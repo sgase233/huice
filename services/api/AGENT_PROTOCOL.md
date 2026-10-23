@@ -40,4 +40,4 @@ M1 在 `app/agents/contracts.py` 实现以下类型，并与 `app/schemas.py` �
 
 ## 4. 实现与验收
 
-M1 先完成 `contracts.py` 和一个不调用 MaaS 的固定样本调度，再接入真实采集、抽取与解释。`tests/test_agent_flow.py` 至少验证：正常链路可追溯到原文；引用校验失败不能发布；缺失事实不能得到“满足”；解释智能体不能覆盖规则结果；模型暂不可用时仍能返回已审核规则的判断与明确降级说明。M2 在轨迹页展示各步骤状态、依据与耗时；M3 按 `docs/product/ACCEPTANCE.md` 核对中文含义和政策来源。
+M1 先完成 `contracts.py` 和一个不调用 DeepSeek 的固定样本调度，再接入真实采集、抽取与解释；模型调用统一经 `app/integrations/llm.py`（`fixture` 离线替身 / `deepseek` 真实调用），失败时 429 或 503 并由编排层降级为已审核规则的确定性说明。`tests/test_agent_flow.py` 至少验证：正常链路可追溯到原文；引用校验失败不能发布；缺失事实不能得到“满足”；解释智能体不能覆盖规则结果；模型暂不可用时仍能返回已审核规则的判断与明确降级说明。M2 在轨迹页展示各步骤状态、依据与耗时；M3 按 `docs/product/ACCEPTANCE.md` 核对中文含义和政策来源。
