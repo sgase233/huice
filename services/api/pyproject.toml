@@ -1,3 +1,35 @@
 # Purpose: define Python project metadata, dependencies, lint/test commands.
 # Call: M1 fills before running pip install or uvicorn.
 # Output constraint: pin tested dependency versions; no credentials.
+
+[project]
+name = "huice-api"
+version = "1.0.0rc1"
+description = "惠策协同后端服务：健康检查、政策导入与后台草稿读取（M1 阶段）"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.161.1",
+    "uvicorn[standard]==0.54.0",
+    "pydantic==2.14.1",
+    "python-multipart==0.0.32",
+    "psycopg[binary,pool]==3.3.6",
+    "pypdf==6.21.2",
+    "python-dotenv==1.2.4",
+    "esdk-obs-python==3.26.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+    "PyYAML==6.0.3",
+    "jsonschema==4.26.0",
+    "rfc3339-validator==0.1.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "db: 需要真实 PostgreSQL 的用例，仅在 HUICE_TEST_DATABASE_URL 存在时运行",
+]
+filterwarnings = ["error::DeprecationWarning:app.*"]

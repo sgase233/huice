@@ -1,3 +1,44 @@
-# Purpose: M1 will define local PostgreSQL 16 + pgvector and Redis 7 services.
-# Load: after implementation, run Docker Compose from this directory using a local secret file.
-# Output constraint: bind ports only to 127.0.0.1; persist local data; include no credentials in Git.
+# Purpose: M1 本地 PostgreSQL 16 + pgvector 与 Redis 7 数据服务定义。
+# Load: docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml up -d
+# Output constraint: 端口只绑 127.0.0.1；凭据只来自本地 .env；数据放命名卷。
+
+name: huice-local
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB 未在 infra/local/.env 中设置}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER 未在 infra/local/.env 中设置}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未在 infra/local/.env 中设置}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - huice-db-data:/var/lib/postgresql/data
+      - ../sql:/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # 仅本机回环访问，因此不设密码；如需改绑网卡必须同时开启 requirepass。
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - huice-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  huice-db-data:
+  huice-redis-data:
