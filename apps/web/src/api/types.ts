@@ -305,7 +305,7 @@ export type PolicyDraftList = {
 };
 
 export type ModelUsage = {
-  mode: "maas" | "fixture" | "saved";
+  mode: "deepseek" | "fixture" | "saved";
   modelVersion: (string) | (null);
   inputTokens: number;
   outputTokens: number;
@@ -387,7 +387,7 @@ export type PolicyAssessment = {
   validUntil: (Timestamp) | (null);
   preparation: Preparation;
   explanation: string;
-  explanationMode: "maas" | "saved" | "fixture";
+  explanationMode: "deepseek" | "saved" | "fixture";
   warnings: Array<string>;
 };
 

@@ -2,8 +2,8 @@
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约
-  version: 0.2.0-draft
-  description: 2026-10-23 实现前草案。应用尚无运行实现；由 M1/M2 联合审查后冻结。restricted 模式需要网关会话；local 模式免 DemoSession，但管理 Bearer 仍必需。语义/流程见工作区《惠策协同_功能实现逻辑与接口协作约定.md》。
+  version: 1.0.0-rc.2
+  description: 2026-10-23 候选冻结版（rc.2：模型模式 maas 改为 deepseek）。M1 已实现 API-01/04/15/16（健康检查、政策导入、后台草稿列表与详情），其余接口按里程碑实现；M2 复核后定版 1.0.0。restricted 模式需要网关会话；local 模式免 DemoSession，但管理 Bearer 仍必需。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。语义/流程见工作区《惠策协同_功能实现逻辑与接口协作约定.md》。
 servers:
 - url: /api/v1
 tags:
@@ -33,7 +33,7 @@ paths:
                 $ref: '#/components/schemas/HealthResponse'
               example:
                 status: ok
-                version: 0.2.0-draft
+                version: 1.0.0-rc.2
         default:
           $ref: '#/components/responses/ApiFailure'
         '400': &id004
@@ -206,7 +206,8 @@ paths:
       operationId: importPolicy
       summary: API-04
       description: Creates a draft; never publishes. Up to 5 files, each <=10 MiB. Validate content and official
-        final URL.
+        final URL. The draft is returned with status pending_parse and empty criteria; 条款抽取（API-05）
+        完成前不会出现 pending_review。
       tags:
       - admin
       security:
@@ -242,10 +243,10 @@ paths:
                 applicationWindow: null
                 sourceUrl: https://www.gov.cn/
                 officialEntryUrl: https://www.gov.cn/
-                status: pending_review
+                status: pending_parse
                 revision: 44444444-4444-4444-8444-444444444444
                 sources: *id010
-                criteria: *id011
+                criteria: []
                 validationFindings: []
         default:
           $ref: '#/components/responses/ApiFailure'
@@ -299,6 +300,8 @@ paths:
                   description: JSON.stringify(PolicyImportMetadata). Required; parsed and validated server-side.
                 files:
                   type: array
+                  description: 可选。第一个文件是政策正文（kind=body），其余为附件（kind=attachment）；
+                    不传文件时草稿 sources 为空数组，正文抓取留待后续 ingestion 阶段。
                   items:
                     type: string
                     format: binary
@@ -2007,7 +2010,7 @@ components:
         mode:
           type: string
           enum:
-          - maas
+          - deepseek
           - fixture
           - saved
         modelVersion:
@@ -2249,7 +2252,7 @@ components:
         explanationMode:
           type: string
           enum:
-          - maas
+          - deepseek
           - saved
           - fixture
         warnings:

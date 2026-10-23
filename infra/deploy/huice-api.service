@@ -1,0 +1,42 @@
+# Purpose: run the Huice API under systemd on the ECS instance (M1).
+# Install: /etc/systemd/system/huice-api.service  (see infra/deploy/README.md)
+# Notes: binds loopback only; nginx is the public entry point. Secrets come from
+#        /etc/huice/api.env (mode 0640, owner root:huice) and are never in this file.
+
+[Unit]
+Description=Huice API (FastAPI / uvicorn)
+Documentation=file:/opt/huice/app/infra/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=huice
+Group=huice
+WorkingDirectory=/opt/huice/app
+EnvironmentFile=/etc/huice/api.env
+# 单 worker：M1 的仓储与对象存储都无跨进程状态，多 worker 只会让日志难对齐。
+ExecStart=/opt/huice/venv/bin/python -m uvicorn app.main:app \
+    --app-dir services/api \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --proxy-headers \
+    --forwarded-allow-ips 127.0.0.1 \
+    --no-access-log
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+# 启动失败时只写变量名（应用自身保证），这里再加一层：日志不进文件、走 journald。
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=-/opt/huice/app/.local-objects
+
+[Install]
+WantedBy=multi-user.target
