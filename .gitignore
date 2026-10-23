@@ -1,0 +1,17 @@
+# 本地密钥、运行产物和个人数据
+.env
+.env.*
+!.env.example
+!**/.env.example
+**/.local-objects/
+**/*.dump
+**/*.backup
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/node_modules/
+**/dist/
+**/.pytest_cache/
+**/test-results/
+**/playwright-report/
+*.log

@@ -1,0 +1,4 @@
+/* Purpose: define page layout, responsive behavior, and components.
+ * Load: import once in main.tsx or App.tsx.
+ * Output constraint: keep policy evidence readable on desktop/mobile and support reduced motion.
+ */

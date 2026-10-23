@@ -1,0 +1,3 @@
+# Purpose: define Python project metadata, dependencies, lint/test commands.
+# Call: M1 fills before running pip install or uvicorn.
+# Output constraint: pin tested dependency versions; no credentials.

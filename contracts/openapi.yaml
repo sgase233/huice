@@ -1,0 +1,2481 @@
+# HTTP contract draft, not an implemented server. M1 owns; M2 reviews.
+openapi: 3.1.0
+info:
+  title: 惠策协同 HTTP 协作契约
+  version: 0.2.0-draft
+  description: 2026-10-23 实现前草案。应用尚无运行实现；由 M1/M2 联合审查后冻结。restricted 模式需要网关会话；local 模式免 DemoSession，但管理 Bearer 仍必需。语义/流程见工作区《惠策协同_功能实现逻辑与接口协作约定.md》。
+servers:
+- url: /api/v1
+tags:
+- name: public
+- name: admin
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: API-01
+      description: ''
+      tags:
+      - public
+      security: []
+      parameters: []
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: &id001
+              description: Request trace UUID; error body uses the same value.
+              schema: &id028
+                $ref: '#/components/schemas/UUID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                version: 0.2.0-draft
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': &id004
+          description: 请求语法或查询参数错误
+          content:
+            application/json:
+              schema: &id002
+                $ref: '#/components/schemas/ApiError'
+          headers: &id003
+            X-Trace-Id: *id001
+        '401': &id005
+          description: 未认证
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '403': &id006
+          description: 权限不足
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '500': &id007
+          description: 内部错误（脱敏）
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '503': &id008
+          description: 依赖不可用
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+  /policies:
+    get:
+      operationId: listPolicies
+      summary: API-02
+      description: Published/closed only. Omitted status includes both. asOf is an optional metadata filter, not
+        a historical-version selector.
+      tags:
+      - public
+      security:
+      - DemoSession: []
+      parameters:
+      - $ref: '#/components/parameters/PublicStatus'
+      - $ref: '#/components/parameters/PolicyType'
+      - $ref: '#/components/parameters/Region'
+      - $ref: '#/components/parameters/AsOf'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyList'
+              example:
+                items:
+                - &id058
+                  id: 22222222-2222-4222-8222-222222222222
+                  title: 合成演示政策（非真实政策）
+                  type: tax
+                  issuer: 演示发布者
+                  region: '440300'
+                  version: demo-v1
+                  status: published
+                  effectiveFrom: '2026-01-01'
+                  effectiveTo: null
+                  applicationWindow: null
+                  sourceUrl: https://www.gov.cn/
+                nextCursor: null
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '500': *id007
+        '503': *id008
+  /policies/{policyId}:
+    get:
+      operationId: getPolicy
+      summary: API-03
+      description: Default latest published version. Unpublished or unknown explicit version returns 404.
+      tags:
+      - public
+      security:
+      - DemoSession: []
+      parameters:
+      - $ref: '#/components/parameters/policyId'
+      - $ref: '#/components/parameters/Version'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema: &id018
+                $ref: '#/components/schemas/PolicyDetail'
+              example: &id065
+                id: 22222222-2222-4222-8222-222222222222
+                title: 合成演示政策（非真实政策）
+                type: tax
+                issuer: 演示发布者
+                region: '440300'
+                version: demo-v1
+                status: published
+                effectiveFrom: '2026-01-01'
+                effectiveTo: null
+                applicationWindow: null
+                sourceUrl: https://www.gov.cn/
+                documentNumber: null
+                applicableEntities: &id009
+                - 合成企业
+                publishedAt: '2026-01-01'
+                officialEntryUrl: https://www.gov.cn/
+                sources: &id010
+                - id: 44444444-4444-4444-8444-444444444444
+                  kind: body
+                  sourceUrl: https://www.gov.cn/
+                  title: 合成演示原文
+                  fetchedAt: '2026-10-23T02:00:00Z'
+                  contentHash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                  text: 此处仅为接口结构演示，不是真实政策。
+                criteria: &id011
+                - id: 33333333-3333-4333-8333-333333333333
+                  title: 合成演示阈值
+                  expression: &id046
+                    op: compare
+                    factKey: taxableIncome
+                    period: assessment
+                    comparator: lte
+                    value: '3000000.00'
+                    unit: CNY
+                  sourceSpans: &id047
+                  - sourceId: 44444444-4444-4444-8444-444444444444
+                    sourceUrl: https://www.gov.cn/
+                    sourceVersion: demo-v1
+                    page: null
+                    section: 合成演示条款
+                    quote: 此处仅为接口结构演示，不是真实政策。
+                    textHash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                  reviewFinding: none
+                  validationStatus: passed
+                preparationTemplate: &id023
+                  type: tax
+                  handlingMode: tax_self_assessment
+                  officialEntryUrl: https://www.gov.cn/
+                  deadline: null
+                  items: []
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': &id013
+          description: 记录不存在
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '500': *id007
+        '503': *id008
+  /admin/policies/import:
+    post:
+      operationId: importPolicy
+      summary: API-04
+      description: Creates a draft; never publishes. Up to 5 files, each <=10 MiB. Validate content and official
+        final URL.
+      tags:
+      - admin
+      security:
+      - DemoSession: []
+        AdminBearer: []
+      parameters: []
+      responses:
+        '201':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            ETag: &id012
+              description: Strong quoted version token; preserve verbatim in If-Match.
+              schema:
+                type: string
+              example: '"44444444-4444-4444-8444-444444444444"'
+          content:
+            application/json:
+              schema: &id026
+                $ref: '#/components/schemas/PolicyDraft'
+              example: &id027
+                id: 22222222-2222-4222-8222-222222222222
+                version: demo-v1
+                title: 合成演示政策（非真实政策）
+                type: tax
+                issuer: 演示发布者
+                region: '440300'
+                documentNumber: null
+                applicableEntities: *id009
+                publishedAt: '2026-01-01'
+                effectiveFrom: '2026-01-01'
+                effectiveTo: null
+                applicationWindow: null
+                sourceUrl: https://www.gov.cn/
+                officialEntryUrl: https://www.gov.cn/
+                status: pending_review
+                revision: 44444444-4444-4444-8444-444444444444
+                sources: *id010
+                criteria: *id011
+                validationFindings: []
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '409': &id014
+          description: 版本或幂等冲突
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '413':
+          description: 文件超限
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '415':
+          description: 不支持文件类型
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '422': &id015
+          description: 业务或请求体校验失败
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '429': &id016
+          description: 调用限流
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '500': *id007
+        '503': *id008
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - metadata
+              properties:
+                metadata:
+                  type: string
+                  description: JSON.stringify(PolicyImportMetadata). Required; parsed and validated server-side.
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  maxItems: 5
+  /admin/policies/{policyId}/extract:
+    post:
+      operationId: extractPolicy
+      summary: API-05
+      description: Target version in JSON. Idempotent extraction; do not overwrite concurrent manual edits.
+      tags:
+      - admin
+      security:
+      - DemoSession: []
+        AdminBearer: []
+      parameters:
+      - $ref: '#/components/parameters/policyId'
+      - $ref: '#/components/parameters/IfMatch'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            ETag: *id012
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractionResult'
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '409': *id014
+        '422': *id015
+        '428': &id017
+          description: 缺少 If-Match
+          content:
+            application/json:
+              schema: *id002
+          headers: *id003
+        '429': *id016
+        '500': *id007
+        '503': *id008
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractPolicyInput'
+  /admin/policies/{policyId}/criteria:
+    put:
+      operationId: saveCriteria
+      summary: API-06
+      description: Save structurally valid drafts with failed findings. Server recomputes validation; bad JSON shape=422.
+      tags:
+      - admin
+      security:
+      - DemoSession: []
+        AdminBearer: []
+      parameters:
+      - $ref: '#/components/parameters/policyId'
+      - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            ETag: *id012
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaveCriteriaResult'
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '409': *id014
+        '422': *id015
+        '428': *id017
+        '429': *id016
+        '500': *id007
+        '503': *id008
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveCriteriaInput'
+  /admin/policies/{policyId}/publish:
+    post:
+      operationId: publishPolicy
+      summary: API-07
+      description: Revalidate citations and human review in same version transaction. Invalid source support=422.
+      tags:
+      - admin
+      security:
+      - DemoSession: []
+        AdminBearer: []
+      parameters:
+      - $ref: '#/components/parameters/policyId'
+      - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            ETag: *id012
+          content:
+            application/json:
+              schema: *id018
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '409': *id014
+        '422': *id015
+        '428': *id017
+        '429': *id016
+        '500': *id007
+        '503': *id008
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishPolicyInput'
+  /enterprises:
+    post:
+      operationId: createEnterprise
+      summary: API-08
+      description: ''
+      tags:
+      - public
+      security:
+      - DemoSession: []
+      parameters: []
+      responses:
+        '201':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            ETag: *id012
+          content:
+            application/json:
+              schema: &id020
+                $ref: '#/components/schemas/Enterprise'
+              example: &id021
+                id: 11111111-1111-4111-8111-111111111111
+                nameSynthetic: 合成企业A
+                period: &id019
+                  startDate: '2026-01-01'
+                  endDate: '2026-12-31'
+                facts:
+                - key: region
+                  value: '440300'
+                  unit: code
+                  period: *id019
+                  source: user_input
+                  verified: false
+                - key: industry
+                  value: C39
+                  unit: code
+                  period: *id019
+                  source: user_input
+                  verified: false
+                - key: taxableIncome
+                  value: null
+                  unit: CNY
+                  period: *id019
+                  source: user_input
+                  verified: false
+                factVersion: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '409': *id014
+        '422': *id015
+        '429': *id016
+        '500': *id007
+        '503': *id008
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnterpriseInput'
+  /enterprises/{enterpriseId}:
+    get:
+      operationId: getEnterprise
+      summary: API-09
+      description: ''
+      tags:
+      - public
+      security:
+      - DemoSession: []
+      parameters:
+      - $ref: '#/components/parameters/enterpriseId'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            ETag: *id012
+          content:
+            application/json:
+              schema: *id020
+              example: *id021
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '500': *id007
+        '503': *id008
+  /enterprises/{enterpriseId}/facts/{factKey}:
+    patch:
+      operationId: updateFact
+      summary: API-10
+      description: Upsert exact key+period. null means unknown. Same canonical content leaves factVersion unchanged.
+      tags:
+      - public
+      security:
+      - DemoSession: []
+      parameters:
+      - $ref: '#/components/parameters/enterpriseId'
+      - $ref: '#/components/parameters/factKey'
+      - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            ETag: *id012
+          content:
+            application/json:
+              schema: *id020
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '409': *id014
+        '422': *id015
+        '428': *id017
+        '429': *id016
+        '500': *id007
+        '503': *id008
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FactUpdate'
+  /assessment-runs:
+    post:
+      operationId: createRun
+      summary: API-11
+      description: Synchronous immutable snapshot. Resolve currently published versions, never draft versions. History
+        creates a new run ID.
+      tags:
+      - public
+      security:
+      - DemoSession: []
+      parameters: []
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema: &id024
+                $ref: '#/components/schemas/AssessmentRun'
+              example: &id025
+                id: 55555555-5555-4555-8555-555555555555
+                enterpriseId: 11111111-1111-4111-8111-111111111111
+                period: *id019
+                asOf: '2026-10-23T10:00:00+08:00'
+                createdAt: '2026-10-23T02:00:00Z'
+                policyVersionMap:
+                  22222222-2222-4222-8222-222222222222: demo-v1
+                factVersion: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                ruleVersion: rules-demo-v1
+                supersedesRunId: null
+                assessments:
+                - policyId: 22222222-2222-4222-8222-222222222222
+                  result: insufficient_evidence
+                  validity: current
+                  staleReasons: []
+                  criteriaResults:
+                  - criterionId: 33333333-3333-4333-8333-333333333333
+                    result: insufficient_evidence
+                    reason: 缺少演示事实
+                    factRefs:
+                    - &id022
+                      key: taxableIncome
+                      period: *id019
+                    evidenceRefs:
+                    - policyId: 22222222-2222-4222-8222-222222222222
+                      sourceId: 44444444-4444-4444-8444-444444444444
+                      sourceUrl: https://www.gov.cn/
+                      sourceVersion: demo-v1
+                      page: null
+                      section: 合成演示条款
+                      quote: 此处仅为接口结构演示，不是真实政策。
+                      textHash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                    calculation: null
+                  missingFacts:
+                  - *id022
+                  nextQuestion:
+                    factRef: *id022
+                    prompt: 请补充演示年度应纳税所得额
+                    reason: 用于演示条件求值
+                    rank: 1
+                  validUntil: null
+                  preparation: *id023
+                  explanation: 合成样例；缺失事实不能作肯定判断。
+                  explanationMode: fixture
+                  warnings:
+                  - 仅为结构演示；非税务专业意见。
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '409': *id014
+        '422': *id015
+        '429': *id016
+        '500': *id007
+        '503': *id008
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssessmentInput'
+  /assessment-runs/{runId}:
+    get:
+      operationId: getRun
+      summary: API-12
+      description: Preserve snapshot; resolve per-assessment validity/staleReasons against current events/time.
+      tags:
+      - public
+      security:
+      - DemoSession: []
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema: *id024
+              example: *id025
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '500': *id007
+        '503': *id008
+  /assessment-runs/{runId}/report.md:
+    get:
+      operationId: downloadReport
+      summary: API-13
+      description: UTF-8 Markdown, immutable historical body plus current download validity notice. Errors remain
+        JSON.
+      tags:
+      - public
+      security:
+      - DemoSession: []
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            Content-Disposition:
+              schema:
+                type: string
+              example: attachment; filename="assessment-demo.md"
+          content:
+            text/markdown:
+              schema:
+                type: string
+              example: '# 合成演示报告
+
+
+                政策信息辅助整理；非税务专业意见。
+
+                '
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '500': *id007
+        '503': *id008
+  /assessment-runs/{runId}/trace:
+    get:
+      operationId: getTrace
+      summary: API-14
+      description: Ordered redacted steps; link stored ingestion/review trace to online run. No secrets/raw prompts.
+      tags:
+      - admin
+      security:
+      - DemoSession: []
+        AdminBearer: []
+      parameters:
+      - $ref: '#/components/parameters/runId'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TraceResponse'
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '500': *id007
+        '503': *id008
+  /admin/policies:
+    get:
+      operationId: listAdminPolicies
+      summary: API-15
+      description: One item per policy version; includes unpublished drafts.
+      tags:
+      - admin
+      security:
+      - DemoSession: []
+        AdminBearer: []
+      parameters:
+      - $ref: '#/components/parameters/AdminStatus'
+      - $ref: '#/components/parameters/PolicyType'
+      - $ref: '#/components/parameters/Cursor'
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyDraftList'
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '500': *id007
+        '503': *id008
+  /admin/policies/{policyId}:
+    get:
+      operationId: getAdminPolicy
+      summary: API-16
+      description: Explicit version or latest imported draft; never use public endpoint to read unpublished data.
+      tags:
+      - admin
+      security:
+      - DemoSession: []
+        AdminBearer: []
+      parameters:
+      - $ref: '#/components/parameters/policyId'
+      - $ref: '#/components/parameters/Version'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+            ETag: *id012
+          content:
+            application/json:
+              schema: *id026
+              example: *id027
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '500': *id007
+        '503': *id008
+components:
+  securitySchemes:
+    DemoSession:
+      type: apiKey
+      in: cookie
+      name: huice_demo_session
+      description: restricted gateway only; HttpOnly Secure SameSite=Lax cookie. Local loopback mode bypasses this
+        scheme only.
+    AdminBearer:
+      type: http
+      scheme: bearer
+      description: Runtime-only ADMIN_TOKEN for admin and trace APIs; never VITE/localStorage.
+  parameters:
+    policyId:
+      name: policyId
+      in: path
+      required: true
+      schema: *id028
+    enterpriseId:
+      name: enterpriseId
+      in: path
+      required: true
+      schema: *id028
+    runId:
+      name: runId
+      in: path
+      required: true
+      schema: *id028
+    factKey:
+      name: factKey
+      in: path
+      required: true
+      schema: &id030
+        $ref: '#/components/schemas/FactKey'
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: ^"[^"\r\n]+"$
+      description: Strong quoted token from latest read. Missing=428; mismatch=409; no * or W/.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: *id028
+      description: Extraction only. Same body/key replays committed result without charging twice, unless draft
+        has since changed.
+    Version:
+      name: version
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+    PolicyType:
+      name: type
+      in: query
+      required: false
+      schema: &id053
+        $ref: '#/components/schemas/PolicyType'
+    PublicStatus:
+      name: status
+      in: query
+      required: false
+      schema: &id056
+        $ref: '#/components/schemas/PolicyStatus'
+    AdminStatus:
+      name: status
+      in: query
+      required: false
+      schema: &id073
+        $ref: '#/components/schemas/DraftStatus'
+    Region:
+      name: region
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+    AsOf:
+      name: asOf
+      in: query
+      required: false
+      schema: &id035
+        $ref: '#/components/schemas/Timestamp'
+  responses:
+    ApiFailure: *id007
+  schemas:
+    UUID:
+      type: string
+      format: uuid
+    Date:
+      type: string
+      format: date
+    Timestamp:
+      type: string
+      format: date-time
+    DecimalString:
+      type: string
+      pattern: ^-?(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+      description: Base-10 string; field-specific scale and nonnegative checks also apply.
+    OfficialUrl:
+      type: string
+      format: uri
+      pattern: ^https://
+      description: Server must validate the final official host and reject private/internal destinations.
+    Period:
+      type: object
+      additionalProperties: false
+      required:
+      - startDate
+      - endDate
+      properties:
+        startDate: &id029
+          $ref: '#/components/schemas/Date'
+        endDate: *id029
+      description: Inclusive dates. Server rejects startDate > endDate.
+    FactKey:
+      type: string
+      enum:
+      - region
+      - industry
+      - establishedDate
+      - taxableIncome
+      - rdExpense
+      - rdActivity
+      - employeeCountStart
+      - employeeCountEnd
+      - assetsStart
+      - assetsEnd
+    FactUnit:
+      type: string
+      enum:
+      - code
+      - date
+      - CNY
+      - boolean
+      - person
+      - ratio
+    AssessmentResult:
+      type: string
+      enum:
+      - satisfied
+      - not_satisfied
+      - insufficient_evidence
+      - conflict
+    Validity:
+      type: string
+      enum:
+      - current
+      - stale
+    PolicyStatus:
+      type: string
+      enum:
+      - published
+      - closed
+    DraftStatus:
+      type: string
+      enum:
+      - pending_parse
+      - pending_review
+      - published
+      - closed
+    PolicyType:
+      type: string
+      enum:
+      - tax
+      - grant
+    AgentStatus:
+      type: string
+      enum:
+      - ok
+      - needs_review
+      - retryable_error
+      - fatal_error
+    FactSource:
+      type: string
+      enum:
+      - user_input
+      - synthetic_material
+    Comparator:
+      type: string
+      enum:
+      - lt
+      - lte
+      - eq
+      - gte
+      - gt
+      - ne
+    FactRef:
+      type: object
+      additionalProperties: false
+      required:
+      - key
+      - period
+      properties:
+        key: *id030
+        period: &id031
+          $ref: '#/components/schemas/Period'
+    FactInput:
+      type: object
+      additionalProperties: false
+      required:
+      - key
+      - value
+      - unit
+      - period
+      - source
+      properties:
+        key: *id030
+        value: &id032
+          oneOf:
+          - type: string
+          - type: boolean
+          - type: 'null'
+        unit: &id033
+          $ref: '#/components/schemas/FactUnit'
+        period: *id031
+        source: &id034
+          $ref: '#/components/schemas/FactSource'
+      if:
+        properties:
+          key:
+            enum:
+            - region
+            - industry
+      then:
+        properties:
+          value:
+            anyOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+          unit:
+            const: code
+      else:
+        if:
+          properties:
+            key:
+              enum:
+              - establishedDate
+        then:
+          properties:
+            value:
+              anyOf:
+              - *id029
+              - type: 'null'
+            unit:
+              const: date
+        else:
+          if:
+            properties:
+              key:
+                enum:
+                - taxableIncome
+          then:
+            properties:
+              value:
+                anyOf:
+                - type: string
+                  pattern: ^-?(0|[1-9][0-9]*)(\.[0-9]{1,2})?$
+                - type: 'null'
+              unit:
+                const: CNY
+          else:
+            if:
+              properties:
+                key:
+                  enum:
+                  - rdExpense
+                  - assetsStart
+                  - assetsEnd
+            then:
+              properties:
+                value:
+                  anyOf:
+                  - type: string
+                    pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$
+                  - type: 'null'
+                unit:
+                  const: CNY
+            else:
+              if:
+                properties:
+                  key:
+                    enum:
+                    - employeeCountStart
+                    - employeeCountEnd
+              then:
+                properties:
+                  value:
+                    anyOf:
+                    - type: string
+                      pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                    - type: 'null'
+                  unit:
+                    const: person
+              else:
+                if:
+                  properties:
+                    key:
+                      enum:
+                      - rdActivity
+                then:
+                  properties:
+                    value:
+                      anyOf:
+                      - type: boolean
+                      - type: 'null'
+                    unit:
+                      const: boolean
+                else: {}
+    EnterpriseFact:
+      type: object
+      additionalProperties: false
+      required:
+      - key
+      - value
+      - unit
+      - period
+      - source
+      - verified
+      properties:
+        key: *id030
+        value: *id032
+        unit: *id033
+        period: *id031
+        source: *id034
+        verified:
+          type: boolean
+      if:
+        properties:
+          key:
+            enum:
+            - region
+            - industry
+      then:
+        properties:
+          value:
+            anyOf:
+            - type: string
+              minLength: 1
+            - type: 'null'
+          unit:
+            const: code
+      else:
+        if:
+          properties:
+            key:
+              enum:
+              - establishedDate
+        then:
+          properties:
+            value:
+              anyOf:
+              - *id029
+              - type: 'null'
+            unit:
+              const: date
+        else:
+          if:
+            properties:
+              key:
+                enum:
+                - taxableIncome
+          then:
+            properties:
+              value:
+                anyOf:
+                - type: string
+                  pattern: ^-?(0|[1-9][0-9]*)(\.[0-9]{1,2})?$
+                - type: 'null'
+              unit:
+                const: CNY
+          else:
+            if:
+              properties:
+                key:
+                  enum:
+                  - rdExpense
+                  - assetsStart
+                  - assetsEnd
+            then:
+              properties:
+                value:
+                  anyOf:
+                  - type: string
+                    pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,2})?$
+                  - type: 'null'
+                unit:
+                  const: CNY
+            else:
+              if:
+                properties:
+                  key:
+                    enum:
+                    - employeeCountStart
+                    - employeeCountEnd
+              then:
+                properties:
+                  value:
+                    anyOf:
+                    - type: string
+                      pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                    - type: 'null'
+                  unit:
+                    const: person
+              else:
+                if:
+                  properties:
+                    key:
+                      enum:
+                      - rdActivity
+                then:
+                  properties:
+                    value:
+                      anyOf:
+                      - type: boolean
+                      - type: 'null'
+                    unit:
+                      const: boolean
+                else: {}
+    FactUpdate:
+      type: object
+      additionalProperties: false
+      required:
+      - value
+      - unit
+      - period
+      - source
+      properties:
+        value: *id032
+        unit: *id033
+        period: *id031
+        source: *id034
+      description: Target factKey is in the URL; period identifies the exact fact. Server validates key/value/unit
+        together.
+      examples:
+      - value: '2800000.00'
+        unit: CNY
+        period: *id019
+        source: user_input
+    EnterpriseInput:
+      type: object
+      additionalProperties: false
+      required:
+      - nameSynthetic
+      - period
+      - facts
+      properties:
+        nameSynthetic:
+          type: string
+          minLength: 1
+          maxLength: 100
+        period: *id031
+        facts:
+          type: array
+          items:
+            $ref: '#/components/schemas/FactInput'
+          minItems: 2
+      description: Require exactly one non-null region and industry for the profile period. Unique key+period; no
+        user-supplied verified flag.
+      examples:
+      - nameSynthetic: 合成企业A
+        period: *id019
+        facts:
+        - key: region
+          value: '440300'
+          unit: code
+          period: *id019
+          source: user_input
+        - key: industry
+          value: C39
+          unit: code
+          period: *id019
+          source: user_input
+        - key: taxableIncome
+          value: null
+          unit: CNY
+          period: *id019
+          source: user_input
+    Enterprise:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - nameSynthetic
+      - period
+      - facts
+      - factVersion
+      properties:
+        id: *id028
+        nameSynthetic:
+          type: string
+        period: *id031
+        facts:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnterpriseFact'
+        factVersion:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      examples:
+      - *id021
+    ApplicationWindow:
+      type: object
+      additionalProperties: false
+      required:
+      - opensAt
+      - closesAt
+      properties:
+        opensAt: *id035
+        closesAt: *id035
+      description: Half-open [opensAt,closesAt); server requires opensAt < closesAt.
+    SourceSpan:
+      type: object
+      additionalProperties: false
+      required:
+      - sourceId
+      - sourceUrl
+      - sourceVersion
+      - page
+      - section
+      - quote
+      - textHash
+      properties:
+        sourceId: *id028
+        sourceUrl: &id036
+          $ref: '#/components/schemas/OfficialUrl'
+        sourceVersion: &id037
+          type: string
+          minLength: 1
+        page: &id038
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+        section: &id039
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        quote: &id040
+          type: string
+          minLength: 1
+        textHash: &id041
+          type: string
+          pattern: ^[a-f0-9]{64}$
+      anyOf: &id042
+      - properties:
+          page:
+            type: integer
+      - properties:
+          section:
+            type: string
+    EvidenceRef:
+      type: object
+      additionalProperties: false
+      required:
+      - policyId
+      - sourceId
+      - sourceUrl
+      - sourceVersion
+      - page
+      - section
+      - quote
+      - textHash
+      properties:
+        policyId: *id028
+        sourceId: *id028
+        sourceUrl: *id036
+        sourceVersion: *id037
+        page: *id038
+        section: *id039
+        quote: *id040
+        textHash: *id041
+      anyOf: *id042
+    SourceDocument:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - kind
+      - sourceUrl
+      - title
+      - fetchedAt
+      - contentHash
+      - text
+      properties:
+        id: *id028
+        kind:
+          type: string
+          enum:
+          - body
+          - attachment
+        sourceUrl: *id036
+        title:
+          type: string
+        fetchedAt: *id035
+        contentHash:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        text:
+          type: string
+      description: Stored policy text; escape when displaying HTML; never expose a private OBS credential/URL.
+    ExpressionPeriod:
+      oneOf:
+      - type: string
+        const: assessment
+      - *id031
+    Expression:
+      oneOf:
+      - $ref: '#/components/schemas/AndExpression'
+      - $ref: '#/components/schemas/OrExpression'
+      - $ref: '#/components/schemas/NotExpression'
+      - $ref: '#/components/schemas/CompareExpression'
+      - $ref: '#/components/schemas/DateExpression'
+      - $ref: '#/components/schemas/IndustryExclusionExpression'
+      - $ref: '#/components/schemas/QuarterlyAverageExpression'
+    AndExpression:
+      type: object
+      additionalProperties: false
+      required:
+      - op
+      - children
+      properties:
+        op:
+          type: string
+          const: and
+        children:
+          type: array
+          items: &id043
+            $ref: '#/components/schemas/Expression'
+          minItems: 2
+    OrExpression:
+      type: object
+      additionalProperties: false
+      required:
+      - op
+      - children
+      properties:
+        op:
+          type: string
+          const: or
+        children:
+          type: array
+          items: *id043
+          minItems: 2
+    NotExpression:
+      type: object
+      additionalProperties: false
+      required:
+      - op
+      - child
+      properties:
+        op:
+          type: string
+          const: not
+        child: *id043
+    CompareExpression:
+      type: object
+      additionalProperties: false
+      required:
+      - op
+      - factKey
+      - period
+      - comparator
+      - value
+      - unit
+      properties:
+        op:
+          type: string
+          const: compare
+        factKey: *id030
+        period: &id044
+          $ref: '#/components/schemas/ExpressionPeriod'
+        comparator: &id045
+          $ref: '#/components/schemas/Comparator'
+        value:
+          oneOf:
+          - type: string
+          - type: boolean
+        unit: *id033
+      description: Decimal for numeric units; strings/booleans only eq/ne. Server validates allowed key/unit/operator.
+    DateExpression:
+      type: object
+      additionalProperties: false
+      required:
+      - op
+      - factKey
+      - period
+      - comparator
+      - value
+      properties:
+        op:
+          type: string
+          const: date
+        factKey:
+          type: string
+          const: establishedDate
+        period: *id044
+        comparator: *id045
+        value: *id029
+    IndustryExclusionExpression:
+      type: object
+      additionalProperties: false
+      required:
+      - op
+      - factKey
+      - period
+      - excluded
+      properties:
+        op:
+          type: string
+          const: industry_exclusion
+        factKey:
+          type: string
+          const: industry
+        period: *id044
+        excluded:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          minItems: 1
+          uniqueItems: true
+    QuarterlyAverageExpression:
+      type: object
+      additionalProperties: false
+      required:
+      - op
+      - metric
+      - period
+      - comparator
+      - value
+      - unit
+      properties:
+        op:
+          type: string
+          const: quarterly_average
+        metric:
+          type: string
+          enum:
+          - employeeCount
+          - assets
+        period: *id044
+        comparator: *id045
+        value: &id077
+          $ref: '#/components/schemas/DecimalString'
+        unit:
+          type: string
+          enum:
+          - person
+          - CNY
+      description: Full natural year only; use eight quarter-opening/closing facts; reject incompatible metric/unit.
+    CriterionDraft:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - expression
+      - sourceSpans
+      - reviewFinding
+      properties:
+        id: *id028
+        title: &id048
+          type: string
+          minLength: 1
+        expression: *id043
+        sourceSpans: &id049
+          type: array
+          items: &id051
+            $ref: '#/components/schemas/SourceSpan'
+          minItems: 1
+        reviewFinding: &id050
+          type: string
+          enum:
+          - none
+          - conflict
+      description: Conflict requires two supported sources. Client cannot provide validationStatus.
+      examples:
+      - id: 33333333-3333-4333-8333-333333333333
+        title: 合成演示阈值
+        expression: *id046
+        sourceSpans: *id047
+        reviewFinding: none
+      if:
+        properties:
+          reviewFinding:
+            const: conflict
+      then:
+        properties:
+          sourceSpans:
+            minItems: 2
+    Criterion:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - expression
+      - sourceSpans
+      - reviewFinding
+      - validationStatus
+      properties:
+        id: *id028
+        title: *id048
+        expression: *id043
+        sourceSpans: *id049
+        reviewFinding: *id050
+        validationStatus:
+          type: string
+          enum:
+          - pending
+          - passed
+          - failed
+      if:
+        properties:
+          reviewFinding:
+            const: conflict
+      then:
+        properties:
+          sourceSpans:
+            minItems: 2
+    ValidationFinding:
+      type: object
+      additionalProperties: false
+      required:
+      - criterionId
+      - code
+      - message
+      - sourceSpans
+      properties:
+        criterionId:
+          anyOf:
+          - *id028
+          - type: 'null'
+        code:
+          type: string
+        message:
+          type: string
+        sourceSpans:
+          type: array
+          items: *id051
+    PreparationTemplateItem:
+      type: object
+      additionalProperties: false
+      required:
+      - title
+      - description
+      - requiredFactRefs
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        requiredFactRefs:
+          type: array
+          items: &id052
+            $ref: '#/components/schemas/FactRef'
+    PreparationItem:
+      type: object
+      additionalProperties: false
+      required:
+      - title
+      - description
+      - requiredFactRefs
+      - missing
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        requiredFactRefs:
+          type: array
+          items: *id052
+        missing:
+          type: boolean
+    PreparationTemplate:
+      type: object
+      additionalProperties: false
+      required:
+      - type
+      - handlingMode
+      - officialEntryUrl
+      - deadline
+      - items
+      properties:
+        type: *id053
+        handlingMode: &id054
+          type: string
+          enum:
+          - tax_self_assessment
+          - grant_application
+        officialEntryUrl: *id036
+        deadline: &id055
+          anyOf:
+          - *id035
+          - type: 'null'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationTemplateItem'
+    Preparation:
+      type: object
+      additionalProperties: false
+      required:
+      - type
+      - handlingMode
+      - officialEntryUrl
+      - deadline
+      - items
+      properties:
+        type: *id053
+        handlingMode: *id054
+        officialEntryUrl: *id036
+        deadline: *id055
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreparationItem'
+    PolicyImportMetadata:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      - title
+      - type
+      - issuer
+      - region
+      - documentNumber
+      - applicableEntities
+      - publishedAt
+      - effectiveFrom
+      - effectiveTo
+      - applicationWindow
+      - sourceUrl
+      - officialEntryUrl
+      properties:
+        policyId: *id028
+        version:
+          type: string
+          minLength: 1
+        title: &id066
+          type: string
+          minLength: 1
+        type: *id053
+        issuer: &id067
+          type: string
+          minLength: 1
+        region: &id068
+          type: string
+          minLength: 1
+        documentNumber: &id069
+          anyOf:
+          - type: string
+          - type: 'null'
+        applicableEntities: &id070
+          type: array
+          items:
+            type: string
+            minLength: 1
+          minItems: 1
+        publishedAt: *id029
+        effectiveFrom: *id029
+        effectiveTo: &id071
+          anyOf:
+          - *id029
+          - type: 'null'
+        applicationWindow: &id072
+          anyOf:
+          - &id057
+            $ref: '#/components/schemas/ApplicationWindow'
+          - type: 'null'
+        sourceUrl: *id036
+        officialEntryUrl: *id036
+      description: Omit policyId for new policy. Existing policy requires a new unique version; dates validated
+        server-side.
+      examples:
+      - version: demo-v1
+        title: 合成演示政策（非真实政策）
+        type: tax
+        issuer: 演示发布者
+        region: '440300'
+        documentNumber: null
+        applicableEntities: *id009
+        publishedAt: '2026-01-01'
+        effectiveFrom: '2026-01-01'
+        effectiveTo: null
+        applicationWindow: null
+        sourceUrl: https://www.gov.cn/
+        officialEntryUrl: https://www.gov.cn/
+    PolicySummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - type
+      - issuer
+      - region
+      - version
+      - status
+      - effectiveFrom
+      - effectiveTo
+      - applicationWindow
+      - sourceUrl
+      properties:
+        id: *id028
+        title: &id059
+          type: string
+        type: *id053
+        issuer: &id060
+          type: string
+        region: &id061
+          type: string
+        version: &id062
+          type: string
+        status: *id056
+        effectiveFrom: *id029
+        effectiveTo: &id063
+          anyOf:
+          - *id029
+          - type: 'null'
+        applicationWindow: &id064
+          anyOf:
+          - *id057
+          - type: 'null'
+        sourceUrl: *id036
+      examples:
+      - *id058
+    PolicyDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - type
+      - issuer
+      - region
+      - version
+      - status
+      - effectiveFrom
+      - effectiveTo
+      - applicationWindow
+      - sourceUrl
+      - documentNumber
+      - applicableEntities
+      - publishedAt
+      - officialEntryUrl
+      - sources
+      - criteria
+      - preparationTemplate
+      properties:
+        id: *id028
+        title: *id059
+        type: *id053
+        issuer: *id060
+        region: *id061
+        version: *id062
+        status: *id056
+        effectiveFrom: *id029
+        effectiveTo: *id063
+        applicationWindow: *id064
+        sourceUrl: *id036
+        documentNumber:
+          anyOf:
+          - type: string
+          - type: 'null'
+        applicableEntities:
+          type: array
+          items:
+            type: string
+        publishedAt: *id029
+        officialEntryUrl: *id036
+        sources:
+          type: array
+          items: &id074
+            $ref: '#/components/schemas/SourceDocument'
+          minItems: 1
+        criteria:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublishedCriterion'
+          minItems: 1
+        preparationTemplate:
+          $ref: '#/components/schemas/PreparationTemplate'
+      examples:
+      - *id065
+    PolicyDraft:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - version
+      - title
+      - type
+      - issuer
+      - region
+      - documentNumber
+      - applicableEntities
+      - publishedAt
+      - effectiveFrom
+      - effectiveTo
+      - applicationWindow
+      - sourceUrl
+      - officialEntryUrl
+      - status
+      - revision
+      - sources
+      - criteria
+      - validationFindings
+      properties:
+        id: *id028
+        version:
+          type: string
+        title: *id066
+        type: *id053
+        issuer: *id067
+        region: *id068
+        documentNumber: *id069
+        applicableEntities: *id070
+        publishedAt: *id029
+        effectiveFrom: *id029
+        effectiveTo: *id071
+        applicationWindow: *id072
+        sourceUrl: *id036
+        officialEntryUrl: *id036
+        status: *id073
+        revision: *id028
+        sources:
+          type: array
+          items: *id074
+        criteria:
+          type: array
+          items: &id075
+            $ref: '#/components/schemas/Criterion'
+        validationFindings:
+          type: array
+          items: &id076
+            $ref: '#/components/schemas/ValidationFinding'
+      examples:
+      - *id027
+    PolicyList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicySummary'
+        nextCursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+    PolicyDraftList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - nextCursor
+      properties:
+        items:
+          type: array
+          items: *id026
+        nextCursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+    ModelUsage:
+      type: object
+      additionalProperties: false
+      required:
+      - mode
+      - modelVersion
+      - inputTokens
+      - outputTokens
+      - elapsedMs
+      properties:
+        mode:
+          type: string
+          enum:
+          - maas
+          - fixture
+          - saved
+        modelVersion:
+          anyOf:
+          - type: string
+          - type: 'null'
+        inputTokens:
+          type: integer
+          minimum: 0
+        outputTokens:
+          type: integer
+          minimum: 0
+        elapsedMs:
+          type: integer
+          minimum: 0
+    ExtractPolicyInput:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        version:
+          type: string
+          minLength: 1
+        modelVersion:
+          type: string
+          minLength: 1
+    ExtractionResult:
+      type: object
+      additionalProperties: false
+      required:
+      - draft
+      - criteriaDrafts
+      - validationFindings
+      - usage
+      properties:
+        draft: *id026
+        criteriaDrafts:
+          type: array
+          items: *id075
+        validationFindings:
+          type: array
+          items: *id076
+        usage:
+          $ref: '#/components/schemas/ModelUsage'
+    SaveCriteriaInput:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      - criteria
+      properties:
+        version:
+          type: string
+          minLength: 1
+        criteria:
+          type: array
+          items:
+            $ref: '#/components/schemas/CriterionDraft'
+          minItems: 1
+      description: Criterion IDs must be unique within version.
+    SaveCriteriaResult:
+      type: object
+      additionalProperties: false
+      required:
+      - draft
+      - criteria
+      - validationFindings
+      properties:
+        draft: *id026
+        criteria:
+          type: array
+          items: *id075
+        validationFindings:
+          type: array
+          items: *id076
+    PublishPolicyInput:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      - reviewConfirmed
+      properties:
+        version:
+          type: string
+          minLength: 1
+        reviewConfirmed:
+          type: boolean
+          const: true
+    NextQuestion:
+      type: object
+      additionalProperties: false
+      required:
+      - factRef
+      - prompt
+      - reason
+      - rank
+      properties:
+        factRef: *id052
+        prompt:
+          type: string
+        reason:
+          type: string
+        rank:
+          type: integer
+          minimum: 1
+    StaleReason:
+      type: object
+      additionalProperties: false
+      required:
+      - code
+      - message
+      - changedCriterionIds
+      - changedFactRefs
+      properties:
+        code:
+          type: string
+          enum:
+          - policy_changed
+          - fact_changed
+          - window_closed
+          - policy_expired
+          - valid_until_passed
+        message:
+          type: string
+        changedCriterionIds:
+          type: array
+          items: *id028
+        changedFactRefs:
+          type: array
+          items: *id052
+    CalculationInput:
+      type: object
+      additionalProperties: false
+      required:
+      - factRef
+      - value
+      properties:
+        factRef: *id052
+        value:
+          anyOf:
+          - *id077
+          - type: 'null'
+    Calculation:
+      type: object
+      additionalProperties: false
+      required:
+      - formula
+      - inputs
+      - intermediateValues
+      - value
+      - unit
+      properties:
+        formula:
+          type: string
+        inputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalculationInput'
+        intermediateValues:
+          type: array
+          items: *id077
+        value:
+          anyOf:
+          - *id077
+          - type: 'null'
+        unit: *id033
+    CriterionResult:
+      type: object
+      additionalProperties: false
+      required:
+      - criterionId
+      - result
+      - reason
+      - factRefs
+      - evidenceRefs
+      - calculation
+      properties:
+        criterionId: *id028
+        result: &id078
+          $ref: '#/components/schemas/AssessmentResult'
+        reason:
+          type: string
+        factRefs:
+          type: array
+          items: *id052
+        evidenceRefs:
+          type: array
+          items: &id079
+            $ref: '#/components/schemas/EvidenceRef'
+        calculation:
+          anyOf:
+          - $ref: '#/components/schemas/Calculation'
+          - type: 'null'
+    PolicyAssessment:
+      type: object
+      additionalProperties: false
+      required:
+      - policyId
+      - result
+      - validity
+      - staleReasons
+      - criteriaResults
+      - missingFacts
+      - nextQuestion
+      - validUntil
+      - preparation
+      - explanation
+      - explanationMode
+      - warnings
+      properties:
+        policyId: *id028
+        result: *id078
+        validity:
+          $ref: '#/components/schemas/Validity'
+        staleReasons:
+          type: array
+          items:
+            $ref: '#/components/schemas/StaleReason'
+        criteriaResults:
+          type: array
+          items:
+            $ref: '#/components/schemas/CriterionResult'
+        missingFacts:
+          type: array
+          items: *id052
+        nextQuestion:
+          anyOf:
+          - $ref: '#/components/schemas/NextQuestion'
+          - type: 'null'
+        validUntil:
+          anyOf:
+          - *id035
+          - type: 'null'
+        preparation:
+          $ref: '#/components/schemas/Preparation'
+        explanation:
+          type: string
+        explanationMode:
+          type: string
+          enum:
+          - maas
+          - saved
+          - fixture
+        warnings:
+          type: array
+          items:
+            type: string
+    AssessmentInput:
+      type: object
+      additionalProperties: false
+      required:
+      - enterpriseId
+      - policyIds
+      - asOf
+      - period
+      properties:
+        enterpriseId: *id028
+        policyIds:
+          type: array
+          items: *id028
+          minItems: 1
+          maxItems: 7
+          uniqueItems: true
+        asOf: *id035
+        period: *id031
+        supersedesRunId: *id028
+        skippedFactRefs:
+          type: array
+          items: *id052
+      examples:
+      - enterpriseId: 11111111-1111-4111-8111-111111111111
+        policyIds:
+        - 22222222-2222-4222-8222-222222222222
+        asOf: '2026-10-23T10:00:00+08:00'
+        period: *id019
+    AssessmentRun:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - enterpriseId
+      - period
+      - asOf
+      - createdAt
+      - policyVersionMap
+      - factVersion
+      - ruleVersion
+      - supersedesRunId
+      - assessments
+      properties:
+        id: *id028
+        enterpriseId: *id028
+        period: *id031
+        asOf: *id035
+        createdAt: *id035
+        policyVersionMap:
+          type: object
+          additionalProperties:
+            type: string
+            minLength: 1
+        factVersion:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        ruleVersion:
+          type: string
+        supersedesRunId:
+          anyOf:
+          - *id028
+          - type: 'null'
+        assessments:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyAssessment'
+          minItems: 1
+          maxItems: 7
+      examples:
+      - *id025
+    TraceStep:
+      type: object
+      additionalProperties: false
+      required:
+      - sequence
+      - stage
+      - status
+      - inputSummary
+      - outputSummary
+      - evidenceRefs
+      - policyId
+      - policyVersion
+      - modelOrRuleVersion
+      - elapsedMs
+      - errorCode
+      - humanAction
+      properties:
+        sequence:
+          type: integer
+          minimum: 1
+        stage:
+          type: string
+          enum:
+          - ingestion
+          - extraction
+          - citation_validation
+          - human_review
+          - profile
+          - retrieval
+          - evaluation
+          - questioning
+          - explanation
+        status:
+          $ref: '#/components/schemas/AgentStatus'
+        inputSummary:
+          type: string
+        outputSummary:
+          type: string
+        evidenceRefs:
+          type: array
+          items: *id079
+        policyId:
+          anyOf:
+          - *id028
+          - type: 'null'
+        policyVersion:
+          anyOf:
+          - type: string
+          - type: 'null'
+        modelOrRuleVersion:
+          type: string
+        elapsedMs:
+          type: integer
+          minimum: 0
+        errorCode:
+          anyOf:
+          - type: string
+          - type: 'null'
+        humanAction:
+          anyOf:
+          - type: string
+          - type: 'null'
+    TraceResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - steps
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceStep'
+    ApiError:
+      type: object
+      additionalProperties: false
+      required:
+      - error
+      - traceId
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+          - code
+          - message
+          - details
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+        traceId: *id028
+      examples:
+      - error:
+          code: VERSION_CONFLICT
+          message: 数据已更新，请重新读取并核对。
+          details:
+            currentVersion: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        traceId: 11111111-1111-4111-8111-111111111111
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      - version
+      properties:
+        status:
+          type: string
+          const: ok
+        version:
+          type: string
+    PublishedCriterion:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - expression
+      - sourceSpans
+      - reviewFinding
+      - validationStatus
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        title:
+          type: string
+          minLength: 1
+        expression:
+          $ref: '#/components/schemas/Expression'
+        sourceSpans:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceSpan'
+          minItems: 1
+        reviewFinding:
+          type: string
+          enum:
+          - none
+          - conflict
+        validationStatus:
+          type: string
+          const: passed
+      if:
+        properties:
+          reviewFinding:
+            const: conflict
+      then:
+        properties:
+          sourceSpans:
+            minItems: 2

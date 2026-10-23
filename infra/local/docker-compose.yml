@@ -1,0 +1,3 @@
+# Purpose: M1 will define local PostgreSQL 16 + pgvector and Redis 7 services.
+# Load: after implementation, run Docker Compose from this directory using a local secret file.
+# Output constraint: bind ports only to 127.0.0.1; persist local data; include no credentials in Git.

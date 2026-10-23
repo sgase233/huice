@@ -1,0 +1,98 @@
+@startuml main-use-cases
+' Owner: M3 maintains business meaning; M1/M2 review boundaries against FR-01..FR-09.
+' Render locally with the installed VS Code PlantUML extension (jebbs.plantuml).
+left to right direction
+skinparam defaultFontName Microsoft YaHei
+skinparam defaultFontSize 14
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam nodesep 22
+skinparam ranksep 36
+skinparam ArrowColor #64748B
+skinparam ArrowFontColor #475569
+skinparam ArrowFontSize 12
+skinparam actor {
+  BorderColor #334155
+  FontColor #1E293B
+}
+skinparam usecase {
+  BackgroundColor #FFFFFF
+  BorderColor #4B6584
+  FontColor #1E293B
+}
+skinparam package {
+  BackgroundColor #F8FAFC
+  BorderColor #CBD5E1
+  FontColor #334155
+  FontStyle bold
+}
+skinparam rectangle {
+  BackgroundColor #FFFFFF
+  BorderColor #334155
+  FontColor #0F172A
+}
+skinparam note {
+  BackgroundColor #FFF9E8
+  BorderColor #D6BD73
+  FontColor #55482C
+}
+
+title 惠策协同 · 主要用例图\n<size:13>初赛 MVP / FR-01—FR-09 / 设计范围，尚未实现</size>
+
+actor "企业用户\n负责人 / 财务 / 申报人员" as Enterprise
+actor "政策标注与审核员\n团队受限后台" as Reviewer
+actor "受限演示人员" as Presenter
+
+rectangle "惠策协同系统" {
+  package "企业侧：发现机会与准备材料" {
+    usecase "维护企业画像\n与事实证据" as UC_Profile
+    usecase "查找政策机会" as UC_Search
+    usecase "分析政策适用性\n（四态判断）" as UC_Assess
+    usecase "查看逐条判断依据\n与官方原文" as UC_Evidence
+    usecase "补充缺失事实" as UC_Answer
+    usecase "重新核验失效结论" as UC_Reassess
+    usecase "查看分类准备清单\n（税收 / 资金）" as UC_Prepare
+    usecase "查看与下载分析报告" as UC_Report
+  }
+
+  package "政策后台：形成可信规则" {
+    usecase "导入政策原文\n与新版本" as UC_Import
+    usecase "抽取政策条件" as UC_Extract
+    usecase "审核并修正规则" as UC_Review
+    usecase "校验原文引用" as UC_Validate
+    usecase "发布审核通过版本" as UC_Publish
+  }
+
+  package "受限演示：追溯协作过程" {
+    usecase "查看智能体审计轨迹" as UC_Trace
+  }
+}
+
+Enterprise -- UC_Profile
+Enterprise -- UC_Search
+Enterprise -- UC_Assess
+Enterprise -- UC_Evidence
+Enterprise -- UC_Answer
+Enterprise -- UC_Reassess
+Enterprise -- UC_Prepare
+Enterprise -- UC_Report
+
+Reviewer -- UC_Import
+Reviewer -- UC_Extract
+Reviewer -- UC_Review
+Reviewer -- UC_Publish
+Presenter -- UC_Trace
+
+UC_Answer ..> UC_Assess : <<extend>>\n[必要事实不足时]
+UC_Reassess ..> UC_Assess : <<include>>
+UC_Extract ..> UC_Validate : <<include>>
+UC_Review ..> UC_Validate : <<include>>
+UC_Publish ..> UC_Validate : <<include>>
+
+legend bottom
+  实线：参与者使用用例　　<<include>>：必须执行的子用例　　<<extend>>：条件触发的扩展
+  四态：满足 / 不满足 / 证据不足 / 条款冲突；“依据已失效”为独立标记。
+  内部：协调器 + 采集 / 条款解析 / 企业画像 / 解释与准备智能体；独立规则引擎与引用校验器。
+  内部模块不作为外部参与者；审计轨迹需管理授权。仅用合成企业，不自动代填、代签、代报。
+endlegend
+@enduml

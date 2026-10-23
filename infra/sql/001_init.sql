@@ -1,0 +1,3 @@
+-- Purpose: create versioned policy, criterion, fact, assessment, and trace tables.
+-- Call: apply through M1's documented migration process after implementation.
+-- Output constraint: schema preserves immutable historical runs and source provenance.

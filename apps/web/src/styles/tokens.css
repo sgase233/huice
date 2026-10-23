@@ -1,0 +1,4 @@
+/* Purpose: define colors, type scale, spacing, and state colors from M3 UI brief.
+ * Load: import once in main.tsx or App.tsx.
+ * Output constraint: meet contrast and visible-focus requirements; stale state distinct from four result states.
+ */
