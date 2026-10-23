@@ -8,7 +8,7 @@
 
 交付范围为深圳合成企业的政策机会分析：2 项国家税收政策、3—5 项深圳资金通知、6—8 家企业和至少 30 个判断组合。FR-01～FR-09 为 P0；文件 OCR、金额试算、自动巡检、第二城市、提醒与批量报告仍为 P1。不代企业申报，不把历史通知显示成当前开放项目。
 
-实现顺序：政策来源与标注 → 契约/事实字典 → 引用校验与规则求值 → 企业判断 → 补问/清单/版本 → 页面联调 → 评测部署。先完成确定性链路，再接 MaaS 解释和向量检索；MaaS 不决定资格。
+实现顺序：政策来源与标注 → 契约/事实字典 → 引用校验与规则求值 → 企业判断 → 补问/清单/版本 → 页面联调 → 评测部署。先完成确定性链路，再接 DeepSeek 解释和向量检索；模型不决定资格。
 
 主要用例图见 [PlantUML 源文件](./diagrams/main-use-cases.puml)、[PNG](./diagrams/main-use-cases.png)、[SVG](./diagrams/main-use-cases.svg)；角色、用例关系及本地插件预览/导出方法见[图示说明](./diagrams/README.md)。
 
@@ -26,7 +26,7 @@
 
 ### 2.1 FR-01：政策导入与版本
 
-1. `AdminReviewPage → client.importPolicy → admin_policies.py → ingestion → storage/obs`。前端提交 `multipart/form-data`，`metadata` 是 JSON 字符串；附件用同名 `files` 重复添加，不能手写 multipart boundary。
+1. `AdminReviewPage → client.importPolicy → admin_policies.py → ingestion → storage/obs`。前端提交 `multipart/form-data`，`metadata` 是 JSON 字符串；附件用同名 `files` 重复添加，不能手写 multipart boundary。**第一个文件是政策正文（`kind=body`），其余按上传顺序为附件（`kind=attachment`）**；`files` 可为空，此时草稿 `sources: []`，正文留给后续抓取阶段补齐，导入不会凭空生成原文。
 2. 新政策不传 `policyId`，后端分配 UUID；新版本传原 `policyId` 和新 `version`。`(policyId, version)` 唯一。已发布版本不能原地改元数据/规则，必须重新导入新版本，保留旧版；仅有草稿不让旧判断失效。
 3. `metadata` 包含标题、类型、机关、地区、文号（可 null）、适用主体、发布日期、有效日期、申报窗口、官方入口和来源 URL。后端记录 `fetchedAt`、文件哈希和正文/附件关系。URL 必须通过服务端官方域名白名单检查；跳转后也检查目标，禁止访问本机、内网和非 HTTPS 地址。网络抓取失败返回错误，不凭空补原文。
 4. 导入后为 `pending_parse`；抽取完成为 `pending_review`；人工发布后为 `published` 或按时间推导为 `closed`。内部保存“是否已发布”和有效日期，`closed` 是已审核但过期/窗口关闭的公开视图，不代表未审核。
@@ -96,7 +96,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 每项结果带 `preparation={type,handlingMode,officialEntryUrl,deadline,items[]}`；item 含 `title,description,requiredFactRefs,missing`。税收 handlingMode=`tax_self_assessment`，资金=`grant_application`；真实具体办理说明来自已审核材料要求，模型只改写文字。类型不同必须分栏；关闭窗口不能有立即申报动作。
 
-结果的 `explanationMode=maas/saved/fixture`，`warnings[]` 说明解释降级/样例模式。模型失败时规则结果照常返回，使用已存确定性说明；不能把整次判断伪装成模型成功。抽取端模型不可用仍返回 503 并保留草稿。
+结果的 `explanationMode=deepseek/saved/fixture`，`warnings[]` 说明解释降级/样例模式。模型失败时规则结果照常返回，使用已存确定性说明；不能把整次判断伪装成模型成功。抽取端模型不可用仍返回 503 并保留草稿。
 
 `ReportPage` 先读 API-12 的 JSON 展示，再通过 API-13 下载 UTF-8 Markdown；不能把下载内容当 JSON 解析。报告含原 run 的生成时间、企业/政策/规则版本、条件与证据快照、两类清单、风险文案；每次下载前追加“截至 downloadedAt 的有效性提示”，正文历史依据不变。旧文件脱离系统后不会自动更新，页首提示再次申报前返回系统核验。
 
@@ -114,7 +114,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 ### 2.8 FR-09：智能体与轨迹
 
-入库链：管理路由 → ingestion → extraction → citations → 人工审核。在线链：assessment 路由 → orchestrator → profile 快照 → 已审规则检索 → rules → questioning → explanation → trace/storage。四个角色可共享同一 Python 进程与 MaaS 客户端。
+入库链：管理路由 → ingestion → extraction → citations → 人工审核。在线链：assessment 路由 → orchestrator → profile 快照 → 已审规则检索 → rules → questioning → explanation → trace/storage。四个角色可共享同一 Python 进程与 DeepSeek 客户端。
 
 `AgentContext` 只有上下文（trace/request ID、asOf、period、版本图、预算）；业务参数由独立 `AssessmentInput` 传入，不能把 enterpriseId/policyIds 塞进未定义的 context 字段。内部 snake_case 转外部 camelCase 只在 schema 边界做。
 
@@ -150,7 +150,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 | ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
 | --- | --- | --- |
-| API-04 `POST /admin/policies/import` | multipart metadata 字符串 + files；每文件 ≤10 MiB、最多5个；仅 PDF/UTF-8 text（含原始 HTML，展示须转义），检查真实内容 | 201 `PolicyDraft` + ETag；相同政策版本 409 |
+| API-04 `POST /admin/policies/import` | multipart metadata 字符串 + files；每文件 ≤10 MiB、最多5个；第一个文件为正文、其余为附件，可传0个文件；仅 PDF/UTF-8 text（含原始 HTML，展示须转义），按真实内容而非扩展名判断 | 201 `PolicyDraft`（`status=pending_parse`、`criteria: []`）+ ETag；相同政策版本 409 |
 | API-05 `POST /admin/policies/{policyId}/extract` | JSON `{version,modelVersion?}`；If-Match 和 UUID Idempotency-Key 必填 | 200 `ExtractionResult`（含更新后的 draft、criteriaDrafts、validationFindings、usage）+ 新 ETag |
 | API-06 `PUT /admin/policies/{policyId}/criteria` | JSON `{version,criteria:CriterionDraft[]}`；If-Match 必填；criteria 至少一条，ID 不重复 | 200 `{draft,criteria,validationFindings}` + 新 ETag |
 | API-07 `POST /admin/policies/{policyId}/publish` | JSON `{version,reviewConfirmed:true}`；If-Match 必填 | 200 `PolicyDetail` + 发布后 revision ETag；失败保留草稿 |
@@ -224,7 +224,7 @@ API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络�
 
 前端函数路径/查询值均 URL 编码；client 写请求分开传 body 与 headers，不把 version 或 ETag 放错位置。GET 不发送 body。所有返回先校验关键结构，未知枚举展示契约错误，不默认为满足。
 
-组件 Props：`StatusBadge({result,validity,policyStatus})`；`EvidenceRow({criterionResult,sources,facts})`；`NextQuestion({question,onAnswer(value),onSkip(),pending})`；`PreparationList({preparation,policyStatus,validity})`。组件不访问数据库/MaaS、不推导政策阈值；页面负责调 client 和管理请求状态。Report/Trace 页面以 runId 读取，不以当前 enterpriseId 重新拼装旧报告。
+组件 Props：`StatusBadge({result,validity,policyStatus})`；`EvidenceRow({criterionResult,sources,facts})`；`NextQuestion({question,onAnswer(value),onSkip(),pending})`；`PreparationList({preparation,policyStatus,validity})`。组件不访问数据库/模型服务、不推导政策阈值；页面负责调 client 和管理请求状态。Report/Trace 页面以 runId 读取，不以当前 enterpriseId 重新拼装旧报告。
 
 ## 7. 本次代码核对与修改记录
 
@@ -266,7 +266,46 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 
 已执行：类型一致性检查通过；8 项静态测试全部通过，覆盖16个端点清单、本地引用解析、67个schema的结构检查及合成示例、TS生成一致性、事实零值/未知/精度/来源边界、AST和来源定位、判断请求限制、管理权限/并发头与报告媒体类型。检查使用 JSON Schema 2020-12 校验器，不等同于完整 OpenAPI 专用校验器；额外语义（如开始日期小于结束日期、真实官方域名、数据库并发）仍须后端实现和集成测试。
 
-未执行：业务 API、规则求值、数据库/Redis/MaaS/OBS、浏览器与 TypeScript 编译（项目尚无构建依赖）。这些不计作通过，静态测试结果不能作为业务验收率。
+本节只覆盖静态契约检查：业务 API、规则求值、数据库与 Redis/OBS、浏览器与 TypeScript 编译**不能由静态测试代替**，其执行结果见下文「M1 后端实现验证记录」。MaaS 不在范围内（队长 2026-10-23 决定），模型调用改用 DeepSeek。
+
+### M1 后端实现验证记录（2026-10-23，第二阶段）
+
+运行环境：Windows 11（10.0.26200）、CPython 3.12.10（`services/api/.venv`）、Git 2.54.0.windows.1、Node v24.15.0（与计划的 Node 22 LTS 不符，记录为偏差，M1 后端不受影响）、WSL 3.0.3.0（默认版本 2）、Docker Desktop 4.96.3（CLI 29.9.2、Compose v5.6.1）。依赖版本见 `services/api/requirements.lock`（47 项，由 `pip freeze` 生成；在 41 项基础上加入 `esdk-obs-python==3.26.6` 及 5 个传递依赖，用于 OBS 对象存储）。
+
+从 `huice/services/api` 执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+已执行并通过：166 项用例通过、12 项数据库用例跳过（见下）、75 项契约子测试通过（含当日稍后补入的 16 项 OBS 对象存储用例与 3 项 OBS 配置用例：键命名空间、endpoint 归一化、非 2xx 状态与 SDK 异常统一映射 503、异常消息不含桶名与 AK/SK、客户端惰性创建与关闭后重建；以及 16 项 DeepSeek 模型客户端用例：`/chat/completions` 请求形状与 Bearer 头、base URL 归一化、usage 解析、429→`UPSTREAM_RATE_LIMITED`、其余状态/坏 JSON/缺字段/网络异常→503 且消息不含密钥与 base URL、`fixture`/`deepseek` 模式分派、缺 `DEEPSEEK_API_KEY` 时启动即失败）。覆盖配置加载（缺变量只报变量名、模式必填、CORS/ADMIN_TOKEN 基线）、统一错误信封与 `X-Trace-Id`、404/500 脱敏、CORS 预检与暴露头、Bearer 401/演示 cookie 403、API-04 全部分支（metadata 缺失/坏 JSON/字段与枚举/日期与窗口倒置/官方 URL/文件数量/10 MiB 边界/空文件/二进制/坏 PDF/409/503 清理）、文件摄取单元规则、API-15/16 读取与游标签名，以及服务实际暴露的4个接口与契约的 operationId/summary/tags/security 对齐。
+
+真实服务冒烟：按 `README.md` 启动 uvicorn（读取 `huice/.env`）后 `curl.exe -i http://127.0.0.1:8000/api/v1/health` 返回 503、`{"error":{"code":"DEPENDENCY_UNAVAILABLE",...}}`、`X-Trace-Id` 与 body `traceId` 一致（本机无数据库，502/503 属预期）；进程能完成 startup，说明配置加载与中间件装配正常。依赖锁定复现：在 `%TEMP%` 干净 venv 中 `pip install -r requirements.lock` 后 `pip check` 输出 `No broken requirements found.`。
+
+契约：`python contracts/generate_types.py --check` 一致；`test_contract.py` 8 项通过（`types.ts` 无需改动）。为让 `format: date-time` 检查真正生效，dev 依赖补入 `rfc3339-validator==0.1.4`；此前该环境下“日期时间缺时区”用例会误判为通过。
+
+**数据库与 Redis 实测（2026-10-23 当日补齐）**：本机先完成 WSL2（3.0.3.0，默认版本 2）与 Docker Desktop 4.96.3 安装，用 `infra/local/docker-compose.yml` 起 PostgreSQL 16.15 + pgvector 0.8.7 与 Redis 7.4。`infra/sql/001_init.sql` 连跑两次退出码均为 0（第二次仅 `NOTICE ... already exists`），得到 13 张业务表、13 个业务触发器（`pg_trigger` 全量 24 行含外键内部触发器，口径待复核）、`schema_migration` 记 `001_init`；`redis-cli PING` 返回 `PONG`；`pytest -m db -q` 在真实库上 **12 项通过**（导入落库行数、新版本复用 policyId、重复版本无部分写入、分页与派生 `closed`、已发布版本与其子表不可改删、只追加表拒改）。
+
+端到端冒烟（真实库）：API-04 导入返回 201、`ETag` 与 body `revision` 一致、`status=pending_parse`、来源 `kind=body`；API-15 列表 200、无 `ETag`、顺序为 `imported_at DESC`；API-16 带 `version` 与不带 `version` 均命中同一 `revision`；未知 `version` 返回 404 `POLICY_NOT_FOUND` 且不回退。冒烟数据已清理。首轮 `pytest -m db` 曾 10 项失败，暴露一个真实缺陷（`_fetchone()` 误用于无 `RETURNING` 的 `INSERT ... ON CONFLICT DO NOTHING`，已改用 `_execute()`）与两处用例问题（用例间数据串号、把「同版本即冲突」写错，后者已按契约语义修正为同一 `policyId` 下重复才 409）。原始记录见 `docs/devlog/M1.md` 与 `infra/local/README.md`。
+
+**云端资源（2026-10-23 当日补齐状态）**
+
+| 资源 | 状态 | 证据 |
+| --- | --- | --- |
+| ECS | 已开通并登录 | `huice-api-01`，Ubuntu 24.04.4、Python 3.12.3、内网 `192.168.0.86`，22 端口实测可连 |
+| RDS for PostgreSQL | **已实测** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`pg_trigger` 全量 24 行含外键内部触发器，口径待复核），`vector` 0.8.0（本地 0.8.7） |
+| Redis（DCS） | **已实测** | `huice-redis` 7.0 主备 1GB，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG` |
+| OBS | 已建桶，代码已实现，**未在真实桶验证** | 桶 `huice-policies`（私有，`cn-south-1`）；`ObsObjectStore` 用 `esdk-obs-python` 3.26.6 实现，只用假客户端做过单元测试 |
+| DeepSeek | 已接入，**未用真实 Key 联调** | `app/integrations/llm.py`（`fixture`/`deepseek` 两模式，OpenAI 兼容 `/chat/completions`）；契约 rc.2 中 `ModelUsage.mode`/`explanationMode` 的 `maas` 已改为 `deepseek`；联调前 `MODEL_MODE` 仍为 `fixture` |
+| CodeArts / Skills | **不作为要求** | 账号据本人告知已开通、未接入；队长 2026-10-23 同意开发记录以实际使用的工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
+
+**仍未执行**（未执行即不计作通过）：
+
+- 云端 API 部署（`infra/deploy/` 的 systemd/nginx 文件已就绪，尚未在 ECS 上执行），因此云端健康检查、`app→RDS` 内网链路尚未有实测证据
+- OBS 真实桶的文件上传/删除验证；验证前 `OBJECT_STORE_MODE` 保持 `local`
+- `restricted` 模式的 `huice_demo_session` 签发入口，故云端 `/api/v1/admin/*` 目前无法通过鉴权
+- 前端 TypeScript 编译与浏览器验收（属 M2）
+- 11/15 要求的「从空环境复现部署」，需先用已推送的提交重做一遍
 
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 
@@ -275,12 +314,14 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 | 文件/目录 | 编写内容 |
 | --- | --- |
 | `contracts/openapi.yaml`、`contracts/README.md`、`contracts/generate_types.py` | API 参数、schema、权限、错误、示例和类型生成；M2 审查每次变更及前端生成文件 |
-| `services/api/app/main.py`、`schemas.py` | 应用组装、配置加载、CORS/错误转换、数据模型与别名 |
-| `services/api/app/routes/{health,policies,admin_policies,enterprises,assessment_runs}.py` | 本文对应16个接口；只组织请求/响应，不在路由里写规则 |
+| `services/api/app/main.py`、`schemas.py` | 应用组装（CORS、中间件顺序、惰性 `app`）、wire 模型与 camelCase 别名 |
+| `services/api/app/{config,errors,security,db}.py` | 环境变量加载与按模式校验（缺失只报变量名）、统一错误信封与 `X-Trace-Id`、管理 Bearer 与演示 cookie、psycopg 连接池与健康探测 |
+| `services/api/app/routes/{health,policies,admin_policies,enterprises,assessment_runs}.py` | 本文对应16个接口；只组织请求/响应，不在路由里写规则（当前实现 health/admin_policies） |
 | `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效 |
-| `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹 |
-| `services/api/app/integrations/{storage,cache,maas,obs}.py` | 持久化、缓存、模型与原文存储适配 |
+| `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 已实现文件摄取） |
+| `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage/llm/obs 已实现政策草稿部分） |
 | `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow}.py` | 静态契约与业务测试，独立报告覆盖范围 |
+| `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_openapi_alignment,test_db_policy_repository,test_obs_object_store,test_llm_client}.py` | 第二阶段新增：无数据库 HTTP 测试（假仓储）、摄取单元测试、契约对齐测试、OBS 与 DeepSeek 适配器单元测试（假客户端/假传输层，不联网）与 `db` 标记的数据库用例 |
 | `services/api/AGENT_PROTOCOL.md`、`pyproject.toml`、实现后生成的 `requirements.lock` | 内部协议、真实依赖与测试命令 |
 | `infra/**`、`.env.example`、`.gitignore`、`README.md`、`docs/devlog/M1.md` | 数据库/Compose、网关会话和门禁、部署回滚、环境说明与日志 |
 
