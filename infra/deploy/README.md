@@ -45,6 +45,8 @@ bash /opt/huice/app/infra/deploy/provision.sh
 
 脚本可重复执行，不会覆盖已存在的 `/etc/huice/api.env`。它会先装 `python3-dev` / `build-essential`——`crcmod`（`esdk-obs-python` 的依赖）在 PyPI 没有 Linux 预编译包，缺 gcc 会在编译阶段失败。
 
+脚本还会创建 `${APP_ROOT}/.local-objects` 并交给 `huice` 用户：unit 用 `ProtectSystem=strict`，只对这一个路径开放写权限，而只读父目录下服务自己 `mkdir` 会失败。自定义目录用 `HUICE_OBJECT_DIR=... bash provision.sh`，同时要改 `huice-api.service` 的 `ReadWritePaths`。
+
 依赖从华为云 PyPI 镜像安装（`repo.huaweicloud.com`），避免 ECS 直连 pypi.org 超时；需要换源时加环境变量：
 
 ```bash
@@ -76,6 +78,17 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 ```bash
 systemctl restart huice-api
 ```
+
+### 3.1 演示会话 cookie（`restricted` 模式）
+
+`APP_ENV=demo` 时 `/api/v1/admin/*` 除了 Bearer 还要求签名未过期的 `huice_demo_session`；任意字符串不再通过。签发：
+
+```bash
+set -a; . /etc/huice/api.env; set +a      # 仅为取到 ADMIN_TOKEN，注意当前 shell 会持有它
+python3 /opt/huice/app/infra/deploy/issue-session.py --hours 12
+```
+
+输出两行：cookie 值和可直接使用的 `Set-Cookie` 头。把 `Set-Cookie` 配到网关/演示入口（或在浏览器开发者工具里手工设置 cookie），之后带着它访问后台接口。签名密钥由 `ADMIN_TOKEN` 派生，所以**拿到 ADMIN_TOKEN 就等于能签发会话**：不要把输出写进日志、文档或群聊。
 
 ## 4. 验证
 

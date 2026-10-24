@@ -108,7 +108,7 @@ MaaS 按队长 2026-10-23 决定不再使用：华为云账号未开通 MaaS，�
 - [x] `ObsObjectStore.put()/delete()` 真实实现（`esdk-obs-python` 3.26.6，私有桶、`obs/<uuid>` 命名空间、失败统一映射 503）——**代码已完成，尚未在真实桶上验证**
 - [x] DeepSeek 客户端（`MODEL_MODE=deepseek`，`app/integrations/llm.py`）与降级路径：模型只起草措辞与抽取建议，判断一律由确定性规则求值；调用失败时返回已审核规则结果并显式降级，不抛 500。**代码与单测已完成，尚未用真实 Key 联调**
 - [ ] 契约里的 `maas` 枚举值已改为 `deepseek`（`ModelUsage.mode`、`explanationMode`，契约 `1.0.0-rc.2`），待 M2 复核；前端若按 `maas` 写过字面量需同步改
-- [ ] `restricted` 模式的 `huice_demo_session` **签发**（部署入口，HttpOnly/Secure/SameSite=Lax）
+- [x] `restricted` 模式的 `huice_demo_session`：后端校验 `v1.<过期时间>.<HMAC>` 签名与有效期，任意字符串不再通过（2026-10-24 按 M2 审查 R1 修复）；签发用 `infra/deploy/issue-session.py`（密钥由 `ADMIN_TOKEN` 派生）。**网关仍须负责下发该 cookie 并拦掉绕过网关的请求**，这一层尚未验收
 - [ ] CORS 白名单换成真实前端源
 - [x] 部署自动化：`infra/deploy/{provision.sh,huice-api.service,nginx-huice.conf}` 取代占位脚本（`deploy.ps1` 未删，仍为占位）
 
