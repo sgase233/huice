@@ -41,10 +41,12 @@ class LocalObjectStore:
         self._root = root
 
     def put(self, data: bytes, *, suffix: str = "") -> str:
-        self._root.mkdir(parents=True, exist_ok=True)
         name = f"{uuid.uuid4().hex}{suffix}"
         path = self._root / name
         try:
+            # 目录可能不存在（全新部署、systemd 只读父目录），mkdir 失败同样是
+            # 存储不可用，必须落在同一个 503 分支里，不能冒成 500。
+            self._root.mkdir(parents=True, exist_ok=True)
             handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(handle, "wb") as stream:
                 stream.write(data)

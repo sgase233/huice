@@ -33,6 +33,16 @@ if ! id -u "${APP_USER}" >/dev/null 2>&1; then
 fi
 mkdir -p /opt/huice
 
+# local 对象存储目录：unit 在 ReadWritePaths 里放开了它，但 ProtectSystem=strict
+# 下只读父目录不能靠服务自己 mkdir，必须由安装脚本先建好并交给运行用户。
+OBJECT_DIR="${HUICE_OBJECT_DIR:-${APP_ROOT}/.local-objects}"
+mkdir -p "${OBJECT_DIR}"
+chown "${APP_USER}:${APP_USER}" "${OBJECT_DIR}"
+log "对象目录 ${OBJECT_DIR} 已就绪"
+if [[ "${OBJECT_DIR}" != "/opt/huice/app/.local-objects" ]]; then
+    log "注意：unit 的 ReadWritePaths 固定为 /opt/huice/app/.local-objects，自定义目录需同步修改 huice-api.service"
+fi
+
 log "3/6 建立虚拟环境并安装锁定依赖（镜像：${PIP_INDEX}）"
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
     python3 -m venv "${VENV_DIR}"

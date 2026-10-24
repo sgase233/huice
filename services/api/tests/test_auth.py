@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.security import DEMO_SESSION_COOKIE, issue_demo_session
 from support import ADMIN_TOKEN, FakeObjectStore, FakeRepository
 
-DEMO_COOKIE = "huice_demo_session"
+DEMO_COOKIE = DEMO_SESSION_COOKIE
+
+
+def signed_session(hours: float = 1.0, token: str = ADMIN_TOKEN) -> str:
+    return issue_demo_session(token, expires_at=int(time.time() + hours * 3600))
 
 
 def build_client(**overrides) -> TestClient:
@@ -68,25 +75,79 @@ def test_restricted_mode_requires_demo_cookie():
     assert missing.status_code == 403
     assert missing.json()["error"]["code"] == "DEMO_SESSION_REQUIRED"
 
-    client.cookies.set(DEMO_COOKIE, "gateway-session")
+    client.cookies.set(DEMO_COOKIE, signed_session())
     accepted = client.get("/api/v1/admin/policies", headers=headers)
     assert accepted.status_code == 200
 
 
-def test_restricted_mode_still_checks_bearer():
+@pytest.mark.parametrize(
+    "value",
+    [
+        "gateway-session",  # 任意非空串，曾经能通过
+        "v1.notanumber.deadbeef",
+        "v2.9999999999.deadbeef",
+        "v1.9999999999",  # 缺签名
+        "",
+        "   ",
+    ],
+)
+def test_restricted_mode_rejects_unsigned_or_malformed_cookie(value):
     client = build_client(app_env="demo", demo_access_mode="restricted")
-    client.cookies.set(DEMO_COOKIE, "gateway-session")
-
-    response = client.get("/api/v1/admin/policies")
-    assert response.status_code == 401
-
-
-def test_blank_demo_cookie_is_rejected():
-    client = build_client(app_env="demo", demo_access_mode="restricted")
-    client.cookies.set(DEMO_COOKIE, "   ")
+    client.cookies.set(DEMO_COOKIE, value)
 
     response = client.get(
         "/api/v1/admin/policies",
         headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
     )
     assert response.status_code == 403
+    assert response.json()["error"]["code"] == "DEMO_SESSION_REQUIRED"
+
+
+def test_expired_session_cookie_is_rejected():
+    client = build_client(app_env="demo", demo_access_mode="restricted")
+    client.cookies.set(DEMO_COOKIE, signed_session(hours=-1))
+
+    response = client.get(
+        "/api/v1/admin/policies",
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert response.status_code == 403
+
+
+def test_tampered_expiry_is_rejected():
+    version, _, rest = signed_session().partition(".")
+    _, _, signature = rest.partition(".")
+    forged = f"{version}.9999999999.{signature}"
+
+    client = build_client(app_env="demo", demo_access_mode="restricted")
+    client.cookies.set(DEMO_COOKIE, forged)
+
+    response = client.get(
+        "/api/v1/admin/policies",
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert response.status_code == 403
+
+
+def test_session_signed_with_another_token_is_rejected():
+    client = build_client(app_env="demo", demo_access_mode="restricted")
+    client.cookies.set(DEMO_COOKIE, signed_session(token="another-admin-token-0002"))
+
+    response = client.get(
+        "/api/v1/admin/policies",
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert response.status_code == 403
+
+
+def test_restricted_mode_still_checks_bearer():
+    client = build_client(app_env="demo", demo_access_mode="restricted")
+    client.cookies.set(DEMO_COOKIE, signed_session())
+
+    response = client.get("/api/v1/admin/policies")
+    assert response.status_code == 401
+
+
+def test_local_mode_ignores_the_cookie_entirely(client, auth):
+    response = client.get("/api/v1/admin/policies", headers=auth)
+    assert response.status_code == 200
