@@ -1,4 +1,15 @@
-/* Purpose: define colors, type scale, spacing, and state colors from M3 UI brief.
- * Load: import once in main.tsx or App.tsx.
- * Output constraint: meet contrast and visible-focus requirements; stale state distinct from four result states.
- */
+:root {
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  color: #182b32;
+  background: #f4f7f7;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --ink: #182b32;
+  --muted: #546872;
+  --line: #d9e3e5;
+  --brand: #0a5362;
+  --brand-dark: #083e49;
+  --surface: #ffffff;
+  --canvas: #f4f7f7;
+  --focus: #d96918;
+}

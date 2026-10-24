@@ -4,6 +4,8 @@
 
 团队 Git 分支、提交和推送要求见[工作手册](./WORKING_GUIDE.md)：M1/M2/M3 各自建分支；每次提交和远程推送前均须取得明确同意。
 
+2026-10-24 负责人确认：允许 DeepSeek 替代 MaaS、其他 AI 编码助手替代 CodeArts；最终材料可统一写“AI 辅助编码”，工具使用说明须符合实际。完整规则及旧计划的修订口径见[工作手册“模型与编码工具规则”](./WORKING_GUIDE.md)。
+
 `contracts/openapi.yaml` 是 16 个接口的 OpenAPI 3.1 契约，当前为 `1.0.0-rc.2`（原14个接口加后台草稿列表/详情；rc.2 将模型模式枚举 `maas` 改为 `deepseek`），`apps/web/src/api/types.ts` 由它生成；M2 复核后再定版 `1.0.0`。已实现的4个接口见 `contracts/README.md`，其余定义不表示服务已经实现。
 
 - M1：`services/api/`、`infra/`、`contracts/` 与根配置。
