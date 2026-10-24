@@ -65,14 +65,21 @@ class Database:
         pool = self._get_pool()
         try:
             conn = pool.getconn(timeout=timeout or self._acquire_timeout)
-        except PoolTimeout as exc:
-            raise StorageUnavailable("数据库连接不可用") from exc
-        except (OperationalError, ValueError) as exc:
+        except (PoolTimeout, OperationalError, ValueError) as exc:
             raise StorageUnavailable("数据库连接不可用") from exc
         try:
-            yield conn
+            try:
+                yield conn
+            except OperationalError as exc:
+                # 拿到连接后才发现断连（被实例踢掉、网络中断、语句超时）同样是
+                # 依赖不可用 → 503。SQL 语法/约束错误是 ProgrammingError /
+                # IntegrityError，不会走进这里，仍按 500 处理。
+                raise StorageUnavailable("数据库连接不可用") from exc
         finally:
-            pool.putconn(conn)
+            try:
+                pool.putconn(conn)
+            except Exception:  # noqa: BLE001 - 坏的连接可能归还失败，不能掩盖原始异常
+                logger.debug("归还数据库连接失败，已忽略", exc_info=True)
 
     def close(self) -> None:
         if self._pool is not None:

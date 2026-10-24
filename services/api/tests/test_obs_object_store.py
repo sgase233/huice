@@ -6,7 +6,7 @@ import pytest
 
 from app.config import Settings
 from app.errors import ApiProblem
-from app.integrations.obs import ObsObjectStore, build_object_store
+from app.integrations.obs import LocalObjectStore, ObsObjectStore, build_object_store
 
 
 def obs_settings(**overrides) -> Settings:
@@ -159,3 +159,25 @@ def test_local_mode_still_builds_local_store():
 def test_obs_mode_builds_obs_store():
     store = build_object_store(obs_settings())
     assert isinstance(store, ObsObjectStore)
+
+
+def test_local_store_creates_missing_directory(tmp_path):
+    root = tmp_path / "nested" / "objects"
+    store = LocalObjectStore(root)
+
+    key = store.put(b"payload")
+
+    assert key.startswith("local/")
+    assert (root / key.split("/", 1)[1]).read_bytes() == b"payload"
+
+
+def test_local_store_mkdir_failure_maps_to_503(tmp_path):
+    # 目录位置被一个普通文件占住：mkdir 会抛 OSError，必须落 503 而不是 500。
+    blocker = tmp_path / "objects"
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ApiProblem) as info:
+        LocalObjectStore(blocker).put(b"payload")
+
+    assert info.value.status_code == 503
+    assert info.value.code == "DEPENDENCY_UNAVAILABLE"

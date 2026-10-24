@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from app.agents.ingestion import MAX_FILE_BYTES
 from app.errors import ApiProblem
@@ -147,6 +148,72 @@ def test_application_window_inversion_is_rejected(client, auth):
     assert response.status_code == 422
     fields = {item["field"] for item in response.json()["error"]["details"]["fieldErrors"]}
     assert "applicationWindow.closesAt" in fields
+
+
+def test_naive_application_window_is_rejected(client, auth):
+    response = post(
+        client,
+        auth,
+        metadata_payload(
+            applicationWindow={
+                "opensAt": "2026-10-01T09:00:00",
+                "closesAt": "2026-11-01T09:00:00",
+            }
+        ),
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    fields = {item["field"] for item in error["details"]["fieldErrors"]}
+    assert any(field.endswith("opensAt") for field in fields)
+
+
+def test_mixed_timezone_window_is_422_not_500(client, auth):
+    response = post(
+        client,
+        auth,
+        metadata_payload(
+            applicationWindow={
+                "opensAt": "2026-10-01T09:00:00",
+                "closesAt": "2026-11-01T09:00:00+08:00",
+            }
+        ),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_aware_application_window_is_accepted(client, auth):
+    response = post(
+        client,
+        auth,
+        metadata_payload(
+            applicationWindow={
+                "opensAt": "2026-10-01T09:00:00+08:00",
+                "closesAt": "2026-11-01T09:00:00+08:00",
+            }
+        ),
+    )
+
+    assert response.status_code == 201
+    window = response.json()["applicationWindow"]
+    assert window["opensAt"] == "2026-10-01T09:00:00+08:00"
+
+
+def test_misspelled_file_part_is_rejected(client, auth):
+    response = client.post(
+        IMPORT_URL,
+        headers=auth,
+        data={"metadata": json.dumps(metadata_payload(), ensure_ascii=False)},
+        files={"file": ("notice.txt", BODY_TEXT, "text/plain")},
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "UNEXPECTED_FIELD"
+    assert error["details"]["fieldErrors"][0]["field"] == "file"
 
 
 def test_non_official_source_url_is_rejected(client, auth):

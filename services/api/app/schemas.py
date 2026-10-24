@@ -11,7 +11,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.alias_generators import to_camel
 
 NonEmptyStr = Annotated[str, StringConstraints(min_length=1)]
@@ -39,8 +39,10 @@ class Period(WireModel):
 
 
 class ApplicationWindow(WireModel):
-    opens_at: datetime
-    closes_at: datetime
+    # 契约的 Timestamp 是 RFC 3339 date-time，必须带时区；无时区输入在入口就拒绝，
+    # 否则与库里的 aware 值比较会抛 TypeError 变成 500。
+    opens_at: AwareDatetime
+    closes_at: AwareDatetime
 
 
 class PolicyImportMetadata(WireModel):

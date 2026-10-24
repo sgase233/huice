@@ -85,7 +85,7 @@ SECURITY_SCHEMES = {
         "type": "apiKey",
         "in": "cookie",
         "name": "huice_demo_session",
-        "description": "restricted 模式由网关下发；local 模式免校验。",
+        "description": "restricted 模式要求经签名的会话 cookie（v1.<过期秒>.<HMAC>），由 infra/deploy/issue-session.py 签发；local 模式免校验。",
     },
     "AdminBearer": {
         "type": "http",
