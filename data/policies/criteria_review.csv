@@ -1,1 +1,2 @@
-policy_id,criterion_id,source_version,source_page_or_section,source_span,field,operator,value,unit,period,logic_group,negation,annotator_a,annotator_b,adjudicated_expression,review_status
+criterionId,policyId,expressionExpect,sourceSpan,sourceText,reviewStatus
+crit-01,P001,"企业属于中小企业","文件总则部分","本意见适用于各类中小企业","pending"

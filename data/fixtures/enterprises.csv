@@ -1,1 +1,3 @@
 enterprise_id,name_synthetic,region,industry,fact_key,fact_value,unit,period,source,verified
+ent-01,合成企业A,深圳市,软件和信息技术服务业,营收,8000000,元,2025,合成构造,true
+ent-02,合成企业B,深圳市,制造业,营收,25000000,元,2025,合成构造,true
