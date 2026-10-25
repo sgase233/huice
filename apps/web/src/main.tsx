@@ -1,3 +1,7 @@
-// Purpose: mount the React application.
-// Call: loaded by apps/web/index.html after Vite setup.
-// Output constraint: render App with no embedded API keys or real enterprise data.
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import './styles/tokens.css';
+import './styles/app.css';
+
+createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);

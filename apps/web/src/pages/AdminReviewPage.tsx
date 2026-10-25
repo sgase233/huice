@@ -1,3 +1,6 @@
-// Purpose: review extracted criteria and publish approved policy versions.
-// Call: protected API-15 list -> API-16 detail -> API-04..07 writes; preserve latest ETag and target version; never use public detail for drafts.
-// Output constraint: show failed findings, block invalid publish; keep edits on 409 and reload for manual merge; token only in memory.
+export default function AdminReviewPage() {
+  return <section className="page-block" aria-labelledby="admin-title"><div className="page-heading"><div><span className="eyebrow">05 / 审核界面预览</span><h1 id="admin-title">让每条政策有可追溯的审核状态</h1><p>以下是合成布局预览，没有读取后台草稿或执行管理操作。</p></div><span className="phase-tag">仅界面预览</span></div>
+    <div className="content-columns"><section className="panel"><span className="eyebrow">草稿队列示意</span><h2>待审核条目</h2><div className="draft-row"><div><strong>合成草稿：政策正文待抽取</strong><p>demo-v1 · 待解析 · 演示发布者</p></div><span className="badge badge-pending">待解析</span></div><div className="draft-row"><div><strong>合成草稿：来源冲突待核对</strong><p>demo-v2 · 待审核 · 演示发布者</p></div><span className="badge badge-conflict">待人工核对</span></div></section>
+      <aside className="panel side-panel"><span className="eyebrow">审核步骤</span><h2>发布前核对</h2><ol className="steps"><li>导入政策正文与元数据</li><li>抽取条款并核对来源</li><li>处理冲突和缺失信息</li><li>确认版本后发布</li></ol><p className="notice warning">管理接口需要受限会话和 Bearer 授权。本预览不显示真实后台数据。</p><div className="disabled-actions"><button className="button" type="button" disabled>导入政策（后续阶段）</button><button className="button button-secondary" type="button" disabled>审核发布（后续阶段）</button></div></aside></div>
+  </section>;
+}
