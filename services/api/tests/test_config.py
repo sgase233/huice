@@ -86,6 +86,17 @@ def test_short_demo_session_secret_is_rejected():
     assert "DEMO_SESSION_SECRET" in error_names(info.value)
 
 
+def test_demo_session_secret_must_differ_from_admin_token():
+    """两个机密取同一个值时，两层门禁会退化成一把钥匙，必须拒绝（M2 复审）。"""
+    same = BASE_ENV["ADMIN_TOKEN"]
+    with pytest.raises(ConfigError) as info:
+        Settings.from_env(env(**{**DEMO_ENV, "DEMO_SESSION_SECRET": same}))
+
+    message = error_names(info.value)
+    assert "DEMO_SESSION_SECRET" in message
+    assert same not in message  # 只报变量名，不回显任何值
+
+
 def test_restricted_mode_accepts_a_separate_session_secret():
     settings = Settings.from_env(env(**DEMO_ENV))
     assert settings.demo_access_mode == "restricted"

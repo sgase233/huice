@@ -124,8 +124,11 @@ class Settings:
             problems.append("DEMO_ACCESS_MODE")
 
         # 演示会话密钥与后台 Bearer 令牌必须是两个独立机密：否则持有 ADMIN_TOKEN 的人
-        # 可以自行签发会话，绕过网关门禁这一层（M2 二审 P1）。
+        # 可以自行签发会话，绕过网关门禁这一层（M2 二审 P1）。仅检查长度不够——两个值
+        # 取同一个字符串时，耦合会原样回来，所以这里强制要求不同（M2 复审）。
         demo_session_secret = _text(env, "DEMO_SESSION_SECRET", "")
+        if demo_session_secret and demo_session_secret == admin_token:
+            problems.append("DEMO_SESSION_SECRET")
         if demo_access_mode == "restricted" and len(
             demo_session_secret
         ) < MIN_DEMO_SESSION_SECRET_LENGTH:

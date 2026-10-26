@@ -143,6 +143,23 @@ def test_session_signed_with_admin_token_is_rejected():
     assert response.json()["error"]["code"] == "DEMO_SESSION_REQUIRED"
 
 
+def test_runtime_guard_rejects_secret_equal_to_admin_token():
+    """即使绕过配置校验直接构造 Settings，密钥等于 ADMIN_TOKEN 时也必须拒绝。"""
+    client = build_client(
+        app_env="demo",
+        demo_access_mode="restricted",
+        demo_session_secret=ADMIN_TOKEN,
+    )
+    client.cookies.set(DEMO_COOKIE, signed_session(secret=ADMIN_TOKEN))
+
+    response = client.get(
+        "/api/v1/admin/policies",
+        headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "DEMO_SESSION_REQUIRED"
+
+
 def test_session_signed_with_another_secret_is_rejected():
     client = build_client(app_env="demo", demo_access_mode="restricted")
     client.cookies.set(DEMO_COOKIE, signed_session(secret="another-demo-secret-0000000000000002"))

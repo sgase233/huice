@@ -71,7 +71,7 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `CORS_ORIGINS` | 前端真实源；前端未部署前用 `http://139.9.33.46` |
 | `DEMO_ACCESS_MODE` | `restricted`（`APP_ENV=demo` 时强制） |
 | `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用；只用于后台 Bearer |
-| `DEMO_SESSION_SECRET` | ≥32 位随机串，仅服务端使用；**必须与 `ADMIN_TOKEN` 不同**，用于签发与校验演示会话 cookie。restricted 模式必填，缺失时启动失败并只报变量名 |
+| `DEMO_SESSION_SECRET` | ≥32 位随机串，仅服务端使用；**必须与 `ADMIN_TOKEN` 不同**（取值相同同样启动失败），用于签发与校验演示会话 cookie。restricted 模式必填，缺失、过短或与 `ADMIN_TOKEN` 相同时启动失败并只报变量名 |
 | `MODEL_MODE` | `fixture`（首轮部署；联调通过后改 `deepseek`，此时还需 `DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL`/`DEEPSEEK_API_KEY`） |
 | `OBJECT_STORE_MODE` | `local` 或 `obs`（`obs` 还需 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK`） |
 | `LOCAL_OBJECT_DIR` | `.local-objects`（`obs` 模式下不生效） |

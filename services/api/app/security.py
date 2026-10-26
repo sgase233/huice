@@ -90,9 +90,12 @@ def require_admin(request: Request) -> None:
     if settings.demo_access_mode == "restricted":
         session = request.cookies.get(DEMO_SESSION_COOKIE, "")
         secret = settings.demo_session_secret
-        # 配置校验已保证 restricted 模式下密钥存在；这里再挡一次，避免空密钥被当成
-        # 合法签名密钥使用（空密钥签出的 cookie 任何人都能伪造）。
-        if not secret or not demo_session_is_valid(session, secret):
+        # 配置校验已保证 restricted 模式下密钥存在且与 ADMIN_TOKEN 不同；这里再挡一次，
+        # 覆盖绕过 Settings.from_env 直接构造配置的情形（例如测试或后续重构）：
+        # 空密钥签出的 cookie 人人可伪造，密钥等于 ADMIN_TOKEN 则两层门禁退化为同一把钥匙。
+        if not secret or secret == settings.admin_token or not demo_session_is_valid(
+            session, secret
+        ):
             raise ApiProblem(
                 403,
                 "DEMO_SESSION_REQUIRED",

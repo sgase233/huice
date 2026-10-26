@@ -91,7 +91,7 @@ MaaS 按队长 2026-10-23 决定不再使用：华为云账号未开通 MaaS，�
 | `OBJECT_STORE_MODE` | `local` | `obs` | `obs` 需 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK`，缺任一项启动失败并只报变量名 |
 | `LOCAL_OBJECT_DIR` | `.local-objects` | 不使用 | 仅 `local` 模式生效；已 gitignore |
 | `ADMIN_TOKEN` | 本地随机值，≥16 位 | 服务端机密，≥16 位 | 只服务端校验，**绝不**作为前端构建变量 |
-| `DEMO_SESSION_SECRET` | 可留空（`local` 模式不校验会话） | 服务端机密，≥32 位 | 演示会话 cookie 的独立签名密钥，**必须与 `ADMIN_TOKEN` 不同**；`restricted` 模式缺失或过短即启动失败并只报变量名 |
+| `DEMO_SESSION_SECRET` | 可留空（`local` 模式不校验会话） | 服务端机密，≥32 位 | 演示会话 cookie 的独立签名密钥，**必须与 `ADMIN_TOKEN` 不同**；`restricted` 模式缺失、过短或与 `ADMIN_TOKEN` 相同即启动失败并只报变量名 |
 
 切换取值后按第 6 节重启；启动失败时进程只打印变量名，不打印值。
 
