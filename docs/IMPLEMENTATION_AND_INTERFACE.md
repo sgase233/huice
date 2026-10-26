@@ -128,7 +128,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 - 非 2xx 统一 `{"error":{"code":"...","message":"中文可执行说明","details":{}},"traceId":"UUID"}`；FastAPI 默认 detail 数组必须转换。响应头 `X-Trace-Id` 与 body.traceId 一致；成功也返回追踪头。422 的 details 可放 fieldErrors/findings；409 放 currentVersion；不得含堆栈、密钥或连接串。
 - 状态码：400 请求语法/查询参数错误；401 未认证；403 已认证但权限不足；404 不存在；409 版本/幂等冲突；413 文件过大；415 文件类型不支持；422 业务或 body 校验失败；428 缺并发头；429 限流；500 未预期内部错误（脱敏）；503 必需依赖不可用。
 - 本地模式仅监听 loopback；管理 API 和轨迹均须 `Authorization: Bearer <ADMIN_TOKEN>`。M1 在受控机器手动输入，M2 的 client 仅保存在内存，退出/刷新清空，不写 localStorage、URL 或 VITE 变量。没有令牌不展示后台数据。
-- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie（HttpOnly/Secure/SameSite=Lax），管理 API/轨迹再验证 Bearer；后端已校验 cookie 的 HMAC 签名与有效期（`v1.<过期秒>.<HMAC>`，签发脚本 `infra/deploy/issue-session.py`），网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 描述 restricted 模式；local 模式免演示 cookie，但不免管理 Bearer。健康检查无认证且不含连接详情。
+- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie（HttpOnly/Secure/SameSite=Lax），管理 API/轨迹再验证 Bearer；后端已校验 cookie 的 HMAC 签名与有效期（`v1.<过期秒>.<HMAC>`，签发脚本 `infra/deploy/issue-session.py`）；签名密钥是独立的 `DEMO_SESSION_SECRET`（restricted 模式必填），**不由 `ADMIN_TOKEN` 派生**，因此持有 Bearer 的人不能自行签发会话，两层门禁相互独立。网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 描述 restricted 模式；local 模式免演示 cookie，但不免管理 Bearer。健康检查无认证且不含连接详情。
 - 跨源开发 fetch 使用 `credentials:'include'`，CORS 只允许确切前端源并允许 credentials。允许头 `Content-Type,Authorization,If-Match,Idempotency-Key`；暴露头 `ETag,X-Trace-Id,Content-Disposition`。M1 处理 OPTIONS；M2 不能以 no-cors 规避。
 
 ## 4. 端点与参数传递（路径均省略 /api/v1）

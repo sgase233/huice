@@ -70,7 +70,8 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `REDIS_URL` | `redis://:<密码>@192.168.0.38:6379/0` |
 | `CORS_ORIGINS` | 前端真实源；前端未部署前用 `http://139.9.33.46` |
 | `DEMO_ACCESS_MODE` | `restricted`（`APP_ENV=demo` 时强制） |
-| `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用 |
+| `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用；只用于后台 Bearer |
+| `DEMO_SESSION_SECRET` | ≥32 位随机串，仅服务端使用；**必须与 `ADMIN_TOKEN` 不同**，用于签发与校验演示会话 cookie。restricted 模式必填，缺失时启动失败并只报变量名 |
 | `MODEL_MODE` | `fixture`（首轮部署；联调通过后改 `deepseek`，此时还需 `DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL`/`DEEPSEEK_API_KEY`） |
 | `OBJECT_STORE_MODE` | `local` 或 `obs`（`obs` 还需 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK`） |
 | `LOCAL_OBJECT_DIR` | `.local-objects`（`obs` 模式下不生效） |
@@ -84,13 +85,15 @@ systemctl restart huice-api
 `APP_ENV=demo` 时 `/api/v1/admin/*` 除了 Bearer 还要求签名未过期的 `huice_demo_session`；任意字符串不再通过。签发：
 
 ```bash
-set -a; . /etc/huice/api.env; set +a      # 仅为取到 ADMIN_TOKEN，注意当前 shell 会持有它
+set -a; . /etc/huice/api.env; set +a      # 仅为取到 DEMO_SESSION_SECRET，注意当前 shell 会持有它
 /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/issue-session.py --hours 12
 ```
 
 **必须用虚拟环境的解释器**：脚本会导入 `app.security`，后者在模块级导入 FastAPI，而依赖只装在 `/opt/huice/venv`。用系统 `python3` 运行会直接抛 `ModuleNotFoundError`（脚本会打印提示并以退出码 2 结束，而不是抛堆栈）。
 
-输出两行：cookie 值和可直接使用的 `Set-Cookie` 头。把 `Set-Cookie` 配到网关/演示入口（或在浏览器开发者工具里手工设置 cookie），之后带着它访问后台接口。签名密钥由 `ADMIN_TOKEN` 派生，所以**拿到 ADMIN_TOKEN 就等于能签发会话**：不要把输出写进日志、文档或群聊。
+输出两行：cookie 值和可直接使用的 `Set-Cookie` 头。把 `Set-Cookie` 配到网关/演示入口（或在浏览器开发者工具里手工设置 cookie），之后带着它访问后台接口。
+
+签名密钥是**独立的 `DEMO_SESSION_SECRET`**，与后台 Bearer 使用的 `ADMIN_TOKEN` 互不派生：持有 Bearer 不能签发会话，持有会话密钥也不能调用后台接口。两个值都要按机密对待，**不要把密钥或输出写进日志、文档或群聊**。
 
 ## 4. 验证
 

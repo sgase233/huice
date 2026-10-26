@@ -64,6 +64,40 @@ def test_admin_token_value_is_never_echoed_on_other_errors():
     assert BASE_ENV["ADMIN_TOKEN"] not in message
 
 
+DEMO_ENV = {
+    "APP_ENV": "demo",
+    "DATABASE_URL": "postgresql://huice:pw@10.0.0.5:5432/huice",
+    "DEMO_ACCESS_MODE": "restricted",
+    "DEMO_SESSION_SECRET": "demo-session-secret-0123456789abcdef",  # 36 位，与 ADMIN_TOKEN 不同
+}
+
+
+def test_restricted_mode_requires_demo_session_secret():
+    with pytest.raises(ConfigError) as info:
+        Settings.from_env(env(**{k: v for k, v in DEMO_ENV.items() if k != "DEMO_SESSION_SECRET"}))
+    message = error_names(info.value)
+    assert "DEMO_SESSION_SECRET" in message
+    assert DEMO_ENV["DEMO_SESSION_SECRET"] not in message
+
+
+def test_short_demo_session_secret_is_rejected():
+    with pytest.raises(ConfigError) as info:
+        Settings.from_env(env(**{**DEMO_ENV, "DEMO_SESSION_SECRET": "too-short-secret"}))
+    assert "DEMO_SESSION_SECRET" in error_names(info.value)
+
+
+def test_restricted_mode_accepts_a_separate_session_secret():
+    settings = Settings.from_env(env(**DEMO_ENV))
+    assert settings.demo_access_mode == "restricted"
+    assert settings.demo_session_secret == DEMO_ENV["DEMO_SESSION_SECRET"]
+    assert settings.demo_session_secret != settings.admin_token
+
+
+def test_local_mode_does_not_require_demo_session_secret():
+    settings = Settings.from_env(env())
+    assert settings.demo_session_secret == ""
+
+
 @pytest.mark.parametrize(
     "origin",
     ["*", "http://127.0.0.1:5173/path", "ftp://example.com", "example.com"],

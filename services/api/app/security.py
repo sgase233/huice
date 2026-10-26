@@ -9,8 +9,11 @@ unexpired, so an arbitrary value cannot satisfy the gate. Format::
 
     v1.<expiresAtEpochSeconds>.<hmacSha256Hex>
 
-The signing key is derived from ``ADMIN_TOKEN`` (no extra secret to operate),
-and ``infra/deploy/issue-session.py`` is the supported way to mint one.
+The signing key is derived from the dedicated ``DEMO_SESSION_SECRET``, never from
+``ADMIN_TOKEN``: the gateway gate and the admin Bearer gate must stay independent,
+so holding the Bearer token must not be enough to mint a session. The secret is
+required (≥32 chars) whenever ``DEMO_ACCESS_MODE=restricted``.
+``infra/deploy/issue-session.py`` is the supported way to mint a session.
 """
 
 from __future__ import annotations
@@ -29,23 +32,27 @@ DEMO_SESSION_VERSION = "v1"
 _KEY_PREFIX = "huice-demo-session:"
 
 
-def _session_key(admin_token: str) -> bytes:
-    return hashlib.sha256(f"{_KEY_PREFIX}{admin_token}".encode("utf-8")).digest()
+def _session_key(secret: str) -> bytes:
+    return hashlib.sha256(f"{_KEY_PREFIX}{secret}".encode("utf-8")).digest()
 
 
-def _sign(admin_token: str, payload: str) -> str:
+def _sign(secret: str, payload: str) -> str:
     return hmac.new(
-        _session_key(admin_token), payload.encode("utf-8"), hashlib.sha256
+        _session_key(secret), payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
 
-def issue_demo_session(admin_token: str, *, expires_at: int) -> str:
-    """Build a signed cookie value that stays valid until ``expires_at``."""
+def issue_demo_session(secret: str, *, expires_at: int) -> str:
+    """Build a signed cookie value that stays valid until ``expires_at``.
+
+    ``secret`` is ``DEMO_SESSION_SECRET``; passing ``ADMIN_TOKEN`` here would
+    re-couple the two gates, so callers must not do it.
+    """
     payload = f"{DEMO_SESSION_VERSION}.{int(expires_at)}"
-    return f"{payload}.{_sign(admin_token, payload)}"
+    return f"{payload}.{_sign(secret, payload)}"
 
 
-def demo_session_is_valid(value: str, admin_token: str, *, now: int | None = None) -> bool:
+def demo_session_is_valid(value: str, secret: str, *, now: int | None = None) -> bool:
     """Check version, signature and expiry; any malformed value is invalid."""
     version, _, remainder = value.strip().partition(".")
     if version != DEMO_SESSION_VERSION:
@@ -57,7 +64,7 @@ def demo_session_is_valid(value: str, admin_token: str, *, now: int | None = Non
         expires_at = int(expires_raw)
     except ValueError:
         return False
-    expected = _sign(admin_token, f"{version}.{expires_raw}")
+    expected = _sign(secret, f"{version}.{expires_raw}")
     if not hmac.compare_digest(signature, expected):
         return False
     current = int(time.time()) if now is None else int(now)
@@ -82,7 +89,10 @@ def require_admin(request: Request) -> None:
 
     if settings.demo_access_mode == "restricted":
         session = request.cookies.get(DEMO_SESSION_COOKIE, "")
-        if not demo_session_is_valid(session, settings.admin_token):
+        secret = settings.demo_session_secret
+        # 配置校验已保证 restricted 模式下密钥存在；这里再挡一次，避免空密钥被当成
+        # 合法签名密钥使用（空密钥签出的 cookie 任何人都能伪造）。
+        if not secret or not demo_session_is_valid(session, secret):
             raise ApiProblem(
                 403,
                 "DEMO_SESSION_REQUIRED",

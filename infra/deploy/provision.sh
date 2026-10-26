@@ -77,6 +77,8 @@ OBJECT_STORE_MODE=local
 LOCAL_OBJECT_DIR=.local-objects
 ADMIN_TOKEN=
 DEMO_ACCESS_MODE=restricted
+# 演示会话 cookie 的签名密钥，restricted 模式必填（≥32 位），必须与 ADMIN_TOKEN 不同。
+DEMO_SESSION_SECRET=
 # MODEL_MODE=deepseek 时以下三项必填；fixture 模式留空。
 DEEPSEEK_BASE_URL=
 DEEPSEEK_MODEL=
@@ -86,7 +88,7 @@ OBS_ENDPOINT=
 OBS_AK=
 OBS_SK=
 EOF
-    log "已生成模板，请填写 DATABASE_URL / REDIS_URL / ADMIN_TOKEN / CORS_ORIGINS 等"
+    log "已生成模板，请填写 DATABASE_URL / REDIS_URL / ADMIN_TOKEN / DEMO_SESSION_SECRET / CORS_ORIGINS 等"
 fi
 chown root:"${APP_USER}" "${ENV_FILE}"
 chmod 640 "${ENV_FILE}"
@@ -102,7 +104,8 @@ systemctl restart huice-api || true
 cat <<EOF
 
 [provision] 完成。下一步：
-  1) 编辑 ${ENV_FILE}，填入 DATABASE_URL、REDIS_URL、ADMIN_TOKEN、CORS_ORIGINS
+  1) 编辑 ${ENV_FILE}，填入 DATABASE_URL、REDIS_URL、ADMIN_TOKEN、DEMO_SESSION_SECRET、CORS_ORIGINS
+     （DEMO_SESSION_SECRET 与 ADMIN_TOKEN 必须是两个不同的随机值）
      （OBJECT_STORE_MODE=obs 时还需 OBS_BUCKET/OBS_ENDPOINT/OBS_AK/OBS_SK）
   2) sudo systemctl restart huice-api
   3) curl -i http://127.0.0.1:8000/api/v1/health        # 期望 200

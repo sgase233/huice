@@ -11,6 +11,7 @@ from app.errors import ApiProblem
 from app.schemas import PolicyDraft, PolicyDraftList
 
 ADMIN_TOKEN = "local-dev-admin-token-0001"
+DEMO_SESSION_SECRET = "local-dev-demo-session-secret-000000000001"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "openapi.yaml"
 
