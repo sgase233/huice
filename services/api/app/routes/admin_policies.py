@@ -38,6 +38,7 @@ router = APIRouter(
 )
 
 _MAX_PART_KB = MAX_FILE_BYTES // 1024
+ALLOWED_FORM_PARTS = frozenset({"metadata", "files"})
 
 
 @router.post(
@@ -82,8 +83,23 @@ async def import_policy(request: Request, response: Response) -> PolicyDraft:
 
     raw_files: list[tuple[str, str | None, bytes]] = []
     for name, value in form.multi_items():
-        if name != "files" or not isinstance(value, UploadFile):
+        # 未知字段（尤其是把 files 拼成 file）不能静默忽略：那样会返回 201 但正文丢失。
+        if name not in ALLOWED_FORM_PARTS:
+            raise ApiProblem(
+                422,
+                "UNEXPECTED_FIELD",
+                "表单包含导入接口未定义的字段，只接受 metadata 与 files。",
+                {"fieldErrors": [{"field": _display_name(name), "message": "未定义的字段名"}]},
+            )
+        if name == "metadata":
             continue
+        if not isinstance(value, UploadFile):
+            raise ApiProblem(
+                422,
+                "UNEXPECTED_FIELD",
+                "files 字段的每个部分都必须是文件。",
+                {"fieldErrors": [{"field": "files", "message": "该字段必须是文件"}]},
+            )
         if value.size is not None and value.size > MAX_FILE_BYTES:
             raise ApiProblem(413, "FILE_TOO_LARGE", "单个文件不能超过 10 MiB。")
         raw_files.append((value.filename or "source", value.content_type, await value.read()))
@@ -193,6 +209,12 @@ def _parse_metadata(raw: Any) -> PolicyImportMetadata:
     validate_official_url(metadata.source_url, "sourceUrl")
     validate_official_url(metadata.official_entry_url, "officialEntryUrl")
     return metadata
+
+
+def _display_name(name: str) -> str:
+    """只回显字段名本身，去掉控制字符并限长，避免把任意请求内容塞进响应。"""
+    cleaned = "".join(ch for ch in name if ch.isprintable())[:40]
+    return cleaned or "(空字段名)"
 
 
 def _field_errors(exc: ValidationError) -> list[dict[str, str]]:

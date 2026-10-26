@@ -130,7 +130,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 - 非 2xx 统一 `{"error":{"code":"...","message":"中文可执行说明","details":{}},"traceId":"UUID"}`；FastAPI 默认 detail 数组必须转换。响应头 `X-Trace-Id` 与 body.traceId 一致；成功也返回追踪头。422 的 details 可放 fieldErrors/findings；409 放 currentVersion；不得含堆栈、密钥或连接串。
 - 状态码：400 请求语法/查询参数错误；401 未认证；403 已认证但权限不足；404 不存在；409 版本/幂等冲突；413 文件过大；415 文件类型不支持；422 业务或 body 校验失败；428 缺并发头；429 限流；500 未预期内部错误（脱敏）；503 必需依赖不可用。
 - 本地模式仅监听 loopback；管理 API 和轨迹均须 `Authorization: Bearer <ADMIN_TOKEN>`。M1 在受控机器手动输入，M2 的 client 仅保存在内存，退出/刷新清空，不写 localStorage、URL 或 VITE 变量。没有令牌不展示后台数据。
-- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie（HttpOnly/Secure/SameSite=Lax），管理 API/轨迹再验证 Bearer；会话签发由 M1 在部署入口落实，不能仅隐藏按钮。OpenAPI 描述 restricted 模式；local 模式免演示 cookie，但不免管理 Bearer。健康检查无认证且不含连接详情。
+- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie（HttpOnly/Secure/SameSite=Lax），管理 API/轨迹再验证 Bearer；后端已校验 cookie 的 HMAC 签名与有效期（`v1.<过期秒>.<HMAC>`，签发脚本 `infra/deploy/issue-session.py`）；签名密钥是独立的 `DEMO_SESSION_SECRET`（restricted 模式必填），**不由 `ADMIN_TOKEN` 派生**，因此持有 Bearer 的人不能自行签发会话，两层门禁相互独立。网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 描述 restricted 模式；local 模式免演示 cookie，但不免管理 Bearer。健康检查无认证且不含连接详情。
 - 跨源开发 fetch 使用 `credentials:'include'`，CORS 只允许确切前端源并允许 credentials。允许头 `Content-Type,Authorization,If-Match,Idempotency-Key`；暴露头 `ETag,X-Trace-Id,Content-Disposition`。M1 处理 OPTIONS；M2 不能以 no-cors 规避。
 
 ## 4. 端点与参数传递（路径均省略 /api/v1）
@@ -286,7 +286,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 
 契约：`python contracts/generate_types.py --check` 一致；`test_contract.py` 8 项通过（`types.ts` 无需改动）。为让 `format: date-time` 检查真正生效，dev 依赖补入 `rfc3339-validator==0.1.4`；此前该环境下“日期时间缺时区”用例会误判为通过。
 
-**数据库与 Redis 实测（2026-10-23 当日补齐）**：本机先完成 WSL2（3.0.3.0，默认版本 2）与 Docker Desktop 4.96.3 安装，用 `infra/local/docker-compose.yml` 起 PostgreSQL 16.15 + pgvector 0.8.7 与 Redis 7.4。`infra/sql/001_init.sql` 连跑两次退出码均为 0（第二次仅 `NOTICE ... already exists`），得到 13 张业务表、13 个业务触发器（`pg_trigger` 全量 24 行含外键内部触发器，口径待复核）、`schema_migration` 记 `001_init`；`redis-cli PING` 返回 `PONG`；`pytest -m db -q` 在真实库上 **12 项通过**（导入落库行数、新版本复用 policyId、重复版本无部分写入、分页与派生 `closed`、已发布版本与其子表不可改删、只追加表拒改）。
+**数据库与 Redis 实测（2026-10-23 当日补齐）**：本机先完成 WSL2（3.0.3.0，默认版本 2）与 Docker Desktop 4.96.3 安装，用 `infra/local/docker-compose.yml` 起 PostgreSQL 16.15 + pgvector 0.8.7 与 Redis 7.4。`infra/sql/001_init.sql` 连跑两次退出码均为 0（第二次仅 `NOTICE ... already exists`），得到 13 张业务表、13 个业务触发器（云端 RDS 于 2026-10-24 复测为 `public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器；本地库尚未重测，旧记录的「24 行」为不同查询口径）、`schema_migration` 记 `001_init`；`redis-cli PING` 返回 `PONG`；`pytest -m db -q` 在真实库上 **12 项通过**（导入落库行数、新版本复用 policyId、重复版本无部分写入、分页与派生 `closed`、已发布版本与其子表不可改删、只追加表拒改）。
 
 端到端冒烟（真实库）：API-04 导入返回 201、`ETag` 与 body `revision` 一致、`status=pending_parse`、来源 `kind=body`；API-15 列表 200、无 `ETag`、顺序为 `imported_at DESC`；API-16 带 `version` 与不带 `version` 均命中同一 `revision`；未知 `version` 返回 404 `POLICY_NOT_FOUND` 且不回退。冒烟数据已清理。首轮 `pytest -m db` 曾 10 项失败，暴露一个真实缺陷（`_fetchone()` 误用于无 `RETURNING` 的 `INSERT ... ON CONFLICT DO NOTHING`，已改用 `_execute()`）与两处用例问题（用例间数据串号、把「同版本即冲突」写错，后者已按契约语义修正为同一 `policyId` 下重复才 409）。原始记录见 `docs/devlog/M1.md` 与 `infra/local/README.md`。
 
@@ -295,8 +295,8 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 | 资源 | 状态 | 证据 |
 | --- | --- | --- |
 | ECS | 已开通并登录 | `huice-api-01`，Ubuntu 24.04.4、Python 3.12.3、内网 `192.168.0.86`，22 端口实测可连 |
-| RDS for PostgreSQL | **已实测** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`pg_trigger` 全量 24 行含外键内部触发器，口径待复核），`vector` 0.8.0（本地 0.8.7） |
-| Redis（DCS） | **已实测** | `huice-redis` 7.0 主备 1GB，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG` |
+| RDS for PostgreSQL | **已实测（2026-10-24 复测）** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器），`vector` 0.8.0（本地 0.8.7）；`schema_migration` 记 `001_init`，`policy` 与 `policy_version` 均 0 行 |
+| Redis（DCS） | **已实测** | `huice-redis` 7.0 主备 1GB，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG`；2026-10-24 复测时实例未开启（端口拒绝），当前代码不依赖 Redis |
 | OBS | 已建桶，代码已实现，**未在真实桶验证** | 桶 `huice-policies`（私有，`cn-south-1`）；`ObsObjectStore` 用 `esdk-obs-python` 3.26.6 实现，只用假客户端做过单元测试 |
 | DeepSeek | 已接入，**未用真实 Key 联调** | `app/integrations/llm.py`（`fixture`/`deepseek` 两模式，OpenAI 兼容 `/chat/completions`）；契约 rc.2 中 `ModelUsage.mode`/`explanationMode` 的 `maas` 已改为 `deepseek`；联调前 `MODEL_MODE` 仍为 `fixture` |
 | CodeArts / Skills | **不作为要求** | 账号据本人告知已开通、未接入；队长 2026-10-23 同意开发记录以实际使用的工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
@@ -305,7 +305,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 
 - 云端 API 部署（`infra/deploy/` 的 systemd/nginx 文件已就绪，尚未在 ECS 上执行），因此云端健康检查、`app→RDS` 内网链路尚未有实测证据
 - OBS 真实桶的文件上传/删除验证；验证前 `OBJECT_STORE_MODE` 保持 `local`
-- `restricted` 模式的 `huice_demo_session` 签发入口，故云端 `/api/v1/admin/*` 目前无法通过鉴权
+- `restricted` 模式的网关侧会话下发与绕过拦截：后端已改为校验签名与有效期的 cookie（2026-10-24 按 M2 审查 R1 修复），但网关那层尚未配置和验收
 - 前端 TypeScript 编译与浏览器验收（属 M2）
 - 11/15 要求的「从空环境复现部署」，需先用已推送的提交重做一遍
 

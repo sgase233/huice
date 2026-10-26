@@ -45,6 +45,8 @@ bash /opt/huice/app/infra/deploy/provision.sh
 
 脚本可重复执行，不会覆盖已存在的 `/etc/huice/api.env`。它会先装 `python3-dev` / `build-essential`——`crcmod`（`esdk-obs-python` 的依赖）在 PyPI 没有 Linux 预编译包，缺 gcc 会在编译阶段失败。
 
+脚本还会创建 `${APP_ROOT}/.local-objects` 并交给 `huice` 用户：unit 用 `ProtectSystem=strict`，只对这一个路径开放写权限，而只读父目录下服务自己 `mkdir` 会失败。自定义目录用 `HUICE_OBJECT_DIR=... bash provision.sh`，同时要改 `huice-api.service` 的 `ReadWritePaths`。
+
 依赖从华为云 PyPI 镜像安装（`repo.huaweicloud.com`），避免 ECS 直连 pypi.org 超时；需要换源时加环境变量：
 
 ```bash
@@ -68,7 +70,8 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `REDIS_URL` | `redis://:<密码>@192.168.0.38:6379/0` |
 | `CORS_ORIGINS` | 前端真实源；前端未部署前用 `http://139.9.33.46` |
 | `DEMO_ACCESS_MODE` | `restricted`（`APP_ENV=demo` 时强制） |
-| `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用 |
+| `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用；只用于后台 Bearer |
+| `DEMO_SESSION_SECRET` | ≥32 位随机串，仅服务端使用；**必须与 `ADMIN_TOKEN` 不同**（取值相同同样启动失败），用于签发与校验演示会话 cookie。restricted 模式必填，缺失、过短或与 `ADMIN_TOKEN` 相同时启动失败并只报变量名 |
 | `MODEL_MODE` | `fixture`（首轮部署；联调通过后改 `deepseek`，此时还需 `DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL`/`DEEPSEEK_API_KEY`） |
 | `OBJECT_STORE_MODE` | `local` 或 `obs`（`obs` 还需 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK`） |
 | `LOCAL_OBJECT_DIR` | `.local-objects`（`obs` 模式下不生效） |
@@ -76,6 +79,21 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 ```bash
 systemctl restart huice-api
 ```
+
+### 3.1 演示会话 cookie（`restricted` 模式）
+
+`APP_ENV=demo` 时 `/api/v1/admin/*` 除了 Bearer 还要求签名未过期的 `huice_demo_session`；任意字符串不再通过。签发：
+
+```bash
+set -a; . /etc/huice/api.env; set +a      # 仅为取到 DEMO_SESSION_SECRET，注意当前 shell 会持有它
+/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/issue-session.py --hours 12
+```
+
+**必须用虚拟环境的解释器**：脚本会导入 `app.security`，后者在模块级导入 FastAPI，而依赖只装在 `/opt/huice/venv`。用系统 `python3` 运行会直接抛 `ModuleNotFoundError`（脚本会打印提示并以退出码 2 结束，而不是抛堆栈）。
+
+输出两行：cookie 值和可直接使用的 `Set-Cookie` 头。把 `Set-Cookie` 配到网关/演示入口（或在浏览器开发者工具里手工设置 cookie），之后带着它访问后台接口。
+
+签名密钥是**独立的 `DEMO_SESSION_SECRET`**，与后台 Bearer 使用的 `ADMIN_TOKEN` 互不派生：持有 Bearer 不能签发会话，持有会话密钥也不能调用后台接口。两个值都要按机密对待，**不要把密钥或输出写进日志、文档或群聊**。
 
 ## 4. 验证
 
@@ -96,7 +114,7 @@ curl -i http://139.9.33.46/api/v1/health
 
 ## 5. 已知限制（M1）
 
-- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie，而**签发该 cookie 的入口尚未实现**（计划见 `infra/README.md` §5.2 B）。因此在云端，`/api/v1/admin/*` 目前会返回 403，只有 `/api/v1/health` 可用。这不是部署故障。
+- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；尚未完成的是网关侧的自动下发、`Secure` 所需的 TLS，以及云端真实链路验证（见 `infra/README.md` §5.2 B）。在网关下发或手工注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
 - `OBJECT_STORE_MODE=obs` 的代码已实现，但**尚未在真实桶上验证**；在验证前保持 `local`。
 - 未配置域名与证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示。
 - `infra/deploy/deploy.ps1` 仍是占位文件，本阶段以本文档的手工步骤为准。

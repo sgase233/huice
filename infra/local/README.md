@@ -118,7 +118,7 @@ docker compose --env-file .env -f docker-compose.yml down   # 保留命名卷
 | `001_init.sql` 首次执行 | 无错误，退出码 0 |
 | `001_init.sql` 第二次执行 | 仅 `NOTICE: ... already exists, skipping`，退出码 0（幂等通过） |
 | 业务表数量 | `information_schema` 中 `public` 基础表 13 张 |
-| 触发器数量 | `public` 下 24 个 |
+| 触发器数量 | 旧记录为「`public` 下 24 个」，但当时未注明查询语句，口径不可复现。2026-10-24 在云端 RDS（同一份 `001_init.sql`）用 `select count(*) filter (where not t.tgisinternal) from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='public'` 测得**业务触发器 13 个**（`public` 下 `pg_trigger` 全量 61 行，其余 48 行为外键内部触发器）。本地库下次启动 Docker 时按同一命令重测 |
 | `schema_migration` | `001_init | 政策/来源/条款、企业画像、评估运行、失效事件与追踪表 | 2026-10-23 06:11:52.557794+00` |
 | `redis-cli PING` | `PONG` |
 | `pytest -m db -q` | `12 passed`（真实 PostgreSQL 上执行，不再是 skipped） |

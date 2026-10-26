@@ -25,6 +25,7 @@ DEMO_ACCESS_MODES = ("local", "restricted")
 LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 
 MIN_ADMIN_TOKEN_LENGTH = 16
+MIN_DEMO_SESSION_SECRET_LENGTH = 32
 
 
 class ConfigError(RuntimeError):
@@ -44,6 +45,7 @@ class Settings:
     local_object_dir: str = ".local-objects"
     admin_token: str = ""
     demo_access_mode: str = "local"
+    demo_session_secret: str = ""
     deepseek_base_url: str = ""
     deepseek_model: str = ""
     deepseek_api_key: str = ""
@@ -121,6 +123,17 @@ class Settings:
         elif app_env == "local" and demo_access_mode != "local":
             problems.append("DEMO_ACCESS_MODE")
 
+        # 演示会话密钥与后台 Bearer 令牌必须是两个独立机密：否则持有 ADMIN_TOKEN 的人
+        # 可以自行签发会话，绕过网关门禁这一层（M2 二审 P1）。仅检查长度不够——两个值
+        # 取同一个字符串时，耦合会原样回来，所以这里强制要求不同（M2 复审）。
+        demo_session_secret = _text(env, "DEMO_SESSION_SECRET", "")
+        if demo_session_secret and demo_session_secret == admin_token:
+            problems.append("DEMO_SESSION_SECRET")
+        if demo_access_mode == "restricted" and len(
+            demo_session_secret
+        ) < MIN_DEMO_SESSION_SECRET_LENGTH:
+            problems.append("DEMO_SESSION_SECRET")
+
         deepseek_base_url = _text(env, "DEEPSEEK_BASE_URL", "")
         deepseek_model = _text(env, "DEEPSEEK_MODEL", "")
         deepseek_api_key = _text(env, "DEEPSEEK_API_KEY", "")
@@ -167,6 +180,7 @@ class Settings:
             local_object_dir=local_object_dir,
             admin_token=admin_token,
             demo_access_mode=demo_access_mode,
+            demo_session_secret=demo_session_secret,
             deepseek_base_url=deepseek_base_url,
             deepseek_model=deepseek_model,
             deepseek_api_key=deepseek_api_key,
