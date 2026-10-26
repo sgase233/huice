@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """签发 restricted 模式用的 huice_demo_session cookie。
 
-用法（在代码根目录）：
-    ADMIN_TOKEN=... python3 infra/deploy/issue-session.py --hours 12
-    python3 infra/deploy/issue-session.py --token <ADMIN_TOKEN> --hours 12
+用法（必须用装了本项目依赖的解释器——脚本会导入 ``app.security``，后者依赖 FastAPI）：
+    本地（仓库根目录）：ADMIN_TOKEN=... services/api/.venv/Scripts/python.exe infra/deploy/issue-session.py --hours 12
+    ECS：ADMIN_TOKEN=... /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/issue-session.py --hours 12
+    也可用 --token 传令牌：... issue-session.py --token <ADMIN_TOKEN> --hours 12
 
 输出两行：cookie 值，以及可直接放进网关/浏览器开发者工具的 Set-Cookie 头。
 签名密钥由 ADMIN_TOKEN 派生，所以本脚本不引入新的机密；但也意味着**拿到
@@ -22,7 +23,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT / "services" / "api"))
 
-from app.security import DEMO_SESSION_COOKIE, issue_demo_session  # noqa: E402
+try:  # noqa: E402
+    from app.security import DEMO_SESSION_COOKIE, issue_demo_session
+except ModuleNotFoundError as exc:  # 用到系统解释器时给出可操作提示，而不是抛堆栈
+    print(
+        f"缺少依赖 {exc.name}：请用项目虚拟环境的解释器运行本脚本"
+        "（本地 services/api/.venv，ECS /opt/huice/venv/bin/python）。",
+        file=sys.stderr,
+    )
+    raise SystemExit(2) from None
 
 
 def main() -> int:
