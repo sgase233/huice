@@ -1,12 +1,13 @@
 # requirements.lock — 惠策协同后端依赖锁定（完整冻结，含传递依赖）
 # 生成环境：Windows 11 / CPython 3.12.10 / venv services/api/.venv
-# 生成日期：2026-10-23
+# 生成日期：2026-10-23（2026-10-26 增加 redis 8.1.0 后重新冻结）
 # 生成命令：services\api\.venv\Scripts\python.exe -m pip freeze --exclude-editable > requirements.lock
 # 复现命令：py -3.12 -m venv .venv-clean
 #           .venv-clean\Scripts\python.exe -m pip install -r requirements.lock
 #           .venv-clean\Scripts\python.exe -m pip check
 # 维护约束：升级任一依赖后必须重新生成，并在干净虚拟环境中复现后再提交。
 # 本次更新：新增 esdk-obs-python 3.26.6 及其传递依赖（requests/urllib3/crcmod/pycryptodome/charset-normalizer），用于 OBS 对象存储实现。
+# 本次更新（2026-10-26）：新增 redis 8.1.0（纯 Python，无传递依赖），用于 app/integrations/cache.py 的版本化求值缓存。
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
@@ -41,6 +42,7 @@ pytest==9.1.1
 python-dotenv==1.2.4
 python-multipart==0.0.32
 PyYAML==6.0.3
+redis==8.1.0
 referencing==0.37.0
 requests==2.34.2
 rfc3339-validator==0.1.4

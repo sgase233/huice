@@ -67,7 +67,7 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `APP_ENV` | `demo` |
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `8000`（与 unit 一致） |
 | `DATABASE_URL` | `postgresql://root:<密码>@192.168.0.80:5432/huice` |
-| `REDIS_URL` | `redis://:<密码>@192.168.0.38:6379/0` |
+| `REDIS_URL` | `redis://:<密码>@192.168.0.38:6379/0`（也可用控制台「连接地址」的域名形式 `redis://:<密码>@redis-4be07660-....dcs.myhuaweicloud.com:6379/0`；2026-10-26 在 ECS 上实测 `--askpass PING` → `PONG`） |
 | `CORS_ORIGINS` | 前端真实源；前端未部署前用 `http://139.9.33.46` |
 | `DEMO_ACCESS_MODE` | `restricted`（`APP_ENV=demo` 时强制） |
 | `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用；只用于后台 Bearer |

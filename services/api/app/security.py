@@ -71,6 +71,18 @@ def demo_session_is_valid(value: str, secret: str, *, now: int | None = None) ->
     return expires_at > current
 
 
+def require_demo_session(request: Request) -> None:
+    """公开接口的演示会话门禁：local 模式直接放行，restricted 模式校验签名与有效期。
+
+    网关是这一层的主要执行者；后端再校验一次，保证绕过网关的请求也拿不到数据。
+    """
+
+    settings = request.app.state.settings
+    if settings.demo_access_mode != "restricted":
+        return
+    _check_session(request, settings)
+
+
 def require_admin(request: Request) -> None:
     settings = request.app.state.settings
     header = request.headers.get("authorization", "")
@@ -88,16 +100,18 @@ def require_admin(request: Request) -> None:
         )
 
     if settings.demo_access_mode == "restricted":
-        session = request.cookies.get(DEMO_SESSION_COOKIE, "")
-        secret = settings.demo_session_secret
-        # 配置校验已保证 restricted 模式下密钥存在且与 ADMIN_TOKEN 不同；这里再挡一次，
-        # 覆盖绕过 Settings.from_env 直接构造配置的情形（例如测试或后续重构）：
-        # 空密钥签出的 cookie 人人可伪造，密钥等于 ADMIN_TOKEN 则两层门禁退化为同一把钥匙。
-        if not secret or secret == settings.admin_token or not demo_session_is_valid(
-            session, secret
-        ):
-            raise ApiProblem(
-                403,
-                "DEMO_SESSION_REQUIRED",
-                "演示会话无效或已过期，请从演示入口重新进入。",
-            )
+        _check_session(request, settings)
+
+
+def _check_session(request: Request, settings) -> None:
+    session = request.cookies.get(DEMO_SESSION_COOKIE, "")
+    secret = settings.demo_session_secret
+    # 配置校验已保证 restricted 模式下密钥存在且与 ADMIN_TOKEN 不同；这里再挡一次，
+    # 覆盖绕过 Settings.from_env 直接构造配置的情形（例如测试或后续重构）：
+    # 空密钥签出的 cookie 人人可伪造，密钥等于 ADMIN_TOKEN 则两层门禁退化为同一把钥匙。
+    if not secret or secret == settings.admin_token or not demo_session_is_valid(session, secret):
+        raise ApiProblem(
+            403,
+            "DEMO_SESSION_REQUIRED",
+            "演示会话无效或已过期，请从演示入口重新进入。",
+        )

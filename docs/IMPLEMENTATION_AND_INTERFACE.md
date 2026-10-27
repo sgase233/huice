@@ -1,8 +1,8 @@
 # 惠策协同：功能实现逻辑与接口协作约定
 
-> 日期：2026-10-23；版本：v0.2 协作草案。成员沿用 M1（后端）、M2（前端）、M3（政策与验收），尚未指定实名。
+> 日期：2026-10-23（2026-10-26 更新实现状态）；版本：v0.2 协作草案。成员沿用 M1（后端）、M2（前端）、M3（政策与验收），尚未指定实名。
 >
-> 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[三人分工与开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及 `huice/` 现有文件整理。当前应用仍是注释骨架；本文和配套 OpenAPI/TypeScript 类型定义是实现依据，不表示业务已经实现或已完成联调。本文补充旧计划中未定义的细节；接口由 M1/M2 联合审查后冻结。
+> 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[三人分工与开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及 `huice/` 现有文件整理。截至 2026-10-26：后端已实现契约全部 **16 个端点**，前端仍是骨架，浏览器联调与真实数据验收尚未开始。本文和配套 OpenAPI/TypeScript 类型定义是实现依据；具体验收证据以第 8 节的实测记录为准。本文补充旧计划中未定义的细节；接口由 M1/M2 联合审查后冻结。
 
 ## 1. 范围、依据和成功标准
 
@@ -111,6 +111,8 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 `validUntil` 是现有已知条件下的最早未来失效时刻，可取适用期结束次日零点、窗口关闭等边界的最小值；没有可靠边界时 null。政策/事实变化仍可提前使其失效，不把政策结束日期无条件复制为结论有效期。已过边界的当前读取标 stale。
 
 缓存键包含 `enterpriseId,policyId,policyVersion,factVersion,ruleVersion,period,asOf`；不漏判断时点、期间和规则版本。不把一个时间的结果套给另一个时间。Redis 不可用可绕过后重算，数据库不可用返回 503。
+
+`integrations/cache.py` 按上述口径实现：键是七字段规范化 JSON 的 SHA-256（前缀 `huice:eval:v1:`，`asOf` 统一到 UTC 微秒、无时区按 UTC 解释）；缓存值只投影政策级四态、条件级结果/理由/事实引用/季度计算与依赖，不含 runId、`validity/staleReasons/validUntil`、解释文本和条件 UUID——恢复时按**当前政策版本**的条件顺序回填 `criterionId`，数量、版本或「条件级 → 政策级」聚合结论任一不自洽即判未命中并重算。未配置 `REDIS_URL` 用直通替身；配了即用 `redis` 8.1.0（已入 `requirements.lock`）真实读写，缺客户端、连接/读写报错或值损坏一律记一次告警后绕过，不向请求抛错；数据库故障仍由仓储抛 503，不会被缓存掩盖。
 
 所有写请求以数据库中的当前版本执行 compare-and-swap；仅先查询再无条件更新会丢失并发修改。ETag 使用强标签，不接受 `*` 或弱 ETag；缺 If-Match 返回 428，版本不一致沿用旧计划返回 409，禁止前端自动覆盖重试。
 
@@ -249,7 +251,7 @@ API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络�
 
 本次静态检查：OpenAPI 可解析、引用可解析、16 个 method/path 完整、请求响应示例符合 schema、TS 字段与 schema 对齐、涉及路径存在。命令和实际结果见本节末尾验证记录；不能把这些算成业务通过率。
 
-M1 实现后补：API TestClient 的成功/失败/错误头、multipart 超限/伪文件、未授权后台读取、If-Match 缺失/过期、抽取幂等、发布冲突、按 period 更新、Decimal 边界、季度缺一输入、OR/NOT/冲突传播、局部失效、模型降级、数据库失败和缓存隔离。
+M1 实现后补：API TestClient 的成功/失败/错误头、multipart 超限/伪文件、未授权后台读取、If-Match 缺失/过期、抽取幂等、发布冲突、按 period 更新、Decimal 边界、季度缺一输入、OR/NOT/冲突传播、局部失效、模型降级、数据库失败和缓存隔离。**截至 2026-10-26 均已覆盖**：缓存隔离见 `tests/test_cache.py`（七字段换键、时点等价、值损坏/版本不符/结论不自洽按未命中、命中仍新分配 runId 且有效性重算、事实变更换键、缺客户端与读写报错绕过、数据库故障 503 不被掩盖）。真实 Redis 上的键写入、TTL 与命中见 `tests/test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL` 门控，本地 Redis 7.4 实测 3 项通过）；**未覆盖**：云端部署后的缓存命中——云端 API 尚未部署。其余见下方第三阶段与第四阶段记录。
 
 M2 实现后补：画像 → 列表 → 详情 → 补问 → 旧结果失效 → 新报告；后台列表/重入编辑/并发冲突；报告错误 JSON 与成功 Markdown；Cookie/CORS/ETag 可读；不明枚举可见报错；closed/stale 没有申报按钮。M3 为每项记录真实运行 ID、输入、预期、实际、截图与复测结论，指标只填实测。
 
@@ -295,10 +297,10 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 | 资源 | 状态 | 证据 |
 | --- | --- | --- |
 | ECS | 已开通并登录 | `huice-api-01`，Ubuntu 24.04.4、Python 3.12.3、内网 `192.168.0.86`，22 端口实测可连 |
-| RDS for PostgreSQL | **已实测（2026-10-24 复测）** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器），`vector` 0.8.0（本地 0.8.7）；`schema_migration` 记 `001_init`，`policy` 与 `policy_version` 均 0 行 |
-| Redis（DCS） | **已实测** | `huice-redis` 7.0 主备 1GB，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG`；2026-10-24 复测时实例未开启（端口拒绝），当前代码不依赖 Redis |
+| RDS for PostgreSQL | **已实测（2026-10-24 复测；2026-10-26 补齐迁移）** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器），`vector` 0.8.0（本地 0.8.7）；`schema_migration` 三行齐全（`001_init` 10-23 17:37、`002_evaluation_and_idempotency` 10-26 23:47:03、`003_trace_step_details` 10-26 23:47:13，`applied_at` 显示 `+08` 即实例默认 `Asia/Shanghai`）；`trace_step` 六列与 `trace_step_status_check`/`trace_step_stage_check`、`trace_step_no_update_delete` 均已核对；`policy` 与 `policy_version` 仍 0 行 |
+| Redis（DCS） | **已实测** | `huice-redis` 主备 1GB，小版本 `7.2.11.5`，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG`；2026-10-24 复测时实例未开启（端口拒绝），2026-10-26 在 ECS 上复测恢复：端口可连、`--askpass PING` 返回 `PONG`、白名单已含 ECS `192.168.0.86`。判断链路的版本化求值缓存已实现（2026-10-26），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；云端 API 尚未部署，该项在云端的命中待部署后复测 |
 | OBS | 已建桶，代码已实现，**未在真实桶验证** | 桶 `huice-policies`（私有，`cn-south-1`）；`ObsObjectStore` 用 `esdk-obs-python` 3.26.6 实现，只用假客户端做过单元测试 |
-| DeepSeek | 已接入，**未用真实 Key 联调** | `app/integrations/llm.py`（`fixture`/`deepseek` 两模式，OpenAI 兼容 `/chat/completions`）；契约 rc.2 中 `ModelUsage.mode`/`explanationMode` 的 `maas` 已改为 `deepseek`；联调前 `MODEL_MODE` 仍为 `fixture` |
+| DeepSeek | 已接入，**2026-10-27 用真实 Key 联调通过**（`tests/test_deepseek_live.py` 3 项：补全返回文本/用量、错误 Key→503 不回显、整链 `explanationMode=deepseek` 而结论仍由规则给出） | `app/integrations/llm.py`（`fixture`/`deepseek` 两模式，OpenAI 兼容 `/chat/completions`）；契约 rc.2 中 `ModelUsage.mode`/`explanationMode` 的 `maas` 已改为 `deepseek`；`MODEL_MODE` 默认值仍为 `fixture`，由 `.env` 切换 |
 | CodeArts / Skills | **不作为要求** | 账号据本人告知已开通、未接入；队长 2026-10-23 同意开发记录以实际使用的工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
 
 **仍未执行**（未执行即不计作通过）：
@@ -309,6 +311,74 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 - 前端 TypeScript 编译与浏览器验收（属 M2）
 - 11/15 要求的「从空环境复现部署」，需先用已推送的提交重做一遍
 
+### M1 后端实现验证记录（2026-10-26，第三阶段：条件 AST、引用校验、发布与基础匹配）
+
+运行环境同前（Windows 11 `10.0.26200`、CPython 3.12.10、`services/api/.venv`、本地 PostgreSQL 16.15 + pgvector 0.8.7）。
+
+接口实现状态：契约 16 个端点**全部实现**——API-01（健康检查）、API-02/03（公开政策列表与详情）、API-04/05/06/07（导入、抽取、保存条款、发布）、API-08/09/10（企业画像与 `factVersion` CAS）、API-11/12（判断运行与读取）、API-13（Markdown 报告）、API-14（轨迹）、API-15/16（后台草稿读取）。API-13/14 只读既有历史：报告是 run 快照的转写并在正文前单列「截至下载时刻」的有效性，轨迹先列入库/审核步骤再列在线步骤。
+
+从 `huice/services/api` 执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q          # 439 passed，含 75 项契约子测试
+.\.venv\Scripts\python.exe -m pytest -q -m db    # 33 passed（真实 PostgreSQL 16.15）
+```
+
+覆盖的验收口径：
+
+- **行业排除 → 不满足**：`industry_exclusion` 命中排除名单时结果 `not_satisfied`，`criteriaResults` 带引用与计算过程（`test_agent_flow.py`、`test_rules.py`、`test_db_evaluation.py`）。
+- **缺事实 → 证据不足**：`value=null` 与「事实未提供」都得到 `insufficient_evidence`，`missingFacts` 给出 `FactRef`，全局 `nextQuestion` 只挂在受影响政策上且 `rank=1`（`test_agent_flow.py`、`test_questioning.py`）。
+- **未发布规则不能参与判断**：API-11 整体 422 `POLICY_NOT_PUBLISHED`，run 不落库（`test_agent_flow.py`、`test_db_evaluation.py`）。
+- **失效视图**：改事实只让读到该事实的条件/政策变 `stale`（`fact_changed` + `changedCriterionIds`/`changedFactRefs`）；发布新版本使依赖旧版本的 run 变 `stale`（`policy_changed`）；历史四态与快照不变（`test_invalidation.py`、`test_db_evaluation.py`）。
+- **并发与幂等**：`factVersion` 走 compare-and-swap（缺 `If-Match` 428、`*`/弱标签/畸形 400、过期 409 + `currentVersion`）；抽取按 `Idempotency-Key` 复用已成功结果（`test_enterprise_http.py`、`test_admin_review_http.py`）。
+- **契约对齐**：全部 16 个端点与契约的 operationId/summary/tags/security 逐项比对（`test_openapi_alignment.py`），`generate_types.py --check` 一致、`test_contract.py` 8 项通过。
+- **报告与轨迹**：报告为 UTF-8 Markdown + `Content-Disposition: attachment`，四态/证据/清单原样转写并单列下载时刻的有效性（`test_report_trace_http.py`）；轨迹需管理 Bearer，先列入库/审核步骤、再列在线步骤，`sequence` 重排为严格递增，`policyId`/`policyVersion` 由版本引用回填（`test_report_trace_http.py`、`test_db_evaluation.py`）。
+
+本阶段连真库才暴露、并已修复的缺陷（详见 `docs/devlog/M1.md`）：
+
+1. `infra/sql/002_evaluation_and_idempotency.sql` 用了 `ALTER TABLE trace_step DROP TRIGGER IF EXISTS ...`，不是合法语法，整份迁移回滚。改为独立的 `DROP TRIGGER IF EXISTS trace_step_no_update_delete ON trace_step;`，并验证连跑两遍通过。同日新增 `003_trace_step_details.sql`（`trace_step` 的输入/输出摘要与政策关联列、阶段枚举收口），同样连跑两遍通过。
+2. `create_policy_version` 写入 `trace_step.status='succeeded'`，与 002 后的 `AgentStatus` 约束冲突，已改为 `ok`。
+3. `PolicyRepository._fetchone()` 未使用 `dict_row`，按列名取值时抛 `TypeError`，影响所有读库路径（导入后的读回、企业画像、run 读取）。
+4. `ValidityView.add` 输出 `criterionIds`/`factRefs`，而契约与 Pydantic 模型（`extra="forbid"`）要求 `changedCriterionIds`/`changedFactRefs`，会使 API-12 直接 500。
+5. `orchestrator.assess` 调 `save_run` 时漏传必需的 `policy_version_ids`（运行期 `TypeError`）。
+
+**如实记录的偏差与待办**：
+
+- `preparationTemplate.items` 恒为 `[]`，企业事实一律 `verified:false`：两项都要以 M3 审核过的材料要求为准，未由模型或样例编造。
+- `supersedesRunId` 已校验同企业/同期间/同政策组并记录关联，但重算仍是完整的，尚未按依赖图跳过未受影响条件（契约语义已满足，性能优化后置）。
+- 金额在线上固定两位小数（`"2800000.00"`、`"0.00"`），而 `factVersion` 的哈希会去掉尾随零——同一个内容不会因写法不同而换版本。
+- `closed`、`validity`、`staleReasons`、`validUntil` 都是读取时视图，不回写历史结果。
+
+### M1 后端实现验证记录（2026-10-26，第四阶段：Redis 版本化求值缓存）
+
+运行环境同前。`app/integrations/cache.py` 从占位改为实现，`orchestrator.assess` 接入逐政策取/存，`main.py` 装配并在 lifespan 关闭。
+
+从 `huice/services/api` 执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q                                  # 427 passed / 36 skipped（33 db + 3 redis 门控）
+$env:HUICE_TEST_DATABASE_URL = "<本地库连接串>"
+$env:HUICE_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
+.\.venv\Scripts\python.exe -m pytest -q                                  # 463 passed（含 33 db + 3 真实 Redis）
+.\.venv\Scripts\python.exe -m pytest -q -m redis                         # 3 passed
+```
+
+覆盖的验收口径（`tests/test_cache.py` 21 项 + `tests/test_cache_redis_live.py` 3 项）：
+
+- **键不漏项**：七字段任一变化（企业、政策、政策版本、事实版本、规则版本、期间、判断时点）即换键；同一时刻的不同时区写法得到同一键，真实时刻不同则换键。
+- **命中只复用求值**：第二次请求 runId 不同、`validity` 仍按当前时间重算、条件结果与首次一致；轨迹 `evaluation` 摘要写明「其中 k/n 项复用缓存求值」。
+- **缓存值不承载历史**：投影里没有 runId、`validity/staleReasons/validUntil`、解释文本和条件 UUID；恢复按当前版本条件顺序回填，数量/版本/聚合结论不自洽一律按未命中重算。
+- **Redis 不可用即绕过**：缺客户端、读或写报错、端口拒绝（真实客户端连 `127.0.0.1:1`）都只记一次告警（不含连接串）后重算，不再反复撞同一故障；未配置 `REDIS_URL` 时使用直通替身。
+- **数据库不可用仍是 503**：仓储失败时不进缓存、不被缓存掩盖。
+- **真实 Redis**（`test_cache_redis_live.py`，本地 compose 的 Redis 7.4）：首次判断写入 1 个 `huice:eval:v1:*` 键且 `0 < TTL ≤ 300`，缓存值里没有 `runId`/`validity`/`explanation`；二次请求命中、不开新键、runId 仍不同；事实变更后新增第 2 个键。
+
+如实记录的偏差与待办：
+
+- `redis==8.1.0` 已按负责人 2026-10-26 的决定加入 `pyproject.toml` 与 `requirements.lock`（48 项），并在干净 venv 中 `pip install -r requirements.lock` + `pip check` 复现通过；`redis` 为纯 Python 包，无新增传递依赖。
+- 云端 Redis 连通性已于 2026-10-26 在 ECS 上复测：端口可连、`--askpass PING` 返回 `PONG`、控制台显示小版本 `7.2.11.5`、白名单已含 ECS `192.168.0.86`（2026-10-24 的「实例未开启」已不复现）。`192.168.0.38` 是 VPC 内网地址，本机直连超时属正常。**仍未实测**：云端缓存命中——云端 API 尚未部署（11/08 任务），部署后按同一组用例复测即可。
+- 缓存是加速手段而非证据库：失效裁定仍以数据库 `invalidation_event` 为准，只换缓存键不能代替失效记录。
+- 云端 RDS 尚未执行 002，云端 `app→RDS` 链路仍无实测证据。
+
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 
 ### M1：后端、契约、基础设施
@@ -318,12 +388,13 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 | `contracts/openapi.yaml`、`contracts/README.md`、`contracts/generate_types.py` | API 参数、schema、权限、错误、示例和类型生成；M2 审查每次变更及前端生成文件 |
 | `services/api/app/main.py`、`schemas.py` | 应用组装（CORS、中间件顺序、惰性 `app`）、wire 模型与 camelCase 别名 |
 | `services/api/app/{config,errors,security,db}.py` | 环境变量加载与按模式校验（缺失只报变量名）、统一错误信封与 `X-Trace-Id`、管理 Bearer 与演示 cookie、psycopg 连接池与健康探测 |
-| `services/api/app/routes/{health,policies,admin_policies,enterprises,assessment_runs}.py` | 本文对应16个接口；只组织请求/响应，不在路由里写规则（当前实现 health/admin_policies） |
-| `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效 |
-| `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 已实现文件摄取） |
-| `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage/llm/obs 已实现政策草稿部分） |
-| `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow}.py` | 静态契约与业务测试，独立报告覆盖范围 |
-| `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_openapi_alignment,test_db_policy_repository,test_obs_object_store,test_llm_client}.py` | 第二阶段新增：无数据库 HTTP 测试（假仓储）、摄取单元测试、契约对齐测试、OBS 与 DeepSeek 适配器单元测试（假客户端/假传输层，不联网）与 `db` 标记的数据库用例 |
+| `services/api/app/routes/{health,policies,admin_policies,enterprises,assessment_runs}.py` | 本文对应16个接口；只组织请求/响应，不在路由里写规则（API-01—16 均已实现，API-14 轨迹在 `assessment_runs.admin_router`） |
+| `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效（均已实现；季度平均的期间约束与冲突传播见 2.2） |
+| `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；explanation 的清单 `items[]` 待 M3 材料） |
+| `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage 已覆盖政策草稿、企业画像、公开政策、run、失效视图与轨迹读取；llm/obs 已实现，`esdk-obs-python` 已入锁，**2026-10-27 已在真实桶与真实 DeepSeek Key 上联调通过**（`test_obs_live.py` 5 项、`test_deepseek_live.py` 3 项）；cache 已实现七字段版本化键、值投影与故障绕过，`redis==8.1.0` 已入锁） |
+| `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow,test_citations}.py` | 静态契约与业务测试，独立报告覆盖范围（refs 解析、四态优先级、AST 求值、引用校验、失效视图与端到端判断链路） |
+| `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_admin_review_http,test_public_read_http,test_enterprise_http,test_report_trace_http,test_profile_units,test_questioning,test_trace,test_cache,test_cache_redis_live,test_extraction_units,test_openapi_alignment,test_obs_object_store,test_obs_live,test_llm_client,test_deepseek_live}.py` | 无数据库 HTTP 测试（假仓储）、各单元口径与契约对齐测试；适配器用假客户端/假传输层/假缓存后端，不联网。三个例外都靠环境变量门控、默认跳过：`test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL`，真实 Redis）、`test_obs_live.py`（`HUICE_TEST_OBS_*` 四项，真实桶）、`test_deepseek_live.py`（`HUICE_TEST_DEEPSEEK_API_KEY`，真实模型） |
+| `services/api/tests/{conftest,support,db_support,test_db_policy_repository,test_db_evaluation,test_db_errors}.py` | `db` 标记的真库用例：独立 schema 建表、用例间清表；覆盖政策导入落库、企业画像 CAS、公开列表与游标、快照闸门、run 落库与失效视图、只追加与不可发布保护 |
 | `services/api/AGENT_PROTOCOL.md`、`pyproject.toml`、实现后生成的 `requirements.lock` | 内部协议、真实依赖与测试命令 |
 | `infra/**`、`.env.example`、`.gitignore`、`README.md`、`docs/devlog/M1.md` | 数据库/Compose、网关会话和门禁、部署回滚、环境说明与日志 |
 

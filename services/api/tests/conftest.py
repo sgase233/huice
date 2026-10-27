@@ -11,9 +11,13 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+import psycopg
+
 from app.config import Settings
+from app.db import Database
+from app.integrations.storage import PolicyRepository
 from app.main import create_app
-from support import ADMIN_TOKEN, FakeObjectStore, FakeRepository
+from support import ADMIN_TOKEN, FakeObjectStore, FakeRepository, MIGRATIONS, SCHEMA, with_schema
 
 TEST_DATABASE_URL = "postgresql://huice:huice@127.0.0.1:5432/huice_test"
 
@@ -67,3 +71,61 @@ def database_url() -> str:
     if not url:
         pytest.skip("未设置 HUICE_TEST_DATABASE_URL，跳过数据库用例")
     return url
+
+
+@pytest.fixture(scope="module")
+def database_url_schema(database_url) -> str:
+    """给一个测试模块建独立 schema 并执行全部迁移（连跑两遍，验证可重复执行）。"""
+
+    scripts = [path.read_text(encoding="utf-8") for path in MIGRATIONS]
+    with psycopg.connect(database_url, autocommit=True) as admin:
+        admin.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+        admin.execute(f"CREATE SCHEMA {SCHEMA}")
+
+    scoped = with_schema(database_url, SCHEMA)
+    with psycopg.connect(scoped, autocommit=True) as conn:
+        for script in scripts:
+            conn.execute(script)
+        for script in scripts:
+            conn.execute(script)
+
+    yield scoped
+
+    with psycopg.connect(database_url, autocommit=True) as admin:
+        admin.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+
+
+@pytest.fixture()
+def clean_tables(database_url_schema):
+    """用例之间清空业务表；``schema_migration`` 保留，用于证明脚本已执行。"""
+
+    yield
+    with psycopg.connect(database_url_schema, autocommit=True) as conn:
+        conn.execute(
+            """
+            DO $$
+            DECLARE names text;
+            BEGIN
+                SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+                  INTO names
+                  FROM pg_tables
+                 WHERE schemaname = current_schema()
+                   AND tablename <> 'schema_migration';
+                IF names IS NOT NULL THEN
+                    EXECUTE 'TRUNCATE ' || names || ' CASCADE';
+                END IF;
+            END $$;
+            """
+        )
+
+
+@pytest.fixture()
+def db(database_url_schema):
+    database = Database(database_url_schema)
+    yield database
+    database.close()
+
+
+@pytest.fixture()
+def repo(db) -> PolicyRepository:
+    return PolicyRepository(db, cursor_secret="db-test-secret")

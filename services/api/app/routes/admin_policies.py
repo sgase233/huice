@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -18,6 +19,7 @@ from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException
 
+from ..agents.extraction import ExtractionSource, extract_criteria
 from ..agents.ingestion import (
     MAX_FILE_BYTES,
     MAX_FILES,
@@ -27,8 +29,22 @@ from ..agents.ingestion import (
     prepare_sources,
     validate_official_url,
 )
+from ..domain.citations import CriterionInput, SourceSpanCheck, SourceText, validate_criteria
+from ..domain.rules import validate_expression
 from ..errors import ApiProblem, trace_id_of
-from ..schemas import DraftStatus, PolicyDraft, PolicyDraftList, PolicyImportMetadata
+from ..integrations.storage import CriterionRecord, FindingRecord
+from ..schemas import (
+    DraftStatus,
+    ExtractPolicyInput,
+    ExtractionResult,
+    PolicyDetail,
+    PolicyDraft,
+    PolicyDraftList,
+    PolicyImportMetadata,
+    PublishPolicyInput,
+    SaveCriteriaInput,
+    SaveCriteriaResult,
+)
 from ..security import require_admin
 
 router = APIRouter(
@@ -160,6 +176,364 @@ def get_admin_policy(
     draft = request.app.state.repository.get_admin_policy(policyId, version)
     response.headers["ETag"] = f'"{draft.revision}"'
     return draft
+
+
+# ------------------------------------------------------ API-05 / 06 / 07
+
+
+@router.post(
+    "/policies/{policyId}/extract",
+    response_model=ExtractionResult,
+    operation_id="extractPolicy",
+    summary="API-05",
+)
+async def extract_policy(
+    request: Request,
+    response: Response,
+    policyId: UUID,
+    body: ExtractPolicyInput,
+) -> ExtractionResult:
+    started_at = datetime.now(timezone.utc)
+    expected_revision = _require_if_match(request)
+    idempotency_key = _require_idempotency_key(request)
+    repository = request.app.state.repository
+
+    draft = await run_in_threadpool(repository.get_version_for_edit, policyId, body.version)
+    _ensure_editable(draft)
+
+    fingerprint = _fingerprint(policyId, body)
+    replayed = await run_in_threadpool(repository.read_idempotent, "extract", idempotency_key)
+    if replayed is not None:
+        if replayed["fingerprint"] != fingerprint:
+            raise ApiProblem(
+                409,
+                "IDEMPOTENCY_CONFLICT",
+                "同一个 Idempotency-Key 已用于不同的抽取请求，请换一个新的键。",
+            )
+        if str(replayed["revision"]) != str(draft.revision):
+            raise ApiProblem(
+                409,
+                "VERSION_CONFLICT",
+                "草稿已被更新，不能重放旧结果，请重新读取后再抽取。",
+                {"currentVersion": str(draft.revision)},
+            )
+        response.headers["ETag"] = f'"{draft.revision}"'
+        return ExtractionResult.model_validate(replayed["response"])
+
+    outcome = await run_in_threadpool(
+        extract_criteria,
+        version=draft.version,
+        sources=_extraction_sources(draft),
+        llm=request.app.state.llm,
+        model_version=body.model_version,
+    )
+    drafts = [
+        _domain_criterion(item.id, item.title, item.expression, item.spans, item.review_finding)
+        for item in outcome.criteria
+    ]
+    records, findings = _collect_validation(draft, drafts, extra=outcome.findings)
+
+    saved = await run_in_threadpool(
+        repository.save_criteria,
+        policy_id=policyId,
+        version=draft.version,
+        expected_revision=expected_revision,
+        criteria=records,
+        findings=findings,
+        status="pending_review",
+        trace_id=trace_id_of(request),
+        started_at=started_at,
+    )
+    result = ExtractionResult(
+        draft=saved,
+        criteria_drafts=saved.criteria,
+        validation_findings=saved.validation_findings,
+        usage=outcome.usage,
+    )
+    await run_in_threadpool(
+        repository.save_idempotent,
+        "extract",
+        idempotency_key,
+        fingerprint,
+        result.model_dump(by_alias=True, mode="json"),
+        saved.revision,
+    )
+    response.headers["ETag"] = f'"{saved.revision}"'
+    return result
+
+
+@router.put(
+    "/policies/{policyId}/criteria",
+    response_model=SaveCriteriaResult,
+    operation_id="saveCriteria",
+    summary="API-06",
+)
+def save_criteria(
+    request: Request,
+    response: Response,
+    policyId: UUID,
+    body: SaveCriteriaInput,
+) -> SaveCriteriaResult:
+    started_at = datetime.now(timezone.utc)
+    expected_revision = _require_if_match(request)
+    repository = request.app.state.repository
+
+    draft = repository.get_version_for_edit(policyId, body.version)
+    _ensure_editable(draft)
+
+    ids = [item.id for item in body.criteria]
+    if len(set(ids)) != len(ids):
+        raise ApiProblem(
+            422,
+            "DUPLICATE_CRITERION_ID",
+            "同一政策版本内条款 ID 不能重复。",
+            {"fieldErrors": [{"field": "criteria.id", "message": "存在重复的条款 ID"}]},
+        )
+
+    drafts = [
+        _domain_criterion(
+            item.id, item.title, item.expression, item.source_spans, item.review_finding
+        )
+        for item in body.criteria
+    ]
+    records, findings = _collect_validation(draft, drafts)
+
+    saved = repository.save_criteria(
+        policy_id=policyId,
+        version=draft.version,
+        expected_revision=expected_revision,
+        criteria=records,
+        findings=findings,
+        status="pending_review",
+        trace_id=trace_id_of(request),
+        started_at=started_at,
+    )
+    response.headers["ETag"] = f'"{saved.revision}"'
+    return SaveCriteriaResult(
+        draft=saved, criteria=saved.criteria, validation_findings=saved.validation_findings
+    )
+
+
+@router.post(
+    "/policies/{policyId}/publish",
+    response_model=PolicyDetail,
+    operation_id="publishPolicy",
+    summary="API-07",
+)
+def publish_policy(
+    request: Request,
+    response: Response,
+    policyId: UUID,
+    body: PublishPolicyInput,
+) -> PolicyDetail:
+    started_at = datetime.now(timezone.utc)
+    expected_revision = _require_if_match(request)
+    repository = request.app.state.repository
+
+    draft = repository.get_version_for_edit(policyId, body.version)
+    if draft.status in ("published", "closed"):
+        raise ApiProblem(
+            409,
+            "POLICY_ALREADY_PUBLISHED",
+            "该版本已发布，不能重复发布；如需修改请导入新版本。",
+            {"currentVersion": str(draft.revision)},
+        )
+
+    # 发布前重算引用校验：不能信任草稿里存着的 status，更不能信任前端传入的结论。
+    drafts = [
+        _domain_criterion(item.id, item.title, item.expression, item.source_spans, item.review_finding)
+        for item in draft.criteria
+    ]
+    _, findings = _collect_validation(draft, drafts)
+    blocking = [item for item in draft.criteria if item.validation_status != "passed"]
+    unsupported = [finding for finding in findings if finding.criterion_id is not None]
+    if blocking or unsupported:
+        raise ApiProblem(
+            422,
+            "CRITERIA_NOT_VALIDATED",
+            "存在引用校验未通过的条件，请修正后重新保存，再执行发布。",
+            {
+                "criterionIds": [str(item.id) for item in blocking],
+                "findings": [
+                    {
+                        "criterionId": str(finding.criterion_id) if finding.criterion_id else None,
+                        "code": finding.code,
+                        "message": finding.message,
+                    }
+                    for finding in unsupported
+                ],
+            },
+        )
+
+    saved = repository.publish(
+        policy_id=policyId,
+        version=draft.version,
+        expected_revision=expected_revision,
+        trace_id=trace_id_of(request),
+        started_at=started_at,
+    )
+    detail = repository.get_policy_detail(policyId, draft.version)
+    response.headers["ETag"] = f'"{saved.revision}"'
+    return detail
+
+
+# ------------------------------------------------------------- 写请求公共校验
+
+
+def _require_if_match(request: Request) -> UUID:
+    raw = request.headers.get("if-match")
+    if raw is None or not raw.strip():
+        raise ApiProblem(
+            428,
+            "MISSING_IF_MATCH",
+            "写请求必须带 If-Match：取自上一步响应里的 ETag，原样回传。",
+        )
+    value = raw.strip()
+    if value == "*" or value.upper().startswith("W/"):
+        raise ApiProblem(400, "INVALID_IF_MATCH", "If-Match 只接受强 ETag，不接受 * 或弱校验。")
+    if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+        value = value[1:-1]
+    try:
+        return UUID(value)
+    except ValueError as exc:
+        raise ApiProblem(400, "INVALID_IF_MATCH", "If-Match 不是合法的草稿 revision。") from exc
+
+
+def _require_idempotency_key(request: Request) -> UUID:
+    raw = (request.headers.get("idempotency-key") or "").strip()
+    if not raw:
+        raise ApiProblem(
+            400,
+            "MISSING_IDEMPOTENCY_KEY",
+            "抽取接口必须带 Idempotency-Key（UUID），用于防止重复抽取与重复计费。",
+        )
+    try:
+        return UUID(raw)
+    except ValueError as exc:
+        raise ApiProblem(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key 必须是 UUID。") from exc
+
+
+def _ensure_editable(draft: PolicyDraft) -> None:
+    if draft.status in ("published", "closed"):
+        raise ApiProblem(
+            409,
+            "POLICY_ALREADY_PUBLISHED",
+            "已发布的版本不能再抽取或修改；如需修订请导入新版本。",
+            {"currentVersion": str(draft.revision)},
+        )
+
+
+def _fingerprint(policy_id: UUID, body: ExtractPolicyInput) -> str:
+    payload = json.dumps(
+        {"policyId": str(policy_id), **body.model_dump(by_alias=True, mode="json")},
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _extraction_sources(draft: PolicyDraft) -> list[ExtractionSource]:
+    return [
+        ExtractionSource(id=source.id, source_url=source.source_url, text=source.text, kind=source.kind)
+        for source in draft.sources
+    ]
+
+
+def _source_texts(draft: PolicyDraft) -> dict[UUID, SourceText]:
+    return {
+        source.id: SourceText(
+            id=source.id, source_url=source.source_url, text=source.text, kind=source.kind
+        )
+        for source in draft.sources
+    }
+
+
+def _domain_criterion(
+    criterion_id: UUID,
+    title: str,
+    expression: Any,
+    spans: Any,
+    review_finding: str,
+) -> CriterionInput:
+    return CriterionInput(
+        id=criterion_id,
+        title=title,
+        review_finding=review_finding,
+        spans=tuple(_domain_span(span) for span in spans),
+        expression=expression if isinstance(expression, dict) else None,
+    )
+
+
+def _domain_span(span: Any) -> SourceSpanCheck:
+    return SourceSpanCheck(
+        source_id=span.source_id,
+        source_url=span.source_url,
+        source_version=span.source_version,
+        page=span.page,
+        section=span.section,
+        quote=span.quote,
+        text_hash=span.text_hash,
+    )
+
+
+def _collect_validation(
+    draft: PolicyDraft,
+    criteria: list[CriterionInput],
+    *,
+    extra: Any = (),
+) -> tuple[list[CriterionRecord], list[FindingRecord]]:
+    """调用领域校验并整理成可直接落库的记录；路由自身不做判断。"""
+
+    sources = _source_texts(draft)
+    verdicts = validate_criteria(criteria, sources, draft.version)
+    ast_problems = {
+        criterion.id: validate_expression(criterion.expression or {}) for criterion in criteria
+    }
+
+    records: list[CriterionRecord] = []
+    findings: list[FindingRecord] = []
+    for verdict, criterion in zip(verdicts, criteria):
+        problems = ast_problems[criterion.id]
+        wire_spans = [span.to_wire() for span in criterion.spans]
+        records.append(
+            CriterionRecord(
+                id=criterion.id,
+                title=criterion.title,
+                expression=dict(criterion.expression or {}),
+                spans=wire_spans,
+                review_finding=criterion.review_finding,
+                validation_status="failed" if problems else verdict.status,
+            )
+        )
+        for problem in problems:
+            findings.append(
+                FindingRecord(
+                    criterion_id=criterion.id,
+                    code=problem.code,
+                    message=problem.message,
+                    spans=wire_spans,
+                )
+            )
+        for finding in verdict.findings:
+            findings.append(
+                FindingRecord(
+                    criterion_id=criterion.id,
+                    code=finding.code,
+                    message=finding.message,
+                    spans=[span.to_wire() for span in finding.source_spans],
+                )
+            )
+
+    for finding in extra:
+        findings.append(
+            FindingRecord(
+                criterion_id=None,
+                code=finding.code,
+                message=finding.message,
+                spans=[span.to_wire() for span in finding.source_spans],
+            )
+        )
+    return records, findings
 
 
 def _multipart_problem(message: str) -> ApiProblem:

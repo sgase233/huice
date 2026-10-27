@@ -1,6 +1,6 @@
 # 多智能体实现协议（M1）
 
-当前为实现前的交接说明；`app/agents/*.py` 均只有文件级注释，没有可执行智能体。对外 API 以 `huice/contracts/openapi.yaml` 为字段真源，调用流程见[功能实现逻辑与接口协作约定](../../docs/IMPLEMENTATION_AND_INTERFACE.md)；本协议只约束服务内部调用。
+当前为交接与实现约定。截至 2026-10-26，`app/agents/*.py` 均已可执行：`ingestion` 文件摄取、`extraction` 条款草稿、`profile` 画像归一化、`orchestrator` 同步判断、`explanation` 确定性说明与清单、`report` 报告渲染、`trace` 轨迹汇总；`domain/{rules,citations,questioning,versioning}.py` 已实现，契约 16 个端点全部落地（API-13 报告、API-14 轨迹是同一份历史的两种读取视图）。对外 API 以 `huice/contracts/openapi.yaml` 为字段真源，调用流程见[功能实现逻辑与接口协作约定](../../docs/IMPLEMENTATION_AND_INTERFACE.md)；本协议只约束服务内部调用。
 
 ## 1. 两条流程与职责
 
@@ -41,3 +41,7 @@ M1 在 `app/agents/contracts.py` 实现以下类型，并与 `app/schemas.py` �
 ## 4. 实现与验收
 
 M1 先完成 `contracts.py` 和一个不调用 DeepSeek 的固定样本调度，再接入真实采集、抽取与解释；模型调用统一经 `app/integrations/llm.py`（`fixture` 离线替身 / `deepseek` 真实调用），失败时 429 或 503 并由编排层降级为已审核规则的确定性说明。`tests/test_agent_flow.py` 至少验证：正常链路可追溯到原文；引用校验失败不能发布；缺失事实不能得到“满足”；解释智能体不能覆盖规则结果；模型暂不可用时仍能返回已审核规则的判断与明确降级说明。M2 在轨迹页展示各步骤状态、依据与耗时；M3 按 `docs/product/ACCEPTANCE.md` 核对中文含义和政策来源。
+
+当前状态（2026-10-26）：上述 `test_agent_flow.py` 口径已覆盖（行业排除 → `not_satisfied`、缺事实 → `insufficient_evidence` 与 `nextQuestion`、未发布 → 422、轨迹阶段顺序 `profile/retrieval/evaluation/questioning/explanation`、重算关联）；引用校验失败的发布拦截在 `test_admin_review_http.py`、失效视图在 `test_invalidation.py` 与 `test_db_evaluation.py`。**未完成**：准备清单 `items[]` 与 `verified=true`（等 M3 的已审材料要求）。真实 DeepSeek 联调已于 2026-10-27 用真实 Key 通过（`tests/test_deepseek_live.py` 3 项门控用例）；`MODEL_MODE` 默认值仍为 `fixture`，由 `.env` 切换。
+
+阶段缓存（FR-07）：`app/integrations/cache.py` 只缓存 `rules.evaluate_policy` 的政策级四态与条件级依据，键含 `enterpriseId/policyId/policyVersion/factVersion/ruleVersion/period/asOf` 与结构版本；命中后 `validity/staleReasons/validUntil` 仍按当前时间重算，`runId` 每次新分配。Redis 缺客户端或读写失败一律绕过重算（告警不含连接串），数据库失败仍由仓储抛 503。`redis==8.1.0` 已入 `pyproject.toml` 与 `requirements.lock`：配了 `REDIS_URL` 即真实读写，本地 Redis 7.4 上已用 `tests/test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL` 门控）实测键写入、`TTL≤300`、二次命中与换键。
