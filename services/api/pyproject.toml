@@ -16,6 +16,7 @@ dependencies = [
     "pypdf==6.21.2",
     "python-dotenv==1.2.4",
     "esdk-obs-python==3.26.6",
+    "redis==8.1.0",
 ]
 
 [project.optional-dependencies]
@@ -31,5 +32,8 @@ dev = [
 testpaths = ["tests"]
 markers = [
     "db: 需要真实 PostgreSQL 的用例，仅在 HUICE_TEST_DATABASE_URL 存在时运行",
+    "redis: 需要真实 Redis 的用例，仅在 HUICE_TEST_REDIS_URL 存在时运行",
+    "obs: 需要真实华为云 OBS 桶的用例，仅在 HUICE_TEST_OBS_* 四项都存在时运行",
+    "deepseek: 需要真实 DeepSeek Key 的用例，仅在 HUICE_TEST_DEEPSEEK_API_KEY 存在时运行",
 ]
 filterwarnings = ["error::DeprecationWarning:app.*"]

@@ -4,16 +4,28 @@
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
-## 已实现范围（2026-10-23）
+## 已实现范围（后端，2026-10-27：16/16）
 
 | 接口 | 方法路径 | 状态 |
 | --- | --- | --- |
 | API-01 `getHealth` | `GET /health` | 已实现；数据库不可用返回 503 |
+| API-02 `listPolicies` | `GET /policies` | 已实现；只列已发布版本，`closed` 读取时派生 |
+| API-03 `getPolicy` | `GET /policies/{policyId}` | 已实现；未发布/校验未过返回 422 |
 | API-04 `importPolicy` | `POST /admin/policies/import` | 已实现；201 `PolicyDraft`（`pending_parse`）+ ETag |
+| API-05 `extractPolicy` | `POST /admin/policies/{policyId}/extract` | 已实现；按版本 + `If-Match` + `Idempotency-Key` 防重 |
+| API-06 `saveCriteria` | `PUT /admin/policies/{policyId}/criteria` | 已实现；返回校验发现，失败条件置 `failed` |
+| API-07 `publishPolicy` | `POST /admin/policies/{policyId}/publish` | 已实现；发布时**重算**引用校验，未过 → 422 `CRITERIA_NOT_VALIDATED` |
+| API-08 `createEnterprise` | `POST /enterprises` | 已实现；返回 `factVersion` 作为 ETag |
+| API-09 `getEnterprise` | `GET /enterprises/{enterpriseId}` | 已实现 |
+| API-10 `updateFact` | `PATCH /enterprises/{enterpriseId}/facts/{factKey}` | 已实现；`factVersion` CAS，冲突 409/428 |
+| API-11 `createRun` | `POST /assessment-runs` | 已实现；四态求值 + 补问 + 清单 + 解释 + 轨迹，缓存可绕过 |
+| API-12 `getRun` | `GET /assessment-runs/{runId}` | 已实现；返回 run 快照 + 读取时有效性视图 |
+| API-13 `downloadReport` | `GET /assessment-runs/{runId}/report.md` | 已实现；Markdown 附件，附「截至下载时刻」的有效性 |
+| API-14 `getTrace` | `GET /admin/assessment-runs/{runId}/trace` | 已实现；管理 Bearer、脱敏、阶段顺序重排 |
 | API-15 `listAdminPolicies` | `GET /admin/policies` | 已实现；`{items,nextCursor}`，无 ETag |
 | API-16 `getAdminPolicy` | `GET /admin/policies/{policyId}` | 已实现；200 + ETag，缺省取最新导入版本 |
 
-其余 12 个接口仍只有契约。服务实际暴露的接口、operationId、tags 与 security 由 `services/api/tests/test_openapi_alignment.py` 与契约逐项比对。
+`contracts/openapi.yaml` 本轮**未改动**（仍为 `1.0.0-rc.2`）；后端实现与契约的 operationId、tags、security 由 `services/api/tests/test_openapi_alignment.py` 逐项比对。契约定版 `1.0.0` 仍需 M2 复核。
 
 ### 本轮契约变更（待 M2 复核）
 
@@ -25,7 +37,7 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 
 ## 当前实现产出的错误码
 
-响应统一为 `{"error":{"code","message","details"},"traceId"}`，并带 `X-Trace-Id`。已实现的4个接口会返回：
+响应统一为 `{"error":{"code","message","details"},"traceId"}`，并带 `X-Trace-Id`。全部 16 个接口都按此信封返回，例如：
 
 | HTTP | code | 触发条件 |
 | --- | --- | --- |

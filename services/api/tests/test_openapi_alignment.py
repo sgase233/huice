@@ -10,9 +10,21 @@ from support import CONTRACT_PATH
 
 IMPLEMENTED = {
     ("get", "/health"): "getHealth",
+    ("get", "/policies"): "listPolicies",
+    ("get", "/policies/{policyId}"): "getPolicy",
     ("post", "/admin/policies/import"): "importPolicy",
+    ("post", "/admin/policies/{policyId}/extract"): "extractPolicy",
+    ("put", "/admin/policies/{policyId}/criteria"): "saveCriteria",
+    ("post", "/admin/policies/{policyId}/publish"): "publishPolicy",
     ("get", "/admin/policies"): "listAdminPolicies",
     ("get", "/admin/policies/{policyId}"): "getAdminPolicy",
+    ("post", "/enterprises"): "createEnterprise",
+    ("get", "/enterprises/{enterpriseId}"): "getEnterprise",
+    ("patch", "/enterprises/{enterpriseId}/facts/{factKey}"): "updateFact",
+    ("post", "/assessment-runs"): "createRun",
+    ("get", "/assessment-runs/{runId}"): "getRun",
+    ("get", "/assessment-runs/{runId}/report.md"): "downloadReport",
+    ("get", "/assessment-runs/{runId}/trace"): "getTrace",
 }
 
 

@@ -62,6 +62,27 @@ docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d hu
 
 `001_init.sql` 自带 `BEGIN/COMMIT`、`IF NOT EXISTS` 与 `CREATE OR REPLACE`，可重复执行；重复执行不会重建数据。
 
+### 002 / 003 / 004 迁移（2026-10-26 起）
+
+`002_evaluation_and_idempotency.sql` 增加抽取幂等记录、`assessment_run` 的期间/重算列、`assessment.snapshot`、`trace_step` 状态枚举与事实来源枚举的收口；`003_trace_step_details.sql` 给 `trace_step` 补输入/输出摘要与政策关联列，并把阶段枚举收口为契约的九个值；`004_invalidation_event_period.sql` 给 `invalidation_event` 补事实期间两列与配对约束、加 `run_id` 索引。按文件名顺序执行，**同样可重复执行**：
+
+```powershell
+docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/002_evaluation_and_idempotency.sql
+docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/003_trace_step_details.sql
+docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/004_invalidation_event_period.sql
+```
+
+> **2026-10-26 修正**：该脚本早期版本用 `ALTER TABLE trace_step DROP TRIGGER IF EXISTS ...` 删触发器，这不是合法语法（`DROP TRIGGER` 是独立语句，不在 `ALTER TABLE` 下，`IF EXISTS` 也不能跟在 `ALTER TABLE ... DROP TRIGGER` 后）。因为脚本整体在事务里，报错会让整份回滚，但 `schema_migration` 里可能已留下 002 的行。若本地库曾用 001 之后的旧状态跑过，先确认再重跑：
+
+```powershell
+# 触发器仍在（应有 1 行）
+docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -c "SELECT tgname FROM pg_trigger WHERE tgname = 'trace_step_no_update_delete';"
+# 状态约束是否已含 ok/needs_review/retryable_error/fatal_error
+docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'trace_step_status_check';"
+```
+
+修正后的脚本以独立语句 `DROP TRIGGER IF EXISTS trace_step_no_update_delete ON trace_step;` 开头，可直接重跑（已验证连跑两遍退出码 0）。
+
 ## 检查 Redis
 
 ```powershell
@@ -69,6 +90,22 @@ docker compose --env-file .env -f docker-compose.yml exec redis redis-cli PING
 ```
 
 预期输出 `PONG`。Redis 未设密码，因为端口只绑 `127.0.0.1`；若改绑其它网卡，必须同时配置 `requirepass` 并同步 `huice/.env` 的 `REDIS_URL`。
+
+判断链路的求值缓存（2026-10-26）键形如 `huice:eval:v1:<64 位十六进制>`，TTL 300 秒，可用下面两条命令观察和清理：
+
+```powershell
+docker compose --env-file .env -f docker-compose.yml exec redis redis-cli --scan --pattern "huice:eval:v1:*"
+docker compose --env-file .env -f docker-compose.yml exec redis redis-cli FLUSHDB   # 只清缓存，不动数据库
+```
+
+`redis==8.1.0` 自 2026-10-26 起在 `requirements.lock` 中，配了 `REDIS_URL` 就会真实读写真 Redis。真实缓存用例（只删自己写的 `huice:eval:v1:*` 键，不 `FLUSHDB`）：
+
+```powershell
+$env:HUICE_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
+.\.venv\Scripts\python.exe -m pytest -q -m redis      # 3 passed
+```
+
+若 Redis 停掉或口令不对，判断链路只会「未命中重算」，日志里出现一次「判断缓存不可用…绕过缓存重算」——这是设计好的降级路径，判断结果不受影响。
 
 ## 与 API 的连接
 
@@ -114,14 +151,17 @@ docker compose --env-file .env -f docker-compose.yml down   # 保留命名卷
 | 检查项 | 实测输出 |
 | --- | --- |
 | `SELECT version()` | `PostgreSQL 16.15 (Debian 16.15-1.pgdg12+2) on x86_64-pc-linux-gnu` |
-| `pg_extension` 含 `vector` | `vector | 0.8.7` |
+| `pg_extension` 含 `vector` | `vector \| 0.8.7` |
 | `001_init.sql` 首次执行 | 无错误，退出码 0 |
 | `001_init.sql` 第二次执行 | 仅 `NOTICE: ... already exists, skipping`，退出码 0（幂等通过） |
 | 业务表数量 | `information_schema` 中 `public` 基础表 13 张 |
 | 触发器数量 | 旧记录为「`public` 下 24 个」，但当时未注明查询语句，口径不可复现。2026-10-24 在云端 RDS（同一份 `001_init.sql`）用 `select count(*) filter (where not t.tgisinternal) from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='public'` 测得**业务触发器 13 个**（`public` 下 `pg_trigger` 全量 61 行，其余 48 行为外键内部触发器）。本地库下次启动 Docker 时按同一命令重测 |
-| `schema_migration` | `001_init | 政策/来源/条款、企业画像、评估运行、失效事件与追踪表 | 2026-10-23 06:11:52.557794+00` |
+| `schema_migration` | `001_init \| 政策/来源/条款、企业画像、评估运行、失效事件与追踪表 \| 2026-10-23 06:11:52.557794+00` |
 | `redis-cli PING` | `PONG` |
-| `pytest -m db -q` | `12 passed`（真实 PostgreSQL 上执行，不再是 skipped） |
+| `pytest -m db -q` | `12 passed`（真实 PostgreSQL 上执行，不再是 skipped）→ **2026-10-26 复测 `33 passed`**（新增企业画像 CAS、公开列表/游标、快照闸门、run 落库、失效视图与轨迹读取用例） |
+| `002_evaluation_and_idempotency.sql` | **2026-10-26** 修正 `DROP TRIGGER` 语法后连跑两遍，退出码均 0；`trace_step_status_check` 为 `ok/needs_review/retryable_error/fatal_error`，`trace_step_no_update_delete` 存在 |
+| `003_trace_step_details.sql` | **2026-10-26** 连跑两遍退出码均 0；`trace_step` 增加 `input_summary/output_summary/policy_id/policy_version/error_code/human_action`，`trace_step_stage_check` 固定九个阶段值 |
+| `004_invalidation_event_period.sql` | **2026-10-27** 连跑两遍退出码均 0（第二遍仅 `NOTICE ... already exists, skipping`）；`invalidation_event` 增加 `fact_period_start/fact_period_end`、`invalidation_event_fact_period_check` 约束与 `invalidation_event_run_idx (run_id, created_at)` 索引，`schema_migration` 增至四行；`pytest -m db -q` **34 passed** |
 | 端到端冒烟 | API-04 导入 201（`ETag` 等于 `revision`，`status=pending_parse`）；API-15 列表 200 且无 `ETag`；API-16 按版本与不带版本均命中同一 `revision`；未知版本 404 `POLICY_NOT_FOUND` |
 
 冒烟数据在 `public` 下，验证后已用 `TRUNCATE ... CASCADE` 清空，`schema_migration` 记录保留。原始记录同步进 [../../docs/devlog/M1.md](../../docs/devlog/M1.md)。

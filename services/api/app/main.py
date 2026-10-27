@@ -17,10 +17,11 @@ from fastapi.openapi.utils import get_openapi
 from .config import APP_VERSION, Settings
 from .db import Database
 from .errors import TraceIdMiddleware, register_error_handlers
+from .integrations.cache import build_cache
 from .integrations.llm import build_llm_client
 from .integrations.obs import build_object_store
 from .integrations.storage import PolicyRepository
-from .routes import admin_policies, health
+from .routes import admin_policies, assessment_runs, enterprises, health, policies
 
 API_PREFIX = "/api/v1"
 
@@ -35,6 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     repository = PolicyRepository(database, cursor_secret=_cursor_secret(resolved))
     object_store = build_object_store(resolved)
     llm_client = build_llm_client(resolved)
+    evaluation_cache = build_cache(resolved)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -43,11 +45,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         close_store = getattr(object_store, "close", None)
         if callable(close_store):
             close_store()
+        evaluation_cache.close()
 
     app = FastAPI(
         title="惠策协同 HTTP API",
         version=APP_VERSION,
-        description="契约见 contracts/openapi.yaml；本服务当前实现 API-01/04/15/16。",
+        description=(
+            "契约见 contracts/openapi.yaml；本服务实现契约全部 16 个端点（API-01—API-16），"
+            "其中 API-13 报告与 API-14 轨迹只读既有历史，不重新求值。"
+        ),
         lifespan=lifespan,
     )
 
@@ -56,11 +62,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.repository = repository
     app.state.object_store = object_store
     app.state.llm = llm_client
+    app.state.cache = evaluation_cache
 
     register_error_handlers(app)
 
     api = APIRouter()
     api.include_router(health.router)
+    api.include_router(policies.router)
+    api.include_router(enterprises.router)
+    api.include_router(assessment_runs.router)
+    api.include_router(assessment_runs.admin_router)
     api.include_router(admin_policies.router)
     app.include_router(api, prefix=API_PREFIX)
 
@@ -110,10 +121,15 @@ def _install_openapi(app: FastAPI) -> None:
         schema.setdefault("components", {})["securitySchemes"] = SECURITY_SCHEMES
         for path, operations in schema.get("paths", {}).items():
             for operation in operations.values():
-                if path.startswith(f"{API_PREFIX}/admin/"):
+                tags = operation.get("tags") or []
+                if path == f"{API_PREFIX}/health":
+                    operation["security"] = []
+                elif "admin" in tags:
+                    # 后台接口（含 API-14 轨迹）在演示会话之外再加管理 Bearer。
                     operation["security"] = [{"DemoSession": [], "AdminBearer": []}]
                 else:
-                    operation["security"] = []
+                    # 公开接口仍受演示会话约束：网关拦一遍、后端再验一遍签名与有效期。
+                    operation["security"] = [{"DemoSession": []}]
         app.openapi_schema = schema
         return schema
 

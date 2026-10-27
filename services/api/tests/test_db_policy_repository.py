@@ -6,115 +6,16 @@
 
 from __future__ import annotations
 
-import os
 from uuid import uuid4
 
 import psycopg
 import pytest
 
-from app.agents.ingestion import PreparedSource
-from app.db import Database
 from app.errors import ApiProblem
-from app.integrations.storage import PolicyRepository
-from app.schemas import PolicyImportMetadata
-from support import REPO_ROOT, metadata_payload
+from db_support import create, query_all, query_one, source
+from support import MIGRATIONS
 
-pytestmark = pytest.mark.db
-
-SCHEMA = f"huice_test_{os.getpid()}"
-INIT_SQL = REPO_ROOT / "infra" / "sql" / "001_init.sql"
-
-
-def with_schema(dsn: str, schema: str) -> str:
-    separator = "&" if "?" in dsn else "?"
-    return f"{dsn}{separator}options=-csearch_path%3D{schema}"
-
-
-@pytest.fixture(scope="module")
-def database_url_schema(database_url) -> str:
-    script = INIT_SQL.read_text(encoding="utf-8")
-    with psycopg.connect(database_url, autocommit=True) as admin:
-        admin.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-        admin.execute(f"CREATE SCHEMA {SCHEMA}")
-
-    scoped = with_schema(database_url, SCHEMA)
-    with psycopg.connect(scoped, autocommit=True) as conn:
-        conn.execute(script)
-        # 再执行一次，确认脚本可重复执行
-        conn.execute(script)
-
-    yield scoped
-
-    with psycopg.connect(database_url, autocommit=True) as admin:
-        admin.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-
-
-@pytest.fixture(autouse=True)
-def clean_tables(database_url_schema):
-    """用例之间清空业务表；``schema_migration`` 保留，用于证明脚本已执行。"""
-    yield
-    with psycopg.connect(database_url_schema, autocommit=True) as conn:
-        conn.execute(
-            """
-            DO $$
-            DECLARE names text;
-            BEGIN
-                SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
-                  INTO names
-                  FROM pg_tables
-                 WHERE schemaname = current_schema()
-                   AND tablename <> 'schema_migration';
-                IF names IS NOT NULL THEN
-                    EXECUTE 'TRUNCATE ' || names || ' CASCADE';
-                END IF;
-            END $$;
-            """
-        )
-
-
-@pytest.fixture()
-def db(database_url_schema):
-    database = Database(database_url_schema)
-    yield database
-    database.close()
-
-
-@pytest.fixture()
-def repo(db) -> PolicyRepository:
-    return PolicyRepository(db, cursor_secret="db-test-secret")
-
-
-def query_one(dsn: str, sql: str, params=()):
-    with psycopg.connect(dsn) as conn, conn.cursor() as cur:
-        cur.execute(sql, params)
-        return cur.fetchone()
-
-
-def source(text: str = "政策正文", kind: str = "body") -> PreparedSource:
-    import hashlib
-
-    return PreparedSource(
-        kind=kind,
-        file_name=f"{kind}.txt",
-        mime_type="text/plain",
-        text=text,
-        content_hash=hashlib.sha256(text.encode()).hexdigest(),
-        byte_size=len(text.encode()) or 1,
-    )
-
-
-def create(repo: PolicyRepository, *, version: str = "v1.0", policy_id=None, **overrides):
-    payload = metadata_payload(version=version, **overrides)
-    if policy_id is not None:
-        payload["policyId"] = str(policy_id)
-    metadata = PolicyImportMetadata.model_validate(payload)
-    sources = [source("正文"), source("附件", kind="attachment")]
-    return repo.create_policy_version(
-        metadata=metadata,
-        sources=sources,
-        storage_keys=["local/body.txt", "local/annex.txt"],
-        trace_id=str(uuid4()),
-    )
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
 
 
 def test_import_persists_every_child_row(repo, database_url_schema):
@@ -276,8 +177,122 @@ def test_append_only_tables_reject_updates(repo, database_url_schema):
             conn.commit()
 
 
-def test_schema_migration_row_is_idempotent(database_url_schema):
-    rows = query_one(
-        database_url_schema, "SELECT count(*) FROM schema_migration WHERE id = '001_init'"
-    )
-    assert rows[0] == 1
+def test_schema_migration_rows_are_idempotent(database_url_schema):
+    ids = [row[0] for row in query_all(database_url_schema, "SELECT id FROM schema_migration ORDER BY id")]
+    assert ids == [path.stem for path in MIGRATIONS]
+
+
+# ------------------------------------------------------- 002 迁移后的结构
+
+
+def test_idempotent_record_roundtrip(repo):
+    key = uuid4()
+    revision = uuid4()
+    payload = {"draft": {"revision": str(revision), "status": "pending_review"}}
+
+    assert repo.read_idempotent("extract", key) is None
+
+    repo.save_idempotent("extract", key, "a" * 64, payload, revision)
+
+    stored = repo.read_idempotent("extract", key)
+    assert stored == {"fingerprint": "a" * 64, "response": payload, "revision": revision}
+    # 作用域隔离：同一个键在别的接口下不算重放
+    assert repo.read_idempotent("publish", key) is None
+
+
+def test_idempotent_record_keeps_the_first_write_and_is_append_only(repo, database_url_schema):
+    key = uuid4()
+    repo.save_idempotent("extract", key, "b" * 64, {"n": 1}, uuid4())
+    repo.save_idempotent("extract", key, "c" * 64, {"n": 2}, uuid4())
+
+    stored = repo.read_idempotent("extract", key)
+    assert stored["fingerprint"] == "b" * 64
+    assert stored["response"] == {"n": 1}
+    assert query_one(database_url_schema, "SELECT count(*) FROM idempotency_record")[0] == 1
+
+    for statement in (
+        "UPDATE idempotency_record SET revision = gen_random_uuid()",
+        "DELETE FROM idempotency_record",
+    ):
+        with pytest.raises(psycopg.errors.CheckViolation):
+            with psycopg.connect(database_url_schema) as conn:
+                conn.execute(statement)
+                conn.commit()
+
+
+def test_enterprise_fact_uses_the_contract_source_enum(database_url_schema):
+    """契约 FactSource 是 user_input / synthetic_material；verified_document 不再接受。"""
+
+    enterprise_id = uuid4()
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "INSERT INTO enterprise (id, name_synthetic, period_start, period_end) "
+            "VALUES (%s, %s, %s, %s)",
+            (enterprise_id, "合成演示企业", "2026-01-01", "2026-12-31"),
+        )
+        conn.execute(
+            "INSERT INTO enterprise_fact "
+            "(enterprise_id, key, period_start, period_end, unit, source, value_amount) "
+            "VALUES (%s, 'taxableIncome', '2026-01-01', '2026-12-31', 'CNY', "
+            "'synthetic_material', 1200000)",
+            (enterprise_id,),
+        )
+        conn.commit()
+
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO enterprise_fact "
+                "(enterprise_id, key, period_start, period_end, unit, source, value_amount) "
+                "VALUES (%s, 'rdExpense', '2026-01-01', '2026-12-31', 'CNY', "
+                "'verified_document', 500000)",
+                (enterprise_id,),
+            )
+        conn.rollback()
+
+
+def test_assessment_run_stores_period_and_supersedes(database_url_schema):
+    enterprise_id, first_run, second_run = uuid4(), uuid4(), uuid4()
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "INSERT INTO enterprise (id, name_synthetic, period_start, period_end) "
+            "VALUES (%s, %s, %s, %s)",
+            (enterprise_id, "合成演示企业", "2026-01-01", "2026-12-31"),
+        )
+        insert_run = (
+            "INSERT INTO assessment_run "
+            "(id, enterprise_id, as_of, status, fact_version, model_or_rule_version, "
+            " period_start, period_end, supersedes_run_id) "
+            "VALUES (%s, %s, now(), 'queued', %s, 'rule:criteria@1', %s, %s, %s)"
+        )
+        conn.execute(
+            insert_run,
+            (first_run, enterprise_id, "1" * 64, "2026-01-01", "2026-12-31", None),
+        )
+        conn.execute(
+            insert_run,
+            (second_run, enterprise_id, "2" * 64, "2026-01-01", "2026-12-31", first_run),
+        )
+        conn.commit()
+
+        period, supersedes = query_one(
+            database_url_schema,
+            "SELECT period_start, supersedes_run_id FROM assessment_run WHERE id = %s",
+            (second_run,),
+        )
+        assert str(period) == "2026-01-01"
+        assert supersedes == first_run
+
+        # 期间与重算是运行快照的一部分，写入后冻结
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "UPDATE assessment_run SET period_end = '2027-12-31' WHERE id = %s",
+                (second_run,),
+            )
+        conn.rollback()
+
+        # status/finished_at 仍可推进
+        conn.execute(
+            "UPDATE assessment_run SET status = 'succeeded', finished_at = now() WHERE id = %s",
+            (second_run,),
+        )
+        conn.commit()
