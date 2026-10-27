@@ -356,7 +356,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 从 `huice/services/api` 执行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                                  # 427 passed / 36 skipped（33 db + 3 redis 门控）
+.\.venv\Scripts\python.exe -m pytest -q                                  # 427 passed / 44 skipped（33 db + 3 redis + 5 obs + 3 deepseek 门控，2026-10-27 口径）
 $env:HUICE_TEST_DATABASE_URL = "<本地库连接串>"
 $env:HUICE_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
 .\.venv\Scripts\python.exe -m pytest -q                                  # 463 passed（含 33 db + 3 真实 Redis）
@@ -377,7 +377,36 @@ $env:HUICE_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
 - `redis==8.1.0` 已按负责人 2026-10-26 的决定加入 `pyproject.toml` 与 `requirements.lock`（48 项），并在干净 venv 中 `pip install -r requirements.lock` + `pip check` 复现通过；`redis` 为纯 Python 包，无新增传递依赖。
 - 云端 Redis 连通性已于 2026-10-26 在 ECS 上复测：端口可连、`--askpass PING` 返回 `PONG`、控制台显示小版本 `7.2.11.5`、白名单已含 ECS `192.168.0.86`（2026-10-24 的「实例未开启」已不复现）。`192.168.0.38` 是 VPC 内网地址，本机直连超时属正常。**仍未实测**：云端缓存命中——云端 API 尚未部署（11/08 任务），部署后按同一组用例复测即可。
 - 缓存是加速手段而非证据库：失效裁定仍以数据库 `invalidation_event` 为准，只换缓存键不能代替失效记录。
-- 云端 RDS 尚未执行 002，云端 `app→RDS` 链路仍无实测证据。
+- 云端 RDS 已于 2026-10-26 23:47 补齐 `002` 与 `003`（`schema_migration` 三行、结构与本地一致）；云端 `app→RDS` 链路仍未实测，等 11/08 部署。
+
+### M1 后端实现验证记录（2026-10-27，第五阶段：外部依赖联调与阶段交付）
+
+除上表四个阶段外，同日完成两件事：把 11/03 的两项外部依赖接真（OBS 桶、DeepSeek Key），以及把 10/28 与 11/03 两阶段的成果提交并推送。
+
+从 `huice/services/api` 执行（凭证只在本机终端以环境变量形式存在，不写文件）：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q          # 427 passed / 44 skipped / 75 subtests
+# OBS：HUICE_TEST_OBS_BUCKET / ENDPOINT / AK / SK 四项齐备才运行
+.\.venv\Scripts\python.exe -m pytest -q -m obs        # 5 passed（真实桶 huice-policies）
+# DeepSeek：HUICE_TEST_DEEPSEEK_API_KEY 存在才运行
+.\.venv\Scripts\python.exe -m pytest -q -m deepseek   # 3 passed（真实 Key）
+```
+
+覆盖的验收口径（`tests/test_obs_live.py` 5 项 + `tests/test_deepseek_live.py` 3 项）：
+
+- **OBS 写入是真的**：经 `ObsObjectStore` 写入后，用**独立构造的 SDK 客户端**读回字节逐一比对；删除后 `getObject` 返回 404；同内容两次写入得到不同键且都还在。
+- **导入链路落桶**：`POST /admin/policies/import` 的正文真正上传到桶，且仓储入参 `storage_keys` 与桶内键一致（契约的 `SourceDocument` 不暴露内部键，因此断言取仓储入参而非响应体）。
+- **失败不泄露**：桶不可写时统一 503 `DEPENDENCY_UNAVAILABLE`，异常与详情里不含桶名、AK、SK。
+- **模型只改解释**：真实补全返回文本/模型名/用量；整链判断里 `explanationMode=deepseek`，而 `result` 仍是规则求值给出的 `not_satisfied`——模型无法改写结论。
+- **错误 Key 走降级**：401 等非 2xx 映射为 503，消息不含 Key 与 base URL。
+
+如实记录的偏差与待办：
+
+- 首版用例把带 AK/SK 的 `Settings` 当夹具返回，一次断言失败使 pytest 把密钥打进终端；该对密钥当日作废重建，用例改为 `Credentials` 数据类（`__repr__` 输出 `<redacted>`）且带密钥的 `Settings` 只在辅助函数内临时构造，`infra/README.md` §4.3 注明不要对这两个 marker 用 `--showlocals`。
+- 首版导入用例断言 `sources[0]["storageKey"]`，契约中并无该字段（`KeyError`），失败时在桶里留下 1 个孤儿对象（已在控制台删除）；现改为从仓储入参断言，并给真存储套一层记录型包装器，请求中途失败也能清理。
+- 提交：单次提交 `88d8eec`（52 文件），推送 `origin m1/backend-eval-core`，PR #8（base `main`）；两阶段共用同一批文件，拆开会产生跑不过测试的中间提交，原因已写入 devlog。
+- `MODEL_MODE` 默认值仍为 `fixture`；切到 `deepseek` 由 `.env` 决定，云端切换随 11/08 部署验证。
 
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 
