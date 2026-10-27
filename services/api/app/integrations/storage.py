@@ -154,9 +154,12 @@ ON CONFLICT (enterprise_id, key, period_start, period_end) DO UPDATE SET
 """
 
 #: 写过这条事实的 run 记一条失效事件；只影响真正读过该事实的政策。
+#: 事件必须连期间一起记：读取时按 key + 期间 匹配，否则同键不同期间会被一锅端。
 _INSERT_FACT_EVENTS = """
-INSERT INTO invalidation_event (id, run_id, reason, policy_id, fact_key, created_at)
-SELECT gen_random_uuid(), d.run_id, 'fact_changed', d.policy_id, %(key)s, now()
+INSERT INTO invalidation_event
+    (id, run_id, reason, policy_id, fact_key, fact_period_start, fact_period_end, created_at)
+SELECT gen_random_uuid(), d.run_id, 'fact_changed', d.policy_id, %(key)s,
+       d.fact_period_start, d.fact_period_end, now()
 FROM assessment_dependency d
 JOIN assessment_run r ON r.id = d.run_id
 WHERE r.enterprise_id = %(enterprise_id)s
@@ -1107,8 +1110,8 @@ class PolicyRepository:
             )
             rows = cur.fetchall()
             cur.execute(
-                "SELECT reason, policy_id, fact_key, created_at FROM invalidation_event "
-                "WHERE run_id = %s ORDER BY created_at",
+                "SELECT reason, policy_id, fact_key, fact_period_start, fact_period_end, "
+                "created_at FROM invalidation_event WHERE run_id = %s ORDER BY created_at",
                 (run_id,),
             )
             event_rows = cur.fetchall()
@@ -1119,6 +1122,7 @@ class PolicyRepository:
                 occurred_at=row["created_at"],
                 policy_id=row["policy_id"],
                 fact_key=row["fact_key"],
+                fact_period=_period_of(row["fact_period_start"], row["fact_period_end"]),
             )
             for row in event_rows
         ]
@@ -1577,6 +1581,13 @@ def _draft_from_row(
 
 def _as_date(value: Any) -> date | None:
     return value if value is None or isinstance(value, date) else date.fromisoformat(str(value))
+
+
+def _period_of(start: Any, end: Any) -> tuple[date, date] | None:
+    """失效事件的期间；两列都为空的旧行返回 ``None``（按整键保守匹配）。"""
+
+    first, second = _as_date(start), _as_date(end)
+    return (first, second) if first is not None and second is not None else None
 
 
 def _list_of(value: Any) -> list[dict[str, Any]]:

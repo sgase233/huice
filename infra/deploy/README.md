@@ -53,6 +53,19 @@ bash /opt/huice/app/infra/deploy/provision.sh
 PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra/deploy/provision.sh
 ```
 
+### 2.1 数据库结构必须先于服务启动（硬前提）
+
+代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），**服务启动前云 RDS 必须已执行 001—004 全部迁移**：
+
+```bash
+for f in 001_init 002_evaluation_and_idempotency 003_trace_step_details 004_invalidation_event_period; do
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "/opt/huice/app/infra/sql/$f.sql" || break
+done
+psql "$DATABASE_URL" -tAc "SELECT id FROM schema_migration ORDER BY id"   # 应输出四行
+```
+
+顺序反了不会「降级运行」，而是直接报错：`PATCH /enterprises/{id}/facts/{key}` 的失效事件写入与 `GET /assessment-runs/{runId}` 的事件读取都会因缺列抛 `UndefinedColumn`，分别表现为 500 与历史判断读不出来。反向顺序（先迁移后升级代码）安全，脚本本身可重复执行。
+
 ## 3. 填配置
 
 ```bash
@@ -127,7 +140,7 @@ cp /opt/huice/app.bak/* /opt/huice/app/   # 恢复上一份代码（若事先备
 systemctl restart huice-api
 ```
 
-数据库只增不改：新变更写 `infra/sql/002_*.sql`，不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
+数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `004_invalidation_event_period.sql`，下一份是 `005_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
 
 ## 7. 安全约束
 

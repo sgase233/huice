@@ -359,6 +359,73 @@ def test_fact_change_makes_only_dependent_assessments_stale(repo):
     assert len(stale.stale_reasons[0].changed_criterion_ids) == 1
 
 
+def test_fact_change_is_scoped_to_the_exact_period(repo):
+    """同一个键两个期间：改 2025 只让读 2025 的条件 stale。
+
+    事件如果只记键不记期间，读取时会把读 2026 的那条条件、以及 2026 那条期间一起
+    算进 ``changedCriterionIds``/``changedFactRefs``。
+    """
+
+    income_2025 = {"startDate": "2025-01-01", "endDate": "2025-12-31"}
+    profile = normalize_profile(
+        EnterpriseInput.model_validate(
+            {
+                "nameSynthetic": "合成企业A",
+                "period": YEAR,
+                "facts": [
+                    {"key": "region", "value": "440300", "unit": "code", "period": YEAR, "source": "user_input"},
+                    {"key": "industry", "value": "C39", "unit": "code", "period": YEAR, "source": "user_input"},
+                    {
+                        "key": "taxableIncome",
+                        "value": "4000000.00",
+                        "unit": "CNY",
+                        "period": YEAR,
+                        "source": "user_input",
+                    },
+                    {
+                        "key": "taxableIncome",
+                        "value": "1000000.00",
+                        "unit": "CNY",
+                        "period": income_2025,
+                        "source": "user_input",
+                    },
+                ],
+            }
+        )
+    )
+    enterprise = repo.create_enterprise(profile=profile, trace_id=str(uuid4()))
+
+    policy_id, _ = publish_policy(
+        repo,
+        expressions=[INCOME_GATE, {**INCOME_GATE, "period": income_2025}],
+    )
+    run = run_assessment(repo, enterprise.id, [policy_id])
+
+    current = repo.get_enterprise(enterprise.id)
+    update = FactUpdate.model_validate(
+        {"value": "2000000.00", "unit": "CNY", "period": income_2025, "source": "user_input"}
+    )
+    repo.update_fact(
+        enterprise_id=enterprise.id,
+        fact=normalize_fact_update(
+            key="taxableIncome",
+            update=update,
+            profile_period=(PERIOD[0], PERIOD[1]),
+        ),
+        expected_fact_version=current.fact_version,
+        trace_id=str(uuid4()),
+    )
+
+    stale = repo.get_run(run.id).assessments[0]
+    assert [reason.code for reason in stale.stale_reasons] == ["fact_changed"]
+    reason = stale.stale_reasons[0]
+    assert [(ref.key, ref.period.start_date, ref.period.end_date) for ref in reason.changed_fact_refs] == [
+        ("taxableIncome", date(2025, 1, 1), date(2025, 12, 31))
+    ]
+    # 两条条件只有读 2025 的那条受影响。
+    assert len(reason.changed_criterion_ids) == 1
+
+
 def test_publishing_a_new_version_makes_the_old_run_stale(repo):
     enterprise = make_enterprise(repo, industry="F51")
     policy_id, _ = publish_policy(repo, expressions=[INDUSTRY_GATE])

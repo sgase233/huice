@@ -114,6 +114,45 @@ def test_nesting_depth_is_limited():
     assert "EXPRESSION_TOO_DEEP" in {problem.code for problem in validate_expression(expression)}
 
 
+def test_node_budget_is_counted_over_the_whole_tree():
+    """节点上限是整棵表达式累计，不是每个 and/or 各算各的。
+
+    满扇出的一棵浅树就能超过上限：单看每层都「只有 2 个子项」，展开的节点数却是
+    指数级的。
+    """
+
+    expression: dict = compare("taxableIncome", "gte", "1")
+    # 每层翻倍：7 层 and 就有 2^7 = 128 个叶子，加内部节点共 255 个。
+    for _ in range(7):
+        expression = {"op": "and", "children": [expression, expression]}
+
+    codes = {problem.code for problem in validate_expression(expression)}
+    assert codes == {"EXPRESSION_TOO_LARGE"}
+
+
+def test_node_budget_boundary_is_exactly_the_limit():
+    """上限含根节点：199 个子项 + 根 = 200 允许，200 个子项 + 根 = 201 拒绝。"""
+
+    child = compare("taxableIncome", "gte", "1")
+
+    allowed = {"op": "and", "children": [child] * 199}
+    assert validate_expression(allowed) == []
+
+    rejected = {"op": "and", "children": [child] * 200}
+    assert {problem.code for problem in validate_expression(rejected)} == {"EXPRESSION_TOO_LARGE"}
+
+
+def test_a_long_not_chain_is_rejected_without_recursion_error():
+    """``not`` 串成长链时按节点数先拒绝，不能先撞 Python 的递归上限。"""
+
+    expression: dict = compare("taxableIncome", "gte", "1")
+    for _ in range(300):
+        expression = {"op": "not", "child": expression}
+
+    codes = {problem.code for problem in validate_expression(expression)}
+    assert codes == {"EXPRESSION_TOO_LARGE"}
+
+
 # ------------------------------------------------------------------ 四态求值
 
 

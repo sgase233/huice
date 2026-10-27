@@ -20,12 +20,13 @@ NOW = datetime(2026, 10, 26, 12, 0, tzinfo=SHANGHAI)
 RUN_CREATED = NOW - timedelta(hours=1)
 
 
-def event(reason: str, *, at: datetime | None = None, policy_id=None, fact_key=None):
+def event(reason: str, *, at: datetime | None = None, policy_id=None, fact_key=None, fact_period=None):
     return versioning.ChangedEvent(
         reason=reason,
         occurred_at=at or NOW - timedelta(minutes=30),
         policy_id=policy_id,
         fact_key=fact_key,
+        fact_period=fact_period,
     )
 
 
@@ -86,6 +87,91 @@ def test_fact_change_only_marks_criteria_that_read_that_fact():
     ]
     # 只读过员工人数的那条条件不在 changedCriterionIds 里：事实改动不按整企业失效。
     assert str(criterion_b) not in reason["changedCriterionIds"]
+
+
+def test_fact_change_is_scoped_to_the_exact_period():
+    """同键不同期间各自一条事实：改动 2025 不能把只读 2026 的条件标 stale。"""
+
+    yearly_2025 = uuid4()
+    yearly_2026 = uuid4()
+
+    view = versioning.resolve_validity(
+        boundary=versioning.PolicyBoundary(),
+        events=[
+            event(
+                "fact_changed",
+                fact_key="taxableIncome",
+                fact_period=(date(2025, 1, 1), date(2025, 12, 31)),
+                at=NOW - timedelta(minutes=5),
+            )
+        ],
+        criterion_dependencies={
+            yearly_2025: [("taxableIncome", date(2025, 1, 1), date(2025, 12, 31))],
+            yearly_2026: [("taxableIncome", date(2026, 1, 1), date(2026, 12, 31))],
+        },
+        run_created_at=RUN_CREATED,
+        now=NOW,
+    )
+
+    reason = view.stale_reasons[0]
+    assert reason["changedCriterionIds"] == [str(yearly_2025)]
+    # 没被改的期间不能出现在 changedFactRefs 里。
+    assert reason["changedFactRefs"] == [
+        {
+            "key": "taxableIncome",
+            "period": {"startDate": "2025-01-01", "endDate": "2025-12-31"},
+        }
+    ]
+
+
+def test_a_criterion_reading_two_periods_of_one_key_is_marked_once():
+    criterion = uuid4()
+    view = versioning.resolve_validity(
+        boundary=versioning.PolicyBoundary(),
+        events=[
+            event(
+                "fact_changed",
+                fact_key="taxableIncome",
+                fact_period=(date(2025, 1, 1), date(2025, 12, 31)),
+                at=NOW - timedelta(minutes=5),
+            ),
+            event(
+                "fact_changed",
+                fact_key="taxableIncome",
+                fact_period=(date(2025, 1, 1), date(2025, 12, 31)),
+                at=NOW - timedelta(minutes=4),
+            ),
+        ],
+        criterion_dependencies={
+            criterion: [
+                ("taxableIncome", date(2025, 1, 1), date(2025, 12, 31)),
+                ("taxableIncome", date(2026, 1, 1), date(2026, 12, 31)),
+            ]
+        },
+        run_created_at=RUN_CREATED,
+        now=NOW,
+    )
+
+    reason = view.stale_reasons[0]
+    assert reason["changedCriterionIds"] == [str(criterion)]
+    assert [ref["period"]["startDate"] for ref in reason["changedFactRefs"]] == ["2025-01-01"]
+
+
+def test_an_event_without_a_period_still_matches_the_whole_key():
+    """004 之前写入的事件没有期间列，读历史时按整键保守匹配，不能漏标。"""
+
+    criterion = uuid4()
+    view = versioning.resolve_validity(
+        boundary=versioning.PolicyBoundary(),
+        events=[event("fact_changed", fact_key="taxableIncome", at=NOW - timedelta(minutes=5))],
+        criterion_dependencies={
+            criterion: [("taxableIncome", date(2026, 1, 1), date(2026, 12, 31))]
+        },
+        run_created_at=RUN_CREATED,
+        now=NOW,
+    )
+
+    assert view.stale_reasons[0]["changedCriterionIds"] == [str(criterion)]
 
 
 def test_policy_version_change_marks_stale():

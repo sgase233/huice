@@ -55,6 +55,8 @@ AST 仅接受以下形状，不能执行 Python/JS 字符串：
 
 AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{startDate,endDate}`；年度季度平均表达式必须指向完整自然年度。地区等字符串比较只允许 eq/ne。区间用 AND 的上下界表达，不另加操作符。比例以 unit=`ratio` 的十进制字符串表达；新增事实字段要先改字典和契约。所有冲突节点先单独检测并向上传播为 `conflict`，不得被 OR 短路掩盖。
 
+结构上限按**整棵表达式累计**：节点总数不超过 200、嵌套不超过 8 层，超限在入库前返回 `EXPRESSION_TOO_LARGE`/`EXPRESSION_TOO_DEEP`。只按单个 and/or 的直接子项数限制是无效的——每层各 200 个子项、嵌套下去展开是天文数字，所以计数在整棵树上做，且发现超限即停止遍历。
+
 上表只定义程序口径，具体阈值、适用期间、非完整经营年度计算方式由 M3 提供原文并复核。首版不支持的期间返回证据不足并说明原因，不能把缺少季度当 0 或自行用现有季度替代全年。
 
 ### 2.3 FR-03：企业事实与参数字典
@@ -105,6 +107,8 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 ### 2.7 FR-07：失效、并发和缓存
 
 `storage` 在同一数据库事务内提交事实/政策发布变更与失效事件。草稿修改不影响现有结论；发布新版本使依赖该 policyId 旧版本的 assessment 失效。事实改动按 key+period 查依赖，仅影响相关条件/政策；没有读到该事实的政策保持 current，不按整企业粗暴失效。run 保存完整 factVersion，条件另存依赖快照，以便识别这种差别。
+
+写入与读取两端的匹配口径必须一致：事件除了 `fact_key` 还落 `fact_period_start/fact_period_end`（迁移 `004`），读取时按 **key + 期间** 精确比对。同键不同期间（年度与季度、前后两个年度）各是一条事实，改动其中一条只让读那一条的条件变 stale，`changedFactRefs` 也不列没被改的期间。`004` 之前写入的事件没有期间列，读取时按整键保守匹配——宁可多标 stale，不可漏标；`invalidation_event` 只追加、无法回填，所以这类历史事件所在 run 会**永久**保持整键匹配（多标，不会漏标）。云端库当前 0 个 run、0 条事件，不存在这类历史行。
 
 历史判断正文与旧事实/政策快照不可变；`validity,staleReasons` 是按变更事件和当前时间生成的读取视图，不回写四态结果。`staleReasons` 包括 `policy_changed/fact_changed/window_closed/policy_expired/valid_until_passed`，附 changedCriterionIds/FactRefs 和中文原因。GET run、报告与缓存命中都重新计算该视图；只换 Redis 键不能代替数据库失效记录。
 
@@ -297,7 +301,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 | 资源 | 状态 | 证据 |
 | --- | --- | --- |
 | ECS | 已开通并登录 | `huice-api-01`，Ubuntu 24.04.4、Python 3.12.3、内网 `192.168.0.86`，22 端口实测可连 |
-| RDS for PostgreSQL | **已实测（2026-10-24 复测；2026-10-26 补齐迁移）** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器），`vector` 0.8.0（本地 0.8.7）；`schema_migration` 三行齐全（`001_init` 10-23 17:37、`002_evaluation_and_idempotency` 10-26 23:47:03、`003_trace_step_details` 10-26 23:47:13，`applied_at` 显示 `+08` 即实例默认 `Asia/Shanghai`）；`trace_step` 六列与 `trace_step_status_check`/`trace_step_stage_check`、`trace_step_no_update_delete` 均已核对；`policy` 与 `policy_version` 仍 0 行 |
+| RDS for PostgreSQL | **已实测（2026-10-24 复测；2026-10-26 补齐迁移）** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器），`vector` 0.8.0（本地 0.8.7）；`schema_migration` 三行齐全（`001_init` 10-23 17:37、`002_evaluation_and_idempotency` 10-26 23:47:03、`003_trace_step_details` 10-26 23:47:13，`applied_at` 显示 `+08` 即实例默认 `Asia/Shanghai`；`004_invalidation_event_period` 待 11/08 部署补齐）；`trace_step` 六列与 `trace_step_status_check`/`trace_step_stage_check`、`trace_step_no_update_delete` 均已核对；`policy` 与 `policy_version` 仍 0 行 |
 | Redis（DCS） | **已实测** | `huice-redis` 主备 1GB，小版本 `7.2.11.5`，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG`；2026-10-24 复测时实例未开启（端口拒绝），2026-10-26 在 ECS 上复测恢复：端口可连、`--askpass PING` 返回 `PONG`、白名单已含 ECS `192.168.0.86`。判断链路的版本化求值缓存已实现（2026-10-26），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；云端 API 尚未部署，该项在云端的命中待部署后复测 |
 | OBS | 已建桶，代码已实现，**未在真实桶验证** | 桶 `huice-policies`（私有，`cn-south-1`）；`ObsObjectStore` 用 `esdk-obs-python` 3.26.6 实现，只用假客户端做过单元测试 |
 | DeepSeek | 已接入，**2026-10-27 用真实 Key 联调通过**（`tests/test_deepseek_live.py` 3 项：补全返回文本/用量、错误 Key→503 不回显、整链 `explanationMode=deepseek` 而结论仍由规则给出） | `app/integrations/llm.py`（`fixture`/`deepseek` 两模式，OpenAI 兼容 `/chat/completions`）；契约 rc.2 中 `ModelUsage.mode`/`explanationMode` 的 `maas` 已改为 `deepseek`；`MODEL_MODE` 默认值仍为 `fixture`，由 `.env` 切换 |
@@ -356,10 +360,10 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 从 `huice/services/api` 执行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                                  # 427 passed / 44 skipped（33 db + 3 redis + 5 obs + 3 deepseek 门控，2026-10-27 口径）
+.\.venv\Scripts\python.exe -m pytest -q                                  # 433 passed / 45 skipped（34 db + 3 redis + 5 obs + 3 deepseek 门控，2026-10-27 第六阶段口径）
 $env:HUICE_TEST_DATABASE_URL = "<本地库连接串>"
 $env:HUICE_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
-.\.venv\Scripts\python.exe -m pytest -q                                  # 463 passed（含 33 db + 3 真实 Redis）
+.\.venv\Scripts\python.exe -m pytest -q                                  # 470 passed / 8 skipped（含 34 db + 3 真实 Redis）
 .\.venv\Scripts\python.exe -m pytest -q -m redis                         # 3 passed
 ```
 
@@ -407,6 +411,16 @@ $env:HUICE_TEST_REDIS_URL = "redis://127.0.0.1:6379/0"
 - 首版导入用例断言 `sources[0]["storageKey"]`，契约中并无该字段（`KeyError`），失败时在桶里留下 1 个孤儿对象（已在控制台删除）；现改为从仓储入参断言，并给真存储套一层记录型包装器，请求中途失败也能清理。
 - 提交：单次提交 `88d8eec`（52 文件），推送 `origin m1/backend-eval-core`，PR #8（base `main`）；两阶段共用同一批文件，拆开会产生跑不过测试的中间提交，原因已写入 devlog。
 - `MODEL_MODE` 默认值仍为 `fixture`；切到 `deepseek` 由 `.env` 决定，云端切换随 11/08 部署验证。
+
+### M1 后端实现验证记录（2026-10-27，第六阶段：M2 复核发现的正确性问题）
+
+M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例。
+
+**① 失效没有按期间区分（`domain/versioning.py`）**。写入端 `_INSERT_FACT_EVENTS` 本来是按 `fact_key + fact_period_start/end` 命中依赖的，但事件行只存了 `fact_key`，读取端重算有效性时只能按键匹配。于是同一个键的两个期间（年度与季度、前后两个年度）里改动一条，会把只读另一条的条件也标成 stale，`changedFactRefs` 还会列出没被改的期间。修复：迁移 `infra/sql/004_invalidation_event_period.sql` 给 `invalidation_event` 补 `fact_period_start/fact_period_end` 与配对约束；`ChangedEvent` 增 `fact_period`；读取端按 key + 期间 精确匹配，`004` 之前的旧行（期间为空）按整键保守匹配，宁可多标 stale，不可漏标。回归用例：`tests/test_invalidation.py` 3 项（精确期间、一条条件读两个期间、旧事件保守匹配）与 `tests/test_db_evaluation.py::test_fact_change_is_scoped_to_the_exact_period`（真库，同一键两个期间）。
+
+**② AST 200 节点上限只算单层（`domain/rules.py`）**。原实现对每个 `and/or` 各自检查直接子项数 ≤ 200，嵌套后总节点数仍可指数增长。修复：`validate_expression` 先用显式栈遍历整棵表达式累计节点数（超限即停，不做完整遍历），超过 `MAX_NODES` 直接返回 `EXPRESSION_TOO_LARGE`；单层子项上限随之移除（已被整树预算覆盖）。回归用例：`tests/test_rules.py` 3 项（满扇出浅树超限、200/201 边界、300 层 `not` 长链不触发递归错误）。
+
+验证（2026-10-27，本机 PostgreSQL 16 + pgvector 0.8.7 / Redis 7.4）：`pytest -q`（无外部依赖）**433 passed / 45 skipped / 75 subtests**；`pytest -m db` **34 passed**（含新增的同键两期间用例）；`HUICE_TEST_DATABASE_URL` 与 `HUICE_TEST_REDIS_URL` 都指向本地服务时全量 **470 passed / 8 skipped**（余下 8 项为 OBS 5 项与 DeepSeek 3 项门控，需真实凭证）。迁移 `004` 在本地库连跑两遍退出码均 0，第二遍仅 `NOTICE ... already exists, skipping`；核对结果：`invalidation_event` 增 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束、`invalidation_event_run_idx (run_id, created_at)` 索引，`schema_migration` 四行齐全。云端 RDS 仍未执行 `004`，随 11/08 部署补齐。**未执行**：OBS/DeepSeek 用例本轮未重跑（改动不涉及这两条链路）。
 
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 

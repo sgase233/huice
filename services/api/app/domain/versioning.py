@@ -28,16 +28,25 @@ CURRENT = "current"
 STALE = "stale"
 
 FactRefKey = tuple[str, date, date]
+FactPeriod = tuple[date, date]
 
 
 @dataclass(frozen=True, slots=True)
 class ChangedEvent:
-    """一条失效事件。``fact_key`` 只在事实变更时有值。"""
+    """一条失效事件。``fact_key``/``fact_period`` 只在事实变更时有值。
+
+    ``fact_period`` 是出问题的那一条事实的期间。失效必须按 **key + 期间** 精确匹配：
+    同一个键在不同期间各有一条事实（年度、季度），改动其中一条不能把读另一条的
+    条件也标成 stale，``changedFactRefs`` 也不能列出没被改的期间。
+    ``fact_period`` 为空只在读历史事件时出现（004 迁移之前写入的行没有期间列），
+    这种事件按「该键的任一期间」保守处理——宁可多标 stale，不可漏标。
+    """
 
     reason: str
     occurred_at: datetime
     policy_id: UUID | None = None
     fact_key: str | None = None
+    fact_period: FactPeriod | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,15 +125,25 @@ def resolve_validity(
             "该政策已发布新版本，本结论基于旧版本，请重新判断。",
         )
 
-    changed_keys = {
-        event.fact_key for event in relevant if event.reason == FACT_CHANGED and event.fact_key
-    }
-    if changed_keys:
+    fact_events = [
+        event for event in relevant if event.reason == FACT_CHANGED and event.fact_key
+    ]
+    if fact_events:
+        # 事件先归约成两个集合再查表：一次 get_run 会有多个政策、每政策数十条条件、
+        # 每条条件若干期间，逐条线性扫事件会退化成 refs × events。
+        exact = {
+            (event.fact_key, *event.fact_period) for event in fact_events if event.fact_period
+        }
+        legacy_keys = {event.fact_key for event in fact_events if event.fact_period is None}
+
+        def hit(ref: FactRefKey) -> bool:
+            return ref in exact or ref[0] in legacy_keys
+
         affected = sorted(
             (
                 criterion_id
                 for criterion_id, refs in criterion_dependencies.items()
-                if any(ref[0] in changed_keys for ref in refs)
+                if any(hit(ref) for ref in refs)
             ),
             key=str,
         )
@@ -132,7 +151,7 @@ def resolve_validity(
             ref
             for criterion_id in affected
             for ref in criterion_dependencies.get(criterion_id, ())
-            if ref[0] in changed_keys
+            if hit(ref)
         ]
         view.add(
             "fact_changed",

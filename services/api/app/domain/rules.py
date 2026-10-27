@@ -124,10 +124,60 @@ class Evaluation:
 
 
 def validate_expression(expression: Any) -> list[Problem]:
-    """校验 AST 的结构与语义；空列表表示可以入库。"""
+    """校验 AST 的结构与语义；空列表表示可以入库。
+
+    ``MAX_NODES`` 是**整棵表达式**的节点总数上限，不只限制某个 and/or 的直接子项
+    数：单层 200 个子项、每层再套 200 个，展开后是天文数字，只按单层限制等于没有
+    限制，所以先整体计数，超限直接拒绝。
+    """
     problems: list[Problem] = []
+    if _exceeds_node_budget(expression):
+        return [
+            Problem(
+                "EXPRESSION_TOO_LARGE",
+                f"整棵表达式的节点总数不能超过 {MAX_NODES} 个。",
+                "",
+            )
+        ]
     _validate_node(expression, problems, path="", depth=0)
     return problems
+
+
+def _sub_expressions(node: Any) -> list[Any]:
+    """一个节点直接包含的子表达式。
+
+    AST 的嵌套形态只在这一处声明：新增带子表达式的算子时改这里，节点预算与引用收集
+    都会跟着生效，不会出现「校验认得了、预算数不到」的漏洞。
+    """
+
+    if not isinstance(node, dict):
+        return []
+    op = node.get("op")
+    if op in ("and", "or"):
+        children = node.get("children")
+        return children if isinstance(children, list) else []
+    if op == "not":
+        child = node.get("child")
+        return [child] if child is not None else []
+    return []
+
+
+def _exceeds_node_budget(root: Any) -> bool:
+    """节点数超出 ``MAX_NODES`` 立即返回，不对超大表达式做完整遍历。
+
+    用显式栈而不是递归：``not`` 串成的长链在递归实现里会先撞上 Python 的递归上限，
+    这里只关心「是否超限」，不需要精确计数。
+    """
+
+    count = 0
+    stack: list[Any] = [root]
+    while stack:
+        node = stack.pop()
+        count += 1
+        if count > MAX_NODES:
+            return True
+        stack.extend(_sub_expressions(node))
+    return False
 
 
 def _validate_node(node: Any, problems: list[Problem], *, path: str, depth: int) -> None:
@@ -164,11 +214,8 @@ def _validate_and(node: dict, problems: list[Problem], *, path: str, depth: int)
             Problem("EXPRESSION_CHILDREN", "and/or 至少需要两个子条件。", _join(path, "children"))
         )
         return
-    if len(children) > MAX_NODES:
-        problems.append(
-            Problem("EXPRESSION_TOO_LARGE", f"单个条件的子节点不能超过 {MAX_NODES} 个。", path)
-        )
-        return
+    # 子项数量不在这里单独限制：:func:`validate_expression` 的整树节点预算已经覆盖，
+    # 单层再设一次上限只会给出「单层没超、整树超了」的误判空间。
     for index, child in enumerate(children):
         _validate_node(child, problems, path=_join(path, "children", index), depth=depth + 1)
 
@@ -328,12 +375,10 @@ def _collect_refs(
     if not isinstance(node, dict):
         return
     op = node.get("op")
-    if op in ("and", "or"):
-        for child in node.get("children") or []:
+    children = _sub_expressions(node)
+    if children:
+        for child in children:
             _collect_refs(child, period=period, out=out)
-        return
-    if op == "not":
-        _collect_refs(node.get("child"), period=period, out=out)
         return
     if op in ("compare", "date", "industry_exclusion"):
         span = _node_period(node, period)
