@@ -4,9 +4,10 @@
 同样多时先问获取成本低的、再问敏感度低的，最后按 key 与日期字典序固定顺序，保证
 同样的输入永远得到同样的顺序（评测时可比对排序理由）。
 
-成本与敏感度是 M3 在标注约定里给的人为档位，不由模型猜。M3 尚未给出前，本模块用
-:data:`DEFAULT_COST` / :data:`DEFAULT_SENSITIVITY` 作为**本地默认**并把取值写进
-``reason``，便于验收时逐条替换。调用方也可以直接传入自己的档位表。
+成本与敏感度是 M3 在标注约定里给的人为档位，不由模型猜。2026-10-28 起两张表的
+取值对齐 M3《条款标注规范》§5（1–5 档），本模块的 :data:`DEFAULT_COST` /
+:data:`DEFAULT_SENSITIVITY` 是**唯一实现口径**：改档位只改这里，并把整数写进
+``reason`` 便于验收比对。调用方也可以直接传入自己的档位表。
 """
 
 from __future__ import annotations
@@ -18,31 +19,46 @@ from typing import Iterable, Mapping, Sequence
 FactRefKey = tuple[str, date, date]
 
 #: 获取成本档位（1 最低）：越小的越先问。
+#: 取值对齐 M3 的《条款标注规范》§5（2026-10-28 定稿，1–5 档）。
 DEFAULT_COST: Mapping[str, int] = {
     "establishedDate": 1,
     "region": 1,
     "industry": 1,
-    "rdActivity": 2,
-    "employeeCountStart": 2,
-    "employeeCountEnd": 2,
+    "rdActivity": 1,
+    "taxableIncome": 2,
+    "rdExpense": 2,
+    "employeeCountStart": 3,
+    "employeeCountEnd": 3,
     "assetsStart": 3,
     "assetsEnd": 3,
-    "taxableIncome": 3,
-    "rdExpense": 3,
+    # 2026-10-28 新增键的档位：§5 尚未逐键给出，以下为 M1 提案，待 M3 确认后同步。
+    "revenue": 2,
+    "equityFinancing": 3,
+    "rdExpenseIncrease": 2,
+    "rdExpenseRevenueRatio": 2,
+    "rdAddDeductionClaimed": 2,
+    "creditRecord": 3,
 }
 
 #: 敏感程度档位（1 最不敏感）：越小的越先问。
 DEFAULT_SENSITIVITY: Mapping[str, int] = {
     "establishedDate": 1,
     "region": 1,
-    "industry": 2,
-    "rdActivity": 2,
-    "employeeCountStart": 3,
-    "employeeCountEnd": 3,
-    "assetsStart": 4,
-    "assetsEnd": 4,
-    "taxableIncome": 4,
-    "rdExpense": 4,
+    "industry": 1,
+    "employeeCountStart": 2,
+    "employeeCountEnd": 2,
+    "assetsStart": 2,
+    "assetsEnd": 2,
+    "taxableIncome": 3,
+    "rdExpense": 3,
+    "rdActivity": 4,
+    # 同上：M1 提案，待 M3 确认。
+    "revenue": 3,
+    "equityFinancing": 4,
+    "rdExpenseIncrease": 3,
+    "rdExpenseRevenueRatio": 3,
+    "rdAddDeductionClaimed": 3,
+    "creditRecord": 4,
 }
 
 PROMPTS: Mapping[str, str] = {
@@ -56,11 +72,18 @@ PROMPTS: Mapping[str, str] = {
     "employeeCountEnd": "请补充该季度期末的从业人数。",
     "assetsStart": "请补充该季度期初的资产总额（元）。",
     "assetsEnd": "请补充该季度期末的资产总额（元）。",
+    "revenue": "请补充该年度的营业收入总额（元）。",
+    "equityFinancing": "请补充近两年新增股权融资总额（元，按合格机构投资者实缴额）。",
+    "rdExpenseIncrease": "请补充本年度较上年度的研发费用增量（元，下降时填负数）。",
+    "rdExpenseRevenueRatio": "请补充研发费用占营业收入的比重（小数，例如 3% 填 0.03）。",
+    "rdAddDeductionClaimed": "请确认近两年是否均已申报享受研发费用加计扣除。",
+    "creditRecord": "请确认是否存在限制申请财政性资金的情形（失信惩戒、超期未验收未退款等）。",
 }
 
-#: 未知键的兜底档位：既不抢先，也不至于永远排不上。
-UNKNOWN_COST = 4
-UNKNOWN_SENSITIVITY = 4
+#: 未知键的兜底档位：1–5 量表下取最差档，既不抢先，也不至于永远排不上。
+#: 与 §5 的档位含义一致：档位越小越先问，未知键垫底。
+UNKNOWN_COST = 5
+UNKNOWN_SENSITIVITY = 5
 
 
 @dataclass(frozen=True, slots=True)

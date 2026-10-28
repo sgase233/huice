@@ -2,8 +2,8 @@
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约
-  version: 1.0.0-rc.2
-  description: 2026-10-23 候选冻结版（rc.2：模型模式 maas 改为 deepseek）。M1 已实现 API-01/04/15/16（健康检查、政策导入、后台草稿列表与详情），其余接口按里程碑实现；M2 复核后定版 1.0.0。restricted 模式需要网关会话；local 模式免 DemoSession，但管理 Bearer 仍必需。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。语义/流程见工作区《惠策协同_功能实现逻辑与接口协作约定.md》。
+  version: 1.0.0-rc.3
+  description: 2026-10-28 候选冻结版（rc.3：事实字典扩 6 键，见 FactKey；新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。M1 已实现 API-01/04/15/16（健康检查、政策导入、后台草稿列表与详情），其余接口按里程碑实现；M2 复核后定版 1.0.0。restricted 模式需要网关会话；local 模式免 DemoSession，但管理 Bearer 仍必需。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。语义/流程见工作区《惠策协同_功能实现逻辑与接口协作约定.md》。
 servers:
 - url: /api/v1
 tags:
@@ -33,7 +33,7 @@ paths:
                 $ref: '#/components/schemas/HealthResponse'
               example:
                 status: ok
-                version: 1.0.0-rc.2
+                version: 1.0.0-rc.3
         default:
           $ref: '#/components/responses/ApiFailure'
         '400': &id004
@@ -954,6 +954,12 @@ components:
       - employeeCountEnd
       - assetsStart
       - assetsEnd
+      - revenue
+      - equityFinancing
+      - rdExpenseIncrease
+      - rdExpenseRevenueRatio
+      - rdAddDeductionClaimed
+      - creditRecord
     FactUnit:
       type: string
       enum:

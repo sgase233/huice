@@ -358,3 +358,82 @@ def test_aggregate_priority(results, expected):
     from app.domain.rules import Evaluation
 
     assert aggregate(Evaluation(result, "", [], []) for result in results) == expected
+
+
+# ------------------------------------------------------ 事实字典扩展（rc.3，2026-10-28）
+
+
+def test_new_keys_are_registered_with_their_units():
+    assert FACT_UNITS["revenue"] == "CNY"
+    assert FACT_UNITS["equityFinancing"] == "CNY"
+    assert FACT_UNITS["rdExpenseIncrease"] == "CNY"
+    assert FACT_UNITS["rdExpenseRevenueRatio"] == "ratio"
+    assert FACT_UNITS["rdAddDeductionClaimed"] == "boolean"
+    assert FACT_UNITS["creditRecord"] == "boolean"
+
+
+@pytest.mark.parametrize(
+    "value, code",
+    [("3%", "EXPRESSION_VALUE"), ("-0.1", "EXPRESSION_VALUE"), ("", "EXPRESSION_VALUE")],
+)
+def test_ratio_condition_rejects_non_decimal_and_negative_values(value, code):
+    """比例只接受非负十进制字符串：`3%` 这种写法在这里拦下，不让它进库。"""
+    problem_codes = [item.code for item in validate_expression(compare("rdExpenseRevenueRatio", "gte", value))]
+    assert code in problem_codes
+
+
+def test_ratio_condition_rejects_a_wrong_unit():
+    expression = {**compare("rdExpenseRevenueRatio", "gte", "0.03"), "unit": "CNY"}
+    assert "EXPRESSION_UNIT" in [item.code for item in validate_expression(expression)]
+
+
+def test_ratio_is_compared_numerically():
+    expression = compare("rdExpenseRevenueRatio", "gte", "0.03")
+    assert validate_expression(expression) == []
+    assert (
+        evaluate_expression(
+            expression, table(fact("rdExpenseRevenueRatio", Decimal("0.035"))), period=YEAR
+        ).result
+        == SATISFIED
+    )
+    assert (
+        evaluate_expression(
+            expression, table(fact("rdExpenseRevenueRatio", Decimal("0.02"))), period=YEAR
+        ).result
+        == NOT_SATISFIED
+    )
+
+
+def test_a_negative_expense_increment_is_allowed_and_compared():
+    """``rdExpenseIncrease`` 是「本年减上年」的增量，下降时为负，校验不能拦。"""
+    expression = compare("rdExpenseIncrease", "gte", "2000000")
+    assert validate_expression(expression) == []
+    outcome = evaluate_expression(
+        expression, table(fact("rdExpenseIncrease", Decimal("-500000"))), period=YEAR
+    )
+    assert outcome.result == NOT_SATISFIED
+
+
+@pytest.mark.parametrize("key", ["rdAddDeductionClaimed", "creditRecord"])
+def test_new_boolean_keys_only_accept_booleans(key):
+    assert validate_expression(compare(key, "eq", True)) == []
+    assert "EXPRESSION_VALUE" in [
+        item.code for item in validate_expression(compare(key, "eq", "true"))
+    ]
+    assert "EXPRESSION_COMPARATOR" in [
+        item.code for item in validate_expression(compare(key, "gte", True))
+    ]
+    assert (
+        evaluate_expression(compare(key, "eq", True), table(fact(key, False)), period=YEAR).result
+        == NOT_SATISFIED
+    )
+
+
+def test_an_unknown_key_is_still_rejected():
+    assert "EXPRESSION_FACT_KEY" in [
+        item.code
+        for item in validate_expression(
+            {"op": "compare", "factKey": "invented", "period": "assessment", "comparator": "gte",
+             "value": "1", "unit": "CNY"}
+        )
+    ]

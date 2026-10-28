@@ -236,6 +236,12 @@ FactKey = Literal[
     "employeeCountEnd",
     "assetsStart",
     "assetsEnd",
+    "revenue",
+    "equityFinancing",
+    "rdExpenseIncrease",
+    "rdExpenseRevenueRatio",
+    "rdAddDeductionClaimed",
+    "creditRecord",
 ]
 FactUnit = Literal["code", "date", "CNY", "boolean", "person", "ratio"]
 FactSource = Literal["user_input", "synthetic_material"]

@@ -33,15 +33,20 @@ def test_more_affected_policies_win_over_cheaper_facts():
 
 
 def test_tie_on_reach_breaks_by_cost_then_sensitivity():
-    # 同为 1 项待定政策：establishedDate 成本 1 低于 taxableIncome 的 3。
+    # 同为 1 项待定政策：establishedDate 成本 1 低于 taxableIncome 的 2（§5 1–5 档）。
     cost_first = choose_next_question([pending("a", INCOME, ("establishedDate", *YEAR))])
     assert cost_first is not None
     assert cost_first.fact_ref[0] == "establishedDate"
 
-    # 同为 1 项、成本都为 1：industry 敏感度 2 高于 region 的 1，先问 region。
+    # 同为 1 项、成本与敏感度都为 1（§5）：档位打平后按 key 字典序，先问 industry。
     sense_first = choose_next_question([pending("a", INDUSTRY, REGION)])
     assert sense_first is not None
-    assert sense_first.fact_ref == REGION
+    assert sense_first.fact_ref == INDUSTRY
+
+    # 敏感度仍有区分力时以它为准：两者成本相同，敏感度 2 的键让位于敏感度 1 的键。
+    sense_second = choose_next_question([pending("a", ("employeeCountStart", *Q1), REGION)])
+    assert sense_second is not None
+    assert sense_second.fact_ref == REGION
 
 
 def test_final_tiebreak_is_key_then_period():

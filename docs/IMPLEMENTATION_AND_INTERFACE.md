@@ -74,6 +74,12 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 | `rdActivity` | JSON boolean；`boolean` | 自然年度 |
 | `employeeCountStart` / `employeeCountEnd` | 非负十进制字符串；`person` | 自然季度起止日期 |
 | `assetsStart` / `assetsEnd` | 非负十进制字符串，金额最多 2 位小数；`CNY` | 自然季度起止日期 |
+| `revenue` / `equityFinancing` | 十进制字符串，金额最多 2 位小数；`CNY` | 自然年度（`equityFinancing` 为近两年新增股权融资合计） |
+| `rdExpenseIncrease` | 十进制字符串；`CNY`；**允许负数**（本年减上年的增量，下降时填负值） | 自然年度 |
+| `rdExpenseRevenueRatio` | 非负十进制小数；`ratio`（3% 存 `0.03`） | 自然年度 |
+| `rdAddDeductionClaimed` / `creditRecord` | JSON boolean；`boolean` | 自然年度 |
+
+> **2026-10-28（契约 `1.0.0-rc.3`）**：事实字典由 10 键扩到 16 键，`FactUnit` 补 `ratio`，用于地方通知的研发投入补助/专精特新条款。**增量与占比按「预计算事实」处理**——由标注方给出算好的数值，规则引擎只做 `compare`，不新增 `delta`/`ratio` 算子。三处口径必须同步：`contracts/openapi.yaml` 的 `FactKey`、`app/schemas.py` 的 `FactKey` 字面量、`app/domain/rules.py` 的 `FACT_UNITS`；库里由 `infra/sql/005_fact_dictionary_extension.sql` 重建 `enterprise_fact_key_check`、`enterprise_fact_unit_check`、`enterprise_fact_key_unit` 三个约束。补问档位（§2.5）里这 6 个键的取值是 M1 提案，待 M3 在《条款标注规范》§5 逐键确认。
 
 所有事实 `value=null` 均表示未知；省略事实等价于尚未提供。空字符串、字符串 `"null"`、NaN 均拒绝。数值的通用词法允许最多 6 位小数，按上述字段进一步校验；`"0"` 是有效已知值。`period={startDate,endDate}` 使用日期，包含两端；开始不能晚于结束。同一 key 不同年度是不同事实，不互相覆盖。
 

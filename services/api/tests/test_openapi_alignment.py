@@ -85,4 +85,4 @@ def test_unimplemented_endpoints_are_not_served(schema):
 
 
 def test_contract_version_is_release_candidate(contract):
-    assert contract["info"]["version"] == "1.0.0-rc.2"
+    assert contract["info"]["version"] == "1.0.0-rc.3"

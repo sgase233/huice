@@ -37,13 +37,32 @@ FACT_UNITS: Mapping[str, str] = {
     "employeeCountStart": "person",
     "employeeCountEnd": "person",
     "rdActivity": "boolean",
+    # 2026-10-28 扩展（rc.3）：地方通知用的事实。增量与占比按「预计算事实」处理，
+    # 由标注方给出算好的数值，规则引擎只做 compare，不新增 delta / ratio 算子。
+    "revenue": "CNY",
+    "equityFinancing": "CNY",
+    "rdExpenseIncrease": "CNY",
+    "rdExpenseRevenueRatio": "ratio",
+    "rdAddDeductionClaimed": "boolean",
+    "creditRecord": "boolean",
 }
 
 NUMERIC_KEYS = frozenset(
-    {"taxableIncome", "rdExpense", "assetsStart", "assetsEnd", "employeeCountStart", "employeeCountEnd"}
+    {
+        "taxableIncome",
+        "rdExpense",
+        "assetsStart",
+        "assetsEnd",
+        "employeeCountStart",
+        "employeeCountEnd",
+        "revenue",
+        "equityFinancing",
+        "rdExpenseIncrease",
+        "rdExpenseRevenueRatio",
+    }
 )
 CODE_KEYS = frozenset({"region", "industry"})
-BOOLEAN_KEYS = frozenset({"rdActivity"})
+BOOLEAN_KEYS = frozenset({"rdActivity", "rdAddDeductionClaimed", "creditRecord"})
 
 QUARTERLY_METRICS: Mapping[str, tuple[str, str, str]] = {
     # metric -> (起始键, 结束键, 单位)
@@ -270,12 +289,15 @@ def _validate_compare(node: dict, problems: list[Problem], *, path: str, depth: 
         return
 
     value = node.get("value")
-    if expected == "CNY" or expected == "person":
+    if expected in ("CNY", "person", "ratio"):
         if not isinstance(value, str) or not _DECIMAL_RE.match(value):
             problems.append(Problem("EXPRESSION_VALUE", "数值条件的取值必须是十进制字符串。", _join(path, "value")))
             return
-        if unit == "person" and value.startswith("-"):
+        # 金额键允许负数：``rdExpenseIncrease`` 是「本年减上年」的增量，下降时为负。
+        if expected == "person" and value.startswith("-"):
             problems.append(Problem("EXPRESSION_VALUE", "人数不能为负数。", _join(path, "value")))
+        elif expected == "ratio" and value.startswith("-"):
+            problems.append(Problem("EXPRESSION_VALUE", "比例不能为负数。", _join(path, "value")))
 
     elif expected == "code":
         if not isinstance(value, str) or not value.strip():
@@ -487,7 +509,7 @@ def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]
 
     comparator = str(node.get("comparator"))
     unit = FACT_UNITS.get(key)
-    if unit in ("CNY", "person"):
+    if unit in ("CNY", "person", "ratio"):
         left = fact.value if isinstance(fact.value, Decimal) else _to_decimal(fact.value)
         right = _to_decimal(node.get("value"))
         if left is None or right is None:

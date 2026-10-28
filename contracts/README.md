@@ -1,6 +1,6 @@
 # 接口契约
 
-`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.2`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
+`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.3`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
@@ -25,7 +25,7 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 | API-15 `listAdminPolicies` | `GET /admin/policies` | 已实现；`{items,nextCursor}`，无 ETag |
 | API-16 `getAdminPolicy` | `GET /admin/policies/{policyId}` | 已实现；200 + ETag，缺省取最新导入版本 |
 
-`contracts/openapi.yaml` 本轮**未改动**（仍为 `1.0.0-rc.2`）；后端实现与契约的 operationId、tags、security 由 `services/api/tests/test_openapi_alignment.py` 逐项比对。契约定版 `1.0.0` 仍需 M2 复核。
+后端实现与契约的 operationId、tags、security 由 `services/api/tests/test_openapi_alignment.py` 逐项比对。契约定版 `1.0.0` 仍需 M2 复核。
 
 ### 本轮契约变更（待 M2 复核）
 
@@ -34,6 +34,7 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 3. `HealthResponse` 示例的 `version` 同步为 `1.0.0-rc.2`。
 4. API-04 的 `files` 补充说明：第一个文件是正文（`kind=body`），其余为附件；`files` 仍为可选，不传时 `sources: []`。
 5. rc.2（2026-10-23，队长决定改用 DeepSeek）：`ModelUsage.mode` 与 `PolicyAssessment.explanationMode` 的枚举值 `maas` 改为 `deepseek`，其余取值不变。**这是一处破坏性变更**，`apps/web/src/api/types.ts` 已重新生成（仅这两行），请 M2 复核；若前端已按 `maas` 写过字面量，需同步改为 `deepseek`。
+6. rc.3（2026-10-28，按 M3 标注侧需求）：`FactKey` 由 10 键扩到 16 键——新增 `revenue`、`equityFinancing`、`rdExpenseIncrease`、`rdExpenseRevenueRatio`、`rdAddDeductionClaimed`、`creditRecord`，地方通知的研发投入补助/专精特新条款要用的六类事实；`FactUnit` 补 `ratio`（非负十进制小数，3% 存 `0.03`）。**只放宽枚举，不改任何既有字段与端点**，`apps/web/src/api/types.ts` 已重新生成（`FactKey` 与 `FactUnit` 两处联合类型），请 M2 复核。增量与占比按「预计算事实」处理：由标注方给出算好的数值，引擎只做 `compare`，不新增算子。配套迁移 `infra/sql/005_fact_dictionary_extension.sql` 重建 `enterprise_fact` 的三个约束。
 
 ## 当前实现产出的错误码
 

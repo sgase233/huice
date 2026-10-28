@@ -267,7 +267,7 @@ def test_unknown_fact_key_in_path_is_400(client):
     created = create(client).json()
 
     response = patch(
-        client, created["id"], "revenue", income_update(), if_match=f'"{created["factVersion"]}"'
+        client, created["id"], "turnover", income_update(), if_match=f'"{created["factVersion"]}"'
     )
 
     assert response.status_code == 400
