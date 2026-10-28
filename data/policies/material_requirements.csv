@@ -1,0 +1,13 @@
+policy_type,material_id,title,required,condition_desc,description,proves_fact_keys,applies_to_policy_ids,source_basis,review_status
+tax,TAX-01,营业执照（登记地址、经营范围、成立日期）,必交,,用于判断企业所属地区、行业（是否属排除行业）与成立日期,region;industry;establishedDate,,企业登记信息,待双人复核
+tax,TAX-02,企业所得税年度纳税申报表（A类）,条件交,政策含应纳税所得额阈值判断（小型微利不超过300万元）,主表「应纳税所得额」行次，用于判断 taxableIncome 是否满足阈值,taxableIncome,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号 第五条,待双人复核
+tax,TAX-03,研发费用加计扣除优惠明细表及归集辅助账,条件交,申请研发费用加计扣除（需证明研发费用发生额与研发活动）,证明研发费用发生额与存在研发活动,rdExpense;rdActivity,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号；财税〔2015〕119号,待双人复核
+tax,TAX-04,研发项目立项文件与实施记录,条件交,需证明存在研发活动,证明 rdActivity=true,rdActivity,CN-TAX-RD-2023-007,财税〔2015〕119号,待双人复核
+tax,TAX-05,各季度资产负债表（资产总额）,条件交,政策含资产总额季度平均阈值判断（小型微利不超过5000万元）,季度期初与期末资产总额，用于 quarterly_average,assetsStart;assetsEnd,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号 第五条,待双人复核
+tax,TAX-06,各季度从业人数统计（工资表、社保缴纳记录、劳务派遣协议）,条件交,政策含从业人数季度平均阈值判断（小型微利不超过300人）,季度期初与期末从业人数，用于 quarterly_average,employeeCountStart;employeeCountEnd,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号 第五条,待双人复核
+grant,GRANT-01,营业执照（登记地址、经营范围、成立日期）,必交,,判断企业所属地区、行业与成立日期,region;industry;establishedDate,,各资金项目申报指南,待双人复核
+grant,GRANT-02,申请书或申报表（按申报指南模板，经法定代表人签章）,必交,,企业基本信息与申报事项，不直接对应单一事实键,,,各资金项目申报指南,待双人复核
+grant,GRANT-03,上年度财务审计报告或财务报表,条件交,政策含营收、资产、研发费用等财务门槛,证明财务类事实,taxableIncome;rdExpense;assetsStart;assetsEnd,SZ-GRANT-SRDI-2025;SZ-GRANT-RD-SUBSIDY-2026,深工信规〔2025〕8号（2024年度财务审计报告）；深科创规〔2026〕1号,待双人复核
+grant,GRANT-04,研发费用专项归集表或研发投入专项审计报告,条件交,政策含研发费用门槛,证明研发费用发生额,rdExpense,SZ-GRANT-SRDI-2025;SZ-GRANT-RD-SUBSIDY-2026,深工信规〔2025〕8号；深科创规〔2026〕1号,待双人复核
+grant,GRANT-05,社保缴纳证明、职工名册或从业人数统计,条件交,政策含从业人数门槛,证明从业人数,employeeCountStart;employeeCountEnd,,各资金项目申报指南,待双人复核
+grant,GRANT-06,信用报告或诚信承诺书,条件交,政策含诚信要求,信用与合规承诺，无对应事实键,,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,待双人复核
