@@ -185,3 +185,25 @@ def test_model_prompt_lists_every_unit_including_ratio():
     system = captured["system"]
     assert "CNY/person/code/date/boolean/ratio" in system
     assert "rdExpenseRevenueRatio" in system
+
+
+def test_model_prompt_lists_every_fact_key():
+    """抽取提示词里的键白名单必须跟 ``FACT_UNITS`` 同步。
+
+    漏一个键不会报错：模型照样抽取，但写回时被 ``FactKey`` 字面量拒掉，表现为
+    一条「抽取到了却存不进去」的条款，排查时很容易归咎于模型。
+    """
+
+    from app.domain.rules import FACT_UNITS
+
+    captured: dict[str, str] = {}
+
+    class Capturing(FakeLlm):
+        def complete(self, *, system, user, max_tokens=1024):
+            captured["system"] = system
+            return super().complete(system=system, user=user, max_tokens=max_tokens)
+
+    extract("年应纳税所得额不超过300万元。", llm=Capturing("[]"))
+
+    missing = sorted(key for key in FACT_UNITS if key not in captured["system"].replace("\n", ""))
+    assert missing == [], f"抽取提示词缺少这些键：{missing}"

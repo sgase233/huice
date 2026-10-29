@@ -390,6 +390,24 @@ def local_span(quote: str) -> SourceSpanCheck:
     return span(quote, source_id=LOCAL.id, section="第八条")
 
 
+#: 专精特新一类条款的原文：同一类「时长型」表述的四种写法，外加一句只有**期间**词的
+#: 反例（「上年度」），用来锁住「期间词不算时长」这条边界。
+MARKET_TEXT = (
+    "第九条 企业须具有独立法人资格，并满足下列条件之一："
+    "（一）从事该细分市场满3年（含）以上；"
+    "（二）连续三年从事本细分市场业务；"
+    "（三）在本细分市场经营不少于5年；"
+    "（四）近10年一直从事该细分市场业务。\n"
+    "第十条 上年度开始从事该细分市场业务的企业不适用前述年限要求。"
+)
+MARKET = SourceText(id=uuid4(), source_url=SOURCE_URL, text=MARKET_TEXT)
+MARKET_SOURCES = {MARKET.id: MARKET}
+
+
+def market_span(quote: str) -> SourceSpanCheck:
+    return span(quote, source_id=MARKET.id, section="第九条")
+
+
 @pytest.mark.parametrize(
     ("quote", "expected"),
     [
@@ -514,6 +532,57 @@ def test_a_date_without_any_period_phrase_is_still_reported():
     verdict = validate_criterion(
         criterion(local_span("上年度研发费用达200万元（含）以上"), expression=expression),
         LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_DATE_NOT_FOUND" in codes(verdict)
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        "从事该细分市场满3年（含）以上",
+        "连续三年从事本细分市场业务",
+        "在本细分市场经营不少于5年",
+        "近10年一直从事该细分市场业务",
+    ],
+)
+def test_relative_period_wording_is_recognised_in_any_number(quote):
+    """rc.4 起 ``specificMarketSince`` 是日期键，而原文几乎只会写年数。
+
+    逐条枚举的写法表只能覆盖到「满两年」「近三年」这种恰好出现过的数字，换个数字
+    （「满3年」「近10年」）就漏；这里锁住数字/汉字的通配形式。
+    """
+
+    expression = {
+        "op": "date",
+        "factKey": "specificMarketSince",
+        "period": "assessment",
+        "comparator": "lte",
+        "value": "2023-12-31",
+    }
+    verdict = validate_criterion(
+        criterion(market_span(quote), expression=expression),
+        MARKET_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_period_word_is_not_a_duration_word():
+    """「上年度」是期间不是时长：放宽成通配后仍不能拿它当绝对日期的证据。"""
+
+    expression = {
+        "op": "date",
+        "factKey": "specificMarketSince",
+        "period": "assessment",
+        "comparator": "lte",
+        "value": "2023-12-31",
+    }
+    verdict = validate_criterion(
+        criterion(market_span("上年度开始从事该细分市场业务"), expression=expression),
+        MARKET_SOURCES,
         version=VERSION,
     )
 

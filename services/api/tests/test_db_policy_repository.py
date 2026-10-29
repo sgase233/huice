@@ -296,3 +296,55 @@ def test_assessment_run_stores_period_and_supersedes(database_url_schema):
             (second_run,),
         )
         conn.commit()
+
+
+def test_rc4_facts_only_accept_their_own_unit(database_url_schema):
+    """006 迁移之后，``specificMarketSince`` 只能配 ``date``、``independentLegalEntity`` 只能配 ``boolean``。
+
+    迁移把 ``enterprise_fact_key_check`` 放宽到 18 键的同时重建了配对约束；这里正反各测一次，
+    防止「键加了、配对忘了」——那种情况下错配会静默入库，直到表达式按单位比较时才报
+    ``CONFLICT``，看起来像数据问题。
+    """
+
+    enterprise_id = uuid4()
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "INSERT INTO enterprise (id, name_synthetic, period_start, period_end) "
+            "VALUES (%s, %s, %s, %s)",
+            (enterprise_id, "合成演示企业", "2026-01-01", "2026-12-31"),
+        )
+        conn.execute(
+            "INSERT INTO enterprise_fact "
+            "(enterprise_id, key, period_start, period_end, unit, source, value_date) "
+            "VALUES (%s, 'specificMarketSince', '2026-01-01', '2026-12-31', 'date', "
+            "'user_input', '2020-05-01')",
+            (enterprise_id,),
+        )
+        conn.execute(
+            "INSERT INTO enterprise_fact "
+            "(enterprise_id, key, period_start, period_end, unit, source, value_boolean) "
+            "VALUES (%s, 'independentLegalEntity', '2026-01-01', '2026-12-31', 'boolean', "
+            "'user_input', true)",
+            (enterprise_id,),
+        )
+        conn.commit()
+
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO enterprise_fact "
+                "(enterprise_id, key, period_start, period_end, unit, source, value_amount) "
+                "VALUES (%s, 'specificMarketSince', '2025-01-01', '2025-12-31', 'CNY', "
+                "'user_input', 3)",
+                (enterprise_id,),
+            )
+        conn.rollback()
+
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute(
+                "INSERT INTO enterprise_fact "
+                "(enterprise_id, key, period_start, period_end, unit, source, value_date) "
+                "VALUES (%s, 'independentLegalEntity', '2025-01-01', '2025-12-31', 'date', "
+                "'user_input', '2020-05-01')",
+                (enterprise_id,),
+            )
+        conn.rollback()

@@ -518,11 +518,17 @@ def _require_date(value: Any, criterion: CriterionInput, verdict: CriterionVerdi
     # 原文用相对期间表述时（「注册成立时间在两个会计年度（含）以上」「近两年均已申报」），
     # 绝对日期是我们为了可复现而换算出来的固定值，原文里当然找不到。此时以相对表述为
     # 证据，换算依据由标注方记在仲裁说明里，不由校验器反推。
-    if any(cue in quote for cue in _RELATIVE_PERIOD_CUES for quote in quotes):
+    if any(_has_relative_period(quote) for quote in quotes):
         return
     verdict.findings.append(
         Finding("CITATION_DATE_NOT_FOUND", f"引文中找不到日期 {text}，无法支持该条件。", criterion.spans)
     )
+
+
+def _has_relative_period(quote: str) -> bool:
+    if _RELATIVE_PERIOD_RE.search(quote):
+        return True
+    return any(cue in quote for cue in _RELATIVE_PERIOD_CUES)
 
 
 def _require_cue(
@@ -589,6 +595,16 @@ _RELATIVE_PERIOD_CUES = (
     "近3年",
     "近五年",
     "近5年",
+)
+#: 上面是逐条枚举的固定写法，这里是同一类表述的数字/汉字通配形式——「满3年」
+#: 「连续三年」「从事该细分市场不少于5年」「近10年」都会命中。之所以要放宽：
+#: rc.4 的 ``specificMarketSince`` 记的是日期，而原文几乎只会写年数；枚举式清单
+#: 只能覆盖到政策原文恰好用了哪几个写法，换个数字就漏。
+#:
+#: 前缀词是判定关键——必须是表示时长的词（满/连续/近/超过/不少于…），
+#: 「上年度」「本年度」这类**期间**词不在其中，因此不会被误当作时长证据。
+_RELATIVE_PERIOD_RE = re.compile(
+    r"(?:满|连续|近|超过|不少于|不低于|至少)\s*[一二三四五六七八九十两0-9]+\s*个?\s*(?:会计)?年(?:度)?"
 )
 
 

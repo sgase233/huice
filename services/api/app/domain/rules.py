@@ -45,6 +45,11 @@ FACT_UNITS: Mapping[str, str] = {
     "rdExpenseRevenueRatio": "ratio",
     "rdAddDeductionClaimed": "boolean",
     "creditRecord": "boolean",
+    # 2026-10-29 扩展（rc.4）：细分市场条款用的事实。年限是相对量，同一份企业快照
+    # 在不同年份重算会得到不同结论、不可复现，因此记的是「开始从事之日」这个日期，
+    # 判断交给 date 算子；与 establishedDate 的口径一致。法人资格是企业自述的布尔值。
+    "specificMarketSince": "date",
+    "independentLegalEntity": "boolean",
 }
 
 NUMERIC_KEYS = frozenset(
@@ -62,7 +67,11 @@ NUMERIC_KEYS = frozenset(
     }
 )
 CODE_KEYS = frozenset({"region", "industry"})
-BOOLEAN_KEYS = frozenset({"rdActivity", "rdAddDeductionClaimed", "creditRecord"})
+BOOLEAN_KEYS = frozenset(
+    {"rdActivity", "rdAddDeductionClaimed", "creditRecord", "independentLegalEntity"}
+)
+#: 日期类事实：只能由 ``date`` 算子比较，不能写进 ``compare``。
+DATE_KEYS = frozenset({"establishedDate", "specificMarketSince"})
 
 QUARTERLY_METRICS: Mapping[str, tuple[str, str, str]] = {
     # metric -> (起始键, 结束键, 单位)
@@ -320,9 +329,13 @@ def _validate_compare(node: dict, problems: list[Problem], *, path: str, depth: 
 
 
 def _validate_date_node(node: dict, problems: list[Problem], *, path: str, depth: int) -> None:
-    if node.get("factKey") != "establishedDate":
+    if node.get("factKey") not in DATE_KEYS:
         problems.append(
-            Problem("EXPRESSION_FACT_KEY", "date 算子只接受 establishedDate。", _join(path, "factKey"))
+            Problem(
+                "EXPRESSION_FACT_KEY",
+                "date 算子只接受日期类事实（establishedDate / specificMarketSince）。",
+                _join(path, "factKey"),
+            )
         )
     _validate_period(node, problems, path=path)
     if node.get("comparator") not in COMPARATORS:
@@ -538,16 +551,22 @@ def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]
     return Evaluation(CONFLICT, f"事实 {key} 的单位无法比较。", [ref])
 
 
+#: 日期类事实的补问/理由文案用的中文名。
+_DATE_LABELS = {"establishedDate": "成立日期", "specificMarketSince": "细分市场起始日期"}
+
+
 def _evaluate_date(node: dict, facts: FactTable, *, period: tuple[date, date]) -> Evaluation:
+    key = str(node.get("factKey"))
+    label = _DATE_LABELS.get(key, key)
     span = _node_period(node, period)
     if span is None:
         return Evaluation(CONFLICT, "条件缺少可用的期间。", [])
-    ref = ("establishedDate", span[0], span[1])
-    fact = facts.get("establishedDate", *span)
+    ref = (key, span[0], span[1])
+    fact = facts.get(key, *span)
     if fact is None or not fact.known:
         return Evaluation(
             INSUFFICIENT,
-            "缺少成立日期，无法判断时间条件。",
+            f"缺少{label}，无法判断时间条件。",
             [ref],
             [ref],
         )
@@ -557,7 +576,7 @@ def _evaluate_date(node: dict, facts: FactTable, *, period: tuple[date, date]) -
         return Evaluation(CONFLICT, "日期取值无法解析。", [ref])
     comparator = str(node.get("comparator"))
     ok = _compare_scalar(left.isoformat(), right.isoformat(), comparator)
-    reason = f"成立日期 {left.isoformat()} {'满足' if ok else '不满足'} {comparator} {right.isoformat()}。"
+    reason = f"{label} {left.isoformat()} {'满足' if ok else '不满足'} {comparator} {right.isoformat()}。"
     return Evaluation(SATISFIED if ok else NOT_SATISFIED, reason, [ref], [])
 
 

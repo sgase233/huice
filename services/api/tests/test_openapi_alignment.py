@@ -85,4 +85,34 @@ def test_unimplemented_endpoints_are_not_served(schema):
 
 
 def test_contract_version_is_release_candidate(contract):
-    assert contract["info"]["version"] == "1.0.0-rc.3"
+    assert contract["info"]["version"] == "1.0.0-rc.4"
+
+
+# --------------------------------------------------- 事实字典的三处同步（rc.4 起）
+
+
+def test_fact_key_enum_matches_the_server_dictionary(contract):
+    """契约枚举、``schemas.FactKey`` 字面量、``rules.FACT_UNITS`` 是同一份字典的三份拷贝。
+
+    三份里有任何一份漏键，都会表现成「契约看着支持、接口 422」或「接口能存、表达式
+    校验拒绝」这种两头不一致，而不是一个显眼的报错。这里锁死三者相等。
+    """
+
+    from typing import get_args
+
+    from app.domain.rules import FACT_UNITS
+    from app.schemas import FactKey
+
+    declared = contract["components"]["schemas"]["FactKey"]["enum"]
+    assert set(get_args(FactKey)) == set(declared) == set(FACT_UNITS)
+
+
+def test_fact_unit_enum_matches_the_server_dictionary(contract):
+    from typing import get_args
+
+    from app.domain.rules import FACT_UNITS
+    from app.schemas import FactUnit
+
+    declared = contract["components"]["schemas"]["FactUnit"]["enum"]
+    assert set(get_args(FactUnit)) == set(declared)
+    assert set(FACT_UNITS.values()) <= set(declared)

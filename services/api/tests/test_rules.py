@@ -431,6 +431,85 @@ def test_new_boolean_keys_only_accept_booleans(key):
     )
 
 
+# ------------------------------------------------------ 事实字典扩展（rc.4，2026-10-29）
+
+
+def date_node(key: str, comparator: str, value: str) -> dict:
+    return {
+        "op": "date",
+        "factKey": key,
+        "period": "assessment",
+        "comparator": comparator,
+        "value": value,
+    }
+
+
+def test_rc4_keys_are_registered_with_their_units():
+    assert FACT_UNITS["specificMarketSince"] == "date"
+    assert FACT_UNITS["independentLegalEntity"] == "boolean"
+
+
+@pytest.mark.parametrize("key", ["establishedDate", "specificMarketSince"])
+def test_the_date_operator_accepts_every_date_key(key):
+    """rc.4 前 ``date`` 算子写死只认 establishedDate，细分市场条款无法表达。"""
+    assert validate_expression(date_node(key, "lte", "2023-12-31")) == []
+
+
+def test_the_date_operator_still_rejects_a_non_date_key():
+    codes = [item.code for item in validate_expression(date_node("revenue", "lte", "2023-12-31"))]
+    assert "EXPRESSION_FACT_KEY" in codes
+
+
+def test_a_date_key_cannot_be_used_in_compare():
+    codes = [
+        item.code
+        for item in validate_expression(compare("specificMarketSince", "lte", "2023-12-31"))
+    ]
+    assert "EXPRESSION_OP" in codes
+
+
+def test_specific_market_since_is_evaluated_against_its_own_fact():
+    expression = date_node("specificMarketSince", "lte", "2023-12-31")
+    outcome = evaluate_expression(
+        expression, table(fact("specificMarketSince", date(2020, 5, 1))), period=YEAR
+    )
+    assert outcome.result == SATISFIED
+    assert "细分市场起始日期" in outcome.reason
+
+
+def test_a_missing_date_is_reported_under_its_own_name():
+    """两个日期键共用 ``_evaluate_date``，缺事实时的文案不能一律写成「缺少成立日期」。"""
+    missing_market = evaluate_expression(
+        date_node("specificMarketSince", "lte", "2023-12-31"), table(), period=YEAR
+    )
+    assert missing_market.result == INSUFFICIENT
+    assert "细分市场起始日期" in missing_market.reason
+
+    missing_established = evaluate_expression(
+        date_node("establishedDate", "lte", "2023-12-31"), table(), period=YEAR
+    )
+    assert missing_established.result == INSUFFICIENT
+    assert "成立日期" in missing_established.reason
+
+
+def test_independent_legal_entity_is_a_boolean_key():
+    assert validate_expression(compare("independentLegalEntity", "eq", True)) == []
+    assert "EXPRESSION_VALUE" in [
+        item.code for item in validate_expression(compare("independentLegalEntity", "eq", "true"))
+    ]
+    assert "EXPRESSION_COMPARATOR" in [
+        item.code for item in validate_expression(compare("independentLegalEntity", "gte", True))
+    ]
+    assert (
+        evaluate_expression(
+            compare("independentLegalEntity", "eq", True),
+            table(fact("independentLegalEntity", False)),
+            period=YEAR,
+        ).result
+        == NOT_SATISFIED
+    )
+
+
 def test_an_unknown_key_is_still_rejected():
     assert "EXPRESSION_FACT_KEY" in [
         item.code

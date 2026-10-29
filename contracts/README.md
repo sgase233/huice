@@ -1,6 +1,6 @@
 # 接口契约
 
-`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.3`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
+`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.4`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
@@ -36,6 +36,7 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 5. rc.2（2026-10-23，队长决定改用 DeepSeek）：`ModelUsage.mode` 与 `PolicyAssessment.explanationMode` 的枚举值 `maas` 改为 `deepseek`，其余取值不变。**这是一处破坏性变更**，`apps/web/src/api/types.ts` 已重新生成（仅这两行），请 M2 复核；若前端已按 `maas` 写过字面量，需同步改为 `deepseek`。
 6. rc.3（2026-10-28，按 M3 标注侧需求）：`FactKey` 由 10 键扩到 16 键——新增 `revenue`、`equityFinancing`、`rdExpenseIncrease`、`rdExpenseRevenueRatio`、`rdAddDeductionClaimed`、`creditRecord`，地方通知的研发投入补助/专精特新条款要用的六类事实；`FactUnit` 补 `ratio`（非负十进制小数，3% 存 `0.03`）。**只放宽枚举，不改任何既有字段与端点**，`apps/web/src/api/types.ts` 已重新生成（`FactKey` 与 `FactUnit` 两处联合类型），请 M2 复核。增量与占比按「预计算事实」处理：由标注方给出算好的数值，引擎只做 `compare`，不新增算子。配套迁移 `infra/sql/005_fact_dictionary_extension.sql` 重建 `enterprise_fact` 的三个约束。
 7. rc.3 内追加（2026-10-29，仅描述）：API-02 的 `region` 参数补语义说明——按区划码筛同时包含全国性政策（全国性政策记 `region=CN`），传 `CN` 只返回全国性政策。**只改描述文字，不改 schema**，`apps/web/src/api/types.ts` 不变（`generate_types.py --check` 通过）。同步落在 `services/api/app/integrations/storage.py` 的 `NATIONAL_REGION_CODE` 与同一条过滤口径。
+8. rc.4（2026-10-29，按 #9 的三键讨论结论）：`FactKey` 由 16 键扩到 18 键——新增 `specificMarketSince`（`date`，企业**开始从事该细分市场之日**）与 `independentLegalEntity`（`boolean`，`true` = 具有独立法人资格），专精特新的细分市场年限与法人资格条款要用。**只放宽枚举，`FactUnit` 与任何既有字段、端点都不动**；**`apps/web/src/api/types.ts` 未由 M1 改动**（前端目录归 M2），需 M2 执行 `python contracts/generate_types.py` 重新生成（差异只有 `FactKey` 一行）；在那之前 `generate_types.py --check` 会报 `Frontend types differ`，`npm run build` 也会因为新键没有映射而失败。两个设计取舍：①年限做成**日期**而不是数值——年数是相对量，同一份企业快照换个年份重算就得出另一结论、不可复现，`date` 算子按绝对日期判断；②法人资格键名从提案的 `legalPersonStatus` 改为 `independentLegalEntity`，原名看不出 true 指「合法」还是「具备法人资格」。另有行为变更：`date` 算子由「只认 `establishedDate`」改为认 `rules.DATE_KEYS`（白名单）。配套迁移 `infra/sql/006_fact_dictionary_extension_rc4.sql`。被否决的提案：`restrictedIndustry`（布尔）——标注规范已规定「不属于限制禁止行业」用 `industry_exclusion` 表达，加布尔键会与自身口径冲突，未解的问题是码表粒度而不是表达力。
 
 ## 当前实现产出的错误码
 

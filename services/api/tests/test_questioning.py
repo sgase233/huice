@@ -205,3 +205,34 @@ def test_expense_increase_prompt_states_the_formula():
     assert "该期间的研发费用" in prompt
     assert "上一期间的研发费用" in prompt
     assert "负数" in prompt
+
+
+# ------------------------------------------------- rc.4 新增键的补问（2026-10-29）
+
+
+def test_every_fact_key_has_a_prompt_and_both_tiers():
+    """事实字典扩键时最容易漏的就是这三张静态表：漏一条补问，页面只能显示键名。"""
+
+    from app.domain.rules import FACT_UNITS
+
+    assert set(FACT_UNITS) - set(PROMPTS) == set()
+    assert set(FACT_UNITS) - set(DEFAULT_COST) == set()
+    assert set(FACT_UNITS) - set(DEFAULT_SENSITIVITY) == set()
+
+
+def test_specific_market_question_asks_for_a_date_not_a_number_of_years():
+    """年限是相对量：问「几年」会存下一个随判断年份漂移的数，同一份快照重算结果不同。"""
+
+    question = choose_next_question([pending("a", ("specificMarketSince", *YEAR))])
+
+    assert question is not None
+    assert "YYYY-MM-DD" in question.prompt
+    assert "不是年数" in question.prompt
+
+
+def test_independent_legal_entity_question_is_positive_too():
+    question = choose_next_question([pending("a", ("independentLegalEntity", *YEAR))])
+
+    assert question is not None
+    assert "具有独立法人资格" in question.prompt
+    assert "是否不具有" not in question.prompt

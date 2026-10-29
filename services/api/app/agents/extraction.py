@@ -291,7 +291,7 @@ _SYSTEM_PROMPT = (
     "factKey 只能取 region/industry/establishedDate/taxableIncome/rdExpense/"
     "assetsStart/assetsEnd/employeeCountStart/employeeCountEnd/rdActivity/"
     "revenue/equityFinancing/rdExpenseIncrease/rdExpenseRevenueRatio/"
-    "rdAddDeductionClaimed/creditRecord；"
+    "rdAddDeductionClaimed/creditRecord/specificMarketSince/independentLegalEntity；"
     "数值用十进制字符串，unit 用 CNY/person/code/date/boolean/ratio"
     "（rdExpenseRevenueRatio 只能用 ratio，取值是小数，3% 写 0.03）。"
     "quote 必须是原文中一字不差的片段，找不到原文就不要输出该项。"

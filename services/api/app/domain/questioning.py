@@ -38,6 +38,10 @@ DEFAULT_COST: Mapping[str, int] = {
     "rdExpenseRevenueRatio": 2,
     "rdAddDeductionClaimed": 2,
     "creditRecord": 3,
+    # 2026-10-29 扩展（rc.4）：细分市场起始日期与「成立日期」同级（都是企业自述的
+    # 一个日期，翻营业执照即可）；独立法人资格是营业执照上的一行，成本与 rdActivity 同档。
+    "specificMarketSince": 1,
+    "independentLegalEntity": 1,
 }
 
 #: 敏感程度档位（1 最不敏感）：越小的越先问。
@@ -59,6 +63,9 @@ DEFAULT_SENSITIVITY: Mapping[str, int] = {
     "rdExpenseRevenueRatio": 3,
     "rdAddDeductionClaimed": 3,
     "creditRecord": 4,
+    # 细分市场的经营范围可能透露业务方向，比成立日期敏感一档；法人资格是公开登记信息。
+    "specificMarketSince": 2,
+    "independentLegalEntity": 1,
 }
 
 #: 补问文案：**只引用事实期间（「该期间」），不写任何相对年份**。
@@ -96,6 +103,16 @@ PROMPTS: Mapping[str, str] = {
     "creditRecord": (
         "请确认该期间的诚信记录是否良好（无失信惩戒、无超期未验收未退款等限制申请"
         "财政性资金的情形）——良好填「是」，否则填「否」。"
+    ),
+    "specificMarketSince": (
+        "请补充企业开始从事该细分市场的日期（YYYY-MM-DD）。"
+        "这是起始日期，不是年数——年限由引擎按判断时点计算。"
+    ),
+    # 布尔语义：true = 具有独立法人资格。问法必须同向，否则「是」被存成 true
+    # 会把「不是独立法人（如分公司）」记成「是独立法人」。
+    "independentLegalEntity": (
+        "请确认企业是否具有独立法人资格（营业执照上的企业法人，分公司等非独立核算主体"
+        "填「否」）——具有填「是」，否则填「否」。"
     ),
 }
 

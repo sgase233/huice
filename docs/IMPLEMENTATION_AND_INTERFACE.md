@@ -49,7 +49,7 @@ AST 仅接受以下形状，不能执行 Python/JS 字符串：
 | `and` / `or` | `children: Expression[]`，至少两个 | AND 任一不满足则不满足；全满足才满足。OR 任一满足则满足；全不满足才不满足；其余证据不足 |
 | `not` | `child: Expression` | 满足/不满足互换，未知仍未知 |
 | `compare` | `factKey,period,comparator,value,unit` | `comparator=lt/lte/eq/gte/gt/ne`；数值用 Decimal，禁止 JS float 预先算结果 |
-| `date` | `factKey,period,comparator,value`（日期） | 按日期比较，禁止本地化日期字符串 |
+| `date` | `factKey∈{establishedDate,specificMarketSince},period,comparator,value`（日期） | 按日期比较，禁止本地化日期字符串；rc.4 起不再只认 `establishedDate` |
 | `industry_exclusion` | `factKey=industry,period,excluded[]` | 行业值在名单中为不满足；缺行业为证据不足 |
 | `quarterly_average` | `metric=employeeCount/assets,period,comparator,value,unit` | 各季度 `(期初+期末)/2`，再对完整四季度求平均；保留八个输入与中间值 |
 
@@ -57,7 +57,9 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 **政策级一律按 AND 合并，`logic_group` 之类的分组列不参与求值**（契约与实现都不读它，2026-10-29 核实）。原文的「或」必须写进同一条 `or` 节点；把两个分支拆成两条并列条件，合起来就是「且」，政策对任何企业都不可能满足——M3 早期 SRDI 行里的 `revenue>=1000万` 与 `revenue<1000万` 并列即此类。为此 API-06 保存时做跨条款检查：同一条款内各自合法、合起来合取为空的组合，报一条**政策级 finding**（`criterionId: null`、`code: "POLICY_UNSATISFIABLE"`、`sourceSpans` 带两侧引用）；API-07 发布前若仍存在该 finding 返回 422 `CRITERIA_NOT_VALIDATED`，`details.findings` 里同样带 `criterionId: null`。检查只看顶层原子 `compare`：`or`/`not`/`quarterly_average` 内部的限制不参与，期间只在写法完全相同时合并（`assessment` 展开成哪一段要等运行时才知道）。报出来的是标注结构错，不是政策本身错。
 
-`date` 算子的 `value` 必须是绝对日期 `YYYY-MM-DD`，**不支持「asOf 前 N 年」这类相对阈值**：判断期间会变，而落库的表达式不会跟着变，同一份快照重算会得出不同结论。相对年限请在标注时换算成绝对日期，并在引文里保留换算依据。
+`date` 算子的 `value` 必须是绝对日期 `YYYY-MM-DD`，**不支持「asOf 前 N 年」这类相对阈值**：判断期间会变，而落库的表达式不会跟着变，同一份快照重算会得出不同结论。相对年限请在标注时换算成绝对日期，并在引文里保留换算依据。这也正是「年限」不做成数值事实的原因——`specificMarketYears` 这类键存的年数会随年份漂移，`specificMarketSince` 存起始日期则不会。
+
+`date` 算子接受的 `factKey` 是一个白名单（`rules.DATE_KEYS`，目前两个：成立日期与细分市场起始日期），不在白名单里的键报 `EXPRESSION_FACT_KEY`；反过来，日期类键写进 `compare` 报 `EXPRESSION_OP`。引文层对日期条件的核对会同时认两种证据：原文里的绝对日期，或**时长型**相对表述（「两个会计年度（含）以上」「满3年」「近10年」「不少于5年」）。期间词（「上年度」「本年度」）不算时长证据——它说的是「哪一段」，不是「多久」，拿它当日期依据会把无关引文也算成支持。
 
 结构上限按**整棵表达式累计**：节点总数不超过 200、嵌套不超过 8 层，超限在入库前返回 `EXPRESSION_TOO_LARGE`/`EXPRESSION_TOO_DEEP`。只按单个 and/or 的直接子项数限制是无效的——每层各 200 个子项、嵌套下去展开是天文数字，所以计数在整棵树上做，且发现超限即停止遍历。
 
@@ -82,13 +84,19 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 | `rdExpenseIncrease` | 十进制字符串，金额最多 2 位小数；`CNY`；**允许负数**（本年减上年的增量，下降时填负值） | 自然年度 |
 | `rdExpenseRevenueRatio` | 非负十进制小数；`ratio`（3% 存 `0.03`） | 自然年度 |
 | `rdAddDeductionClaimed` | JSON boolean；`boolean`；**`true` = 近两年均已申报** | 近两年 |
-| `creditRecord` | JSON boolean；`boolean`；**`true` = 诚信记录良好**（无失信惩戒、无超期未验收未退款等限制申请财政性资金的情形） | 自然年度 |
+| `creditRecord` | JSON boolean；`boolean`；**`true` = 诚信记录良好**（无失信惩戒、无超期未验收未退款等限制申请财政性资金的情形） | 核验时点：条件里写 `assessment`，事实存为本次判断所在年度区间那一行 |
+| `specificMarketSince` | `YYYY-MM-DD`；`date`；**记的是「开始从事该细分市场之日」，不是年数** | 画像年度 |
+| `independentLegalEntity` | JSON boolean；`boolean`；**`true` = 具有独立法人资格**（企业自述，需营业执照复核） | 画像年度 |
 
-> **布尔语义必须与问法同向（2026-10-29 修）**：`creditRecord` 的真值是「良好」，补问文案也必须问「是否良好」；若问成「是否存在限制情形」，用户答「是」会被存成 `true`，规则按「记录良好」反向判断。两个布尔键的 period 必须写成具体日期区间——「申报时点」「近两年」不是区间，事实表主键是 `(key, period_start, period_end)`，写不进具体日期就存不下来。
+> **布尔语义必须与问法同向（2026-10-29 修）**：`creditRecord` 的真值是「良好」，补问文案也必须问「是否良好」；若问成「是否存在限制情形」，用户答「是」会被存成 `true`，规则按「记录良好」反向判断。`independentLegalEntity` 同理（true = 具有法人资格）。布尔键的 period 必须写成具体日期区间——「申报时点」「近两年」不是区间，事实表主键是 `(key, period_start, period_end)`，写不进具体日期就存不下来；`creditRecord` 例外，它按核验时点（本次判断所在年度）存取，见下条。
+
+> **`specificMarketSince` 为什么是日期而不是年限（2026-10-29，契约 rc.4）**：原文写「从事该细分市场满 3 年」，年限是相对量——同一份企业快照在 2026 年算是 2 年、在 2030 年重算就是 6 年，判出不同结论且不可复现。存起始日期后，条件写成 `{"op":"date","factKey":"specificMarketSince","comparator":"lte","value":"2023-12-31"}`（申报年度倒推的固定值），与 `establishedDate` 判「满两年」同一口径。它**不等于**成立年限：细分市场可能晚于企业成立。补问文案要写明「填日期、不填年数」，否则用户会照着原文回一个数字，而数字过不了日期校验。
 
 > **`creditRecord` 是核验时点的状态，不是期间的均值（2026-10-29，应答 M2 的 P1）**：诚信记录可能在判断之后被撤销，而 `(key, period)` 一字未变，事实表按主键精确匹配，**查不出「期间内状态变过」**——这是当前设计的已知边界，靠流程补：提交前必须重新核验并 PATCH 该事实；PATCH 会生成新的 `factVersion`、写一条失效事件，让原 run 变 `stale`（`staleReasons[].code = fact_changed`，`changedFactRefs` 指向 `creditRecord`），页面据此提示重算。因此「当前有效」的含义是**事实自判断后未被改动**，不等于「这一期间内状态恒定」。演示时用这一步说明有效期：PATCH 撤销记录 → 原 run 变 stale。`test_db_evaluation.py::test_revoking_a_credit_record_makes_the_old_run_stale` 锁住这条链路。若日后确实需要按时点回溯，才考虑给事实加 `verifiedAt` 并改精确匹配口径——那会破坏现有 `(key, period)` 主键语义，本期不做。
 
 > **2026-10-28（契约 `1.0.0-rc.3`）**：事实字典由 10 键扩到 16 键，`FactUnit` 补 `ratio`，用于地方通知的研发投入补助/专精特新条款。**增量与占比按「预计算事实」处理**——由标注方给出算好的数值，规则引擎只做 `compare`，不新增 `delta`/`ratio` 算子。三处口径必须同步：`contracts/openapi.yaml` 的 `FactKey`、`app/schemas.py` 的 `FactKey` 字面量、`app/domain/rules.py` 的 `FACT_UNITS`；库里由 `infra/sql/005_fact_dictionary_extension.sql` 重建 `enterprise_fact_key_check`、`enterprise_fact_unit_check`、`enterprise_fact_key_unit` 三个约束。补问档位（§2.5）里这 6 个键的取值是 M1 提案，待 M3 在《条款标注规范》§5 逐键确认。画像归一化（`app/agents/profile.py`）另有三处口径要跟：`MONEY_KEYS`（新增的三个 `CNY` 键必须计入两位小数校验，否则会收三位小数、而序列化又按两位补齐，读回值与写入值不一致）、`SIGNED_KEYS`（`rdExpenseIncrease` 允许负值）、`domain/citations.py` 的 `_METRIC_FAMILY_BY_KEY`（新增金额键要参与引文数值核对；`rdExpenseRevenueRatio` 有意不参与——引文写「3%」而条件是 `0.03`，按金额阈值比对必然误报）。
+
+> **2026-10-29（契约 `1.0.0-rc.4`）**：事实字典由 16 键扩到 18 键，新增 `specificMarketSince`（`date`）与 `independentLegalEntity`（`boolean`），专精特新的细分市场年限与法人资格条款要用。**只放宽枚举**：`FactUnit` 不变，`date` 算子由「只认 `establishedDate`」改为认 `rules.DATE_KEYS`。三处口径照旧要同步（`contracts/openapi.yaml` 的 `FactKey`、`app/schemas.py` 的字面量、`app/domain/rules.py` 的 `FACT_UNITS`），另有第四处容易漏——`app/agents/extraction.py` 的模型提示词键白名单：漏写在库里不会报错，表现成「模型抽到了却存不进去」。`test_openapi_alignment.py` 现在直接断言契约枚举、字面量与 `FACT_UNITS` 三者相等。库里由 `infra/sql/006_fact_dictionary_extension_rc4.sql` 重建 `enterprise_fact_key_check`（18 键）与 `enterprise_fact_key_unit`（`specificMarketSince` 配 `date`、`independentLegalEntity` 配 `boolean`）。画像归一化：`specificMarketSince` 进 `profile.DATE_KEYS` 与 `PROFILE_SCOPED_KEYS`（与 `establishedDate` 同口径），`independentLegalEntity` 进 `rules.BOOLEAN_KEYS`（只收 JSON 布尔）。补问档位：两者成本都是 1（翻营业执照即可），敏感度分别是 2（经营范围可能透露业务方向）与 1。
 
 所有事实 `value=null` 均表示未知；省略事实等价于尚未提供。空字符串、字符串 `"null"`、NaN 均拒绝。数值的通用词法允许最多 6 位小数，按上述字段进一步校验；`"0"` 是有效已知值。`period={startDate,endDate}` 使用日期，包含两端；开始不能晚于结束。同一 key 不同年度是不同事实，不互相覆盖。
 
