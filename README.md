@@ -39,9 +39,9 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health
 
 ```powershell
 cd services\api
-.\.venv\Scripts\python.exe -m pytest -q          # 443 项通过，45 项外部依赖用例跳过
+.\.venv\Scripts\python.exe -m pytest -q          # 467 项通过，45 项外部依赖用例跳过
 $env:HUICE_TEST_DATABASE_URL = "postgresql://...(本地测试库)"
-.\.venv\Scripts\python.exe -m pytest -m db -q    # 需真实 PostgreSQL 16 + pgvector；2026-10-28 实测 34 项通过
+.\.venv\Scripts\python.exe -m pytest -m db -q    # 需真实 PostgreSQL 16 + pgvector；2026-10-29 实测 34 项通过
 ```
 
 静态契约检查（从 `huice/` 运行，不连接数据库或云端）：

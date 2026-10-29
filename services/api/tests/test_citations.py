@@ -278,3 +278,87 @@ def test_ast_decimal_values_never_crash_the_checker(bad_value):
         criterion(span("年应纳税所得额不超过300万元"), expression=expression), SOURCES, version=VERSION
     )
     assert verdict.status in ("passed", "failed")
+
+
+# --------------------------------- rc.3 新增金额键的引文数值核对（2026-10-29 补）
+
+
+EXTENDED_SOURCE_TEXT = (
+    "第八条 上年度营业收入不低于1000万元。\n"
+    "第九条 近两年新增股权融资不低于2000万元。\n"
+    "第十条 研发费用增量不低于200万元。\n"
+    "第十一条 研发费用不低于100万元。\n"
+    "第十二条 上年度研发费用占营业收入不低于3%。"
+)
+EXTENDED = SourceText(id=uuid4(), source_url=SOURCE_URL, text=EXTENDED_SOURCE_TEXT)
+EXTENDED_SOURCES = {EXTENDED.id: EXTENDED}
+
+
+def extended_span(quote: str) -> SourceSpanCheck:
+    return span(quote, source_id=EXTENDED.id)
+
+
+def compare(fact_key: str, value: str, unit: str, comparator: str = "gte") -> dict:
+    return {
+        "op": "compare",
+        "factKey": fact_key,
+        "period": "assessment",
+        "comparator": comparator,
+        "value": value,
+        "unit": unit,
+    }
+
+
+@pytest.mark.parametrize(
+    ("fact_key", "value", "unit", "quote"),
+    [
+        ("revenue", "10000000.00", "CNY", "上年度营业收入不低于1000万元"),
+        ("equityFinancing", "20000000.00", "CNY", "近两年新增股权融资不低于2000万元"),
+        ("rdExpenseIncrease", "2000000.00", "CNY", "研发费用增量不低于200万元"),
+    ],
+)
+def test_new_amount_keys_are_checked_against_the_quote(fact_key, value, unit, quote):
+    verdict = validate_criterion(
+        criterion(extended_span(quote), expression=compare(fact_key, value, unit)),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_mismatched_amount_on_a_new_key_is_reported():
+    verdict = validate_criterion(
+        criterion(extended_span("上年度营业收入不低于1000万元"), expression=compare("revenue", "20000000.00", "CNY")),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+def test_expense_increase_is_not_satisfied_by_a_plain_expense_quote():
+    """增量单独成族：只有「研发费用」阈值的引文不能支持「研发费用增量」的条件。"""
+
+    verdict = validate_criterion(
+        criterion(extended_span("研发费用不低于100万元"), expression=compare("rdExpenseIncrease", "1000000.00", "CNY")),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_NOT_FOUND" in codes(verdict)
+
+
+def test_ratio_is_deliberately_not_compared_against_a_percentage_quote():
+    """3% 与 0.03 不是同一个字符串，按金额阈值比对必然误报，故不做数值核对。"""
+
+    verdict = validate_criterion(
+        criterion(
+            extended_span("上年度研发费用占营业收入不低于3%"),
+            expression=compare("rdExpenseRevenueRatio", "0.03", "ratio"),
+        ),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)

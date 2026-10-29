@@ -75,11 +75,14 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 | `employeeCountStart` / `employeeCountEnd` | 非负十进制字符串；`person` | 自然季度起止日期 |
 | `assetsStart` / `assetsEnd` | 非负十进制字符串，金额最多 2 位小数；`CNY` | 自然季度起止日期 |
 | `revenue` / `equityFinancing` | 十进制字符串，金额最多 2 位小数；`CNY` | 自然年度（`equityFinancing` 为近两年新增股权融资合计） |
-| `rdExpenseIncrease` | 十进制字符串；`CNY`；**允许负数**（本年减上年的增量，下降时填负值） | 自然年度 |
+| `rdExpenseIncrease` | 十进制字符串，金额最多 2 位小数；`CNY`；**允许负数**（本年减上年的增量，下降时填负值） | 自然年度 |
 | `rdExpenseRevenueRatio` | 非负十进制小数；`ratio`（3% 存 `0.03`） | 自然年度 |
-| `rdAddDeductionClaimed` / `creditRecord` | JSON boolean；`boolean` | 自然年度 |
+| `rdAddDeductionClaimed` | JSON boolean；`boolean`；**`true` = 近两年均已申报** | 近两年 |
+| `creditRecord` | JSON boolean；`boolean`；**`true` = 诚信记录良好**（无失信惩戒、无超期未验收未退款等限制申请财政性资金的情形） | 自然年度 |
 
-> **2026-10-28（契约 `1.0.0-rc.3`）**：事实字典由 10 键扩到 16 键，`FactUnit` 补 `ratio`，用于地方通知的研发投入补助/专精特新条款。**增量与占比按「预计算事实」处理**——由标注方给出算好的数值，规则引擎只做 `compare`，不新增 `delta`/`ratio` 算子。三处口径必须同步：`contracts/openapi.yaml` 的 `FactKey`、`app/schemas.py` 的 `FactKey` 字面量、`app/domain/rules.py` 的 `FACT_UNITS`；库里由 `infra/sql/005_fact_dictionary_extension.sql` 重建 `enterprise_fact_key_check`、`enterprise_fact_unit_check`、`enterprise_fact_key_unit` 三个约束。补问档位（§2.5）里这 6 个键的取值是 M1 提案，待 M3 在《条款标注规范》§5 逐键确认。
+> **布尔语义必须与问法同向（2026-10-29 修）**：`creditRecord` 的真值是「良好」，补问文案也必须问「是否良好」；若问成「是否存在限制情形」，用户答「是」会被存成 `true`，规则按「记录良好」反向判断。两个布尔键的 period 必须写成具体日期区间——「申报时点」「近两年」不是区间，事实表主键是 `(key, period_start, period_end)`，写不进具体日期就存不下来。
+
+> **2026-10-28（契约 `1.0.0-rc.3`）**：事实字典由 10 键扩到 16 键，`FactUnit` 补 `ratio`，用于地方通知的研发投入补助/专精特新条款。**增量与占比按「预计算事实」处理**——由标注方给出算好的数值，规则引擎只做 `compare`，不新增 `delta`/`ratio` 算子。三处口径必须同步：`contracts/openapi.yaml` 的 `FactKey`、`app/schemas.py` 的 `FactKey` 字面量、`app/domain/rules.py` 的 `FACT_UNITS`；库里由 `infra/sql/005_fact_dictionary_extension.sql` 重建 `enterprise_fact_key_check`、`enterprise_fact_unit_check`、`enterprise_fact_key_unit` 三个约束。补问档位（§2.5）里这 6 个键的取值是 M1 提案，待 M3 在《条款标注规范》§5 逐键确认。画像归一化（`app/agents/profile.py`）另有三处口径要跟：`MONEY_KEYS`（新增的三个 `CNY` 键必须计入两位小数校验，否则会收三位小数、而序列化又按两位补齐，读回值与写入值不一致）、`SIGNED_KEYS`（`rdExpenseIncrease` 允许负值）、`domain/citations.py` 的 `_METRIC_FAMILY_BY_KEY`（新增金额键要参与引文数值核对；`rdExpenseRevenueRatio` 有意不参与——引文写「3%」而条件是 `0.03`，按金额阈值比对必然误报）。
 
 所有事实 `value=null` 均表示未知；省略事实等价于尚未提供。空字符串、字符串 `"null"`、NaN 均拒绝。数值的通用词法允许最多 6 位小数，按上述字段进一步校验；`"0"` 是有效已知值。`period={startDate,endDate}` 使用日期，包含两端；开始不能晚于结束。同一 key 不同年度是不同事实，不互相覆盖。
 
@@ -97,6 +100,8 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 ### 2.5 FR-05：补问与局部重算
 
 `questioning.choose_next_question(assessments, skippedFactRefs)` 对 unresolved 的“key+period”去重，按“受影响的待定政策数降序、获取成本升序、敏感程度升序、key/日期字典序”确定稳定顺序。成本/敏感度由 M3 在标注约定中给整数档位，不由模型猜测。函数返回当前全局第一问（rank=1）或 null；仅把同一问题放入受该 FactRef 影响的 policy.nextQuestion，其他政策为 null。前端按 FactRef 去重后一次显示一问，不自行重新评分；完整排序理由写脱敏 trace 供验收比较。
+
+> **补问文案只引用事实期间，不写相对年份（2026-10-29 修）**：`domain/questioning.PROMPTS` 按 key 静态生成，函数本身只知道 `factRef` 的 `periodStart/periodEnd`，不知道「现在是哪一年」。文案若写成「本年度较上年度」，而本次期间实际是「上年度」那一行，用户就会照字面填「本年 − 上年」，把量级差一年的数记进上年度；错年份的值仍是合法十进制数，精度/符号/范围校验全过，判错也不会报错（fail-wrong，不是 fail-safe）。因此所有文案统一写「该期间」，增量类另写明公式（`rdExpenseIncrease`：＝该期间的研发费用 − 上一期间的研发费用，下降填负数），使 M3 预计算的值与用户自己算的值一致。`test_questioning.py` 有守卫用例，文案出现「本年度/上年度/前年度/近两年/本次判断/该年度/该季度」即失败。
 
 `NextQuestion` 回调只给输入值或 skip：回答后调用 `PATCH fact → 收到新 Enterprise → POST assessment-runs`；重算 body 传 `supersedesRunId`。后端验证旧 run 属于同一企业、同一组政策和期间，按依赖图仅重算受改动影响的条件，其他条件可复用；仍生成新 ID。政策版本变更则重算对应政策。补问计数按实际成功更新/明确跳过记录，不能按渲染次数计数。
 

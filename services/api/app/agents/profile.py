@@ -26,9 +26,23 @@ from ..errors import ApiProblem
 from ..schemas import EnterpriseFact, EnterpriseInput, FactInput, FactUpdate, Period
 
 DATE_KEYS = frozenset({"establishedDate"})
-MONEY_KEYS = frozenset({"taxableIncome", "rdExpense", "assetsStart", "assetsEnd"})
-#: 允许为负的事实：应纳税所得额可能为负（亏损），其余金额与人数非负。
-SIGNED_KEYS = frozenset({"taxableIncome"})
+#: 金额类事实：最多两位小数，线上固定补两位。
+#: 2026-10-29 补齐 rc.3 新增的三个 CNY 键——漏掉它们会接受三位小数，
+#: 而 ``fact_value_text`` 又按两位序列化，读回值与原始值不一致。
+MONEY_KEYS = frozenset(
+    {
+        "taxableIncome",
+        "rdExpense",
+        "assetsStart",
+        "assetsEnd",
+        "revenue",
+        "equityFinancing",
+        "rdExpenseIncrease",
+    }
+)
+#: 允许为负的事实：应纳税所得额可能为负（亏损）；研发费用增量是「本年减上年」，
+#: 投入下降时为负。其余金额、人数与比例非负。
+SIGNED_KEYS = frozenset({"taxableIncome", "rdExpenseIncrease"})
 #: 期间必须等于画像年度的事实。
 PROFILE_SCOPED_KEYS = ("region", "industry", "establishedDate")
 #: 必须在画像年度内给出非空值的键。
@@ -208,7 +222,7 @@ def _normalize_value(key: str, value, prefix: str):
             raise _FieldError(f"{prefix}.value", "成立日期不是有效日期。") from exc
     if key in BOOLEAN_KEYS:
         if not isinstance(value, bool):
-            raise _FieldError(f"{prefix}.value", "研发活动标记必须是 JSON 布尔值。")
+            raise _FieldError(f"{prefix}.value", "布尔类事实必须是 JSON 布尔值。")
         return value
 
     if not isinstance(value, str):

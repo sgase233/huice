@@ -167,3 +167,21 @@ def test_model_item_missing_fields_is_reported_not_guessed():
 
     assert outcome.criteria == []
     assert "EXTRACTION_ITEM_INCOMPLETE" in {finding.code for finding in outcome.findings}
+
+
+def test_model_prompt_lists_every_unit_including_ratio():
+    """rc.3 起 rdExpenseRevenueRatio 只能用 ratio：提示词漏了这个单位，
+    模型给出的比例条件会被单位校验拒掉，抽取白跑一遍。"""
+
+    captured: dict[str, str] = {}
+
+    class Capturing(FakeLlm):
+        def complete(self, *, system, user, max_tokens=1024):
+            captured["system"] = system
+            return super().complete(system=system, user=user, max_tokens=max_tokens)
+
+    extract("年应纳税所得额不超过300万元。", llm=Capturing("[]"))
+
+    system = captured["system"]
+    assert "CNY/person/code/date/boolean/ratio" in system
+    assert "rdExpenseRevenueRatio" in system

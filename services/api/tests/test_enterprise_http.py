@@ -287,3 +287,71 @@ def test_invalid_value_is_422_even_with_a_good_etag(client):
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+# ------------------------------------------- rc.3 新增键的接口层口径（M2 复核 P1）
+
+
+def test_negative_expense_increase_is_accepted_through_the_fact_endpoint(client):
+    """研发费用增量允许为负：画像归一化曾只放行 taxableIncome，负值在接口层被拒。"""
+
+    created = create(client).json()
+
+    response = patch(
+        client,
+        created["id"],
+        "rdExpenseIncrease",
+        {"value": "-125000.50", "unit": "CNY", "period": YEAR, "source": "user_input"},
+        if_match=f'"{created["factVersion"]}"',
+    )
+
+    assert response.status_code == 200, response.json()
+    increase = next(item for item in response.json()["facts"] if item["key"] == "rdExpenseIncrease")
+    assert increase["value"] == "-125000.50"
+
+    # 负值必须真的进了版本：再读一次仍是同一个数、同一份 factVersion。
+    fetched = client.get(f"/api/v1/enterprises/{created['id']}").json()
+    assert fetched["factVersion"] == response.headers["ETag"].strip('"')
+    assert next(item for item in fetched["facts"] if item["key"] == "rdExpenseIncrease")["value"] == "-125000.50"
+
+
+def test_ratio_fact_round_trips_through_the_fact_endpoint(client):
+    created = create(client).json()
+
+    response = patch(
+        client,
+        created["id"],
+        "rdExpenseRevenueRatio",
+        {"value": "0.03", "unit": "ratio", "period": YEAR, "source": "user_input"},
+        if_match=f'"{created["factVersion"]}"',
+    )
+
+    assert response.status_code == 200, response.json()
+    ratio = next(item for item in response.json()["facts"] if item["key"] == "rdExpenseRevenueRatio")
+    assert ratio["value"] == "0.03"
+    assert ratio["unit"] == "ratio"
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "unit"),
+    [
+        # 新增金额键必须和既有金额键一样只收两位小数。
+        ("revenue", "1234.567", "CNY"),
+        ("equityFinancing", "1234.567", "CNY"),
+        # 比例不能为负——与 rules._validate_compare 的取值校验对齐。
+        ("rdExpenseRevenueRatio", "-0.01", "ratio"),
+    ],
+)
+def test_new_keys_are_validated_through_the_fact_endpoint(client, key, value, unit):
+    created = create(client).json()
+
+    response = patch(
+        client,
+        created["id"],
+        key,
+        {"value": value, "unit": unit, "period": YEAR, "source": "user_input"},
+        if_match=f'"{created["factVersion"]}"',
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"

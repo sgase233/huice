@@ -216,3 +216,57 @@ def test_money_rejects_more_than_two_decimals_but_accepts_them_after_the_point()
         )
 
     assert any("最多 2 位小数" in item["message"] for item in rejected.value.details["fieldErrors"])
+
+
+# ------------------------------------------------- rc.3 新增键的归一化口径
+
+
+def profile_with(*facts) -> EnterpriseInput:
+    return payload(
+        facts=[
+            {"key": "region", "value": "440300", "unit": "code", "period": YEAR, "source": "user_input"},
+            {"key": "industry", "value": "C39", "unit": "code", "period": YEAR, "source": "user_input"},
+            *facts,
+        ]
+    )
+
+
+def fact_body(key: str, value, unit: str) -> dict:
+    return {"key": key, "value": value, "unit": unit, "period": YEAR, "source": "user_input"}
+
+
+def test_rd_expense_increase_accepts_a_negative_value():
+    """研发费用增量是「本年减上年」，投入下降时为负——不能被负数校验挡在门外。"""
+
+    profile = normalize_profile(profile_with(fact_body("rdExpenseIncrease", "-125000.50", "CNY")))
+
+    increase = next(item for item in profile.facts if item.key == "rdExpenseIncrease")
+    assert increase.value == Decimal("-125000.50")
+
+
+@pytest.mark.parametrize("key", ["revenue", "equityFinancing", "rdExpenseIncrease"])
+def test_new_cny_keys_reject_more_than_two_decimals(key):
+    with pytest.raises(ApiProblem) as rejected:
+        normalize_profile(profile_with(fact_body(key, "1234.567", "CNY")))
+
+    assert rejected.value.status_code == 422
+    assert any("最多 2 位小数" in item["message"] for item in rejected.value.details["fieldErrors"])
+
+
+@pytest.mark.parametrize("key", ["revenue", "equityFinancing"])
+def test_other_new_cny_keys_still_reject_negative_amounts(key):
+    with pytest.raises(ApiProblem):
+        normalize_profile(profile_with(fact_body(key, "-1", "CNY")))
+
+
+def test_ratio_is_stored_as_a_plain_decimal_and_kept_on_the_wire():
+    profile = normalize_profile(profile_with(fact_body("rdExpenseRevenueRatio", "0.03", "ratio")))
+
+    ratio = next(item for item in profile.facts if item.key == "rdExpenseRevenueRatio")
+    assert ratio.value == Decimal("0.03")
+    assert fact_value_text(ratio.value, unit=ratio.unit) == "0.03"
+
+
+def test_ratio_rejects_negative_values():
+    with pytest.raises(ApiProblem):
+        normalize_profile(profile_with(fact_body("rdExpenseRevenueRatio", "-0.01", "ratio")))
