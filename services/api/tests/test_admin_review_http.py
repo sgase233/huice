@@ -267,6 +267,120 @@ def test_save_criteria_marks_invalid_ast_as_failed(client, auth, repository):
     assert "EXPRESSION_OP_UNKNOWN" in {item["code"] for item in response.json()["validationFindings"]}
 
 
+# ------------------------------------- 政策级「合取为空」（criterionId 为空）
+
+CONTRADICTION_BODY = (
+    "第一条 上一年度营业收入不低于1000万元的企业，按研发投入的20%给予补助。" "\n"
+    "第二条 上一年度营业收入低于1000万元的企业，按股权融资额的5%给予补助。"
+)
+CONTRADICTION_QUOTES = (
+    "第一条 上一年度营业收入不低于1000万元的企业，按研发投入的20%给予补助。",
+    "第二条 上一年度营业收入低于1000万元的企业，按股权融资额的5%给予补助。",
+)
+
+
+MERGED_BODY = (
+    "上一年度营业收入低于500万元的企业，按研发投入的20%给予补助；"
+    "上一年度营业收入不低于1000万元的企业，按研发投入的30%给予补助。"
+)
+MERGED_QUOTE = MERGED_BODY
+
+
+def revenue_expression(comparator: str) -> dict:
+    return {
+        "op": "compare",
+        "factKey": "revenue",
+        "period": "assessment",
+        "comparator": comparator,
+        "value": "10000000",
+        "unit": "CNY",
+    }
+
+
+def test_save_criteria_reports_a_policy_level_unsatisfiable_finding(client, auth, repository):
+    """两条条件各自合法，合起来却永远不成立——只能作为政策级 finding 报出来。
+
+    对应 M3 的 SRDI-004/005：`revenue>=1000万` 与 `revenue<1000万` 并列。
+    """
+
+    draft = seed_draft(repository, text=CONTRADICTION_BODY)
+    response = save_criteria(
+        client,
+        auth,
+        draft,
+        [
+            criterion_payload(draft, quote=CONTRADICTION_QUOTES[0],
+                              expression=revenue_expression("gte")),
+            criterion_payload(draft, quote=CONTRADICTION_QUOTES[1],
+                              expression=revenue_expression("lt")),
+        ],
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # 两个条款本身都没问题，卡住发布的只有那一条政策级 finding。
+    assert [item["validationStatus"] for item in body["criteria"]] == ["passed", "passed"]
+    policy_findings = [
+        item for item in body["validationFindings"] if item["criterionId"] is None
+    ]
+    assert [item["code"] for item in policy_findings] == ["POLICY_UNSATISFIABLE"]
+    assert "revenue" in policy_findings[0]["message"]
+    assert policy_findings[0]["sourceSpans"], "政策级 finding 也要带两边的引用"
+
+
+def test_publish_is_blocked_while_a_policy_level_finding_remains(client, auth, repository):
+    draft = seed_draft(repository, text=CONTRADICTION_BODY)
+    saved = save_criteria(
+        client,
+        auth,
+        draft,
+        [
+            criterion_payload(draft, quote=CONTRADICTION_QUOTES[0],
+                              expression=revenue_expression("gte")),
+            criterion_payload(draft, quote=CONTRADICTION_QUOTES[1],
+                              expression=revenue_expression("lt")),
+        ],
+    ).json()
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/publish",
+        headers=headers(auth, saved["draft"]["revision"]),
+        json={"version": draft.version, "reviewConfirmed": True},
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "CRITERIA_NOT_VALIDATED"
+    assert "互斥" in error["message"]
+    assert [item["code"] for item in error["details"]["findings"]] == ["POLICY_UNSATISFIABLE"]
+
+
+def test_publish_succeeds_once_the_branches_are_merged_into_one_or(client, auth, repository):
+    """同样的两条阈值，写进同一条 or 之后不再算矛盾，可以发布。"""
+
+    draft = seed_draft(repository, text=MERGED_BODY)
+    merged = {
+        "op": "or",
+        "children": [
+            {**revenue_expression("lt"), "value": "5000000"},
+            revenue_expression("gte"),
+        ],
+    }
+    saved = save_criteria(
+        client, auth, draft, [criterion_payload(draft, expression=merged, quote=MERGED_QUOTE)]
+    ).json()
+    codes = [item["code"] for item in saved["validationFindings"]]
+    assert [item["validationStatus"] for item in saved["criteria"]] == ["passed"], codes
+    assert codes == []
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/publish",
+        headers=headers(auth, saved["draft"]["revision"]),
+        json={"version": draft.version, "reviewConfirmed": True},
+    )
+    assert response.status_code == 200
+
+
 # ------------------------------------------------------------------ API-07
 
 

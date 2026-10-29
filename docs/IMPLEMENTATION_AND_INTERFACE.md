@@ -38,7 +38,7 @@
 
 `extract(version, modelVersion) → extraction → validate_citations → 草稿与 findings`。模型返回值先做结构检查；引用校验核对源版本、片段哈希、数值、单位换算、比较方向、否定、行业与期间。含糊内容返回 `needs_review`，不能只靠关键词相同放行。
 
-`PUT criteria` 整体替换指定版本的草稿条件，保存结构合法但引用失败的草稿并返回 `validationFindings`，让审核员看到问题；结构不合法返回 422。发布时重新校验，存在 `failed/pending` 条件或未确认人工审核均返回 422。不能信任前端传入的“校验通过”状态。待核实冲突可以作为**已审核的冲突记录**发布，带两处来源和 `reviewFinding=conflict`，规则引擎固定返回 `conflict`；这与“引用不支持表达式”不同，后者不能发布。
+`PUT criteria` 整体替换指定版本的草稿条件，保存结构合法但引用失败的草稿并返回 `validationFindings`，让审核员看到问题；结构不合法返回 422。`validationFindings` 里 `criterionId` 为 null 的是**政策级**发现（如两条条件合取为空），不挂在单个条款上。发布时重新校验，存在 `failed/pending` 条件、会挡发布的政策级发现（目前只有 `POLICY_UNSATISFIABLE`；抽取阶段的 `EXTRACTION_*` 是过程提示，不挡）或未确认人工审核均返回 422。不能信任前端传入的“校验通过”状态。待核实冲突可以作为**已审核的冲突记录**发布，带两处来源和 `reviewFinding=conflict`，规则引擎固定返回 `conflict`；这与“引用不支持表达式”不同，后者不能发布。
 
 每个 `CriterionDraft` 为 `{id,title,expression,sourceSpans,reviewFinding}`；后端增加 `validationStatus`。`sourceSpans` 至少一个，冲突至少两个；含 `sourceId,sourceUrl,sourceVersion,page,section,quote,textHash`，`page` 与 `section` 至少一个非 null。`sourceId` 定位已保存正文或附件；哈希由后端依据保存文本计算并验证。
 
@@ -54,6 +54,10 @@ AST 仅接受以下形状，不能执行 Python/JS 字符串：
 | `quarterly_average` | `metric=employeeCount/assets,period,comparator,value,unit` | 各季度 `(期初+期末)/2`，再对完整四季度求平均；保留八个输入与中间值 |
 
 AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{startDate,endDate}`；年度季度平均表达式必须指向完整自然年度。地区等字符串比较只允许 eq/ne。区间用 AND 的上下界表达，不另加操作符。比例以 unit=`ratio` 的十进制字符串表达；新增事实字段要先改字典和契约。所有冲突节点先单独检测并向上传播为 `conflict`，不得被 OR 短路掩盖。
+
+**政策级一律按 AND 合并，`logic_group` 之类的分组列不参与求值**（契约与实现都不读它，2026-10-29 核实）。原文的「或」必须写进同一条 `or` 节点；把两个分支拆成两条并列条件，合起来就是「且」，政策对任何企业都不可能满足——M3 早期 SRDI 行里的 `revenue>=1000万` 与 `revenue<1000万` 并列即此类。为此 API-06 保存时做跨条款检查：同一条款内各自合法、合起来合取为空的组合，报一条**政策级 finding**（`criterionId: null`、`code: "POLICY_UNSATISFIABLE"`、`sourceSpans` 带两侧引用）；API-07 发布前若仍存在该 finding 返回 422 `CRITERIA_NOT_VALIDATED`，`details.findings` 里同样带 `criterionId: null`。检查只看顶层原子 `compare`：`or`/`not`/`quarterly_average` 内部的限制不参与，期间只在写法完全相同时合并（`assessment` 展开成哪一段要等运行时才知道）。报出来的是标注结构错，不是政策本身错。
+
+`date` 算子的 `value` 必须是绝对日期 `YYYY-MM-DD`，**不支持「asOf 前 N 年」这类相对阈值**：判断期间会变，而落库的表达式不会跟着变，同一份快照重算会得出不同结论。相对年限请在标注时换算成绝对日期，并在引文里保留换算依据。
 
 结构上限按**整棵表达式累计**：节点总数不超过 200、嵌套不超过 8 层，超限在入库前返回 `EXPRESSION_TOO_LARGE`/`EXPRESSION_TOO_DEEP`。只按单个 and/or 的直接子项数限制是无效的——每层各 200 个子项、嵌套下去展开是天文数字，所以计数在整棵树上做，且发现超限即停止遍历。
 
@@ -81,6 +85,8 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 | `creditRecord` | JSON boolean；`boolean`；**`true` = 诚信记录良好**（无失信惩戒、无超期未验收未退款等限制申请财政性资金的情形） | 自然年度 |
 
 > **布尔语义必须与问法同向（2026-10-29 修）**：`creditRecord` 的真值是「良好」，补问文案也必须问「是否良好」；若问成「是否存在限制情形」，用户答「是」会被存成 `true`，规则按「记录良好」反向判断。两个布尔键的 period 必须写成具体日期区间——「申报时点」「近两年」不是区间，事实表主键是 `(key, period_start, period_end)`，写不进具体日期就存不下来。
+
+> **`creditRecord` 是核验时点的状态，不是期间的均值（2026-10-29，应答 M2 的 P1）**：诚信记录可能在判断之后被撤销，而 `(key, period)` 一字未变，事实表按主键精确匹配，**查不出「期间内状态变过」**——这是当前设计的已知边界，靠流程补：提交前必须重新核验并 PATCH 该事实；PATCH 会生成新的 `factVersion`、写一条失效事件，让原 run 变 `stale`（`staleReasons[].code = fact_changed`，`changedFactRefs` 指向 `creditRecord`），页面据此提示重算。因此「当前有效」的含义是**事实自判断后未被改动**，不等于「这一期间内状态恒定」。演示时用这一步说明有效期：PATCH 撤销记录 → 原 run 变 stale。`test_db_evaluation.py::test_revoking_a_credit_record_makes_the_old_run_stale` 锁住这条链路。若日后确实需要按时点回溯，才考虑给事实加 `verifiedAt` 并改精确匹配口径——那会破坏现有 `(key, period)` 主键语义，本期不做。
 
 > **2026-10-28（契约 `1.0.0-rc.3`）**：事实字典由 10 键扩到 16 键，`FactUnit` 补 `ratio`，用于地方通知的研发投入补助/专精特新条款。**增量与占比按「预计算事实」处理**——由标注方给出算好的数值，规则引擎只做 `compare`，不新增 `delta`/`ratio` 算子。三处口径必须同步：`contracts/openapi.yaml` 的 `FactKey`、`app/schemas.py` 的 `FactKey` 字面量、`app/domain/rules.py` 的 `FACT_UNITS`；库里由 `infra/sql/005_fact_dictionary_extension.sql` 重建 `enterprise_fact_key_check`、`enterprise_fact_unit_check`、`enterprise_fact_key_unit` 三个约束。补问档位（§2.5）里这 6 个键的取值是 M1 提案，待 M3 在《条款标注规范》§5 逐键确认。画像归一化（`app/agents/profile.py`）另有三处口径要跟：`MONEY_KEYS`（新增的三个 `CNY` 键必须计入两位小数校验，否则会收三位小数、而序列化又按两位补齐，读回值与写入值不一致）、`SIGNED_KEYS`（`rdExpenseIncrease` 允许负值）、`domain/citations.py` 的 `_METRIC_FAMILY_BY_KEY`（新增金额键要参与引文数值核对；`rdExpenseRevenueRatio` 有意不参与——引文写「3%」而条件是 `0.03`，按金额阈值比对必然误报）。
 

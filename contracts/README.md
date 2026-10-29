@@ -13,8 +13,8 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 | API-03 `getPolicy` | `GET /policies/{policyId}` | 已实现；未发布/校验未过返回 422 |
 | API-04 `importPolicy` | `POST /admin/policies/import` | 已实现；201 `PolicyDraft`（`pending_parse`）+ ETag |
 | API-05 `extractPolicy` | `POST /admin/policies/{policyId}/extract` | 已实现；按版本 + `If-Match` + `Idempotency-Key` 防重 |
-| API-06 `saveCriteria` | `PUT /admin/policies/{policyId}/criteria` | 已实现；返回校验发现，失败条件置 `failed` |
-| API-07 `publishPolicy` | `POST /admin/policies/{policyId}/publish` | 已实现；发布时**重算**引用校验，未过 → 422 `CRITERIA_NOT_VALIDATED` |
+| API-06 `saveCriteria` | `PUT /admin/policies/{policyId}/criteria` | 已实现；返回校验发现，失败条件置 `failed`；policy 级发现以 `criterionId: null` 返回（`code` 是自由字符串，如 `POLICY_UNSATISFIABLE`），无需改契约 |
+| API-07 `publishPolicy` | `POST /admin/policies/{policyId}/publish` | 已实现；发布时**重算**引用校验（含政策级发现），未过 → 422 `CRITERIA_NOT_VALIDATED` |
 | API-08 `createEnterprise` | `POST /enterprises` | 已实现；返回 `factVersion` 作为 ETag |
 | API-09 `getEnterprise` | `GET /enterprises/{enterpriseId}` | 已实现 |
 | API-10 `updateFact` | `PATCH /enterprises/{enterpriseId}/facts/{factKey}` | 已实现；`factVersion` CAS，冲突 409/428 |
