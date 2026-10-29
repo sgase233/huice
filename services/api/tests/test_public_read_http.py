@@ -51,6 +51,30 @@ def test_list_forwards_every_filter(client, repository):
     assert call["limit"] == 5
 
 
+def test_list_by_region_also_returns_national_policies(client, repository):
+    """按区划筛 = 该区划 + 全国性政策。
+
+    地方区划码只覆盖地方，国家层面的税收政策记 region=CN。只做等值会把深圳企业
+    该适用的国家税收政策全部藏掉，用户看到的候选政策集合就不完整。
+    """
+
+    local = published_draft(region="440300")
+    national = published_draft(region="CN")
+    other_city = published_draft(region="440100")
+    repository.drafts.extend([local, national, other_city])
+
+    local_view = client.get("/api/v1/policies", params={"region": "440300"})
+    national_only = client.get("/api/v1/policies", params={"region": "CN"})
+
+    assert local_view.status_code == 200
+    assert {item["id"] for item in local_view.json()["items"]} == {
+        str(local.id),
+        str(national.id),
+    }
+    # 传 CN 只取全国性政策，不反向把地方政策带出来。
+    assert {item["id"] for item in national_only.json()["items"]} == {str(national.id)}
+
+
 @pytest.mark.parametrize(
     "raw, expected",
     [

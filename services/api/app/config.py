@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
-APP_VERSION = "1.0.0-rc.2"
+APP_VERSION = "1.0.0-rc.3"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

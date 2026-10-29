@@ -6,7 +6,13 @@ from datetime import date
 
 import pytest
 
-from app.domain.questioning import DEFAULT_COST, DEFAULT_SENSITIVITY, PendingAssessment, choose_next_question
+from app.domain.questioning import (
+    DEFAULT_COST,
+    DEFAULT_SENSITIVITY,
+    PROMPTS,
+    PendingAssessment,
+    choose_next_question,
+)
 
 YEAR = (date(2026, 1, 1), date(2026, 12, 31))
 Q1 = (date(2026, 1, 1), date(2026, 3, 31))
@@ -33,15 +39,20 @@ def test_more_affected_policies_win_over_cheaper_facts():
 
 
 def test_tie_on_reach_breaks_by_cost_then_sensitivity():
-    # 同为 1 项待定政策：establishedDate 成本 1 低于 taxableIncome 的 3。
+    # 同为 1 项待定政策：establishedDate 成本 1 低于 taxableIncome 的 2（§5 1–5 档）。
     cost_first = choose_next_question([pending("a", INCOME, ("establishedDate", *YEAR))])
     assert cost_first is not None
     assert cost_first.fact_ref[0] == "establishedDate"
 
-    # 同为 1 项、成本都为 1：industry 敏感度 2 高于 region 的 1，先问 region。
+    # 同为 1 项、成本与敏感度都为 1（§5）：档位打平后按 key 字典序，先问 industry。
     sense_first = choose_next_question([pending("a", INDUSTRY, REGION)])
     assert sense_first is not None
-    assert sense_first.fact_ref == REGION
+    assert sense_first.fact_ref == INDUSTRY
+
+    # 敏感度仍有区分力时以它为准：两者成本相同，敏感度 2 的键让位于敏感度 1 的键。
+    sense_second = choose_next_question([pending("a", ("employeeCountStart", *Q1), REGION)])
+    assert sense_second is not None
+    assert sense_second.fact_ref == REGION
 
 
 def test_final_tiebreak_is_key_then_period():
@@ -136,3 +147,61 @@ def test_prompt_falls_back_to_the_period_for_unknown_keys(ref, fragment):
 
     assert question is not None
     assert fragment in question.prompt
+
+
+def test_credit_record_question_asks_in_the_same_direction_as_the_key():
+    """``creditRecord`` 的语义是「诚信记录良好」（true = 好）。
+
+    补问若问成「是否存在限制情形」，用户答「是」会被存成 true，
+    规则就按「记录良好」反向判断。问法与键的语义必须同向。
+    """
+
+    question = choose_next_question([pending("a", ("creditRecord", *YEAR))])
+
+    assert question is not None
+    assert "良好" in question.prompt
+    assert "是否存在" not in question.prompt
+
+
+def test_rd_add_deduction_question_is_positive_too():
+    question = choose_next_question([pending("a", ("rdAddDeductionClaimed", *YEAR))])
+
+    assert question is not None
+    # true = 期间内各年度均已申报；问句要写明「每个年度都申报填是」。
+    assert "每个年度都申报填「是」" in question.prompt
+
+
+#: 补问文案是按 key 静态定义的，并不知道这次 ``factRef.period`` 是哪一年；界面会把期间
+#: 单独展示。文案里一旦出现相对时间词，用户就可能照文案字面填成别的年份——错年份的值
+#: 仍是合法十进制数，精度/符号/范围校验全过，于是判错也不报错（fail-wrong，不是 fail-safe）。
+#: 「上一期间」不在此列：增量公式本来就要相对上一期间说明。
+RELATIVE_TIME_WORDS = (
+    "本年度",
+    "上年度",
+    "前年度",
+    "近两年",
+    "本次判断",
+    "该年度",
+    "该季度",
+)
+
+
+def test_prompt_text_never_anchors_on_a_relative_period():
+    offenders = {
+        key: word
+        for key, prompt in PROMPTS.items()
+        for word in RELATIVE_TIME_WORDS
+        if word in prompt
+    }
+
+    assert offenders == {}, f"补问文案不许写相对时间词，改成「该期间」：{offenders}"
+
+
+def test_expense_increase_prompt_states_the_formula():
+    """增量是标注方预计算的值，用户自己算也必须得到同一个数，否则差一个年度的量级。"""
+
+    prompt = PROMPTS["rdExpenseIncrease"]
+
+    assert "该期间的研发费用" in prompt
+    assert "上一期间的研发费用" in prompt
+    assert "负数" in prompt

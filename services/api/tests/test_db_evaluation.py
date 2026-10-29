@@ -46,6 +46,15 @@ INCOME_GATE = {
     "unit": "CNY",
 }
 
+CREDIT_GATE = {
+    "op": "compare",
+    "factKey": "creditRecord",
+    "period": "assessment",
+    "comparator": "eq",
+    "value": True,
+    "unit": "boolean",
+}
+
 
 # ------------------------------------------------------------------ 构造工具
 
@@ -218,6 +227,26 @@ def test_public_list_filters_by_region_and_as_of(repo):
         limit=20,
     )
     assert len(december.items) == 2  # 六月到期的那项不再适用
+
+
+def test_public_list_region_includes_national_policies(repo):
+    """按区划筛要带上全国性政策，否则深圳企业看不到国家税收政策。"""
+
+    local_id, _ = publish_policy(repo, expressions=[INDUSTRY_GATE], region="440300")
+    national_id, _ = publish_policy(repo, expressions=[INDUSTRY_GATE], region="CN")
+    other_id, _ = publish_policy(repo, expressions=[INDUSTRY_GATE], region="440100")
+
+    shenzhen = repo.list_public_policies(
+        status=None, policy_type=None, region="440300", as_of=None, cursor=None, limit=20
+    )
+    assert {item.id for item in shenzhen.items} == {local_id, national_id}
+
+    national = repo.list_public_policies(
+        status=None, policy_type=None, region="CN", as_of=None, cursor=None, limit=20
+    )
+    # 传 CN 只取全国性政策，不反向带出其它区划。
+    assert {item.id for item in national.items} == {national_id}
+    assert other_id not in {item.id for item in national.items}
 
 
 def test_public_list_cursor_is_bound_to_the_filters(repo):
@@ -424,6 +453,54 @@ def test_fact_change_is_scoped_to_the_exact_period(repo):
     ]
     # 两条条件只有读 2025 的那条受影响。
     assert len(reason.changed_criterion_ids) == 1
+
+
+def test_revoking_a_credit_record_makes_the_old_run_stale(repo):
+    """``creditRecord`` 记的是**核验时点**的状态，不是某段期间的平均值（M2 P1）。
+
+    诚信记录可能在判断之后被撤销，而 ``(key, period)`` 一点没变——系统不追溯「当时
+    的状态」，而是要求提交前重新核验后 PATCH：PATCH 改 ``factVersion`` 并写一条失效
+    事件，原 run 立刻变 stale。所以页面上「当前有效」的前提是事实没被改过，而不是
+    这一期间内状态恒定。
+    """
+
+    profile = normalize_profile(
+        EnterpriseInput.model_validate(
+            {
+                "nameSynthetic": "合成企业A",
+                "period": YEAR,
+                "facts": [
+                    {"key": "region", "value": "440300", "unit": "code", "period": YEAR, "source": "user_input"},
+                    {"key": "industry", "value": "C39", "unit": "code", "period": YEAR, "source": "user_input"},
+                    {"key": "creditRecord", "value": True, "unit": "boolean", "period": YEAR, "source": "user_input"},
+                ],
+            }
+        )
+    )
+    enterprise = repo.create_enterprise(profile=profile, trace_id=str(uuid4()))
+    policy_id, _ = publish_policy(repo, expressions=[CREDIT_GATE])
+
+    run = run_assessment(repo, enterprise.id, [policy_id])
+    assert run.assessments[0].result == "satisfied"
+    assert repo.get_run(run.id).assessments[0].validity == "current"
+
+    update = FactUpdate.model_validate(
+        {"value": False, "unit": "boolean", "period": YEAR, "source": "user_input"}
+    )
+    updated = repo.update_fact(
+        enterprise_id=enterprise.id,
+        fact=normalize_fact_update(key="creditRecord", update=update, profile_period=PERIOD),
+        expected_fact_version=enterprise.fact_version,
+        trace_id=str(uuid4()),
+    )
+    assert updated.fact_version != enterprise.fact_version
+
+    stale = repo.get_run(run.id).assessments[0]
+    assert stale.validity == "stale"
+    # 快照里的结论保持原样，只多一条「事实已变」。
+    assert stale.result == "satisfied"
+    assert [reason.code for reason in stale.stale_reasons] == ["fact_changed"]
+    assert [ref.key for ref in stale.stale_reasons[0].changed_fact_refs] == ["creditRecord"]
 
 
 def test_publishing_a_new_version_makes_the_old_run_stale(repo):

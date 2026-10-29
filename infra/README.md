@@ -41,12 +41,15 @@ docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exe
   psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/003_trace_step_details.sql
 docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exec db `
   psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/004_invalidation_event_period.sql
+docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exec db `
+  psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/005_fact_dictionary_extension.sql
 
 # 云 RDS 或本机 PG
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/001_init.sql
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/002_evaluation_and_idempotency.sql
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/003_trace_step_details.sql
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/004_invalidation_event_period.sql
+psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/005_fact_dictionary_extension.sql
 ```
 
 `infra/sql/001_init.sql` 建 13 张表（policy、policy_version、policy_source、policy_criterion、policy_validation_finding、enterprise、enterprise_fact、assessment_run、assessment、assessment_dependency、invalidation_event、trace_step、schema_migration）、启用 `vector` 扩展、创建 updated_at / 已发布版本保护 / 只追加表三类触发器，并在末尾写入 `schema_migration('001_init', ...)`。脚本开 `BEGIN/COMMIT`、全部使用 `IF NOT EXISTS`/`CREATE OR REPLACE`，可重复执行。
@@ -74,9 +77,18 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/004_invalidation_event_period
 
 执行 004 后基础表仍为 14 张（只加列）。已执行过 001—003 的库（含云 RDS）按序补执行 004 即可。
 
+`infra/sql/005_fact_dictionary_extension.sql` 把事实字典从 10 键扩到 16 键（契约 `1.0.0-rc.3`）：
+
+- `enterprise_fact_key_check` 重建为 16 个键：新增 `revenue`、`equityFinancing`、`rdExpenseIncrease`、`rdExpenseRevenueRatio`、`rdAddDeductionClaimed`、`creditRecord`。
+- `enterprise_fact_unit_check` 补 `ratio`（占比用十进制小数，3% 存 `0.03`）。
+- `enterprise_fact_key_unit` 同步配对：3 个新金额键归入 `CNY`（`rdExpenseIncrease` 允许负数，是本年减上年的增量），`rdExpenseRevenueRatio` 对 `ratio`，3 个新布尔键对 `boolean`。
+- 只放宽允许集合，不改既有键、不删行；增量与占比按「预计算事实」入库，不新增算子。
+
+执行 005 后基础表仍为 14 张（只换约束）。已执行过 001—004 的库（含云 RDS）补执行 005 即可；`schema_migration` 应增至五行。
+
 > **2026-10-26 修正**：002 早期版本第 4 节用 `ALTER TABLE trace_step DROP TRIGGER IF EXISTS ...` 删触发器，这不是合法语法（`DROP TRIGGER` 是独立语句；`ALTER TABLE` 下也没有 `DROP TRIGGER IF EXISTS` 形式），执行会在该行报 `syntax error at or near "IF"`。已改为独立语句 `DROP TRIGGER IF EXISTS trace_step_no_update_delete ON trace_step;`，并在修正后连续执行两遍验证（退出码 0，`trace_step_status_check` 为 `ok/needs_review/retryable_error/fatal_error`）。由于脚本整体在一个事务里，旧的报错不会留下半成品结构；若 `schema_migration` 里已有 002 行但结构未变，先按 [local/README.md](local/README.md) 的「002 迁移」一节核对触发器与约束，再重跑 002。
 
-迁移约定：新变更写 `004_*.sql` 之后的下一个序号，不改历史脚本；每条迁移同样登记 `schema_migration`。
+迁移约定：新变更写 `005_*.sql` 之后的下一个序号，不改历史脚本；每条迁移同样登记 `schema_migration`。
 
 ## 4. 云端资源状态（截至 2026-10-23）
 
@@ -90,7 +102,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/004_invalidation_event_period
 | 登录方式 | 密码（用户 `root`） | 密码不入文档；建议后续换成密钥对 |
 | CodeArts / Skills | 本人 2026-10-23 告知已开通（未在控制台复核） | **本项目不接入**：队长 2026-10-23 决定，开发过程记录以实际使用的编码工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
 | Redis（DCS） | **已购买并实测连通（2026-10-23）**：`huice-redis`，Redis 7.0（`INFO server` 报 `redis_version:7.x`），**主备**，1 GB，内网 `192.168.0.38:6379` | 在 ECS `huice-api-01` 上 `AUTH` 返回 `OK`、`PING` 返回 `PONG`；密码只进服务器 `.env`，不入库不入文档。**2026-10-26 复测**：`/dev/tcp/192.168.0.38/6379` 可连、`redis-cli --askpass PING` → `PONG`，控制台显示小版本 `7.2.11.5`，白名单已含 ECS 内网 `192.168.0.86`（2026-10-24 的「连接被拒」不复现）。2026-10-26 起判断链路有版本化求值缓存（键前缀 `huice:eval:v1:`，TTL 300 秒），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；Redis 不可达时自动按「未命中重算」执行 |
-| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql` 尚未执行**，11/08 部署时补齐 |
+| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql` 与 `005_fact_dictionary_extension.sql` 尚未执行**，11/08 部署时补齐 |
 | OBS（对象存储） | **已购买并建桶（2026-10-23）**：桶 `huice-policies`，**私有**，区域 `cn-south-1`（华南-广州），endpoint `obs.cn-south-1.myhuaweicloud.com` | 区域级服务，不进 VPC；`ObsObjectStore` 已用 `esdk-obs-python` 3.26.6 实现（`obs/<uuid>` 命名空间、失败映射 503），**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项：写入→独立客户端读回字节、删除后 404、两次写入键不冲突、导入正文真正落桶、不可写桶 503 且不泄露凭证，见 §4.3）；AK/SK 只存于 ECS 的 `/etc/huice/api.env`（本地联调用过的一对因失败输出误打印已作废重建） |
 | Docker Desktop + WSL2（本地） | WSL 3.0.3.0 + Docker Desktop 4.96.3 | 已解除，本地 compose 可用 |
 
@@ -137,7 +149,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 ⚠️ **凭证不会被 pytest 打印**：用例失败时 pytest 会显示夹具取值，所以凭证装在 `Credentials` 数据类里（`__repr__` 固定输出 `<redacted>`），带密钥的 `Settings` 只在辅助函数内部临时构造、不绑定到用例局部变量。2026-10-27 首次实测时旧版本把 `Settings(... obs_ak=..., obs_sk=...)` 直接当夹具返回，一次断言失败就把 AK/SK 打进了终端——该密钥已作废重建，新版已改为上述写法。**不要把 `pytest -l`（`--showlocals`）与这两个 `-m` 用例一起用。**
 
-验证缺口（本地已闭合）：`001_init.sql` 已在真实 PostgreSQL 16.15 上执行两次（第二次仅 `NOTICE ... already exists`），`002_evaluation_and_idempotency.sql`、`003_trace_step_details.sql` 与 `004_invalidation_event_period.sql` 均连续执行两遍通过（2026-10-26 / 2026-10-27），`@pytest.mark.db` 用例 **34 项全部通过**（2026-10-27，见 [local/README.md](local/README.md)）；端到端导入/读回与判断链路冒烟见 [local/README.md](local/README.md)。**缓存已闭合（本地）**：`redis==8.1.0` 入锁后，`tests/test_cache_redis_live.py` 在本地 Redis 7.4 上实测键写入、`TTL≤300`、二次命中与换键（3 passed）；未闭合部分是云端部署后的命中（云端 API 尚未部署）。**云端** RDS 已于 2026-10-23 在 ECS 上实测连通并完成建表（PostgreSQL 16.13、`vector` 0.8.0、13 张表），**2026-10-26 23:47 补齐 002/003**（`schema_migration` 三行齐全，结构与本地一致；`004_invalidation_event_period.sql` 待 11/08 部署补齐）、Redis 实测 `PONG`；OBS 已购买并建桶，`obs` 路径**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项，见 §4.3）；模型调用改由 DeepSeek 承担（MaaS 按队长 2026-10-23 决定不再使用），**2026-10-27 已用真实 Key 联调通过**（`-m deepseek` 3 项）——`MODEL_MODE` 仍保持 `fixture` 作为默认值，切到 `deepseek` 由 `.env` 决定，云端切换随 11/08 部署验证。
+验证缺口（本地已闭合）：`001_init.sql` 已在真实 PostgreSQL 16.15 上执行两次（第二次仅 `NOTICE ... already exists`），`002_evaluation_and_idempotency.sql`、`003_trace_step_details.sql`、`004_invalidation_event_period.sql` 与 `005_fact_dictionary_extension.sql` 均连续执行两遍通过（2026-10-26 / 2026-10-27 / 2026-10-28），`@pytest.mark.db` 用例 **34 项全部通过**（2026-10-28，见 [local/README.md](local/README.md)）；端到端导入/读回与判断链路冒烟见 [local/README.md](local/README.md)。**缓存已闭合（本地）**：`redis==8.1.0` 入锁后，`tests/test_cache_redis_live.py` 在本地 Redis 7.4 上实测键写入、`TTL≤300`、二次命中与换键（3 passed）；未闭合部分是云端部署后的命中（云端 API 尚未部署）。**云端** RDS 已于 2026-10-23 在 ECS 上实测连通并完成建表（PostgreSQL 16.13、`vector` 0.8.0、13 张表），**2026-10-26 23:47 补齐 002/003**（`schema_migration` 三行齐全，结构与本地一致；`004_invalidation_event_period.sql` 与 `005_fact_dictionary_extension.sql` 待 11/08 部署补齐）、Redis 实测 `PONG`；OBS 已购买并建桶，`obs` 路径**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项，见 §4.3）；模型调用改由 DeepSeek 承担（MaaS 按队长 2026-10-23 决定不再使用），**2026-10-27 已用真实 Key 联调通过**（`-m deepseek` 3 项）——`MODEL_MODE` 仍保持 `fixture` 作为默认值，切到 `deepseek` 由 `.env` 决定，云端切换随 11/08 部署验证。
 
 ## 5. 本地开发 → 云端部署检查清单
 
@@ -186,7 +198,8 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 - [x] 记录 `vector` 版本：云上实际安装 **0.8.0**，本地 **0.8.7**，同为 0.8 系列，未发现语法差异
 - [x] `001_init.sql` 在 RDS 上执行成功并登记 `schema_migration`（2026-10-23，13 张表，无超级用户专属语句报错）
 - [x] `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql` 已在云 RDS 执行（**2026-10-26 23:47**，`schema_migration` 记 `002` 23:47:03、`003` 23:47:13）；已核对：`trace_step` 的 `input_summary/output_summary/policy_id/policy_version/error_code/human_action` 六列存在、`trace_step_status_check`（`ok/needs_review/retryable_error/fatal_error`）与 `trace_step_stage_check`（九个契约阶段）定义与本地一致、`trace_step_no_update_delete` 触发器仍在
-- [ ] `004_invalidation_event_period.sql` 尚未在云 RDS 执行（11/08 部署时补齐，`schema_migration` 应增至四行）；执行后核对 `invalidation_event` 的 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束与 `invalidation_event_run_idx` 索引存在
+- [ ] `004_invalidation_event_period.sql` 尚未在云 RDS 执行（11/08 部署时补齐，`schema_migration` 应增至五行）；执行后核对 `invalidation_event` 的 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束与 `invalidation_event_run_idx` 索引存在
+- [ ] `005_fact_dictionary_extension.sql` 尚未在云 RDS 执行（11/08 部署时补齐，紧接 004 之后）；执行后核对 `enterprise_fact` 的三个约束定义：`enterprise_fact_key_check` 含 16 键、`enterprise_fact_unit_check` 含 `ratio`、`enterprise_fact_key_unit` 每组配对正确
 - [ ] 时区复验：库内 UTC，派生 `closed` 使用 `AT TIME ZONE 'Asia/Shanghai'`，用一条已过期政策验证。**注意**：RDS 实例默认 `timezone` 为 `Asia/Shanghai`（`schema_migration.applied_at` 显示 `+08`），与本地容器（UTC）不同；应用侧 `db.py` 每连接 `SET TIME ZONE 'UTC'`，需在首次云端联调时用实际数据确认派生结果一致
 - [ ] `storage_key` 命名空间：本地写 `local/<uuid>`，云端写 `obs/...`；**旧 key 不迁移**，演示数据重新导入
 - [ ] 演示数据只用合成的企业画像，不复用本地数据卷
@@ -238,7 +251,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 services\api\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir services/api --host 127.0.0.1 --port 8000
 
 # 正常（2026-10-23 实测：连本地 compose 的 PostgreSQL 16.15）
-curl.exe -i http://127.0.0.1:8000/api/v1/health          # 200 {"status":"ok","version":"1.0.0-rc.2"} + X-Trace-Id
+curl.exe -i http://127.0.0.1:8000/api/v1/health          # 200 {"status":"ok","version":"1.0.0-rc.3"} + X-Trace-Id
 
 # 停掉数据库后（实测：docker compose stop db 后返回 503，X-Trace-Id 与 body.traceId 一致）
 curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":"DEPENDENCY_UNAVAILABLE",...}}
@@ -260,7 +273,7 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 `infra/deploy/deploy.ps1` 未删除，仍是占位文件；本阶段以 `deploy/README.md` 的手工步骤为准。
 
-**执行前提**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **003**（`schema_migration` 三行齐全，2026-10-26 补齐），部署时需再补 `004_invalidation_event_period.sql`。MaaS 已不在范围内，模型侧首轮部署用 `MODEL_MODE=fixture`（DeepSeek 尚未用真实 Key 联调）；OBS 未在真实桶验证前保持 `OBJECT_STORE_MODE=local`。
+**执行前提**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **003**（`schema_migration` 三行齐全，2026-10-26 补齐），部署时需再补 `004_invalidation_event_period.sql` 与 `005_fact_dictionary_extension.sql`。MaaS 已不在范围内，模型侧首轮部署用 `MODEL_MODE=fixture`（DeepSeek 尚未用真实 Key 联调）；OBS 未在真实桶验证前保持 `OBJECT_STORE_MODE=local`。
 
 上云前的准备项、环境变量对照与目标时间表见第 5 节；本地先行开发不等于可以推迟到 11/14 再部署——计划的云端节点是 11/08。
 

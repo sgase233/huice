@@ -17,6 +17,7 @@ from app.agents.profile import (
     to_wire_fact,
 )
 from app.domain.rules import CriterionRule
+from app.integrations.storage import NATIONAL_REGION_CODE
 from app.errors import ApiProblem
 from app.schemas import (
     Criterion,
@@ -274,7 +275,8 @@ class FakeRepository:
                 continue
             if policy_type is not None and draft.policy_type != policy_type:
                 continue
-            if region is not None and draft.region != region:
+            # 与真实仓储同一条口径：按区划筛 = 该区划 + 全国性政策（NATIONAL_REGION_CODE）。
+            if region is not None and draft.region not in (region, NATIONAL_REGION_CODE):
                 continue
             items.append(
                 PolicySummary(

@@ -289,8 +289,11 @@ _SYSTEM_PROMPT = (
     "每项形如 {\"title\":string,\"expression\":object,\"quote\":string,\"section\":string}。"
     "expression 只能是 and/or/not/compare/date/industry_exclusion/quarterly_average 之一，"
     "factKey 只能取 region/industry/establishedDate/taxableIncome/rdExpense/"
-    "assetsStart/assetsEnd/employeeCountStart/employeeCountEnd/rdActivity；"
-    "数值用十进制字符串，unit 用 CNY/person/code/date/boolean。"
+    "assetsStart/assetsEnd/employeeCountStart/employeeCountEnd/rdActivity/"
+    "revenue/equityFinancing/rdExpenseIncrease/rdExpenseRevenueRatio/"
+    "rdAddDeductionClaimed/creditRecord；"
+    "数值用十进制字符串，unit 用 CNY/person/code/date/boolean/ratio"
+    "（rdExpenseRevenueRatio 只能用 ratio，取值是小数，3% 写 0.03）。"
     "quote 必须是原文中一字不差的片段，找不到原文就不要输出该项。"
 )
 

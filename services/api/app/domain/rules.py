@@ -37,13 +37,32 @@ FACT_UNITS: Mapping[str, str] = {
     "employeeCountStart": "person",
     "employeeCountEnd": "person",
     "rdActivity": "boolean",
+    # 2026-10-28 扩展（rc.3）：地方通知用的事实。增量与占比按「预计算事实」处理，
+    # 由标注方给出算好的数值，规则引擎只做 compare，不新增 delta / ratio 算子。
+    "revenue": "CNY",
+    "equityFinancing": "CNY",
+    "rdExpenseIncrease": "CNY",
+    "rdExpenseRevenueRatio": "ratio",
+    "rdAddDeductionClaimed": "boolean",
+    "creditRecord": "boolean",
 }
 
 NUMERIC_KEYS = frozenset(
-    {"taxableIncome", "rdExpense", "assetsStart", "assetsEnd", "employeeCountStart", "employeeCountEnd"}
+    {
+        "taxableIncome",
+        "rdExpense",
+        "assetsStart",
+        "assetsEnd",
+        "employeeCountStart",
+        "employeeCountEnd",
+        "revenue",
+        "equityFinancing",
+        "rdExpenseIncrease",
+        "rdExpenseRevenueRatio",
+    }
 )
 CODE_KEYS = frozenset({"region", "industry"})
-BOOLEAN_KEYS = frozenset({"rdActivity"})
+BOOLEAN_KEYS = frozenset({"rdActivity", "rdAddDeductionClaimed", "creditRecord"})
 
 QUARTERLY_METRICS: Mapping[str, tuple[str, str, str]] = {
     # metric -> (起始键, 结束键, 单位)
@@ -270,12 +289,15 @@ def _validate_compare(node: dict, problems: list[Problem], *, path: str, depth: 
         return
 
     value = node.get("value")
-    if expected == "CNY" or expected == "person":
+    if expected in ("CNY", "person", "ratio"):
         if not isinstance(value, str) or not _DECIMAL_RE.match(value):
             problems.append(Problem("EXPRESSION_VALUE", "数值条件的取值必须是十进制字符串。", _join(path, "value")))
             return
-        if unit == "person" and value.startswith("-"):
+        # 金额键允许负数：``rdExpenseIncrease`` 是「本年减上年」的增量，下降时为负。
+        if expected == "person" and value.startswith("-"):
             problems.append(Problem("EXPRESSION_VALUE", "人数不能为负数。", _join(path, "value")))
+        elif expected == "ratio" and value.startswith("-"):
+            problems.append(Problem("EXPRESSION_VALUE", "比例不能为负数。", _join(path, "value")))
 
     elif expected == "code":
         if not isinstance(value, str) or not value.strip():
@@ -487,7 +509,7 @@ def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]
 
     comparator = str(node.get("comparator"))
     unit = FACT_UNITS.get(key)
-    if unit in ("CNY", "person"):
+    if unit in ("CNY", "person", "ratio"):
         left = fact.value if isinstance(fact.value, Decimal) else _to_decimal(fact.value)
         right = _to_decimal(node.get("value"))
         if left is None or right is None:
@@ -669,6 +691,191 @@ class CriterionRule:
     title: str
     expression: Mapping[str, Any]
     review_finding: str = "none"
+
+
+POLICY_UNSATISFIABLE = "POLICY_UNSATISFIABLE"
+
+#: 会挡住发布（API-07）的政策级 finding。抽取阶段的 ``EXTRACTION_*`` 是过程提示
+#: （``status=needs_review``），人工补录条款后本就消失，因此不在其列。
+POLICY_BLOCKING_CODES = frozenset({POLICY_UNSATISFIABLE})
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyContradiction:
+    """两条条款合起来永远不成立——政策对任何企业都只能是 ``not_satisfied``。"""
+
+    code: str
+    message: str
+    criterion_ids: tuple[Any, ...]
+
+
+def policy_contradictions(criteria: Iterable[CriterionRule]) -> list[PolicyContradiction]:
+    """找出「合取为空」的条款对（跨条款，单条 AST 校验看不出来）。
+
+    政策级一律按 AND 合并（见 :func:`aggregate`），所以两条顶层原子条件若在同一
+    事实、同一期间上要求互斥的取值，这条政策对任何企业都不可能是 ``satisfied``：
+    管理员看到的是「不达标」，实际原因是标注把原文的「或」写成了两条并列的「且」。
+    M3 的 SRDI 曾把「营收≥1000 万」与「营收<1000 万」并列，正是这一类。
+
+    只看顶层 ``compare`` 节点。``or`` / ``not`` / ``quarterly_average`` 等节点内部
+    的限制不在此列——OR 分支本来就允许互斥，报出来只会是误报。期间只在写法完全
+    相同时合并（同为 ``assessment``，或相同的显式起止日期）：``assessment`` 展开成
+    哪一段要等运行时才知道，草稿阶段不能拿它去和写死的日期比。
+
+    单位不一致、取值不是合法十进制、比较符不在枚举内的组合一律跳过，交给单条校验
+    去报，这里不重复报错也不猜。
+    """
+
+    groups: dict[tuple[str, Any], list[tuple[CriterionRule, Mapping[str, Any]]]] = {}
+    for rule in criteria:
+        node = rule.expression
+        if not isinstance(node, Mapping) or node.get("op") != "compare":
+            continue
+        key = node.get("factKey")
+        period = _period_identity(node.get("period"))
+        if not isinstance(key, str) or key not in FACT_UNITS or period is None:
+            continue
+        groups.setdefault((key, period), []).append((rule, node))
+
+    contradictions: list[PolicyContradiction] = []
+    for (key, _period), members in groups.items():
+        for left_index, (left_rule, left) in enumerate(members):
+            for right_rule, right in members[left_index + 1 :]:
+                if left_rule.id == right_rule.id:
+                    continue
+                reason = _disjoint_reason(left, right)
+                if reason is None:
+                    continue
+                contradictions.append(
+                    PolicyContradiction(
+                        code=POLICY_UNSATISFIABLE,
+                        message=(
+                            f"条款「{left_rule.title}」（{left_rule.id}）与「{right_rule.title}」"
+                            f"（{right_rule.id}）对同一事实 {key}、同一期间的要求互斥（{reason}），"
+                            "政策级按「且」合并后永远无法满足。"
+                            "若原文是「或」，请把两个分支写进同一条条件的 or 节点。"
+                        ),
+                        criterion_ids=(left_rule.id, right_rule.id),
+                    )
+                )
+    return contradictions
+
+
+def _period_identity(raw: Any) -> Any:
+    """期间的可比标识；``None`` 表示这条条件不参与跨条款比较（写法不完整）。"""
+
+    if raw == "assessment":
+        return "assessment"
+    if isinstance(raw, Mapping):
+        start, end = raw.get("startDate"), raw.get("endDate")
+        if isinstance(start, str) and isinstance(end, str):
+            return (start, end)
+    return None
+
+
+def _disjoint_reason(left: Mapping[str, Any], right: Mapping[str, Any]) -> str | None:
+    """两条同事实、同期间、同单位的 ``compare`` 是否互斥；互斥时返回人类可读的说明。"""
+
+    if left.get("unit") != right.get("unit"):
+        return None
+    left_op, right_op = left.get("comparator"), right.get("comparator")
+    if left_op not in COMPARATORS or right_op not in COMPARATORS:
+        return None
+    left_value, right_value = left.get("value"), right.get("value")
+
+    if left.get("unit") in ("CNY", "person", "ratio"):
+        left_number, right_number = _decimal_of(left_value), _decimal_of(right_value)
+        if left_number is None or right_number is None:
+            return None
+        return _numeric_disjoint(left_op, left_number, right_op, right_number)
+
+    # code / boolean：只有 eq 与 ne，互斥只可能是「同一个取值又要又不要」或「两个不同的等值」。
+    if left_op == "eq" and right_op == "eq" and left_value != right_value:
+        return f"eq {left_value} 与 eq {right_value}"
+    if {left_op, right_op} == {"eq", "ne"}:
+        equal_value = left_value if left_op == "eq" else right_value
+        unequal_value = right_value if left_op == "eq" else left_value
+        if equal_value == unequal_value:
+            return f"eq {equal_value} 与 ne {unequal_value}"
+    return None
+
+
+def _decimal_of(value: Any) -> Decimal | None:
+    if not isinstance(value, str) or not _DECIMAL_RE.match(value):
+        return None
+    try:
+        return Decimal(value)
+    except InvalidOperation:  # pragma: no cover - 正则已排除
+        return None
+
+
+def _numeric_bounds(
+    comparator: str, value: Decimal
+) -> tuple[Decimal | None, bool, Decimal | None, bool] | None:
+    """把比较符化成区间 ``(下界, 下界是否可取, 上界, 上界是否可取)``；``ne`` 不是区间。"""
+
+    if comparator == "gt":
+        return value, False, None, False
+    if comparator == "gte":
+        return value, True, None, False
+    if comparator == "lt":
+        return None, False, value, False
+    if comparator == "lte":
+        return None, False, value, True
+    if comparator == "eq":
+        return value, True, value, True
+    return None
+
+
+def _numeric_disjoint(
+    left_op: str, left_value: Decimal, right_op: str, right_value: Decimal
+) -> str | None:
+    left_bounds = _numeric_bounds(left_op, left_value)
+    right_bounds = _numeric_bounds(right_op, right_value)
+    if left_bounds is None or right_bounds is None:
+        # 至少一侧是 ne：区间不是单段，只有另一侧把取值钉死在同一数值时才互斥。
+        point = left_bounds if left_bounds is not None else right_bounds
+        unequal = right_value if left_bounds is not None else left_value
+        if point is not None and point[0] == unequal == point[2]:
+            other_op = left_op if left_bounds is not None else right_op
+            return f"{other_op} {point[0]} 与 ne {unequal}"
+        return None
+
+    low, low_inclusive = _tighter_low(left_bounds, right_bounds)
+    high, high_inclusive = _tighter_high(left_bounds, right_bounds)
+    if low is None or high is None:
+        return None
+    if low > high or (low == high and not (low_inclusive and high_inclusive)):
+        return f"{left_op} {left_value} 与 {right_op} {right_value}"
+    return None
+
+
+def _tighter_low(
+    left: tuple[Decimal | None, bool, Decimal | None, bool],
+    right: tuple[Decimal | None, bool, Decimal | None, bool],
+) -> tuple[Decimal | None, bool]:
+    low, low_inclusive = left[0], left[1]
+    if right[0] is None:
+        return low, low_inclusive
+    if low is None or right[0] > low:
+        return right[0], right[1]
+    if right[0] == low:
+        return low, low_inclusive and right[1]
+    return low, low_inclusive
+
+
+def _tighter_high(
+    left: tuple[Decimal | None, bool, Decimal | None, bool],
+    right: tuple[Decimal | None, bool, Decimal | None, bool],
+) -> tuple[Decimal | None, bool]:
+    high, high_inclusive = left[2], left[3]
+    if right[2] is None:
+        return high, high_inclusive
+    if high is None or right[2] < high:
+        return right[2], right[3]
+    if right[2] == high:
+        return high, high_inclusive and right[3]
+    return high, high_inclusive
 
 
 @dataclass(slots=True)

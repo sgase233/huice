@@ -16,7 +16,7 @@ export type Period = {
   endDate: Date;
 };
 
-export type FactKey = "region" | "industry" | "establishedDate" | "taxableIncome" | "rdExpense" | "rdActivity" | "employeeCountStart" | "employeeCountEnd" | "assetsStart" | "assetsEnd";
+export type FactKey = "region" | "industry" | "establishedDate" | "taxableIncome" | "rdExpense" | "rdActivity" | "employeeCountStart" | "employeeCountEnd" | "assetsStart" | "assetsEnd" | "revenue" | "equityFinancing" | "rdExpenseIncrease" | "rdExpenseRevenueRatio" | "rdAddDeductionClaimed" | "creditRecord";
 
 export type FactUnit = "code" | "date" | "CNY" | "boolean" | "person" | "ratio";
 

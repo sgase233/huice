@@ -278,9 +278,21 @@ _METRIC_FAMILY_BY_KEY: Mapping[str, str] = {
     "assetsEnd": "assets",
     "employeeCountStart": "employeeCount",
     "employeeCountEnd": "employeeCount",
+    # 2026-10-29 补 rc.3 的金额键：不映射就等于不做引文数值核对（静默放行）。
+    # 「研发费用增量」单独成族，不与「研发费用」合并——否则只有研发费用阈值的引文
+    # 也能通过增量的条件，属于放宽方向的错判。
+    "revenue": "revenue",
+    "equityFinancing": "equityFinancing",
+    "rdExpenseIncrease": "rdExpenseIncrease",
+    # rdExpenseRevenueRatio 有意不映射：引文写「3%」而条件值是 0.03，按金额阈值
+    # 比对必然误报。比例的引文核对留给人工复核。
 }
 
 _FAMILY_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("研发费用增量", "rdExpenseIncrease"),
+    ("研发投入增量", "rdExpenseIncrease"),
+    ("营业收入", "revenue"),
+    ("股权融资", "equityFinancing"),
     ("研发费用", "rdExpense"),
     ("研发投入", "rdExpense"),
     ("应纳税所得额", "taxableIncome"),
@@ -517,6 +529,9 @@ def _family_label(family: str) -> str:
         "taxableIncome": "应纳税所得额",
         "assets": "资产总额",
         "employeeCount": "从业人员数",
+        "revenue": "营业收入",
+        "equityFinancing": "股权融资",
+        "rdExpenseIncrease": "研发费用增量",
     }.get(family, family)
 
 

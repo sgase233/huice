@@ -15,6 +15,7 @@ from app.domain.rules import (
     FACT_UNITS,
     INSUFFICIENT,
     NOT_SATISFIED,
+    POLICY_UNSATISFIABLE,
     SATISFIED,
     CriterionRule,
     FactSnapshot,
@@ -22,6 +23,7 @@ from app.domain.rules import (
     aggregate,
     evaluate_expression,
     evaluate_policy,
+    policy_contradictions,
     validate_expression,
 )
 
@@ -358,3 +360,267 @@ def test_aggregate_priority(results, expected):
     from app.domain.rules import Evaluation
 
     assert aggregate(Evaluation(result, "", [], []) for result in results) == expected
+
+
+# ------------------------------------------------------ 事实字典扩展（rc.3，2026-10-28）
+
+
+def test_new_keys_are_registered_with_their_units():
+    assert FACT_UNITS["revenue"] == "CNY"
+    assert FACT_UNITS["equityFinancing"] == "CNY"
+    assert FACT_UNITS["rdExpenseIncrease"] == "CNY"
+    assert FACT_UNITS["rdExpenseRevenueRatio"] == "ratio"
+    assert FACT_UNITS["rdAddDeductionClaimed"] == "boolean"
+    assert FACT_UNITS["creditRecord"] == "boolean"
+
+
+@pytest.mark.parametrize(
+    "value, code",
+    [("3%", "EXPRESSION_VALUE"), ("-0.1", "EXPRESSION_VALUE"), ("", "EXPRESSION_VALUE")],
+)
+def test_ratio_condition_rejects_non_decimal_and_negative_values(value, code):
+    """比例只接受非负十进制字符串：`3%` 这种写法在这里拦下，不让它进库。"""
+    problem_codes = [item.code for item in validate_expression(compare("rdExpenseRevenueRatio", "gte", value))]
+    assert code in problem_codes
+
+
+def test_ratio_condition_rejects_a_wrong_unit():
+    expression = {**compare("rdExpenseRevenueRatio", "gte", "0.03"), "unit": "CNY"}
+    assert "EXPRESSION_UNIT" in [item.code for item in validate_expression(expression)]
+
+
+def test_ratio_is_compared_numerically():
+    expression = compare("rdExpenseRevenueRatio", "gte", "0.03")
+    assert validate_expression(expression) == []
+    assert (
+        evaluate_expression(
+            expression, table(fact("rdExpenseRevenueRatio", Decimal("0.035"))), period=YEAR
+        ).result
+        == SATISFIED
+    )
+    assert (
+        evaluate_expression(
+            expression, table(fact("rdExpenseRevenueRatio", Decimal("0.02"))), period=YEAR
+        ).result
+        == NOT_SATISFIED
+    )
+
+
+def test_a_negative_expense_increment_is_allowed_and_compared():
+    """``rdExpenseIncrease`` 是「本年减上年」的增量，下降时为负，校验不能拦。"""
+    expression = compare("rdExpenseIncrease", "gte", "2000000")
+    assert validate_expression(expression) == []
+    outcome = evaluate_expression(
+        expression, table(fact("rdExpenseIncrease", Decimal("-500000"))), period=YEAR
+    )
+    assert outcome.result == NOT_SATISFIED
+
+
+@pytest.mark.parametrize("key", ["rdAddDeductionClaimed", "creditRecord"])
+def test_new_boolean_keys_only_accept_booleans(key):
+    assert validate_expression(compare(key, "eq", True)) == []
+    assert "EXPRESSION_VALUE" in [
+        item.code for item in validate_expression(compare(key, "eq", "true"))
+    ]
+    assert "EXPRESSION_COMPARATOR" in [
+        item.code for item in validate_expression(compare(key, "gte", True))
+    ]
+    assert (
+        evaluate_expression(compare(key, "eq", True), table(fact(key, False)), period=YEAR).result
+        == NOT_SATISFIED
+    )
+
+
+def test_an_unknown_key_is_still_rejected():
+    assert "EXPRESSION_FACT_KEY" in [
+        item.code
+        for item in validate_expression(
+            {"op": "compare", "factKey": "invented", "period": "assessment", "comparator": "gte",
+             "value": "1", "unit": "CNY"}
+        )
+    ]
+
+
+# ------------------------------------------- 跨条款「合取为空」（政策永远不满足）
+
+SRDI_PERIOD = {"startDate": "2024-01-01", "endDate": "2024-12-31"}
+
+
+def rule(criterion_id: str, expression: dict) -> CriterionRule:
+    return CriterionRule(id=criterion_id, title=criterion_id, expression=expression)
+
+
+def test_srdi_revenue_pair_is_reported_as_unsatisfiable():
+    """M3 的 SRDI-004/005 原样：``revenue>=1000万`` 与 ``revenue<1000万`` 并列。
+
+    ``logic_group`` 不参与合并（政策级一律 AND），这两条同时生效时政策对任何企业
+    都只能是 ``not_satisfied``——用户看到「不达标」，实际是「或」被写成了「且」。
+    """
+
+    found = policy_contradictions(
+        [
+            rule("SRDI-004", compare("revenue", "gte", "10000000.00", period=SRDI_PERIOD)),
+            rule("SRDI-005", compare("revenue", "lt", "10000000.00", period=SRDI_PERIOD)),
+        ]
+    )
+    assert [item.code for item in found] == [POLICY_UNSATISFIABLE]
+    assert set(found[0].criterion_ids) == {"SRDI-004", "SRDI-005"}
+    assert "revenue" in found[0].message
+    assert "SRDI-004" in found[0].message and "SRDI-005" in found[0].message
+
+
+def test_the_same_contradiction_is_caught_under_the_assessment_period():
+    found = policy_contradictions(
+        [
+            rule("A", compare("taxableIncome", "lte", "3000000.00")),
+            rule("B", compare("taxableIncome", "gt", "5000000.00")),
+        ]
+    )
+    assert len(found) == 1
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("gte", "lte"),  # 闭区间有解：正好等于阈值
+        ("gte", "gt"),
+        ("lt", "lte"),
+        ("ne", "gte"),  # 大于阈值就一定不等于阈值
+        ("ne", "lt"),
+        ("ne", "ne"),
+    ],
+)
+def test_overlapping_bounds_are_not_reported(left, right):
+    assert (
+        policy_contradictions(
+            [
+                rule("A", compare("revenue", left, "10000000.00")),
+                rule("B", compare("revenue", right, "10000000.00")),
+            ]
+        )
+        == []
+    )
+
+
+def test_equal_point_ranges_are_disjoint():
+    found = policy_contradictions(
+        [
+            rule("A", compare("revenue", "eq", "10000000.00")),
+            rule("B", compare("revenue", "ne", "10000000.00")),
+        ]
+    )
+    assert len(found) == 1
+
+
+@pytest.mark.parametrize(
+    ("key", "left", "right"),
+    [
+        ("region", ("eq", "440300"), ("ne", "440300")),
+        ("region", ("eq", "440300"), ("eq", "440100")),
+        ("rdActivity", ("eq", True), ("eq", False)),
+        ("rdActivity", ("eq", True), ("ne", True)),
+    ],
+)
+def test_code_and_boolean_pairs_only_conflict_on_the_same_value(key, left, right):
+    found = policy_contradictions(
+        [rule("A", compare(key, left[0], left[1])), rule("B", compare(key, right[0], right[1]))]
+    )
+    assert len(found) == 1
+
+
+def test_different_periods_or_facts_are_never_compared():
+    other_year = {"startDate": "2025-01-01", "endDate": "2025-12-31"}
+    assert (
+        policy_contradictions(
+            [
+                rule("A", compare("revenue", "gte", "10000000.00", period=SRDI_PERIOD)),
+                rule("B", compare("revenue", "lt", "10000000.00", period=other_year)),
+            ]
+        )
+        == []
+    )
+    # assessment 展开成哪一段要等运行时才知道，草稿阶段不拿它和写死的日期比。
+    assert (
+        policy_contradictions(
+            [
+                rule("A", compare("revenue", "gte", "10000000.00")),
+                rule("B", compare("revenue", "lt", "10000000.00", period=SRDI_PERIOD)),
+            ]
+        )
+        == []
+    )
+    assert (
+        policy_contradictions(
+            [
+                rule("A", compare("revenue", "gte", "10000000.00", period=SRDI_PERIOD)),
+                rule("B", compare("rdExpense", "lt", "10000000.00", period=SRDI_PERIOD)),
+            ]
+        )
+        == []
+    )
+
+
+def test_mutually_exclusive_branches_inside_one_or_are_fine():
+    """两条互斥条件只要都写在同一个 or 节点里，就不是矛盾。"""
+
+    expression = {
+        "op": "or",
+        "children": [
+            compare("revenue", "lt", "10000000.00", period=SRDI_PERIOD),
+            compare("revenue", "gte", "10000000.00", period=SRDI_PERIOD),
+        ],
+    }
+    assert validate_expression(expression) == []
+    assert policy_contradictions([rule("SRDI", expression)]) == []
+
+
+def test_the_merged_or_ast_for_srdi_does_not_trip_the_check():
+    """给 M3 的修法：把两档合并成一条 or，检测器不再报。"""
+
+    merged = {
+        "op": "or",
+        "children": [
+            {
+                "op": "and",
+                "children": [
+                    compare("revenue", "lt", "10000000.00", period=SRDI_PERIOD),
+                    compare("equityFinancing", "gte", "20000000.00",
+                            period={"startDate": "2023-01-01", "endDate": "2024-12-31"}),
+                ],
+            },
+            {
+                "op": "and",
+                "children": [
+                    compare("revenue", "gte", "10000000.00", period=SRDI_PERIOD),
+                    compare("rdExpenseRevenueRatio", "gte", "0.03", period=SRDI_PERIOD),
+                ],
+            },
+        ],
+    }
+    assert validate_expression(merged) == []
+    assert (
+        policy_contradictions(
+            [
+                rule("SRDI-001", merged),
+                rule("SRDI-002", compare("rdExpense", "gte", "1000000.00", period=SRDI_PERIOD)),
+            ]
+        )
+        == []
+    )
+
+
+def test_every_disjoint_pair_is_reported_once():
+    found = policy_contradictions(
+        [
+            rule("A", compare("revenue", "gte", "10000000.00")),
+            rule("B", compare("revenue", "lt", "10000000.00")),
+            rule("C", compare("revenue", "eq", "5000000.00")),
+        ]
+    )
+    # A×B、A×C（5e6 < 1e7 → gte 1e7 与 eq 5e6 无交集）、B×C 有解。
+    assert sorted(item.criterion_ids for item in found) == [("A", "B"), ("A", "C")]
+
+
+def test_an_expression_that_is_not_an_atomic_compare_is_skipped():
+    assert policy_contradictions([rule("A", INDUSTRY_GATE)]) == []
+    assert policy_contradictions([rule("A", {})]) == []

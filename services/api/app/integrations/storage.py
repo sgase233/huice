@@ -68,6 +68,13 @@ _STATUS_EXPR = (
     "ELSE pv.review_status END"
 )
 
+#: 全国性政策 ``policy_version.region`` 的取值。行政区划码只覆盖地方，国家层面的
+#: 政策没有对应区划码，M3 在 `source_register.csv` 里统一记 ``CN``。
+#:
+#: API-02 按 region 过滤时的口径是「该区划 + 全国」，见 :meth:`list_public_policies`。
+#: 这是一个约定值而不是国标码，改它必须同时改 `source_register.csv` 与契约描述。
+NATIONAL_REGION_CODE = "CN"
+
 _INSERT_VERSION = """
 INSERT INTO policy_version (
     id, policy_id, version, title, policy_type, issuer, region, document_number,
@@ -444,7 +451,9 @@ class PolicyRepository:
     ) -> PolicyList:
         """只列已审核发布的政策，每项政策给最新发布版本。
 
-        ``asOf`` 只是元数据过滤（当天是否处于适用期），不用于挑历史版本；关闭状态
+        ``region`` 按「该区划 + 全国性政策」匹配：地方区划码只覆盖地方，全国性政策
+        记 :data:`NATIONAL_REGION_CODE`，只做等值会把深圳企业该适用的国家税收政策
+        藏掉。``asOf`` 只是元数据过滤（当天是否处于适用期），不用于挑历史版本；关闭状态
         由 :data:`_STATUS_EXPR` 按当前时刻派生，不落库。游标带上全部筛选条件，
         条件一变游标即失效，避免把上一组筛选的页边界套到新结果上。
         """
@@ -463,7 +472,15 @@ class PolicyRepository:
             WHERE pv.review_status = 'published'
               AND (%(status)s::text IS NULL OR {_STATUS_EXPR}::text = %(status)s)
               AND (%(policy_type)s::text IS NULL OR pv.policy_type::text = %(policy_type)s)
-              AND (%(region)s::text IS NULL OR pv.region = %(region)s)
+              -- 按 region 筛 = 该区划 + 全国性政策。区划码只覆盖地方，全国性政策记
+              -- NATIONAL_REGION_CODE；只做等值会把深圳企业该适用的国家税收政策全部
+              -- 藏掉（2026-10-29 按 M3 数据口径修）。方向只放宽不收紧：不会因为多加了
+              -- 全国政策而漏掉本来命中的地方政策。
+              AND (
+                    %(region)s::text IS NULL
+                    OR pv.region = %(region)s
+                    OR pv.region = %(national_region)s
+                  )
               AND (
                     %(as_of)s::date IS NULL
                     OR (pv.effective_from <= %(as_of)s::date
@@ -483,6 +500,7 @@ class PolicyRepository:
             "status": status,
             "policy_type": policy_type,
             "region": region,
+            "national_region": NATIONAL_REGION_CODE,
             "as_of": as_of,
             "after_ts": after_ts,
             "after_id": after_id,

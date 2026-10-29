@@ -62,14 +62,15 @@ docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d hu
 
 `001_init.sql` 自带 `BEGIN/COMMIT`、`IF NOT EXISTS` 与 `CREATE OR REPLACE`，可重复执行；重复执行不会重建数据。
 
-### 002 / 003 / 004 迁移（2026-10-26 起）
+### 002 / 003 / 004 / 005 迁移（2026-10-26 起）
 
-`002_evaluation_and_idempotency.sql` 增加抽取幂等记录、`assessment_run` 的期间/重算列、`assessment.snapshot`、`trace_step` 状态枚举与事实来源枚举的收口；`003_trace_step_details.sql` 给 `trace_step` 补输入/输出摘要与政策关联列，并把阶段枚举收口为契约的九个值；`004_invalidation_event_period.sql` 给 `invalidation_event` 补事实期间两列与配对约束、加 `run_id` 索引。按文件名顺序执行，**同样可重复执行**：
+`002_evaluation_and_idempotency.sql` 增加抽取幂等记录、`assessment_run` 的期间/重算列、`assessment.snapshot`、`trace_step` 状态枚举与事实来源枚举的收口；`003_trace_step_details.sql` 给 `trace_step` 补输入/输出摘要与政策关联列，并把阶段枚举收口为契约的九个值；`004_invalidation_event_period.sql` 给 `invalidation_event` 补事实期间两列与配对约束、加 `run_id` 索引；`005_fact_dictionary_extension.sql` 把事实字典从 10 键扩到 16 键（契约 `1.0.0-rc.3`）、给 `unit` 补 `ratio`，并同步重建键、单位、键与单位配对三个约束。按文件名顺序执行，**同样可重复执行**：
 
 ```powershell
 docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/002_evaluation_and_idempotency.sql
 docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/003_trace_step_details.sql
 docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/004_invalidation_event_period.sql
+docker compose --env-file .env -f docker-compose.yml exec db psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/005_fact_dictionary_extension.sql
 ```
 
 > **2026-10-26 修正**：该脚本早期版本用 `ALTER TABLE trace_step DROP TRIGGER IF EXISTS ...` 删触发器，这不是合法语法（`DROP TRIGGER` 是独立语句，不在 `ALTER TABLE` 下，`IF EXISTS` 也不能跟在 `ALTER TABLE ... DROP TRIGGER` 后）。因为脚本整体在事务里，报错会让整份回滚，但 `schema_migration` 里可能已留下 002 的行。若本地库曾用 001 之后的旧状态跑过，先确认再重跑：
@@ -162,6 +163,7 @@ docker compose --env-file .env -f docker-compose.yml down   # 保留命名卷
 | `002_evaluation_and_idempotency.sql` | **2026-10-26** 修正 `DROP TRIGGER` 语法后连跑两遍，退出码均 0；`trace_step_status_check` 为 `ok/needs_review/retryable_error/fatal_error`，`trace_step_no_update_delete` 存在 |
 | `003_trace_step_details.sql` | **2026-10-26** 连跑两遍退出码均 0；`trace_step` 增加 `input_summary/output_summary/policy_id/policy_version/error_code/human_action`，`trace_step_stage_check` 固定九个阶段值 |
 | `004_invalidation_event_period.sql` | **2026-10-27** 连跑两遍退出码均 0（第二遍仅 `NOTICE ... already exists, skipping`）；`invalidation_event` 增加 `fact_period_start/fact_period_end`、`invalidation_event_fact_period_check` 约束与 `invalidation_event_run_idx (run_id, created_at)` 索引，`schema_migration` 增至四行；`pytest -m db -q` **34 passed** |
+| `005_fact_dictionary_extension.sql` | **2026-10-28** 连跑两遍退出码均 0（第二遍 `INSERT 0 0`，无 `NOTICE`）；核对到 `enterprise_fact_key_check` 16 键、`enterprise_fact_unit_check` 含 `ratio`、`enterprise_fact_key_unit` 配对正确，`schema_migration` 增至五行。实测：`rdExpenseRevenueRatio` 配 `ratio` 落 `value_amount` 通过；`rdExpenseIncrease` 负增量通过；`creditRecord` 布尔通过；ratio 键配 `CNY`、未知键 `turnover`、金额键配 `ratio` 均被 CHECK 拒绝（事务内验证后 `ROLLBACK`，未留数据）；`pytest -m db -q` **36 passed**，DB+Redis 全量 **528 passed / 8 skipped**（2026-10-29 复测，含 M2 复核整改、region 过滤与政策级「合取为空」校验的 48 项新用例） |
 | 端到端冒烟 | API-04 导入 201（`ETag` 等于 `revision`，`status=pending_parse`）；API-15 列表 200 且无 `ETag`；API-16 按版本与不带版本均命中同一 `revision`；未知版本 404 `POLICY_NOT_FOUND` |
 
 冒烟数据在 `public` 下，验证后已用 `TRUNCATE ... CASCADE` 清空，`schema_migration` 记录保留。原始记录同步进 [../../docs/devlog/M1.md](../../docs/devlog/M1.md)。

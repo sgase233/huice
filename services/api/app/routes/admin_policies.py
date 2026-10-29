@@ -30,7 +30,13 @@ from ..agents.ingestion import (
     validate_official_url,
 )
 from ..domain.citations import CriterionInput, SourceSpanCheck, SourceText, validate_criteria
-from ..domain.rules import validate_expression
+from ..domain.rules import (
+    POLICY_BLOCKING_CODES,
+    POLICY_UNSATISFIABLE,
+    CriterionRule,
+    policy_contradictions,
+    validate_expression,
+)
 from ..errors import ApiProblem, trace_id_of
 from ..integrations.storage import CriterionRecord, FindingRecord
 from ..schemas import (
@@ -346,12 +352,24 @@ def publish_policy(
     ]
     _, findings = _collect_validation(draft, drafts)
     blocking = [item for item in draft.criteria if item.validation_status != "passed"]
-    unsupported = [finding for finding in findings if finding.criterion_id is not None]
+    # 政策级 finding 没有 criterion_id，但「合取为空」这类同样必须挡住发布：这样的政策
+    # 发布出去，任何企业查到的都是「不达标」，比不放出来更误导。
+    unsupported = [
+        finding
+        for finding in findings
+        if finding.criterion_id is not None or finding.code in POLICY_BLOCKING_CODES
+    ]
     if blocking or unsupported:
+        unsatisfiable = any(finding.code == POLICY_UNSATISFIABLE for finding in findings)
         raise ApiProblem(
             422,
             "CRITERIA_NOT_VALIDATED",
-            "存在引用校验未通过的条件，请修正后重新保存，再执行发布。",
+            (
+                "存在互斥的条件，政策按「且」合并后永远无法满足；请把「或」的分支写进同一条条件，"
+                "修正后重新保存再发布。"
+                if unsatisfiable
+                else "存在引用校验未通过的条件，请修正后重新保存，再执行发布。"
+            ),
             {
                 "criterionIds": [str(item.id) for item in blocking],
                 "findings": [
@@ -523,6 +541,33 @@ def _collect_validation(
                     spans=[span.to_wire() for span in finding.source_spans],
                 )
             )
+
+    # 跨条款的「合取为空」只能在这里查：单条 AST 各自合法，合起来却永远不成立。
+    # 发现作为政策级 finding 落库（criterion_id 为空），不需要改契约或建表。
+    comparable = [
+        CriterionRule(
+            id=criterion.id,
+            title=criterion.title,
+            expression=criterion.expression or {},
+            review_finding=criterion.review_finding,
+        )
+        for criterion in criteria
+        if criterion.expression and not ast_problems[criterion.id]
+    ]
+    for contradiction in policy_contradictions(comparable):
+        findings.append(
+            FindingRecord(
+                criterion_id=None,
+                code=contradiction.code,
+                message=contradiction.message,
+                spans=[
+                    span.to_wire()
+                    for criterion in criteria
+                    if criterion.id in contradiction.criterion_ids
+                    for span in criterion.spans
+                ],
+            )
+        )
 
     for finding in extra:
         findings.append(
