@@ -30,7 +30,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `value` | 阈值/列表 | 金额十进制字符串；行业排除为行业码列表，用 `\|` 分隔 |
 | `unit` | 单位 | `code/CNY/person/boolean/date` |
 | `period` | 所属期间 | `assessment`（本次判断所属年度）或显式 `YYYY-MM-DD/YYYY-MM-DD` |
-| `logic_group` | AND/OR 分组 | 组1 = 必选条件（全部 AND）；组2、组3… = 互斥 OR 分支（不同组号 OR、同组号内 AND）。完整逻辑 = 组1 全部 AND 且（组2 OR 组3 OR …） |
+| `logic_group` | 分组标注（仅供人复核，引擎不读） | 引擎纯 AND 合并（`rules.aggregate()` 不分枝），**不读 logic_group**；原文「或」必须写进同一条 `adjudicated_expression` 的 `or` 节点。组号仅辅助人复核，不影响求值 |
 | `negation` | 是否否定 | `false` 为主；「不属于限制禁止行业」用 `industry_exclusion` 表达，不额外写否定 |
 | `annotator_a` | 标注人 A | 独立填写，留空=尚未标注 |
 | `annotator_b` | 标注人 B | 独立填写，留空=尚未标注 |
@@ -60,7 +60,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `date` | `factKey=establishedDate,period,comparator,value(YYYY-MM-DD)` | `{"op":"date","factKey":"establishedDate","period":"assessment","comparator":"gte","value":"2020-01-01"}` |
 | `quarterly_average` | `metric=employeeCount/assets,period,comparator,value,unit` | `{"op":"quarterly_average","metric":"employeeCount","period":"assessment","comparator":"lte","value":"300","unit":"person"}` |
 | `industry_exclusion` | `factKey=industry,period,excluded[]` | `{"op":"industry_exclusion","factKey":"industry","period":"assessment","excluded":["H62"]}` |
-| `and` / `or` | `children:[...]`（至少两个） | 政策级默认 AND，一般由 `logic_group` 表达，行内 AST 保持原子 |
+| `and` / `or` | `children:[...]`（至少两个） | 政策级默认 AND；**原文「或」必须写进同一条 AST 的 `or` 节点**（引擎不读 logic_group，分行会被纯 AND 合并成空集） |
 | `not` | `child` | 仅在原文明确「不属于…但…」时用 |
 
 - 数值一律十进制字符串，禁止用 JS float 预计算结果；金额最多 2 位小数。
@@ -96,9 +96,9 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `rdExpenseIncrease` | 上年度研发费用增量 = 上年度 `rdExpense` − 前年度 `rdExpense`（M3 预计算） | 十进制字符串（可为负）；`CNY` | 上年度显式日期，如 2025-01-01/2025-12-31（= 该年度 − 前一年） | RD-SUBSIDY 第八条（二）1 |
 | `rdExpenseRevenueRatio` | 上年度研发费用占营业收入比重 = `rdExpense` ÷ `revenue`（M3 预计算，如 3% 记 `0.03`） | 十进制字符串；`ratio` | 与 revenue/rdExpense 同一期间（上年度显式日期） | SRDI 二（二） |
 | `rdAddDeductionClaimed` | 近两年均已申报享受研发费用加计扣除 | JSON boolean；`boolean` | 近两年显式日期，如 2024-01-01/2025-12-31 | RD-SUBSIDY 第八条（二）1 |
-| `creditRecord` | 诚信记录良好（无限制申请财政性资金惩戒、无超期未验收未退款） | JSON boolean；`boolean` | 申报年度显式日期，如 2025-01-01/2025-12-31 | RD-SUBSIDY 第八条（三） |
+| `creditRecord` | 诚信记录良好（无限制申请财政性资金惩戒、无超期未验收未退款） | JSON boolean；`boolean` | 显式日期 2025-01-01/2025-12-31（本政策周期 asOf=2025-12-31 钉死，按核验时点状态处理；判断后取消记录→PATCH→stale） | RD-SUBSIDY 第八条（三） |
 
-> **AST period 必须写显式日期**：以上 6 键均为期间专指事实，`adjudicated_expression` 的 `period` 不能写 `assessment`，必须写 `{"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD"}`，并与事实侧 `(key, period_start, period_end)` 逐字一致，否则查不到事实、恒为 insufficient_evidence。具体年份按各政策申报年度核定（SRDI 2025 上年度=2024；RD-SUBSIDY 首个申报年度上年度=2025）。
+> **AST period 口径**：6 键均为期间专指事实，`adjudicated_expression` 的 `period` 一律写 `{"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD"}`（`creditRecord` 也不例外，用 2025-01-01/2025-12-31，不用 assessment），并与事实侧 `(key, period_start, period_end)` 逐字一致，否则查不到事实、恒为 insufficient_evidence。具体年份按各政策申报年度核定（SRDI 2025 上年度=2024；RD-SUBSIDY 首个申报年度上年度=2025、成立年限 asOf=2025-12-31 钉死）。
 
 > 键名与 unit 为 M3 建议，须与 M1 定稿后再写进 `criteria_review.csv`。「从事特定细分市场≥2年」暂无法用现有事实键表达，保持待核实（**不用 `establishedDate` 近似**：成立年限 ≠ 细分市场经营年限），是否新增 `specificMarketYears` 待定。
 
