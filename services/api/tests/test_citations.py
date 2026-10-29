@@ -14,6 +14,7 @@ from app.domain.citations import (
     SourceSpanCheck,
     SourceText,
     quote_hash,
+    threshold_bounds,
     validate_criteria,
     validate_criterion,
 )
@@ -362,3 +363,236 @@ def test_ratio_is_deliberately_not_compared_against_a_percentage_quote():
     )
 
     assert verdict.status == "passed", codes(verdict)
+
+
+# ------------------------------------------------ 地方通知的中文句式（2026-10-29 硬化）
+#
+# 真实地方通知很少用「不低于 200 万元」这种前置写法，更常见的是「200 万元（含）以上」
+# 「在 1000 万元以下」「达到 2000 万元以上」，以及「两个会计年度（含）以上」这类相对
+# 期间。以下用例把这几类写法锁进契约，避免正确的 AST 被误判成「引文不支持」。
+
+LOCAL_NOTICE_TEXT = (
+    "第七条 企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，"
+    "在按规定据实扣除的基础上，再按照实际发生额的一定比例在税前加计扣除。"
+    "第八条（一）在本市实际从事经营活动；注册成立时间在两个会计年度（含）以上；"
+    "近两年均已申报享受研发费用税前加计扣除；且上年度研发费用增量达200万元（含）以上；"
+    "当年度已申报享受研发费用税前加计扣除；且上年度研发费用达200万元（含）以上；"
+    "单位诚信记录良好。\n"
+    "第八条（二）上年度研发费用总额不低于100万元；且占营业收入总额比重不低于3%；"
+    "上年度营业收入总额在1000万元以上；或上年度营业收入总额在1000万元以下但近2年新增"
+    "股权融资总额达到2000万元以上。"
+)
+LOCAL = SourceText(id=uuid4(), source_url=SOURCE_URL, text=LOCAL_NOTICE_TEXT)
+LOCAL_SOURCES = {LOCAL.id: LOCAL}
+
+
+def local_span(quote: str) -> SourceSpanCheck:
+    return span(quote, source_id=LOCAL.id, section="第八条")
+
+
+@pytest.mark.parametrize(
+    ("quote", "expected"),
+    [
+        ("上年度营业收入总额在1000万元以上", [(1_000_0000, "gte")]),
+        ("上年度营业收入总额在1000万元以下", [(1_000_0000, "lte")]),
+        ("上年度研发费用增量达200万元（含）以上", [(200_0000, "gte")]),
+        ("近2年新增股权融资总额达到2000万元以上", [(2000_0000, "gte")]),
+    ],
+)
+def test_suffix_and_verb_threshold_phrasings_are_recognised(quote, expected):
+    bounds = threshold_bounds(quote)
+    assert [(int(bound.amount), bound.direction) for bound in bounds] == expected
+
+
+def test_houzhih_threshold_supports_a_greedy_revenue_condition():
+    """「在 1000 万元以上」是后置写法，抽不到就会把正确 AST 判成没有阈值。"""
+
+    verdict = validate_criterion(
+        criterion(local_span("上年度营业收入总额在1000万元以上"), expression=compare("revenue", "10000000.00", "CNY")),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_dadao_is_a_lower_bound_not_a_strict_one():
+    """「达到 2000 万元以上」含本数：与 AST 的 gte 一致，不该报方向不一致。"""
+
+    verdict = validate_criterion(
+        criterion(
+            local_span("近2年新增股权融资总额达到2000万元以上"),
+            expression=compare("equityFinancing", "20000000.00", "CNY"),
+        ),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_han_ben_shu_difference_between_lt_and_lte_is_tolerated():
+    """「1000 万元以下」含本数（lte），AST 写 lt 仍是同一侧，不判为方向抽错。"""
+
+    verdict = validate_criterion(
+        criterion(
+            local_span("上年度营业收入总额在1000万元以下"),
+            expression=compare("revenue", "10000000.00", "CNY", comparator="lt"),
+        ),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_zero_threshold_needs_no_number_in_the_quote():
+    """「实际发生的研发费用」对应 rdExpense > 0：0 是存在性条件，不是引文会写的阈值。"""
+
+    zero = {
+        "op": "compare",
+        "factKey": "rdExpense",
+        "period": "assessment",
+        "comparator": "gt",
+        "value": "0",
+        "unit": "CNY",
+    }
+    verdict = validate_criterion(
+        criterion(local_span("企业开展研发活动中实际发生的研发费用"), expression=zero),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_non_zero_threshold_still_needs_a_number_in_the_quote():
+    expression = {
+        "op": "compare",
+        "factKey": "rdExpense",
+        "period": "assessment",
+        "comparator": "gt",
+        "value": "1000000",
+        "unit": "CNY",
+    }
+    verdict = validate_criterion(
+        criterion(local_span("企业开展研发活动中实际发生的研发费用"), expression=expression),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_NOT_FOUND" in codes(verdict)
+
+
+def test_relative_period_phrase_supports_a_pinned_absolute_date():
+    """原文写「两个会计年度（含）以上」，AST 里是换算后的绝对日期，应视为受支持。"""
+
+    expression = {
+        "op": "date",
+        "factKey": "establishedDate",
+        "period": "assessment",
+        "comparator": "lte",
+        "value": "2023-12-31",
+    }
+    verdict = validate_criterion(
+        criterion(local_span("注册成立时间在两个会计年度（含）以上"), expression=expression),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_date_without_any_period_phrase_is_still_reported():
+    expression = {
+        "op": "date",
+        "factKey": "establishedDate",
+        "period": "assessment",
+        "comparator": "lte",
+        "value": "2023-12-31",
+    }
+    verdict = validate_criterion(
+        criterion(local_span("上年度研发费用达200万元（含）以上"), expression=expression),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_DATE_NOT_FOUND" in codes(verdict)
+
+
+def _revenue_pair(operator: str) -> dict:
+    lower = compare("revenue", "10000000.00", "CNY", comparator="gte")
+    upper = compare("revenue", "10000000.00", "CNY", comparator="lt")
+    return {"op": operator, "children": [lower, upper]}
+
+
+def test_complementary_bounds_inside_one_or_are_not_a_conflict():
+    """「1000 万元以上，或在 1000 万元以下」是互补 OR 分支，不是没处理完的冲突。"""
+
+    verdict = validate_criterion(
+        criterion(
+            local_span("上年度营业收入总额在1000万元以上"),
+            local_span("上年度营业收入总额在1000万元以下"),
+            expression=_revenue_pair("or"),
+        ),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_complementary_bounds_merged_with_and_still_report_a_conflict():
+    """纯 AND 合并后永远不成立，引文层必须先挡住，让人工确认。"""
+
+    verdict = validate_criterion(
+        criterion(
+            local_span("上年度营业收入总额在1000万元以上"),
+            local_span("上年度营业收入总额在1000万元以下"),
+            expression=_revenue_pair("and"),
+        ),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_CONFLICT" in codes(verdict)
+
+
+def test_the_same_or_branch_is_not_treated_as_exclusive():
+    """两条阈值落在同一个 OR 分支里，互补就是真矛盾，不能因为外层有 or 就放过。"""
+
+    expression = {
+        "op": "or",
+        "children": [
+            _revenue_pair("and"),
+            compare("rdExpense", "1000000.00", "CNY"),
+        ],
+    }
+    verdict = validate_criterion(
+        criterion(
+            local_span("上年度营业收入总额在1000万元以上"),
+            local_span("上年度营业收入总额在1000万元以下"),
+            expression=expression,
+        ),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_CONFLICT" in codes(verdict)
+
+
+def test_mismatch_message_does_not_double_count_the_unit():
+    """报错消息曾把已换算成元的数值再带上「万元」，看起来像放大了一万倍。"""
+
+    verdict = validate_criterion(
+        criterion(
+            local_span("上年度营业收入总额在1000万元以上"),
+            expression=compare("revenue", "20000000.00", "CNY"),
+        ),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    message = next(f.message for f in verdict.findings if f.code == "CITATION_THRESHOLD_MISMATCH")
+    assert "20000000万元" not in message
+    assert "原文以「万元」计" in message
