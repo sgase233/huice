@@ -30,12 +30,12 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `value` | 阈值/列表 | 金额十进制字符串；行业排除为行业码列表，用 `\|` 分隔 |
 | `unit` | 单位 | `code/CNY/person/boolean/date` |
 | `period` | 所属期间 | `assessment`（本次判断所属年度）或显式 `YYYY-MM-DD/YYYY-MM-DD` |
-| `logic_group` | AND/OR 分组 | 同一 `policy_id` 内，同组号的条件 AND 合并；OR 分支用不同组号并在备注说明 |
+| `logic_group` | AND/OR 分组 | 组1 = 必选条件（全部 AND）；组2、组3… = 互斥 OR 分支（不同组号 OR、同组号内 AND）。完整逻辑 = 组1 全部 AND 且（组2 OR 组3 OR …） |
 | `negation` | 是否否定 | `false` 为主；「不属于限制禁止行业」用 `industry_exclusion` 表达，不额外写否定 |
 | `annotator_a` | 标注人 A | 独立填写，留空=尚未标注 |
 | `annotator_b` | 标注人 B | 独立填写，留空=尚未标注 |
 | `adjudicated_expression` | 仲裁后 AST | JSON 字符串，须 CSV 转义（内部双引号写成 `""`），操作符见 §3 |
-| `review_status` | 复核状态 | `待双人复核`（默认）→ `已仲裁` → `可发布`；未仲裁不得写「可发布」；无法写成可执行 AST 时写「待核实」且 `adjudicated_expression` 留空 |
+| `review_status` | 复核状态 | `待双人复核`（默认）→ `已仲裁` → `可发布`；未仲裁不得写「可发布」。`待核实` 表示条件暂无法写成可执行 AST，该行仅保留在 CSV 供复核、**不进库**——`adjudicated_expression` 留空，导入时会被 API-06 以 422 拒绝（这是护栏，不是被忍受的状态）；转「可发布」前必须先补齐 AST |
 
 **注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。
 
@@ -65,7 +65,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 - 数值一律十进制字符串，禁止用 JS float 预计算结果；金额最多 2 位小数。
 - 布尔条件 `rdActivity` 的 `value` 必须是 JSON 布尔值 `true`/`false`（不带引号），不能写成字符串 `"true"`。
-- `period` 用 `assessment` 表示判断所属年度，季度平均必须指向完整自然年度。
+- `period` 取值：`assessment`（仅用于与本次判断年度一致的事实，如当年应纳税所得额）或显式日期对象 `{"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD"}`。跨期/上年度/近两年等「期间专指」事实**必须写显式起止日期、不能写 assessment**——引擎按 `(key, period_start, period_end)` 精确查表，assessment 只会解析成本次评估期间、不会自动往前退一年，写错期间会恒为 insufficient_evidence。季度平均必须指向完整自然年度。
 - `quarterly_average` 的 `field` 列填指标名 `employeeCount`/`assets`（对应 §4 的 `employeeCountStart/End`、`assetsStart/End` 八个季度起止输入）。
 - 区间用 AND 的上下界表达，不另加操作符；比例以 `unit=ratio` 的十进制字符串表达。
 - 冲突节点先单独检测并向上传播为 `conflict`，不得被 OR 短路掩盖。
@@ -85,18 +85,20 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 季度平均值口径：各季度 `(期初+期末)/2`，再对完整四季度求平均；`quarterly_average` 需保留八个输入与中间值。从业人数含与单位建立劳动关系的职工及接受的劳务派遣用工。
 
-## 4.1 地方通知待扩展事实键（预计算事实口径，已由 M1 实现 PR #10）
+## 4.1 地方通知待扩展事实键（预计算事实口径，已在 PR #10 实现，待合并）
 
 第二阶段地方通知（`SZ-GRANT-RD-SUBSIDY-2026`、`SZ-GRANT-SRDI-2025`）需要的事实键超出当前 10 键字典。按「**预计算事实**」口径处理：增量与占比由 M3 在 `enterprises.csv`/`labels.csv` 里给出已算好的数值，M1 只做 `compare`，**不新增 delta/ratio 算子**。以下键已由 M1 在 PR #10 扩展 `FACT_UNITS` 与 OpenAPI `FactKey` 枚举：
 
-| key | 含义与计算口径 | value 与 unit | period | 需求来源 |
+| key | 含义与计算口径 | value 与 unit | period（事实侧与 AST 侧一致，均显式日期） | 需求来源 |
 | --- | --- | --- | --- | --- |
-| `revenue` | 上年度营业收入总额 | 十进制字符串，金额最多 2 位小数；`CNY` | 自然年度 | SRDI 二（二）（三） |
-| `equityFinancing` | 近2年新增股权融资总额（合格机构投资者实缴额） | 十进制字符串；`CNY` | 近2年（显式日期，如 2025-01-01/2026-12-31） | SRDI 二（三） |
-| `rdExpenseIncrease` | 上年度研发费用增量 = 上年度 `rdExpense` − 前年度 `rdExpense`（M3 预计算） | 十进制字符串（可为负）；`CNY` | 上年度 | RD-SUBSIDY 第八条（二）1 |
-| `rdExpenseRevenueRatio` | 上年度研发费用占营业收入比重 = `rdExpense` ÷ `revenue`（M3 预计算，如 3% 记 `0.03`） | 十进制字符串；`ratio` | 上年度 | SRDI 二（二） |
-| `rdAddDeductionClaimed` | 近两年均已申报享受研发费用加计扣除 | JSON boolean；`boolean` | 近两年 | RD-SUBSIDY 第八条（二）1 |
-| `creditRecord` | 诚信记录良好（无限制申请财政性资金惩戒、无超期未验收未退款） | JSON boolean；`boolean` | 申报所属年度（如 2026-01-01/2026-12-31） | RD-SUBSIDY 第八条（三） |
+| `revenue` | 上年度营业收入总额 | 十进制字符串，金额最多 2 位小数；`CNY` | 上年度显式日期，如 2025-01-01/2025-12-31 | SRDI 二（二）（三） |
+| `equityFinancing` | 近2年新增股权融资总额（合格机构投资者实缴额） | 十进制字符串；`CNY` | 近两年显式日期，如 2025-01-01/2026-12-31（SRDI 2025 为 2023-01-01/2024-12-31） | SRDI 二（三） |
+| `rdExpenseIncrease` | 上年度研发费用增量 = 上年度 `rdExpense` − 前年度 `rdExpense`（M3 预计算） | 十进制字符串（可为负）；`CNY` | 上年度显式日期，如 2025-01-01/2025-12-31（= 该年度 − 前一年） | RD-SUBSIDY 第八条（二）1 |
+| `rdExpenseRevenueRatio` | 上年度研发费用占营业收入比重 = `rdExpense` ÷ `revenue`（M3 预计算，如 3% 记 `0.03`） | 十进制字符串；`ratio` | 与 revenue/rdExpense 同一期间（上年度显式日期） | SRDI 二（二） |
+| `rdAddDeductionClaimed` | 近两年均已申报享受研发费用加计扣除 | JSON boolean；`boolean` | 近两年显式日期，如 2024-01-01/2025-12-31 | RD-SUBSIDY 第八条（二）1 |
+| `creditRecord` | 诚信记录良好（无限制申请财政性资金惩戒、无超期未验收未退款） | JSON boolean；`boolean` | 申报年度显式日期，如 2025-01-01/2025-12-31 | RD-SUBSIDY 第八条（三） |
+
+> **AST period 必须写显式日期**：以上 6 键均为期间专指事实，`adjudicated_expression` 的 `period` 不能写 `assessment`，必须写 `{"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD"}`，并与事实侧 `(key, period_start, period_end)` 逐字一致，否则查不到事实、恒为 insufficient_evidence。具体年份按各政策申报年度核定（SRDI 2025 上年度=2024；RD-SUBSIDY 首个申报年度上年度=2025）。
 
 > 键名与 unit 为 M3 建议，须与 M1 定稿后再写进 `criteria_review.csv`。「从事特定细分市场≥2年」暂无法用现有事实键表达，保持待核实（**不用 `establishedDate` 近似**：成立年限 ≠ 细分市场经营年限），是否新增 `specificMarketYears` 待定。
 
@@ -143,6 +145,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 2. 核对 A、B 两列：一致则直接进入仲裁确认；不一致在 `notes`/评审意见里写明双方依据。
 3. 仲裁由第三人或指导教师按原文裁定，`adjudicated_expression` 填最终 AST，`review_status` 改「已仲裁」；仅当引用校验与人工审核均通过，才可交 M1 发布并标「可发布」。
 4. 仲裁记录保留原双方意见，不覆盖、不删除。
+5. `待核实` 的行只能进复核清单，不能直接升「可发布」：必须先补出可执行、引用校验通过的 `adjudicated_expression`，再走双人标注 + 仲裁，才能标「可发布」。
 
 ## 7. 容易混淆的名词
 
