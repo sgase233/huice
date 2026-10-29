@@ -35,7 +35,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `annotator_a` | 标注人 A | 独立填写，留空=尚未标注 |
 | `annotator_b` | 标注人 B | 独立填写，留空=尚未标注 |
 | `adjudicated_expression` | 仲裁后 AST | JSON 字符串，须 CSV 转义（内部双引号写成 `""`），操作符见 §3 |
-| `review_status` | 复核状态 | `待双人复核`（默认）→ `已仲裁` → `可发布`；未仲裁不得写「可发布」 |
+| `review_status` | 复核状态 | `待双人复核`（默认）→ `已仲裁` → `可发布`；未仲裁不得写「可发布」；无法写成可执行 AST 时写「待核实」且 `adjudicated_expression` 留空 |
 
 **注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。
 
@@ -85,20 +85,20 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 季度平均值口径：各季度 `(期初+期末)/2`，再对完整四季度求平均；`quarterly_average` 需保留八个输入与中间值。从业人数含与单位建立劳动关系的职工及接受的劳务派遣用工。
 
-## 4.1 地方通知待扩展事实键（预计算事实口径，待 M1 落库）
+## 4.1 地方通知待扩展事实键（预计算事实口径，已由 M1 实现 PR #10）
 
-第二阶段地方通知（`SZ-GRANT-RD-SUBSIDY-2026`、`SZ-GRANT-SRDI-2025`）需要的事实键超出当前 10 键字典。按「**预计算事实**」口径处理：增量与占比由 M3 在 `enterprises.csv`/`labels.csv` 里给出已算好的数值，M1 只做 `compare`，**不新增 delta/ratio 算子**。以下键待 M1 扩展 `FACT_UNITS` 与 OpenAPI `FactKey` 枚举后启用：
+第二阶段地方通知（`SZ-GRANT-RD-SUBSIDY-2026`、`SZ-GRANT-SRDI-2025`）需要的事实键超出当前 10 键字典。按「**预计算事实**」口径处理：增量与占比由 M3 在 `enterprises.csv`/`labels.csv` 里给出已算好的数值，M1 只做 `compare`，**不新增 delta/ratio 算子**。以下键已由 M1 在 PR #10 扩展 `FACT_UNITS` 与 OpenAPI `FactKey` 枚举：
 
 | key | 含义与计算口径 | value 与 unit | period | 需求来源 |
 | --- | --- | --- | --- | --- |
 | `revenue` | 上年度营业收入总额 | 十进制字符串，金额最多 2 位小数；`CNY` | 自然年度 | SRDI 二（二）（三） |
-| `equityFinancing` | 近2年新增股权融资总额（合格机构投资者实缴额） | 十进制字符串；`CNY` | 近2年（显式期间） | SRDI 二（三） |
+| `equityFinancing` | 近2年新增股权融资总额（合格机构投资者实缴额） | 十进制字符串；`CNY` | 近2年（显式日期，如 2025-01-01/2026-12-31） | SRDI 二（三） |
 | `rdExpenseIncrease` | 上年度研发费用增量 = 上年度 `rdExpense` − 前年度 `rdExpense`（M3 预计算） | 十进制字符串（可为负）；`CNY` | 上年度 | RD-SUBSIDY 第八条（二）1 |
 | `rdExpenseRevenueRatio` | 上年度研发费用占营业收入比重 = `rdExpense` ÷ `revenue`（M3 预计算，如 3% 记 `0.03`） | 十进制字符串；`ratio` | 上年度 | SRDI 二（二） |
 | `rdAddDeductionClaimed` | 近两年均已申报享受研发费用加计扣除 | JSON boolean；`boolean` | 近两年 | RD-SUBSIDY 第八条（二）1 |
-| `creditRecord` | 诚信记录良好（无限制申请财政性资金惩戒、无超期未验收未退款） | JSON boolean；`boolean` | 申报时点 | RD-SUBSIDY 第八条（三） |
+| `creditRecord` | 诚信记录良好（无限制申请财政性资金惩戒、无超期未验收未退款） | JSON boolean；`boolean` | 申报所属年度（如 2026-01-01/2026-12-31） | RD-SUBSIDY 第八条（三） |
 
-> 键名与 unit 为 M3 建议，须与 M1 定稿后再写进 `criteria_review.csv`。「从事特定细分市场≥2年」暂以 `establishedDate` + `date` 算子近似，是否另设 `specificMarketYears` 待定。
+> 键名与 unit 为 M3 建议，须与 M1 定稿后再写进 `criteria_review.csv`。「从事特定细分市场≥2年」暂无法用现有事实键表达，保持待核实（**不用 `establishedDate` 近似**：成立年限 ≠ 细分市场经营年限），是否新增 `specificMarketYears` 待定。
 
 ## 5. 补问的获取成本与敏感程度（整数档位）
 
@@ -123,6 +123,17 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | 3 | 财务数据 | `taxableIncome`、`rdExpense` |
 | 4 | 经营细节/商业敏感 | `rdActivity`（研发活动内容/项目明细） |
 | 5 | 高度敏感/个人隐私 | 个人身份、税务明细、统一社会信用代码（本期暂无对应 key，预留） |
+
+**地方通知 6 键档位（已定稿）：**
+
+| key | 获取成本 | 敏感度 |
+| --- | --- | --- |
+| `revenue` | 2 | 3 |
+| `equityFinancing` | 3 | 4 |
+| `rdExpenseIncrease` | 2 | 3 |
+| `rdExpenseRevenueRatio` | 2 | 3 |
+| `rdAddDeductionClaimed` | 2 | 3 |
+| `creditRecord` | 3 | 4 |
 
 **承载字段（已与 M1 对齐，2026-10-28）：** 字段名确认为 `acquisition_cost`、`sensitivity`（整数 1–5）。两项**不写进 OpenAPI，也不进 §4 事实字典**——是补问排序（FR-05）的服务端配置，唯一实现口径是 `services/api/app/domain/questioning.py` 里的 `DEFAULT_COST` / `DEFAULT_SENSITIVITY` 常量（`choose_next_question` 的参数 `costs` / `sensitivity`）。改档位 = 改代码常量一处 + 同步本节，不做「启动时读 CSV」。**档位只表示相对顺序、不表示量化成本/敏感度的绝对值**；`reason` 会原样展示「获取成本档位 N、敏感程度档位 N」，故本节档位表须与代码常量逐 key 一致。本节为唯一口径：M1 按本节 1–5 表重写 `DEFAULT_COST` / `DEFAULT_SENSITIVITY`，并把 `UNKNOWN_COST` / `UNKNOWN_SENSITIVITY` 置为 5（未知键垫底）；`rdActivity` 获取成本定为 1（企业自行知道）、敏感度 4，已定稿。
 
