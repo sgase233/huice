@@ -35,6 +35,7 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 4. API-04 的 `files` 补充说明：第一个文件是正文（`kind=body`），其余为附件；`files` 仍为可选，不传时 `sources: []`。
 5. rc.2（2026-10-23，队长决定改用 DeepSeek）：`ModelUsage.mode` 与 `PolicyAssessment.explanationMode` 的枚举值 `maas` 改为 `deepseek`，其余取值不变。**这是一处破坏性变更**，`apps/web/src/api/types.ts` 已重新生成（仅这两行），请 M2 复核；若前端已按 `maas` 写过字面量，需同步改为 `deepseek`。
 6. rc.3（2026-10-28，按 M3 标注侧需求）：`FactKey` 由 10 键扩到 16 键——新增 `revenue`、`equityFinancing`、`rdExpenseIncrease`、`rdExpenseRevenueRatio`、`rdAddDeductionClaimed`、`creditRecord`，地方通知的研发投入补助/专精特新条款要用的六类事实；`FactUnit` 补 `ratio`（非负十进制小数，3% 存 `0.03`）。**只放宽枚举，不改任何既有字段与端点**，`apps/web/src/api/types.ts` 已重新生成（`FactKey` 与 `FactUnit` 两处联合类型），请 M2 复核。增量与占比按「预计算事实」处理：由标注方给出算好的数值，引擎只做 `compare`，不新增算子。配套迁移 `infra/sql/005_fact_dictionary_extension.sql` 重建 `enterprise_fact` 的三个约束。
+7. rc.3 内追加（2026-10-29，仅描述）：API-02 的 `region` 参数补语义说明——按区划码筛同时包含全国性政策（全国性政策记 `region=CN`），传 `CN` 只返回全国性政策。**只改描述文字，不改 schema**，`apps/web/src/api/types.ts` 不变（`generate_types.py --check` 通过）。同步落在 `services/api/app/integrations/storage.py` 的 `NATIONAL_REGION_CODE` 与同一条过滤口径。
 
 ## 当前实现产出的错误码
 

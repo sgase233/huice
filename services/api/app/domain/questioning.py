@@ -31,7 +31,7 @@ DEFAULT_COST: Mapping[str, int] = {
     "employeeCountEnd": 3,
     "assetsStart": 3,
     "assetsEnd": 3,
-    # 2026-10-28 新增键的档位：§5 尚未逐键给出，以下为 M1 提案，待 M3 确认后同步。
+    # 2026-10-29 起 §5 逐键定稿（M3 采纳 M1 提案，见 ANNOTATION_GUIDE §5）。
     "revenue": 2,
     "equityFinancing": 3,
     "rdExpenseIncrease": 2,
@@ -52,7 +52,7 @@ DEFAULT_SENSITIVITY: Mapping[str, int] = {
     "taxableIncome": 3,
     "rdExpense": 3,
     "rdActivity": 4,
-    # 同上：M1 提案，待 M3 确认。
+    # 同上：2026-10-29 定稿。
     "revenue": 3,
     "equityFinancing": 4,
     "rdExpenseIncrease": 3,

@@ -900,6 +900,8 @@ components:
       name: region
       in: query
       required: false
+      description: '行政区划码（如 440300）。按该区划筛同时包含全国性政策：全国性政策
+        的 region 记 `CN`，不随区划码变化。只查全国性政策请直接传 `CN`。'
       schema:
         type: string
         minLength: 1

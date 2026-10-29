@@ -157,13 +157,15 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 | ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
 | --- | --- | --- |
 | API-01 `GET /health` | 无 body | 200 `{status:"ok",version}`；未就绪 503 |
-| API-02 `GET /policies` | query：status=published/closed、type=tax/grant、region、asOf、cursor、limit 均可选；不传 status 时含已审开放和关闭样本 | 200 `PolicyList`；支持历史展示 |
+| API-02 `GET /policies` | query：status=published/closed、type=tax/grant、region、asOf、cursor、limit 均可选；不传 status 时含已审开放和关闭样本；**region 按「该区划 + 全国性政策」匹配**——传 `440300` 同时返回 `region=CN` 的全国性政策，传 `CN` 只返回全国性政策（2026-10-29 修，见下） | 200 `PolicyList`；支持历史展示 |
 | API-03 `GET /policies/{policyId}` | path UUID；query version 可选 | 200 `PolicyDetail`，sources/criteria/preparationTemplate |
 | API-08 `POST /enterprises` | JSON `EnterpriseInput`，见 2.3 | 201 `Enterprise` + ETag |
 | API-09 `GET /enterprises/{enterpriseId}` | path UUID | 200 `Enterprise` + ETag |
 | API-10 `PATCH /enterprises/{enterpriseId}/facts/{factKey}` | path ID/key；If-Match 头必填；JSON `FactUpdate` 不含 key，period 必填 | 200 完整 `Enterprise` + 新 ETag |
 
 `Enterprise={id,nameSynthetic,period,facts:EnterpriseFact[],factVersion}`。API-02 只给政策元数据，不含企业判断；M2 按 policyId 将 API-11/12 的 assessments 合并到列表。未分析时显示“尚未分析”，不得猜测四态。
+
+> **region 过滤按「该区划 + 全国」（2026-10-29 修）**：行政区划码只覆盖地方，国家层面的政策没有对应区划码，`source_register.csv` 统一记 `CN`（`storage.NATIONAL_REGION_CODE`）。若按等值过滤，深圳企业查 `region=440300` 会看不到《研发费用加计扣除公告》这类全国性政策——候选集合数量对但内容缺，而且缺的是最不该缺的那部分。因此改为「`region = 传入值` 或 `region = CN`」，只放宽不收紧；传 `CN` 本身只返回全国性政策。目前不支持「只看地方」的严格过滤，若 M2 需要再加显式参数，不加就默认放宽。前端展示时应把 `region=CN` 显示为「全国」，不要显示成区划码。
 
 ### 4.2 后台政策（全部管理权限）
 

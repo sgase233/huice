@@ -220,6 +220,26 @@ def test_public_list_filters_by_region_and_as_of(repo):
     assert len(december.items) == 2  # 六月到期的那项不再适用
 
 
+def test_public_list_region_includes_national_policies(repo):
+    """按区划筛要带上全国性政策，否则深圳企业看不到国家税收政策。"""
+
+    local_id, _ = publish_policy(repo, expressions=[INDUSTRY_GATE], region="440300")
+    national_id, _ = publish_policy(repo, expressions=[INDUSTRY_GATE], region="CN")
+    other_id, _ = publish_policy(repo, expressions=[INDUSTRY_GATE], region="440100")
+
+    shenzhen = repo.list_public_policies(
+        status=None, policy_type=None, region="440300", as_of=None, cursor=None, limit=20
+    )
+    assert {item.id for item in shenzhen.items} == {local_id, national_id}
+
+    national = repo.list_public_policies(
+        status=None, policy_type=None, region="CN", as_of=None, cursor=None, limit=20
+    )
+    # 传 CN 只取全国性政策，不反向带出其它区划。
+    assert {item.id for item in national.items} == {national_id}
+    assert other_id not in {item.id for item in national.items}
+
+
 def test_public_list_cursor_is_bound_to_the_filters(repo):
     for _ in range(3):
         publish_policy(repo, expressions=[INDUSTRY_GATE])
