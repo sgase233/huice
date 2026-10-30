@@ -591,14 +591,20 @@ def _evaluate_industry_exclusion(
     if fact is None or not fact.known:
         return Evaluation(INSUFFICIENT, "缺少行业信息，无法判断是否属于排除行业。", [ref], [ref])
     excluded = [str(item) for item in node.get("excluded") or []]
-    if str(fact.value) in excluded:
+    value = str(fact.value)
+    # 清单按**大类**粒度写（如「C16」），企业行业可能记到中类/小类（如「C1621」）。
+    # 精确相等会让粗粒度清单对填得细的企业完全失效，把本该排除的企业判成「不排除」——
+    # 是 fail-wrong 的方向，所以按前缀命中。反向（清单比企业更细）不命中，属于清单写法
+    # 的问题，标注时补细即可，运行时宁可不动结论。
+    hit = next((code for code in excluded if code and value.startswith(code)), None)
+    if hit is not None:
         return Evaluation(
             NOT_SATISFIED,
-            f"行业 {fact.value} 属于排除清单，不满足该条款。",
+            f"行业 {value} 属于排除清单（命中 {hit}），不满足该条款。",
             [ref],
             [],
         )
-    return Evaluation(SATISFIED, f"行业 {fact.value} 不在排除清单内。", [ref], [])
+    return Evaluation(SATISFIED, f"行业 {value} 不在排除清单内。", [ref], [])
 
 
 def _evaluate_quarterly_average(

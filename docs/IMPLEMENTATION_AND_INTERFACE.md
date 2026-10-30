@@ -50,10 +50,33 @@ AST 仅接受以下形状，不能执行 Python/JS 字符串：
 | `not` | `child: Expression` | 满足/不满足互换，未知仍未知 |
 | `compare` | `factKey,period,comparator,value,unit` | `comparator=lt/lte/eq/gte/gt/ne`；数值用 Decimal，禁止 JS float 预先算结果 |
 | `date` | `factKey∈{establishedDate,specificMarketSince},period,comparator,value`（日期） | 按日期比较，禁止本地化日期字符串；rc.4 起不再只认 `establishedDate` |
-| `industry_exclusion` | `factKey=industry,period,excluded[]` | 行业值在名单中为不满足；缺行业为证据不足 |
+| `industry_exclusion` | `factKey=industry,period,excluded[]` | 企业行业码以清单任一项为**前缀**即不满足（清单写大类、企业可填更细）；缺行业为证据不足。码表见下 |
 | `quarterly_average` | `metric=employeeCount/assets,period,comparator,value,unit` | 各季度 `(期初+期末)/2`，再对完整四季度求平均；保留八个输入与中间值 |
 
 AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{startDate,endDate}`；年度季度平均表达式必须指向完整自然年度。地区等字符串比较只允许 eq/ne。区间用 AND 的上下界表达，不另加操作符。比例以 unit=`ratio` 的十进制字符串表达；新增事实字段要先改字典和契约。所有冲突节点先单独检测并向上传播为 `conflict`，不得被 OR 短路掩盖。
+
+**行业排除的粗粒度码表（2026-10-30，应答 M3 的 SME-001 待核实项）**：`industry_exclusion.excluded` 只写 GB/T 4754-2017 的**门类字母 + 两位大类**码；企业侧 `industry` 事实可以记到同一编码体系的任意粒度，运行时按**前缀命中**（清单 `C16` 命中企业 `C1621`，不命中 `C17`）。财税〔2015〕119 号第四条负面清单对应的 9 个码：
+
+| 原文行业 | 门类 | 大类码 | GB/T 4754-2017 名称 |
+| --- | --- | --- | --- |
+| 烟草制造业 | C 制造业 | `C16` | 烟草制品业 |
+| 住宿和餐饮业 | H 住宿和餐饮业 | `H61` | 住宿业 |
+| | H | `H62` | 餐饮业 |
+| 批发和零售业 | F 批发和零售业 | `F51` | 批发业 |
+| | F | `F52` | 零售业 |
+| 房地产业 | K 房地产业 | `K70` | 房地产业 |
+| 租赁和商务服务业 | L 租赁和商务服务业 | `L71` | 租赁业 |
+| | L | `L72` | 商务服务业 |
+| 娱乐业 | R 文化、体育和娱乐业 | `R90` | 娱乐业 |
+| 财政部和国家税务总局规定的其他行业（兜底） | — | **不落码** | 见下 |
+
+直接可用：`{"op":"industry_exclusion","factKey":"industry","period":"assessment","excluded":["C16","H61","H62","F51","F52","K70","L71","L72","R90"]}`（`RD-001` 与 `SME-001` 共用同一份清单）。
+
+三条口径必须一起看：
+
+1. **兜底项不要写进 `excluded`。** 「财政部和国家税务总局规定的其他行业」没有固定码，写进去永远匹配不上任何真实行业码，条件会静默变成「永远不属于排除行业」——比不写更糟。兜底判断只能人工做，结论记在 `adjudication_note`。
+2. **大类粒度表达不了中类/小类的排除**（如只排除「卷烟制造 C162」而不排除整个烟草制品业 C16）。需要细化时把 `excluded` 写细，运行时不用改；前缀匹配保证两种粒度能共存。
+3. **小型微利企业条款的「国家非限制和禁止行业」是粗粒度近似。** 严格说该表述指向《产业结构调整指导目录》的限制类/淘汰类，不属于 GB/T 4754 分类；SME-001 用这张表是近似，标注时须在 note 写明「按 119 号第四条负面清单近似、类目粗粒度、待细化」，不能当成精确判定。
 
 **政策级一律按 AND 合并，`logic_group` 之类的分组列不参与求值**（契约与实现都不读它，2026-10-29 核实）。原文的「或」必须写进同一条 `or` 节点；把两个分支拆成两条并列条件，合起来就是「且」，政策对任何企业都不可能满足——M3 早期 SRDI 行里的 `revenue>=1000万` 与 `revenue<1000万` 并列即此类。为此 API-06 保存时做跨条款检查：同一条款内各自合法、合起来合取为空的组合，报一条**政策级 finding**（`criterionId: null`、`code: "POLICY_UNSATISFIABLE"`、`sourceSpans` 带两侧引用）；API-07 发布前若仍存在该 finding 返回 422 `CRITERIA_NOT_VALIDATED`，`details.findings` 里同样带 `criterionId: null`。检查只看顶层原子 `compare`：`or`/`not`/`quarterly_average` 内部的限制不参与，期间只在写法完全相同时合并（`assessment` 展开成哪一段要等运行时才知道）。报出来的是标注结构错，不是政策本身错。
 

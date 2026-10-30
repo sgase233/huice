@@ -170,6 +170,31 @@ def test_industry_outside_list_is_satisfied():
     assert outcome.result == SATISFIED
 
 
+def test_a_coarse_exclusion_code_catches_a_finer_industry_code():
+    """清单按大类写（「C16」），企业行业记到小类（「C1621」）时也要命中。
+
+    精确相等会把本该排除的企业判成「不排除」——排除清单在粗粒度下失效，属于
+    fail-wrong 的方向；GB/T 码表只能给到大类，运行时必须先兜住这一点。
+    """
+    gate = {**INDUSTRY_GATE, "excluded": ["C16"]}
+    outcome = evaluate_expression(gate, table(fact("industry", "C1621")), period=YEAR)
+    assert outcome.result == NOT_SATISFIED
+    assert "C16" in outcome.reason
+
+
+def test_a_coarse_exclusion_code_does_not_leak_into_the_next_class():
+    gate = {**INDUSTRY_GATE, "excluded": ["C16"]}
+    outcome = evaluate_expression(gate, table(fact("industry", "C17")), period=YEAR)
+    assert outcome.result == SATISFIED
+
+
+def test_a_finer_exclusion_code_does_not_catch_a_coarser_industry_code():
+    """清单比企业行业更细时不命中：此时无法判断，不能猜成「排除」。"""
+    gate = {**INDUSTRY_GATE, "excluded": ["C1621"]}
+    outcome = evaluate_expression(gate, table(fact("industry", "C16")), period=YEAR)
+    assert outcome.result == SATISFIED
+
+
 def test_missing_fact_is_insufficient_not_satisfied():
     """10/28 验收：缺事实是「证据不足」，零值才是已知值。"""
     outcome = evaluate_expression(compare("taxableIncome", "gte", "3000000"), table(), period=YEAR)

@@ -497,7 +497,9 @@ MARKET_TEXT = (
     "（一）从事该细分市场满3年（含）以上；"
     "（二）连续三年从事本细分市场业务；"
     "（三）在本细分市场经营不少于5年；"
-    "（四）近10年一直从事该细分市场业务。\n"
+    "（四）近10年一直从事该细分市场业务；"
+    "（五）从事特定细分市场时间达到2年以上；"
+    "（六）从事本细分市场业务时间达3年以上。\n"
     "第十条 上年度开始从事该细分市场业务的企业不适用前述年限要求。"
 )
 MARKET = SourceText(id=uuid4(), source_url=SOURCE_URL, text=MARKET_TEXT)
@@ -645,6 +647,9 @@ def test_a_date_without_any_period_phrase_is_still_reported():
         "连续三年从事本细分市场业务",
         "在本细分市场经营不少于5年",
         "近10年一直从事该细分市场业务",
+        # 「达到/达」：M3 的 SRDI-001 原文就是「从事特定细分市场时间达到2年以上」
+        "从事特定细分市场时间达到2年以上",
+        "从事本细分市场业务时间达3年以上",
     ],
 )
 def test_relative_period_wording_is_recognised_in_any_number(quote):
