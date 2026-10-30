@@ -15,7 +15,7 @@
 表头固定（不得任意改，M1 导入时映射 camelCase）：
 
 ```
-policy_id,criterion_id,source_version,source_page_or_section,source_span,field,operator,value,unit,period,logic_group,negation,annotator_a,annotator_b,adjudicated_expression,review_status
+policy_id,criterion_id,source_version,source_page_or_section,source_span,field,operator,value,unit,period,logic_group,negation,annotator_a,annotator_b,adjudicated_expression,review_status,adjudication_note
 ```
 
 | 列 | 含义 | 填写要求与允许取值 |
@@ -25,10 +25,10 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `source_version` | 来源版本/文号 | 如「财政部 税务总局公告2023年第12号」；引用文未登记时写「文号（待登记来源）」 |
 | `source_page_or_section` | 页码或条款 | 如「第五条」「第一条」「附件申报指南第3页」；页码与段落至少一个非空 |
 | `source_span` | 原文片段 | 逐字摘录，能回查数字、比较方向、否定词和期间 |
-| `field` | 事实 key / 指标 | 见 §4 事实字典：`industry/taxableIncome/employeeCount/assets/rdActivity/rdExpense/establishedDate` |
+| `field` | 事实 key / 指标 | 见 §4 事实字典及 §4.1 扩展键（共 18 键） |
 | `operator` | 操作符 | 比较符 `lt/lte/eq/ne/gte/gt`，或 `industry_exclusion`、`quarterly_average` |
 | `value` | 阈值/列表 | 金额十进制字符串；行业排除为行业码列表，用 `\|` 分隔 |
-| `unit` | 单位 | `code/CNY/person/boolean/date` |
+| `unit` | 单位 | `code/CNY/person/boolean/date/ratio` |
 | `period` | 所属期间 | `assessment`（本次判断所属年度）或显式 `YYYY-MM-DD/YYYY-MM-DD` |
 | `logic_group` | 分组标注（仅供人复核，引擎不读） | 引擎纯 AND 合并（`rules.aggregate()` 不分枝），**不读 logic_group**；原文「或」必须写进同一条 `adjudicated_expression` 的 `or` 节点。组号仅辅助人复核，不影响求值 |
 | `negation` | 是否否定 | `false` 为主；「不属于限制禁止行业」用 `industry_exclusion` 表达，不额外写否定 |
@@ -36,8 +36,9 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `annotator_b` | 标注人 B | 独立填写，留空=尚未标注 |
 | `adjudicated_expression` | 仲裁后 AST | JSON 字符串，须 CSV 转义（内部双引号写成 `""`），操作符见 §3 |
 | `review_status` | 复核状态 | `待双人复核`（默认）→ `已仲裁` → `可发布`；未仲裁不得写「可发布」。`待核实` 表示条件暂无法写成可执行 AST，该行仅保留在 CSV 供复核、**不进库**——`adjudicated_expression` 留空，导入时会被 API-06 以 422 拒绝（这是护栏，不是被忍受的状态）；转「可发布」前必须先补齐 AST |
+| `adjudication_note` | 裁决备注 | 仲裁结论、兜底说明、日期读法等；仅需要时填写，多数行为空 |
 
-**注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。
+**注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。**例外**：合并条款（如 SRDI-002、RDSUB-001）的 `operator=and/or`，`field/value/unit/period` 留空，本就不可能对应单行投影，只以 AST 为准、不回改。
 
 ## 2. 原文定位与核对要点
 
@@ -85,9 +86,9 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 季度平均值口径：各季度 `(期初+期末)/2`，再对完整四季度求平均；`quarterly_average` 需保留八个输入与中间值。从业人数含与单位建立劳动关系的职工及接受的劳务派遣用工。
 
-## 4.1 地方通知待扩展事实键（预计算事实口径，已在 PR #10 实现，待合并）
+## 4.1 地方通知扩展事实键（预计算事实口径，rc.4 已解锁，共 18 键）
 
-第二阶段地方通知（`SZ-GRANT-RD-SUBSIDY-2026`、`SZ-GRANT-SRDI-2025`）需要的事实键超出当前 10 键字典。按「**预计算事实**」口径处理：增量与占比由 M3 在 `enterprises.csv`/`labels.csv` 里给出已算好的数值，M1 只做 `compare`，**不新增 delta/ratio 算子**。以下键已由 M1 在 PR #10 扩展 `FACT_UNITS` 与 OpenAPI `FactKey` 枚举：
+第二阶段地方通知（`SZ-GRANT-RD-SUBSIDY-2026`、`SZ-GRANT-SRDI-2025`）需要的事实键超出原 10 键字典，现共 18 键。按「**预计算事实**」口径处理：增量与占比由 M3 在 `enterprises.csv`/`labels.csv` 里给出已算好的数值，M1 只做 `compare`，**不新增 delta/ratio 算子**。以下键已由 M1 在 PR #10 扩展 `FACT_UNITS` 与 OpenAPI `FactKey` 枚举：
 
 | key | 含义与计算口径 | value 与 unit | period（事实侧与 AST 侧一致，均显式日期） | 需求来源 |
 | --- | --- | --- | --- | --- |
@@ -96,11 +97,13 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `rdExpenseIncrease` | 上年度研发费用增量 = 上年度 `rdExpense` − 前年度 `rdExpense`（M3 预计算） | 十进制字符串（可为负）；`CNY` | 上年度显式日期，如 2025-01-01/2025-12-31（= 该年度 − 前一年） | RD-SUBSIDY 第八条（二）1 |
 | `rdExpenseRevenueRatio` | 上年度研发费用占营业收入比重 = `rdExpense` ÷ `revenue`（M3 预计算，如 3% 记 `0.03`） | 十进制字符串；`ratio` | 与 revenue/rdExpense 同一期间（上年度显式日期） | SRDI 二（二） |
 | `rdAddDeductionClaimed` | 近两年均已申报享受研发费用加计扣除 | JSON boolean；`boolean` | 近两年显式日期，如 2024-01-01/2025-12-31 | RD-SUBSIDY 第八条（二）1 |
-| `creditRecord` | 诚信记录良好（无限制申请财政性资金惩戒、无超期未验收未退款） | JSON boolean；`boolean` | 显式日期 2025-01-01/2025-12-31（本政策周期 asOf=2025-12-31 钉死，按核验时点状态处理；判断后取消记录→PATCH→stale） | RD-SUBSIDY 第八条（三） |
+| `creditRecord` | 诚信记录良好（无限制申请财政性资金惩戒、无超期未验收未退款） | JSON boolean；`boolean` | `assessment`（当前状态，同 region/establishedDate；判断后取消记录→PATCH→stale） | RD-SUBSIDY 第八条（三） |
+| `specificMarketSince` | 进入特定细分市场的日期（**不是**经营年数） | `YYYY-MM-DD`；`date` | 画像年度 `assessment` | SRDI 二（一） |
+| `independentLegalEntity` | 具有独立法人资格 | JSON boolean；`boolean` | 画像年度 `assessment` | RD-SUBSIDY 第八条（一） |
 
-> **AST period 口径**：6 键均为期间专指事实，`adjudicated_expression` 的 `period` 一律写 `{"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD"}`（`creditRecord` 也不例外，用 2025-01-01/2025-12-31，不用 assessment），并与事实侧 `(key, period_start, period_end)` 逐字一致，否则查不到事实、恒为 insufficient_evidence。具体年份按各政策申报年度核定（SRDI 2025 上年度=2024；RD-SUBSIDY 首个申报年度上年度=2025、成立年限 asOf=2025-12-31 钉死）。
+> **AST period 口径**：除 `creditRecord`（当前状态，用 `assessment`，同 region/establishedDate）外，其余 5 键均为期间专指事实，`adjudicated_expression` 的 `period` 一律写 `{"startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD"}`，并与事实侧 `(key, period_start, period_end)` 逐字一致，否则查不到事实、恒为 insufficient_evidence。具体年份按各政策申报年度核定（SRDI 2025 上年度=2024；RD-SUBSIDY 首个申报年度上年度=2025）。
 
-> 键名与 unit 为 M3 建议，须与 M1 定稿后再写进 `criteria_review.csv`。「从事特定细分市场≥2年」暂无法用现有事实键表达，保持待核实（**不用 `establishedDate` 近似**：成立年限 ≠ 细分市场经营年限），是否新增 `specificMarketYears` 待定。
+> 「从事特定细分市场≥2年」已定稿：键名 `specificMarketSince`（`date` 类型，进入特定细分市场的日期，**不是**年数），用 `date` 算子 `specificMarketSince <= 申报年度倒推 2 年` 表达；另新增 `independentLegalEntity`（boolean，独立法人资格）。
 
 ## 5. 补问的获取成本与敏感程度（整数档位）
 
