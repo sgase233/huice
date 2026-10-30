@@ -24,6 +24,7 @@ from app.domain.rules import (
     evaluate_expression,
     evaluate_policy,
     policy_contradictions,
+    referenced_facts,
     validate_expression,
 )
 
@@ -728,3 +729,68 @@ def test_every_disjoint_pair_is_reported_once():
 def test_an_expression_that_is_not_an_atomic_compare_is_skipped():
     assert policy_contradictions([rule("A", INDUSTRY_GATE)]) == []
     assert policy_contradictions([rule("A", {})]) == []
+
+
+# ------------------------------------------------------- 人工核查条款（rc.5）
+
+
+MANUAL = {
+    "op": "manual_review",
+    "reason": "「国家非限制和禁止行业」指向产业结构调整指导目录，没有 GB/T 码，须人工核查",
+}
+
+
+def test_a_manual_review_condition_never_reads_as_satisfied():
+    verdict = evaluate_expression(MANUAL, table(), period=YEAR)
+    assert verdict.result == INSUFFICIENT
+    assert "须人工核查" in verdict.reason
+    # 说明原样回显：报告要能说清「人工核查什么」，不能只说「判不了」。
+    assert "产业结构调整指导目录" in verdict.reason
+
+
+def test_manual_review_inside_an_and_downgrades_the_whole_condition():
+    expression = {
+        "op": "and",
+        "children": [compare("taxableIncome", "lte", "3000000.00"), MANUAL],
+    }
+    facts = table(fact("taxableIncome", Decimal("2800000.00")))
+    verdict = evaluate_expression(expression, facts, period=YEAR)
+    # 量化条件都满足也不能把「须人工核查」稀释成满足——这正是 M2 在 PR #9 的 P1。
+    assert verdict.result == INSUFFICIENT
+    assert "须人工核查" in verdict.reason
+
+
+def test_manual_review_in_one_or_branch_still_lets_the_other_branch_decide():
+    expression = {
+        "op": "or",
+        "children": [compare("rdExpense", "gte", "1000000.00"), MANUAL],
+    }
+    facts = table(fact("rdExpense", Decimal("1200000.00")))
+    verdict = evaluate_expression(expression, facts, period=YEAR)
+    # OR 的另一支已经成立，就不必劳烦人工：直通条件本来就是这个意思。
+    assert verdict.result == SATISFIED
+
+
+def test_a_manual_review_condition_depends_on_no_fact():
+    # 没有依赖 → 事实更新不会把它标成 stale；它本来就不读事实。
+    assert referenced_facts(MANUAL, period=YEAR) == []
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        {"op": "manual_review"},
+        {"op": "manual_review", "reason": ""},
+        {"op": "manual_review", "reason": "   "},
+        {"op": "manual_review", "reason": "长" * 201},
+        {**MANUAL, "factKey": "industry"},
+    ],
+    ids=["missing", "empty", "blank", "too-long", "extra-field"],
+)
+def test_a_manual_review_condition_needs_a_usable_reason_and_nothing_else(node):
+    codes = [problem.code for problem in validate_expression(node)]
+    assert codes, "不该放行"
+
+
+def test_a_valid_manual_review_condition_passes_structure_checks():
+    assert validate_expression(MANUAL) == []

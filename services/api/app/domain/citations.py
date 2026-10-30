@@ -465,6 +465,10 @@ def _walk_support(
     if op == "date":
         _require_date(node.get("value"), criterion, verdict)
         return
+    if op == "manual_review":
+        # 不要求引文给出阈值：这条本来就不由程序判。但 span 的逐字比对照旧
+        # （在下游统一做），「判不了」不等于「引文可以随便写」。
+        return
     if op == "industry_exclusion":
         excluded = [str(item) for item in node.get("excluded") or []]
         quotes = " ".join(span.quote for span in criterion.spans)

@@ -85,7 +85,7 @@ def test_unimplemented_endpoints_are_not_served(schema):
 
 
 def test_contract_version_is_release_candidate(contract):
-    assert contract["info"]["version"] == "1.0.0-rc.4"
+    assert contract["info"]["version"] == "1.0.0-rc.5"
 
 
 # --------------------------------------------------- 事实字典的三处同步（rc.4 起）
@@ -116,3 +116,75 @@ def test_fact_unit_enum_matches_the_server_dictionary(contract):
     declared = contract["components"]["schemas"]["FactUnit"]["enum"]
     assert set(get_args(FactUnit)) == set(declared)
     assert set(FACT_UNITS.values()) <= set(declared)
+
+
+def test_every_contract_expression_operator_is_accepted_by_the_validator(contract):
+    """契约 oneOf 里的每个算子都要能被 ``validate_expression`` 认可，反之亦然。
+
+    rc.4 的教训：``DateExpression.factKey`` 的 schema 仍写死 ``establishedDate``，而
+    说明和服务端都已经放宽到两个日期键——契约说一套、代码做一套，两边都没报错，直到
+    有人照着 schema 写 AST 才会炸。这里把两边的算子集合与日期键集合一起锁死。
+    """
+
+    from app.domain.rules import DATE_KEYS, validate_expression
+
+    schemas = contract["components"]["schemas"]
+    declared: dict[str, dict] = {}
+    for ref in schemas["Expression"]["oneOf"]:
+        name = ref["$ref"].rsplit("/", 1)[-1]
+        body = schemas[name]
+        declared[body["properties"]["op"]["const"]] = body
+
+    assert set(declared) == {
+        "and",
+        "or",
+        "not",
+        "compare",
+        "date",
+        "industry_exclusion",
+        "quarterly_average",
+        "manual_review",
+    }
+    # 每个算子都能过结构校验（样板：结构与常量一致）。
+    samples = {
+        "and": {"op": "and", "children": [{"op": "manual_review", "reason": "x"}, {"op": "manual_review", "reason": "y"}]},
+        "or": {"op": "or", "children": [{"op": "manual_review", "reason": "x"}, {"op": "manual_review", "reason": "y"}]},
+        "not": {"op": "not", "child": {"op": "manual_review", "reason": "x"}},
+        "compare": {
+            "op": "compare",
+            "factKey": "taxableIncome",
+            "period": "assessment",
+            "comparator": "lte",
+            "value": "3000000.00",
+            "unit": "CNY",
+        },
+        "date": {
+            "op": "date",
+            "factKey": "establishedDate",
+            "period": "assessment",
+            "comparator": "lte",
+            "value": "2026-06-30",
+        },
+        "industry_exclusion": {
+            "op": "industry_exclusion",
+            "factKey": "industry",
+            "period": "assessment",
+            "excluded": ["F51"],
+        },
+        "quarterly_average": {
+            "op": "quarterly_average",
+            "metric": "employeeCount",
+            "period": {"startDate": "2025-01-01", "endDate": "2025-12-31"},
+            "comparator": "lte",
+            "value": "300",
+            "unit": "person",
+        },
+        "manual_review": {"op": "manual_review", "reason": "须人工核查"},
+    }
+    assert set(samples) == set(declared)
+    for op, node in samples.items():
+        assert validate_expression(node) == [], op
+
+    # date 算子的键集合两边必须一致（rc.4 就是这里没对上）。
+    date_keys = declared["date"]["properties"]["factKey"]["enum"]
+    assert set(date_keys) == set(DATE_KEYS)

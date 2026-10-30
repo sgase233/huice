@@ -154,6 +154,26 @@ def test_model_expression_is_revalidated_against_the_contract():
     assert "EXTRACTION_EXPRESSION_INVALID" in {finding.code for finding in outcome.findings}
 
 
+def test_the_model_cannot_declare_a_condition_as_manual_review():
+    """「须人工核查」是标注方的判断，模型不能替人卸责——即便它编出了合法结构。"""
+
+    text = "从事国家非限制和禁止行业。"
+    payload = (
+        '[{"title":"行业条件","expression":{"op":"manual_review","reason":"判不了"},'
+        f'"quote":"{text}"}},'
+        '{"title":"嵌在 and 里","expression":{"op":"and","children":['
+        '{"op":"manual_review","reason":"判不了"},'
+        '{"op":"compare","factKey":"taxableIncome","period":"assessment",'
+        '"comparator":"lte","value":"3000000","unit":"CNY"}]},'
+        f'"quote":"{text}"}}]'
+    )
+    outcome = extract(text, llm=FakeLlm(payload))
+
+    assert outcome.criteria == []
+    codes = {finding.code for finding in outcome.findings}
+    assert "EXTRACTION_MANUAL_REVIEW_NOT_ALLOWED" in codes
+
+
 def test_model_non_json_output_falls_back_to_manual():
     outcome = extract("年应纳税所得额不超过300万元。", llm=FakeLlm("抱歉，我无法完成。"))
 

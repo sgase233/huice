@@ -84,6 +84,7 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 MAX_DEPTH = 8
 MAX_NODES = 200
+MANUAL_REVIEW_REASON_MAX = 200
 
 SATISFIED = "satisfied"
 NOT_SATISFIED = "not_satisfied"
@@ -226,6 +227,7 @@ def _validate_node(node: Any, problems: list[Problem], *, path: str, depth: int)
         "date": _validate_date_node,
         "industry_exclusion": _validate_industry_exclusion,
         "quarterly_average": _validate_quarterly_average,
+        "manual_review": _validate_manual_review,
     }.get(op)
     if handler is None:
         problems.append(
@@ -394,6 +396,39 @@ def _validate_quarterly_average(node: dict, problems: list[Problem], *, path: st
         )
 
 
+def _validate_manual_review(node: dict, problems: list[Problem], *, path: str, depth: int) -> None:
+    """人工核查条款：只带一个说明，不带事实、不带期间。
+
+    允许它进表达式是因为「这条判不了」本身就是要落库的结论——否则标注方只能在
+    「硬写一个大概率错的表达式」和「退回待核实、整版政策发不出去」之间二选一。
+    ``reason`` 会原样回显到判断理由里，所以必须有内容、有长度上限，不能是一句空话。
+    """
+
+    reason = node.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        problems.append(
+            Problem("EXPRESSION_REASON", "manual_review 必须写明需要人工核查什么。", _join(path, "reason"))
+        )
+        return
+    if len(reason) > MANUAL_REVIEW_REASON_MAX:
+        problems.append(
+            Problem(
+                "EXPRESSION_REASON",
+                f"manual_review 的说明不能超过 {MANUAL_REVIEW_REASON_MAX} 字。",
+                _join(path, "reason"),
+            )
+        )
+    extra = set(node) - {"op", "reason"}
+    if extra:
+        problems.append(
+            Problem(
+                "EXPRESSION_SHAPE",
+                "manual_review 只接受 op 与 reason。",
+                path,
+            )
+        )
+
+
 # ------------------------------------------------------------------ 事实引用
 
 
@@ -470,6 +505,16 @@ def _evaluate(node: Any, facts: FactTable, *, period: tuple[date, date]) -> Eval
         return _evaluate_industry_exclusion(node, facts, period=period)
     if op == "quarterly_average":
         return _evaluate_quarterly_average(node, facts, period=period)
+    if op == "manual_review":
+        # 不是「未知事实」，是「这条按政策口径本就不由程序判」：照样落在
+        # insufficient_evidence 上，让上层 AND 整体降级，绝不当成满足放行。
+        reason = str(node.get("reason") or "").strip()
+        return Evaluation(
+            INSUFFICIENT,
+            f"本条须人工核查：{reason}" if reason else "本条须人工核查。",
+            [],
+            [],
+        )
     return Evaluation(CONFLICT, "条件算子不在契约枚举内，无法判断。", [], [])
 
 

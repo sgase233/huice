@@ -229,6 +229,25 @@ def test_industry_exclusion_needs_a_matching_cue():
     assert "CITATION_INDUSTRY_NOT_FOUND" in codes(bad)
 
 
+def test_a_manual_review_criterion_still_needs_a_verbatim_quote():
+    """判不了 ≠ 引文可以随便写：人工核查条款的 span 照样逐字比对。"""
+
+    expression = {
+        "op": "manual_review",
+        "reason": "「国家非限制和禁止行业」指向产业结构调整指导目录，须人工核查",
+    }
+    ok = validate_criteria(
+        [criterion(span("减按25%计入应纳税所得额"), expression=expression)], SOURCES, VERSION
+    )[0]
+    assert ok.status == "passed", codes(ok)
+
+    bad = validate_criteria(
+        [criterion(span("本条由税务机关另行核定"), expression=expression)], SOURCES, VERSION
+    )[0]
+    assert bad.status == "failed"
+    assert any(code.startswith("SPAN_") for code in codes(bad))
+
+
 def test_date_condition_must_appear_in_quote():
     expression = {
         "op": "date",

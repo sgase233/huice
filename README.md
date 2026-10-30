@@ -6,7 +6,7 @@
 
 2026-10-24 负责人确认：允许 DeepSeek 替代 MaaS、其他 AI 编码助手替代 CodeArts；最终材料可统一写“AI 辅助编码”，工具使用说明须符合实际。完整规则及旧计划的修订口径见[工作手册“模型与编码工具规则”](./WORKING_GUIDE.md)。
 
-`contracts/openapi.yaml` 是 16 个接口的 OpenAPI 3.1 契约，当前为 `1.0.0-rc.4`（原14个接口加后台草稿列表/详情；rc.2 将模型模式枚举 `maas` 改为 `deepseek`；rc.3 将事实字典扩到 16 键并新增 `ratio` 单位；rc.4 再扩到 18 键，`date` 算子不再只认成立日期），`apps/web/src/api/types.ts` 由它生成；M2 复核后再定版 `1.0.0`。后端 16 个接口均已实现（逐项状态见 `contracts/README.md`），前端页面尚未接完。
+`contracts/openapi.yaml` 是 16 个接口的 OpenAPI 3.1 契约，当前为 `1.0.0-rc.5`（原14个接口加后台草稿列表/详情；rc.2 将模型模式枚举 `maas` 改为 `deepseek`；rc.3 将事实字典扩到 16 键并新增 `ratio` 单位；rc.4 再扩到 18 键，`date` 算子不再只认成立日期；rc.5 新增 `manual_review` 算子表达「本条须人工核查」），`apps/web/src/api/types.ts` 由它生成；M2 复核后再定版 `1.0.0`。后端 16 个接口均已实现（逐项状态见 `contracts/README.md`），前端页面尚未接完。
 
 - M1：`services/api/`、`infra/`、`contracts/` 与根配置。
 - M2：`apps/web/`。
