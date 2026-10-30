@@ -71,6 +71,8 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 - 区间用 AND 的上下界表达，不另加操作符；比例以 `unit=ratio` 的十进制字符串表达。
 - 冲突节点先单独检测并向上传播为 `conflict`，不得被 OR 短路掩盖。
 
+> **行业排除的码表与三条口径**（财税〔2015〕119号第四条负面清单 → GB/T 4754-2017 大类码、按前缀命中；三条口径：兜底项不落码、大类覆盖不到中/小类时 `excluded` 写细码、小微「国家非限制和禁止行业」为粗粒度近似）以 [IMPLEMENTATION_AND_INTERFACE.md §2.2](../IMPLEMENTATION_AND_INTERFACE.md) 为准。
+
 ## 4. 事实字典（`field` / `unit` / `period` 取值）
 
 | key | value 与 unit | period |
