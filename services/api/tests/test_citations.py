@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from app.domain.citations import (
     SourceSpanCheck,
     SourceText,
     quote_hash,
+    ratio_bounds,
     threshold_bounds,
     validate_criteria,
     validate_criterion,
@@ -289,7 +291,8 @@ EXTENDED_SOURCE_TEXT = (
     "第九条 近两年新增股权融资不低于2000万元。\n"
     "第十条 研发费用增量不低于200万元。\n"
     "第十一条 研发费用不低于100万元。\n"
-    "第十二条 上年度研发费用占营业收入不低于3%。"
+    "第十二条 上年度研发费用占营业收入不低于3%。\n"
+    "第十三条 上年度研发费用占营业收入不超过3%。"
 )
 EXTENDED = SourceText(id=uuid4(), source_url=SOURCE_URL, text=EXTENDED_SOURCE_TEXT)
 EXTENDED_SOURCES = {EXTENDED.id: EXTENDED}
@@ -350,19 +353,116 @@ def test_expense_increase_is_not_satisfied_by_a_plain_expense_quote():
     assert "CITATION_THRESHOLD_NOT_FOUND" in codes(verdict)
 
 
-def test_ratio_is_deliberately_not_compared_against_a_percentage_quote():
-    """3% 与 0.03 不是同一个字符串，按金额阈值比对必然误报，故不做数值核对。"""
+# ------------------------------------------------------- 比例条件（M2 PR #10 的 P1）
+#
+# 3% 与 0.03 不是同一个字符串，按金额阈值比对会误报，所以比例单独走百分比换算。
+# 但「单独走」不等于「不核对」：不核对时，把「不低于 3%」写成 0.30（数量级错）或把
+# 方向写成「不超过」，其余引文检查照样通过、条款被标成 passed 直接进判断。
+
+RATIO_QUOTE = "上年度研发费用占营业收入不低于3%"
+
+
+def test_a_ratio_condition_matches_its_percentage_in_the_quote():
+    verdict = validate_criterion(
+        criterion(extended_span(RATIO_QUOTE), expression=compare("rdExpenseRevenueRatio", "0.03", "ratio")),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_ratio_off_by_one_order_of_magnitude_is_reported():
+    """M2 举的例：原文「不低于 3%」，规则写成 0.30。"""
 
     verdict = validate_criterion(
         criterion(
-            extended_span("上年度研发费用占营业收入不低于3%"),
+            extended_span(RATIO_QUOTE),
+            expression=compare("rdExpenseRevenueRatio", "0.30", "ratio"),
+        ),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+def test_a_ratio_with_the_direction_flipped_is_reported():
+    """M2 举的另一半：原文「不低于 3%」，规则写成「不超过」。"""
+
+    verdict = validate_criterion(
+        criterion(
+            extended_span(RATIO_QUOTE),
+            expression=compare("rdExpenseRevenueRatio", "0.03", "ratio", comparator="lte"),
+        ),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+def test_a_ratio_condition_with_no_percentage_in_the_quote_is_blocked():
+    """引文只有金额阈值时不能放行——挡住发布让人工复核，比静默通过安全。"""
+
+    verdict = validate_criterion(
+        criterion(
+            extended_span("研发费用不低于100万元"),
             expression=compare("rdExpenseRevenueRatio", "0.03", "ratio"),
         ),
         EXTENDED_SOURCES,
         version=VERSION,
     )
 
-    assert verdict.status == "passed", codes(verdict)
+    assert "CITATION_THRESHOLD_NOT_FOUND" in codes(verdict)
+
+
+def test_a_ratio_mismatch_message_quotes_the_original_sentence():
+    """报错要给人看得懂的原文，而不是换算后的 0.03。"""
+
+    verdict = validate_criterion(
+        criterion(
+            extended_span(RATIO_QUOTE),
+            expression=compare("rdExpenseRevenueRatio", "0.30", "ratio"),
+        ),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    message = next(f.message for f in verdict.findings if f.code == "CITATION_THRESHOLD_MISMATCH")
+    assert "不低于3%" in message
+
+
+@pytest.mark.parametrize(
+    ("quote", "expected"),
+    [
+        ("上年度研发费用占营业收入总额比重不低于3%", [(Decimal("0.03"), "gte")]),
+        ("研发费用占营业收入比例不低于百分之3", [(Decimal("0.03"), "gte")]),
+        ("研发费用占营业收入不低于千分之30", [(Decimal("0.03"), "gte")]),
+        ("研发费用占营业收入总额比重3‰以上", [(Decimal("0.003"), "gte")]),
+        ("研发费用占营业收入总额比重5%以下", [(Decimal("0.05"), "lte")]),
+        # 没有「比重/占比/比例」线索：不能拿别处的百分比凑数。
+        ("研发费用增长不低于10%", []),
+        # 金额阈值不是比例，抽到的单位是元，family 也不该是比例。
+        ("上年度营业收入总额在1000万元以上", []),
+    ],
+)
+def test_ratio_thresholds_are_read_as_decimals(quote, expected):
+    assert [(bound.amount, bound.direction) for bound in ratio_bounds(quote)] == expected
+
+
+def test_opposite_ratio_quotes_are_a_conflict():
+    verdict = validate_criterion(
+        criterion(
+            extended_span(RATIO_QUOTE),
+            extended_span("上年度研发费用占营业收入不超过3%"),
+            expression=compare("rdExpenseRevenueRatio", "0.03", "ratio"),
+        ),
+        EXTENDED_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_CONFLICT" in codes(verdict)
 
 
 # ------------------------------------------------ 地方通知的中文句式（2026-10-29 硬化）

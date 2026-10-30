@@ -258,7 +258,11 @@ def _check_threshold_conflict(criterion: CriterionInput, verdict: CriterionVerdi
     if criterion.review_finding == "conflict":
         return
 
-    bounds = [(span, bound) for span in criterion.spans for bound in threshold_bounds(span.quote)]
+    bounds = [
+        (span, bound)
+        for span in criterion.spans
+        for bound in (*threshold_bounds(span.quote), *ratio_bounds(span.quote))
+    ]
     trails = _or_branch_trails(criterion.expression)
     for index, (first_span, first) in enumerate(bounds):
         for second_span, second in bounds[index + 1 :]:
@@ -270,12 +274,14 @@ def _check_threshold_conflict(criterion: CriterionInput, verdict: CriterionVerdi
             # 分支，不是标注没处理完的冲突：AST 已经把它们写成互斥分支了。
             if _branches_are_exclusive(criterion.expression, trails, first, second):
                 continue
+            written = first.source_text or (
+                f"{format(first.amount, 'f')}（原文以「{first.unit}」计）"
+            )
             verdict.findings.append(
                 Finding(
                     "CITATION_THRESHOLD_CONFLICT",
                     f"引文对同一指标给出方向相反的阈值（{_direction_text(first.direction)} 与 "
-                    f"{_direction_text(second.direction)} {format(first.amount, 'f')}"
-                    f"（原文以「{first.unit}」计）），请人工确认后重新标注。",
+                    f"{_direction_text(second.direction)} {written}），请人工确认后重新标注。",
                     (first_span, second_span),
                 )
             )
@@ -325,9 +331,10 @@ def _branches_are_exclusive(
         for node in _walk_atoms(expression):
             if node.get("op") != "compare":
                 continue
-            if str(node.get("unit")) not in ("CNY", "person"):
+            if str(node.get("unit")) not in ("CNY", "person", "ratio"):
                 continue
-            family = _METRIC_FAMILY_BY_KEY.get(str(node.get("factKey")))
+            key = str(node.get("factKey"))
+            family = _RATIO_FAMILY if key == _RATIO_FAMILY else _METRIC_FAMILY_BY_KEY.get(key)
             amount = _to_decimal(node.get("value"))
             if family == bound.family and amount == bound.amount:
                 found.append(trails.get(id(node), ()))
@@ -374,9 +381,20 @@ _METRIC_FAMILY_BY_KEY: Mapping[str, str] = {
     "revenue": "revenue",
     "equityFinancing": "equityFinancing",
     "rdExpenseIncrease": "rdExpenseIncrease",
-    # rdExpenseRevenueRatio 有意不映射：引文写「3%」而条件值是 0.03，按金额阈值
-    # 比对必然误报。比例的引文核对留给人工复核。
+    # rdExpenseRevenueRatio 不在这里：引文写「不低于 3%」而条件值是 0.03，按金额阈值
+    # 比对必然误报。它走 ``ratio_bounds`` 的百分比换算（见下），不是不核对。
 }
+
+#: 比例条件的引文核对。**必须核对**：不核对时，把「不低于 3%」写成 0.30（数量级错）
+#: 或把方向写成「不超过」，其余引文检查都会通过、条款被标成 passed 直接进判断——这正是
+#: M2 在 PR #10 指出的漏洞。识别不到百分比就报 CITATION_THRESHOLD_NOT_FOUND，挡住发布
+#: 并要求人工复核，而不是放行。
+_RATIO_FAMILY = "rdExpenseRevenueRatio"
+
+#: 只有当百分比前 24 字内出现这些线索时才认定为比例条件。没有线索时报「找不到阈值」
+#: 而不是拿别处的百分比凑数——宁可挡住让人看一眼，也不能用「研发费用增长不低于 10%」
+#: 去支持一个「占营业收入比重不低于 3%」的条件。
+_RATIO_CUES = ("比重", "占比", "比例", "百分比", "占")
 
 _FAMILY_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("研发费用增量", "rdExpenseIncrease"),
@@ -403,7 +421,11 @@ _EXCLUSION_CUES = ("行业", "不适用", "排除", "负面清单", "不得属�
 
 
 def _check_expression_support(criterion: CriterionInput, verdict: CriterionVerdict) -> None:
-    bounds = [(span, bound) for span in criterion.spans for bound in threshold_bounds(span.quote)]
+    bounds = [
+        (span, bound)
+        for span in criterion.spans
+        for bound in (*threshold_bounds(span.quote), *ratio_bounds(span.quote))
+    ]
     _walk_support(criterion.expression, criterion, verdict, bounds)
 
 
@@ -424,9 +446,14 @@ def _walk_support(
         _walk_support(node.get("child"), criterion, verdict, bounds)
         return
     if op == "compare":
-        family = _METRIC_FAMILY_BY_KEY.get(str(node.get("factKey")))
+        key = str(node.get("factKey"))
+        family = _METRIC_FAMILY_BY_KEY.get(key)
         unit = str(node.get("unit"))
-        if family and unit in ("CNY", "person"):
+        # 按键而不是按 unit 判：unit 写错（如 CNY）时表达式层本应拒绝，但校验器不假设
+        # 上游一定拦住了——漏判这里就等于静默放行。
+        if key == _RATIO_FAMILY:
+            _require_threshold(node, _RATIO_FAMILY, criterion, verdict, bounds)
+        elif family and unit in ("CNY", "person"):
             _require_threshold(node, family, criterion, verdict, bounds)
         elif node.get("factKey") == "rdActivity":
             _require_cue(criterion, verdict, "研发活动", "CITATION_RD_ACTIVITY_NOT_FOUND")
@@ -489,16 +516,22 @@ def _require_threshold(
             return
 
     span, nearest = candidates[0]
-    verdict.findings.append(
-        Finding(
-            "CITATION_THRESHOLD_MISMATCH",
+    if family == _RATIO_FAMILY:
+        # 比例直接回显原句（「不低于 3%」），不把 0.03 换算回去——读者要看的是原文，
+        # 换算回去还得再猜一次四舍五入。
+        quoted = nearest.source_text or f"{format(nearest.amount, 'f')}（小数）"
+        message = (
+            f"条件写的是 {_comparator_text(comparator)} {format(amount, 'f')}（小数），"
+            f"但引文写的是「{quoted}」，数值或方向不一致，请复核。"
+        )
+    else:
+        message = (
             f"条件写的是 {_comparator_text(comparator)} {format(amount, 'f')}"
             f"{_unit_label(node.get('unit'))}，但引文写的是 "
             f"{_direction_text(nearest.direction)} {format(nearest.amount, 'f')}"
-            f"（原文以「{nearest.unit}」计，已换算到元/人），数值或方向不一致，请复核。",
-            (span,),
+            f"（原文以「{nearest.unit}」计，已换算到元/人），数值或方向不一致，请复核。"
         )
-    )
+    verdict.findings.append(Finding("CITATION_THRESHOLD_MISMATCH", message, (span,)))
 
 
 def _require_date(value: Any, criterion: CriterionInput, verdict: CriterionVerdict) -> None:
@@ -548,6 +581,8 @@ class ThresholdBound:
     amount: Decimal
     direction: str
     unit: str
+    #: 原文片段（如「不低于 3%」），只用于报错文案；换算后的小数读者对不上原句。
+    source_text: str = ""
 
 
 _DIRECTION_INCLUSIVE_LOWER = ("不低于", "不少于", "不得低于", "至少", "大于等于", "达到", "达")
@@ -573,6 +608,13 @@ _THRESHOLD_PREFIX_RE = re.compile(
 _THRESHOLD_SUFFIX_RE = re.compile(
     r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万元|亿元|元|人)"
     r"\s*(?:（含）|\(含\))?\s*(及以上|以上|及以下|以下|以内)"
+)
+
+#: 百分比的三种书写：前置方向词 + 「百分之/千分之」、前置方向词 + 「%」、数字 + 「%」+ 后置词。
+_RATIO_CN_RE = re.compile(rf"({_DIRECTION_WORDS})\s*(百分之|千分之)\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
+_RATIO_SIGN_RE = re.compile(rf"({_DIRECTION_WORDS})\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([%％‰])")
+_RATIO_SUFFIX_RE = re.compile(
+    r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*([%％‰])\s*(及以上|以上|及以下|以下|以内)"
 )
 
 _WHITESPACE = re.compile(r"[\s　]+")
@@ -638,6 +680,81 @@ def threshold_bounds(quote: str) -> list[ThresholdBound]:
         taken.append((start, end))
         bounds.append(ThresholdBound(family=family, amount=amount, direction=direction, unit=unit))
     return bounds
+
+
+def ratio_bounds(quote: str) -> list[ThresholdBound]:
+    """从引文里抽出**百分比**阈值，并换算成小数（「不低于 3%」→ ``0.03``，``gte``）。
+
+    与 ``threshold_bounds`` 分开是因为单位不是金额：原文写百分比，AST 里必须是小数
+    （契约规定 3% 存 ``0.03``）。两者合并会让「3% → 300 元」的换算把它算成 300，
+    进而把写错数量级的条件判成一致。
+    """
+
+    extractions: list[tuple[int, int, str, str, str | None, str]] = []
+    for match in _RATIO_CN_RE.finditer(quote):
+        extractions.append(
+            (
+                match.start(),
+                match.end(),
+                match.group(3),
+                match.group(2),
+                _direction_of(match.group(1)),
+                match.group(0),
+            )
+        )
+    for match in _RATIO_SIGN_RE.finditer(quote):
+        extractions.append(
+            (
+                match.start(),
+                match.end(),
+                match.group(2),
+                match.group(3),
+                _direction_of(match.group(1)),
+                match.group(0),
+            )
+        )
+    for match in _RATIO_SUFFIX_RE.finditer(quote):
+        direction = "gte" if match.group(3) in ("及以上", "以上") else "lte"
+        extractions.append(
+            (match.start(), match.end(), match.group(1), match.group(2), direction, match.group(0))
+        )
+
+    bounds: list[ThresholdBound] = []
+    taken: list[tuple[int, int]] = []
+    for start, end, number, scale, direction, raw in sorted(extractions, key=lambda item: item[:3]):
+        if direction is None:
+            continue
+        if any(start < other_end and other_start < end for other_start, other_end in taken):
+            continue
+        if not _ratio_cue_near(quote, start):
+            continue
+        amount = _ratio_to_decimal(number, scale)
+        if amount is None:
+            continue
+        taken.append((start, end))
+        bounds.append(
+            ThresholdBound(
+                family=_RATIO_FAMILY,
+                amount=amount,
+                direction=direction,
+                unit=scale,
+                source_text=raw,
+            )
+        )
+    return bounds
+
+
+def _ratio_cue_near(quote: str, position: int) -> bool:
+    window = quote[max(0, position - 24) : position]
+    return any(cue in window for cue in _RATIO_CUES)
+
+
+def _ratio_to_decimal(number: str, scale: str) -> Decimal | None:
+    divisor = Decimal(100) if scale in ("%", "％", "百分之") else Decimal(1000)
+    try:
+        return Decimal(number.replace(",", "")) / divisor
+    except InvalidOperation:  # pragma: no cover - 正则已挡住
+        return None
 
 
 def _direction_of(word: str) -> str | None:
@@ -715,6 +832,7 @@ def _family_label(family: str) -> str:
         "revenue": "营业收入",
         "equityFinancing": "股权融资",
         "rdExpenseIncrease": "研发费用增量",
+        _RATIO_FAMILY: "研发费用占营业收入比重",
     }.get(family, family)
 
 
