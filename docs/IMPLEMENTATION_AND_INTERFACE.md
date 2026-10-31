@@ -118,14 +118,16 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 | `revenue` / `equityFinancing` | 十进制字符串，金额最多 2 位小数；`CNY` | 自然年度（`equityFinancing` 为近两年新增股权融资合计） |
 | `rdExpenseIncrease` | 十进制字符串，金额最多 2 位小数；`CNY`；**允许负数**（本年减上年的增量，下降时填负值） | 自然年度 |
 | `rdExpenseRevenueRatio` | 非负十进制小数；`ratio`（3% 存 `0.03`） | 自然年度 |
-| `rdAddDeductionClaimed` | JSON boolean；`boolean`；**`true` = 近两年均已申报** | 近两年 |
+| `rdAddDeductionClaimed` | JSON boolean；`boolean`；**`true` = 该期间内每个年度都已申报**；`value=null` 表示尚未申报或不确定 | 费用所属年度：期间写成哪一年就是哪一年的申报；单年度与「近两年」（两个年度合成的区间）都由 `period` 表达 |
 | `creditRecord` | JSON boolean；`boolean`；**`true` = 诚信记录良好**（无失信惩戒、无超期未验收未退款等限制申请财政性资金的情形） | 核验时点：条件里写 `assessment`，事实存为本次判断所在年度区间那一行 |
 | `specificMarketSince` | `YYYY-MM-DD`；`date`；**记的是「开始从事该细分市场之日」，不是年数** | 画像年度 |
 | `independentLegalEntity` | JSON boolean；`boolean`；**`true` = 具有独立法人资格**（企业自述，需营业执照复核） | 画像年度 |
 
 > **布尔语义必须与问法同向（2026-10-29 修）**：`creditRecord` 的真值是「良好」，补问文案也必须问「是否良好」；若问成「是否存在限制情形」，用户答「是」会被存成 `true`，规则按「记录良好」反向判断。`independentLegalEntity` 同理（true = 具有法人资格）。布尔键的 period 必须写成具体日期区间——「申报时点」「近两年」不是区间，事实表主键是 `(key, period_start, period_end)`，写不进具体日期就存不下来；`creditRecord` 例外，它按核验时点（本次判断所在年度）存取，见下条。
 
-> **`specificMarketSince` 为什么是日期而不是年限（2026-10-29，契约 rc.4）**：原文写「从事该细分市场满 3 年」，年限是相对量——同一份企业快照在 2026 年算是 2 年、在 2030 年重算就是 6 年，判出不同结论且不可复现。存起始日期后，条件写成 `{"op":"date","factKey":"specificMarketSince","comparator":"lte","value":"2023-12-31"}`（申报年度倒推的固定值），与 `establishedDate` 判「满两年」同一口径。它**不等于**成立年限：细分市场可能晚于企业成立。补问文案要写明「填日期、不填年数」，否则用户会照着原文回一个数字，而数字过不了日期校验。
+> **`rdAddDeductionClaimed` 的期间是「费用所属年度」，「尚未申报」不能记成 `false`（2026-10-31，应答 M2 的 P1）**：税务上「提交申报的日期」与「费用所属年度」是两件事——企业可在 7 月或 10 月预缴时申报当年加计扣除，也可在次年汇算清缴时申报上一年度（国家税务总局、财政部公告 2023 年第 11 号）。所以这个键存的是**费用所属年度**：条件要哪一年，就把 `period` 写成哪一年，不需要额外的「申报类型 / 申报日期」字段。反过来，`false` 的含义是「该年度确定没有申报享受」，与「申报期还没到」不是一回事——后者必须记 `value=null`（未知，求值得证据不足），否则一件还没发生的事会被写成否定事实，条件直接判 `not_satisfied`。补问文案因此是**三态**（是 / 否 / 尚未申报或不确定→跳过），`test_questioning.py::test_rd_add_deduction_question_keeps_not_yet_filed_out_of_no` 锁住这条。至于「当年度已申报」在某一年的具体受理口径（当年预缴还是上一年度汇算），只有主管部门能定，标注方须在 `adjudication_note` 里写明依据。
+
+> **`specificMarketSince` 为什么是日期而不是年限（2026-10-29，契约 rc.4）**：原文写「从事该细分市场满 3 年」，年限是相对量——同一份企业快照在 2026 年算是 2 年、在 2030 年重算就是 6 年，判出不同结论且不可复现。存起始日期后，条件写成 `{"op":"date","factKey":"specificMarketSince","comparator":"lte","value":"2023-10-13"}`（按基准日倒推的**固定值**；基准日的选择本身要有依据——例如取通知落款日 2025-10-13 倒推两年），与 `establishedDate` 判「满两年」同一口径。它**不等于**成立年限：细分市场可能晚于企业成立。补问文案要写明「填日期、不填年数」，否则用户会照着原文回一个数字，而数字过不了日期校验。
 
 > **`creditRecord` 是核验时点的状态，不是期间的均值（2026-10-29，应答 M2 的 P1）**：诚信记录可能在判断之后被撤销，而 `(key, period)` 一字未变，事实表按主键精确匹配，**查不出「期间内状态变过」**——这是当前设计的已知边界，靠流程补：提交前必须重新核验并 PATCH 该事实；PATCH 会生成新的 `factVersion`、写一条失效事件，让原 run 变 `stale`（`staleReasons[].code = fact_changed`，`changedFactRefs` 指向 `creditRecord`），页面据此提示重算。因此「当前有效」的含义是**事实自判断后未被改动**，不等于「这一期间内状态恒定」。演示时用这一步说明有效期：PATCH 撤销记录 → 原 run 变 stale。`test_db_evaluation.py::test_revoking_a_credit_record_makes_the_old_run_stale` 锁住这条链路。若日后确实需要按时点回溯，才考虑给事实加 `verifiedAt` 并改精确匹配口径——那会破坏现有 `(key, period)` 主键语义，本期不做。
 
