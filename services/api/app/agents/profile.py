@@ -21,11 +21,13 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from ..domain.rules import BOOLEAN_KEYS, CODE_KEYS, FACT_UNITS, FactSnapshot
+from ..domain.rules import BOOLEAN_KEYS, CODE_KEYS, DATE_KEYS, FACT_UNITS, FactSnapshot
 from ..errors import ApiProblem
 from ..schemas import EnterpriseFact, EnterpriseInput, FactInput, FactUpdate, Period
 
-DATE_KEYS = frozenset({"establishedDate"})
+#: 日期类事实的报错用中文名（``DATE_KEYS`` 本身在 ``domain.rules``）。rc.4 起不再
+#: 只有成立日期，笼统写「成立日期必须是 YYYY-MM-DD」会把填细分市场日期的用户引向错的字段。
+_DATE_LABELS = {"establishedDate": "成立日期", "specificMarketSince": "细分市场起始日期"}
 #: 金额类事实：最多两位小数，线上固定补两位。
 #: 2026-10-29 补齐 rc.3 新增的三个 CNY 键——漏掉它们会接受三位小数，
 #: 而 ``fact_value_text`` 又按两位序列化，读回值与原始值不一致。
@@ -43,8 +45,10 @@ MONEY_KEYS = frozenset(
 #: 允许为负的事实：应纳税所得额可能为负（亏损）；研发费用增量是「本年减上年」，
 #: 投入下降时为负。其余金额、人数与比例非负。
 SIGNED_KEYS = frozenset({"taxableIncome", "rdExpenseIncrease"})
-#: 期间必须等于画像年度的事实。
-PROFILE_SCOPED_KEYS = ("region", "industry", "establishedDate")
+#: 期间必须等于画像年度的事实。日期类事实记的是「某一天」，但事实表主键是
+#: ``(key, period_start, period_end)``，仍挂在画像年度这一格上——与 ``establishedDate``
+#: 同口径，``date`` 算子的 ``period: assessment`` 才能按精确主键查到。
+PROFILE_SCOPED_KEYS = ("region", "industry", "establishedDate", "specificMarketSince")
 #: 必须在画像年度内给出非空值的键。
 REQUIRED_PROFILE_KEYS = ("region", "industry")
 
@@ -214,12 +218,13 @@ def _normalize_value(key: str, value, prefix: str):
             raise _FieldError(f"{prefix}.value", "编码两端不能有空白字符。")
         return value
     if key in DATE_KEYS:
+        label = _DATE_LABELS.get(key, key)
         if not isinstance(value, str) or not _DATE_RE.match(value):
-            raise _FieldError(f"{prefix}.value", "成立日期必须是 YYYY-MM-DD。")
+            raise _FieldError(f"{prefix}.value", f"{label}必须是 YYYY-MM-DD。")
         try:
             return date.fromisoformat(value)
         except ValueError as exc:
-            raise _FieldError(f"{prefix}.value", "成立日期不是有效日期。") from exc
+            raise _FieldError(f"{prefix}.value", f"{label}不是有效日期。") from exc
     if key in BOOLEAN_KEYS:
         if not isinstance(value, bool):
             raise _FieldError(f"{prefix}.value", "布尔类事实必须是 JSON 布尔值。")

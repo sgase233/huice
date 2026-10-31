@@ -24,6 +24,7 @@ from app.domain.rules import (
     evaluate_expression,
     evaluate_policy,
     policy_contradictions,
+    referenced_facts,
     validate_expression,
 )
 
@@ -167,6 +168,31 @@ def test_industry_in_exclusion_list_is_not_satisfied():
 
 def test_industry_outside_list_is_satisfied():
     outcome = evaluate_expression(INDUSTRY_GATE, table(fact("industry", "C39")), period=YEAR)
+    assert outcome.result == SATISFIED
+
+
+def test_a_coarse_exclusion_code_catches_a_finer_industry_code():
+    """清单按大类写（「C16」），企业行业记到小类（「C1621」）时也要命中。
+
+    精确相等会把本该排除的企业判成「不排除」——排除清单在粗粒度下失效，属于
+    fail-wrong 的方向；GB/T 码表只能给到大类，运行时必须先兜住这一点。
+    """
+    gate = {**INDUSTRY_GATE, "excluded": ["C16"]}
+    outcome = evaluate_expression(gate, table(fact("industry", "C1621")), period=YEAR)
+    assert outcome.result == NOT_SATISFIED
+    assert "C16" in outcome.reason
+
+
+def test_a_coarse_exclusion_code_does_not_leak_into_the_next_class():
+    gate = {**INDUSTRY_GATE, "excluded": ["C16"]}
+    outcome = evaluate_expression(gate, table(fact("industry", "C17")), period=YEAR)
+    assert outcome.result == SATISFIED
+
+
+def test_a_finer_exclusion_code_does_not_catch_a_coarser_industry_code():
+    """清单比企业行业更细时不命中：此时无法判断，不能猜成「排除」。"""
+    gate = {**INDUSTRY_GATE, "excluded": ["C1621"]}
+    outcome = evaluate_expression(gate, table(fact("industry", "C16")), period=YEAR)
     assert outcome.result == SATISFIED
 
 
@@ -431,6 +457,85 @@ def test_new_boolean_keys_only_accept_booleans(key):
     )
 
 
+# ------------------------------------------------------ 事实字典扩展（rc.4，2026-10-29）
+
+
+def date_node(key: str, comparator: str, value: str) -> dict:
+    return {
+        "op": "date",
+        "factKey": key,
+        "period": "assessment",
+        "comparator": comparator,
+        "value": value,
+    }
+
+
+def test_rc4_keys_are_registered_with_their_units():
+    assert FACT_UNITS["specificMarketSince"] == "date"
+    assert FACT_UNITS["independentLegalEntity"] == "boolean"
+
+
+@pytest.mark.parametrize("key", ["establishedDate", "specificMarketSince"])
+def test_the_date_operator_accepts_every_date_key(key):
+    """rc.4 前 ``date`` 算子写死只认 establishedDate，细分市场条款无法表达。"""
+    assert validate_expression(date_node(key, "lte", "2023-12-31")) == []
+
+
+def test_the_date_operator_still_rejects_a_non_date_key():
+    codes = [item.code for item in validate_expression(date_node("revenue", "lte", "2023-12-31"))]
+    assert "EXPRESSION_FACT_KEY" in codes
+
+
+def test_a_date_key_cannot_be_used_in_compare():
+    codes = [
+        item.code
+        for item in validate_expression(compare("specificMarketSince", "lte", "2023-12-31"))
+    ]
+    assert "EXPRESSION_OP" in codes
+
+
+def test_specific_market_since_is_evaluated_against_its_own_fact():
+    expression = date_node("specificMarketSince", "lte", "2023-12-31")
+    outcome = evaluate_expression(
+        expression, table(fact("specificMarketSince", date(2020, 5, 1))), period=YEAR
+    )
+    assert outcome.result == SATISFIED
+    assert "细分市场起始日期" in outcome.reason
+
+
+def test_a_missing_date_is_reported_under_its_own_name():
+    """两个日期键共用 ``_evaluate_date``，缺事实时的文案不能一律写成「缺少成立日期」。"""
+    missing_market = evaluate_expression(
+        date_node("specificMarketSince", "lte", "2023-12-31"), table(), period=YEAR
+    )
+    assert missing_market.result == INSUFFICIENT
+    assert "细分市场起始日期" in missing_market.reason
+
+    missing_established = evaluate_expression(
+        date_node("establishedDate", "lte", "2023-12-31"), table(), period=YEAR
+    )
+    assert missing_established.result == INSUFFICIENT
+    assert "成立日期" in missing_established.reason
+
+
+def test_independent_legal_entity_is_a_boolean_key():
+    assert validate_expression(compare("independentLegalEntity", "eq", True)) == []
+    assert "EXPRESSION_VALUE" in [
+        item.code for item in validate_expression(compare("independentLegalEntity", "eq", "true"))
+    ]
+    assert "EXPRESSION_COMPARATOR" in [
+        item.code for item in validate_expression(compare("independentLegalEntity", "gte", True))
+    ]
+    assert (
+        evaluate_expression(
+            compare("independentLegalEntity", "eq", True),
+            table(fact("independentLegalEntity", False)),
+            period=YEAR,
+        ).result
+        == NOT_SATISFIED
+    )
+
+
 def test_an_unknown_key_is_still_rejected():
     assert "EXPRESSION_FACT_KEY" in [
         item.code
@@ -624,3 +729,68 @@ def test_every_disjoint_pair_is_reported_once():
 def test_an_expression_that_is_not_an_atomic_compare_is_skipped():
     assert policy_contradictions([rule("A", INDUSTRY_GATE)]) == []
     assert policy_contradictions([rule("A", {})]) == []
+
+
+# ------------------------------------------------------- 人工核查条款（rc.5）
+
+
+MANUAL = {
+    "op": "manual_review",
+    "reason": "「国家非限制和禁止行业」指向产业结构调整指导目录，没有 GB/T 码，须人工核查",
+}
+
+
+def test_a_manual_review_condition_never_reads_as_satisfied():
+    verdict = evaluate_expression(MANUAL, table(), period=YEAR)
+    assert verdict.result == INSUFFICIENT
+    assert "须人工核查" in verdict.reason
+    # 说明原样回显：报告要能说清「人工核查什么」，不能只说「判不了」。
+    assert "产业结构调整指导目录" in verdict.reason
+
+
+def test_manual_review_inside_an_and_downgrades_the_whole_condition():
+    expression = {
+        "op": "and",
+        "children": [compare("taxableIncome", "lte", "3000000.00"), MANUAL],
+    }
+    facts = table(fact("taxableIncome", Decimal("2800000.00")))
+    verdict = evaluate_expression(expression, facts, period=YEAR)
+    # 量化条件都满足也不能把「须人工核查」稀释成满足——这正是 M2 在 PR #9 的 P1。
+    assert verdict.result == INSUFFICIENT
+    assert "须人工核查" in verdict.reason
+
+
+def test_manual_review_in_one_or_branch_still_lets_the_other_branch_decide():
+    expression = {
+        "op": "or",
+        "children": [compare("rdExpense", "gte", "1000000.00"), MANUAL],
+    }
+    facts = table(fact("rdExpense", Decimal("1200000.00")))
+    verdict = evaluate_expression(expression, facts, period=YEAR)
+    # OR 的另一支已经成立，就不必劳烦人工：直通条件本来就是这个意思。
+    assert verdict.result == SATISFIED
+
+
+def test_a_manual_review_condition_depends_on_no_fact():
+    # 没有依赖 → 事实更新不会把它标成 stale；它本来就不读事实。
+    assert referenced_facts(MANUAL, period=YEAR) == []
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        {"op": "manual_review"},
+        {"op": "manual_review", "reason": ""},
+        {"op": "manual_review", "reason": "   "},
+        {"op": "manual_review", "reason": "长" * 201},
+        {**MANUAL, "factKey": "industry"},
+    ],
+    ids=["missing", "empty", "blank", "too-long", "extra-field"],
+)
+def test_a_manual_review_condition_needs_a_usable_reason_and_nothing_else(node):
+    codes = [problem.code for problem in validate_expression(node)]
+    assert codes, "不该放行"
+
+
+def test_a_valid_manual_review_condition_passes_structure_checks():
+    assert validate_expression(MANUAL) == []

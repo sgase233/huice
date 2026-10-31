@@ -154,6 +154,26 @@ def test_model_expression_is_revalidated_against_the_contract():
     assert "EXTRACTION_EXPRESSION_INVALID" in {finding.code for finding in outcome.findings}
 
 
+def test_the_model_cannot_declare_a_condition_as_manual_review():
+    """「须人工核查」是标注方的判断，模型不能替人卸责——即便它编出了合法结构。"""
+
+    text = "从事国家非限制和禁止行业。"
+    payload = (
+        '[{"title":"行业条件","expression":{"op":"manual_review","reason":"判不了"},'
+        f'"quote":"{text}"}},'
+        '{"title":"嵌在 and 里","expression":{"op":"and","children":['
+        '{"op":"manual_review","reason":"判不了"},'
+        '{"op":"compare","factKey":"taxableIncome","period":"assessment",'
+        '"comparator":"lte","value":"3000000","unit":"CNY"}]},'
+        f'"quote":"{text}"}}]'
+    )
+    outcome = extract(text, llm=FakeLlm(payload))
+
+    assert outcome.criteria == []
+    codes = {finding.code for finding in outcome.findings}
+    assert "EXTRACTION_MANUAL_REVIEW_NOT_ALLOWED" in codes
+
+
 def test_model_non_json_output_falls_back_to_manual():
     outcome = extract("年应纳税所得额不超过300万元。", llm=FakeLlm("抱歉，我无法完成。"))
 
@@ -185,3 +205,25 @@ def test_model_prompt_lists_every_unit_including_ratio():
     system = captured["system"]
     assert "CNY/person/code/date/boolean/ratio" in system
     assert "rdExpenseRevenueRatio" in system
+
+
+def test_model_prompt_lists_every_fact_key():
+    """抽取提示词里的键白名单必须跟 ``FACT_UNITS`` 同步。
+
+    漏一个键不会报错：模型照样抽取，但写回时被 ``FactKey`` 字面量拒掉，表现为
+    一条「抽取到了却存不进去」的条款，排查时很容易归咎于模型。
+    """
+
+    from app.domain.rules import FACT_UNITS
+
+    captured: dict[str, str] = {}
+
+    class Capturing(FakeLlm):
+        def complete(self, *, system, user, max_tokens=1024):
+            captured["system"] = system
+            return super().complete(system=system, user=user, max_tokens=max_tokens)
+
+    extract("年应纳税所得额不超过300万元。", llm=Capturing("[]"))
+
+    missing = sorted(key for key in FACT_UNITS if key not in captured["system"].replace("\n", ""))
+    assert missing == [], f"抽取提示词缺少这些键：{missing}"

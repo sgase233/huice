@@ -45,6 +45,11 @@ FACT_UNITS: Mapping[str, str] = {
     "rdExpenseRevenueRatio": "ratio",
     "rdAddDeductionClaimed": "boolean",
     "creditRecord": "boolean",
+    # 2026-10-29 扩展（rc.4）：细分市场条款用的事实。年限是相对量，同一份企业快照
+    # 在不同年份重算会得到不同结论、不可复现，因此记的是「开始从事之日」这个日期，
+    # 判断交给 date 算子；与 establishedDate 的口径一致。法人资格是企业自述的布尔值。
+    "specificMarketSince": "date",
+    "independentLegalEntity": "boolean",
 }
 
 NUMERIC_KEYS = frozenset(
@@ -62,7 +67,11 @@ NUMERIC_KEYS = frozenset(
     }
 )
 CODE_KEYS = frozenset({"region", "industry"})
-BOOLEAN_KEYS = frozenset({"rdActivity", "rdAddDeductionClaimed", "creditRecord"})
+BOOLEAN_KEYS = frozenset(
+    {"rdActivity", "rdAddDeductionClaimed", "creditRecord", "independentLegalEntity"}
+)
+#: 日期类事实：只能由 ``date`` 算子比较，不能写进 ``compare``。
+DATE_KEYS = frozenset({"establishedDate", "specificMarketSince"})
 
 QUARTERLY_METRICS: Mapping[str, tuple[str, str, str]] = {
     # metric -> (起始键, 结束键, 单位)
@@ -75,6 +84,7 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 MAX_DEPTH = 8
 MAX_NODES = 200
+MANUAL_REVIEW_REASON_MAX = 200
 
 SATISFIED = "satisfied"
 NOT_SATISFIED = "not_satisfied"
@@ -217,6 +227,7 @@ def _validate_node(node: Any, problems: list[Problem], *, path: str, depth: int)
         "date": _validate_date_node,
         "industry_exclusion": _validate_industry_exclusion,
         "quarterly_average": _validate_quarterly_average,
+        "manual_review": _validate_manual_review,
     }.get(op)
     if handler is None:
         problems.append(
@@ -320,9 +331,13 @@ def _validate_compare(node: dict, problems: list[Problem], *, path: str, depth: 
 
 
 def _validate_date_node(node: dict, problems: list[Problem], *, path: str, depth: int) -> None:
-    if node.get("factKey") != "establishedDate":
+    if node.get("factKey") not in DATE_KEYS:
         problems.append(
-            Problem("EXPRESSION_FACT_KEY", "date 算子只接受 establishedDate。", _join(path, "factKey"))
+            Problem(
+                "EXPRESSION_FACT_KEY",
+                "date 算子只接受日期类事实（establishedDate / specificMarketSince）。",
+                _join(path, "factKey"),
+            )
         )
     _validate_period(node, problems, path=path)
     if node.get("comparator") not in COMPARATORS:
@@ -378,6 +393,39 @@ def _validate_quarterly_average(node: dict, problems: list[Problem], *, path: st
     if period is not None and not _is_full_natural_year(*period):
         problems.append(
             Problem("EXPRESSION_PERIOD", "季度平均只支持完整自然年度。", _join(path, "period"))
+        )
+
+
+def _validate_manual_review(node: dict, problems: list[Problem], *, path: str, depth: int) -> None:
+    """人工核查条款：只带一个说明，不带事实、不带期间。
+
+    允许它进表达式是因为「这条判不了」本身就是要落库的结论——否则标注方只能在
+    「硬写一个大概率错的表达式」和「退回待核实、整版政策发不出去」之间二选一。
+    ``reason`` 会原样回显到判断理由里，所以必须有内容、有长度上限，不能是一句空话。
+    """
+
+    reason = node.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        problems.append(
+            Problem("EXPRESSION_REASON", "manual_review 必须写明需要人工核查什么。", _join(path, "reason"))
+        )
+        return
+    if len(reason) > MANUAL_REVIEW_REASON_MAX:
+        problems.append(
+            Problem(
+                "EXPRESSION_REASON",
+                f"manual_review 的说明不能超过 {MANUAL_REVIEW_REASON_MAX} 字。",
+                _join(path, "reason"),
+            )
+        )
+    extra = set(node) - {"op", "reason"}
+    if extra:
+        problems.append(
+            Problem(
+                "EXPRESSION_SHAPE",
+                "manual_review 只接受 op 与 reason。",
+                path,
+            )
         )
 
 
@@ -457,6 +505,16 @@ def _evaluate(node: Any, facts: FactTable, *, period: tuple[date, date]) -> Eval
         return _evaluate_industry_exclusion(node, facts, period=period)
     if op == "quarterly_average":
         return _evaluate_quarterly_average(node, facts, period=period)
+    if op == "manual_review":
+        # 不是「未知事实」，是「这条按政策口径本就不由程序判」：照样落在
+        # insufficient_evidence 上，让上层 AND 整体降级，绝不当成满足放行。
+        reason = str(node.get("reason") or "").strip()
+        return Evaluation(
+            INSUFFICIENT,
+            f"本条须人工核查：{reason}" if reason else "本条须人工核查。",
+            [],
+            [],
+        )
     return Evaluation(CONFLICT, "条件算子不在契约枚举内，无法判断。", [], [])
 
 
@@ -538,16 +596,22 @@ def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]
     return Evaluation(CONFLICT, f"事实 {key} 的单位无法比较。", [ref])
 
 
+#: 日期类事实的补问/理由文案用的中文名。
+_DATE_LABELS = {"establishedDate": "成立日期", "specificMarketSince": "细分市场起始日期"}
+
+
 def _evaluate_date(node: dict, facts: FactTable, *, period: tuple[date, date]) -> Evaluation:
+    key = str(node.get("factKey"))
+    label = _DATE_LABELS.get(key, key)
     span = _node_period(node, period)
     if span is None:
         return Evaluation(CONFLICT, "条件缺少可用的期间。", [])
-    ref = ("establishedDate", span[0], span[1])
-    fact = facts.get("establishedDate", *span)
+    ref = (key, span[0], span[1])
+    fact = facts.get(key, *span)
     if fact is None or not fact.known:
         return Evaluation(
             INSUFFICIENT,
-            "缺少成立日期，无法判断时间条件。",
+            f"缺少{label}，无法判断时间条件。",
             [ref],
             [ref],
         )
@@ -557,7 +621,7 @@ def _evaluate_date(node: dict, facts: FactTable, *, period: tuple[date, date]) -
         return Evaluation(CONFLICT, "日期取值无法解析。", [ref])
     comparator = str(node.get("comparator"))
     ok = _compare_scalar(left.isoformat(), right.isoformat(), comparator)
-    reason = f"成立日期 {left.isoformat()} {'满足' if ok else '不满足'} {comparator} {right.isoformat()}。"
+    reason = f"{label} {left.isoformat()} {'满足' if ok else '不满足'} {comparator} {right.isoformat()}。"
     return Evaluation(SATISFIED if ok else NOT_SATISFIED, reason, [ref], [])
 
 
@@ -572,14 +636,20 @@ def _evaluate_industry_exclusion(
     if fact is None or not fact.known:
         return Evaluation(INSUFFICIENT, "缺少行业信息，无法判断是否属于排除行业。", [ref], [ref])
     excluded = [str(item) for item in node.get("excluded") or []]
-    if str(fact.value) in excluded:
+    value = str(fact.value)
+    # 清单按**大类**粒度写（如「C16」），企业行业可能记到中类/小类（如「C1621」）。
+    # 精确相等会让粗粒度清单对填得细的企业完全失效，把本该排除的企业判成「不排除」——
+    # 是 fail-wrong 的方向，所以按前缀命中。反向（清单比企业更细）不命中，属于清单写法
+    # 的问题，标注时补细即可，运行时宁可不动结论。
+    hit = next((code for code in excluded if code and value.startswith(code)), None)
+    if hit is not None:
         return Evaluation(
             NOT_SATISFIED,
-            f"行业 {fact.value} 属于排除清单，不满足该条款。",
+            f"行业 {value} 属于排除清单（命中 {hit}），不满足该条款。",
             [ref],
             [],
         )
-    return Evaluation(SATISFIED, f"行业 {fact.value} 不在排除清单内。", [ref], [])
+    return Evaluation(SATISFIED, f"行业 {value} 不在排除清单内。", [ref], [])
 
 
 def _evaluate_quarterly_average(

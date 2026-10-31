@@ -14,6 +14,15 @@
    逐项比对；数值对不上或方向相反（否定词）都判为不支持。行业排除与研发活动这类
    非数值条件只做「引文里有对应表述」的存在性检查。
 
+比对刻意留了三处余地，都是「引文表达不到、AST 却必须确定」的地方：
+
+- 比较方向只比到「同一侧」：引文说「1000 万元以下」是上界，AST 写 ``lt`` 还是 ``lte``
+  属标注口径，不算抽错；把「不超过 300 万元」写成「不低于」仍会命中。
+- ``0`` 阈值不做数值要求（``rdExpense > 0`` 对应的原文是「实际发生的研发费用」，不会
+  写出 0）。
+- 日期条件接受「两个会计年度（含）以上」这类**时长型**相对表述：绝对日期是按规定换算
+  出来的固定值，换算依据记在标注说明里。
+
 ``reviewFinding=conflict`` 的条款**可以**发布：它本身就是「经人工确认的冲突记录」，
 规则引擎会固定返回 ``conflict``。这与「引用不支持表达式」是两回事，后者不能发布。
 """
@@ -249,23 +258,111 @@ def _check_threshold_conflict(criterion: CriterionInput, verdict: CriterionVerdi
     if criterion.review_finding == "conflict":
         return
 
-    bounds = [(span, bound) for span in criterion.spans for bound in threshold_bounds(span.quote)]
+    bounds = [
+        (span, bound)
+        for span in criterion.spans
+        for bound in (*threshold_bounds(span.quote), *ratio_bounds(span.quote))
+    ]
+    trails = _or_branch_trails(criterion.expression)
     for index, (first_span, first) in enumerate(bounds):
         for second_span, second in bounds[index + 1 :]:
             if first.family != second.family or first.amount != second.amount:
                 continue
-            if _same_direction(first.direction, second.direction):
+            if not _opposite_trend(first.direction, second.direction):
                 continue
+            # 「营业收入在 1000 万元以上，或在 1000 万元以下」是同一条件里两条互补的 OR
+            # 分支，不是标注没处理完的冲突：AST 已经把它们写成互斥分支了。
+            if _branches_are_exclusive(criterion.expression, trails, first, second):
+                continue
+            written = first.source_text or (
+                f"{format(first.amount, 'f')}（原文以「{first.unit}」计）"
+            )
             verdict.findings.append(
                 Finding(
                     "CITATION_THRESHOLD_CONFLICT",
                     f"引文对同一指标给出方向相反的阈值（{_direction_text(first.direction)} 与 "
-                    f"{_direction_text(second.direction)} {format(first.amount, 'f')}{first.unit}），"
-                    "请人工确认后重新标注。",
+                    f"{_direction_text(second.direction)} {written}），请人工确认后重新标注。",
                     (first_span, second_span),
                 )
             )
             return
+
+
+def _or_branch_trails(expression: Any) -> dict[int, tuple[tuple[int, int], ...]]:
+    """每个原子节点到根路径上「位于哪个 ``or`` 的第几个分支」的轨迹。
+
+    轨迹用 ``(or 节点 id, 分支序号)`` 表示；两个节点在某条 ``or`` 上分支序号不同，
+    就说明它们落在互斥分支里，逻辑上不可能同时生效。
+    """
+    trails: dict[int, tuple[tuple[int, int], ...]] = {}
+    if not isinstance(expression, Mapping):
+        return trails
+
+    def walk(node: Any, trail: tuple[tuple[int, int], ...]) -> None:
+        if not isinstance(node, Mapping):
+            return
+        op = node.get("op")
+        children = node.get("children")
+        if op in ("and", "or") and isinstance(children, list):
+            for index, child in enumerate(children):
+                if op == "or":
+                    walk(child, trail + ((id(node), index),))
+                else:
+                    walk(child, trail)
+            return
+        trails[id(node)] = trail
+
+    walk(expression, ())
+    return trails
+
+
+def _branches_are_exclusive(
+    expression: Any,
+    trails: Mapping[int, tuple[tuple[int, int], ...]],
+    first: ThresholdBound,
+    second: ThresholdBound,
+) -> bool:
+    """两条引文阈值是否各自落在 AST 的互斥 OR 分支上。"""
+    if not isinstance(expression, Mapping) or not trails:
+        return False
+
+    def trails_for(bound: ThresholdBound) -> list[tuple[tuple[int, int], ...]]:
+        found: list[tuple[tuple[int, int], ...]] = []
+        for node in _walk_atoms(expression):
+            if node.get("op") != "compare":
+                continue
+            if str(node.get("unit")) not in ("CNY", "person", "ratio"):
+                continue
+            key = str(node.get("factKey"))
+            family = _RATIO_FAMILY if key == _RATIO_FAMILY else _METRIC_FAMILY_BY_KEY.get(key)
+            amount = _to_decimal(node.get("value"))
+            if family == bound.family and amount == bound.amount:
+                found.append(trails.get(id(node), ()))
+        return found
+
+    for left in trails_for(first):
+        for right in trails_for(second):
+            shared = {or_id for or_id, _ in left} & {or_id for or_id, _ in right}
+            left_map = dict(left)
+            right_map = dict(right)
+            if any(left_map[or_id] != right_map[or_id] for or_id in shared):
+                return True
+    return False
+
+
+def _walk_atoms(node: Any) -> Iterable[Mapping[str, Any]]:
+    if not isinstance(node, Mapping):
+        return
+    op = node.get("op")
+    children = node.get("children")
+    if op in ("and", "or") and isinstance(children, list):
+        for child in children:
+            yield from _walk_atoms(child)
+        return
+    if op == "not":
+        yield from _walk_atoms(node.get("child"))
+        return
+    yield node
 
 
 # ------------------------------------------------------------ AST 与引文比对
@@ -284,9 +381,20 @@ _METRIC_FAMILY_BY_KEY: Mapping[str, str] = {
     "revenue": "revenue",
     "equityFinancing": "equityFinancing",
     "rdExpenseIncrease": "rdExpenseIncrease",
-    # rdExpenseRevenueRatio 有意不映射：引文写「3%」而条件值是 0.03，按金额阈值
-    # 比对必然误报。比例的引文核对留给人工复核。
+    # rdExpenseRevenueRatio 不在这里：引文写「不低于 3%」而条件值是 0.03，按金额阈值
+    # 比对必然误报。它走 ``ratio_bounds`` 的百分比换算（见下），不是不核对。
 }
+
+#: 比例条件的引文核对。**必须核对**：不核对时，把「不低于 3%」写成 0.30（数量级错）
+#: 或把方向写成「不超过」，其余引文检查都会通过、条款被标成 passed 直接进判断——这正是
+#: M2 在 PR #10 指出的漏洞。识别不到百分比就报 CITATION_THRESHOLD_NOT_FOUND，挡住发布
+#: 并要求人工复核，而不是放行。
+_RATIO_FAMILY = "rdExpenseRevenueRatio"
+
+#: 只有当百分比前 24 字内出现这些线索时才认定为比例条件。没有线索时报「找不到阈值」
+#: 而不是拿别处的百分比凑数——宁可挡住让人看一眼，也不能用「研发费用增长不低于 10%」
+#: 去支持一个「占营业收入比重不低于 3%」的条件。
+_RATIO_CUES = ("比重", "占比", "比例", "百分比", "占")
 
 _FAMILY_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("研发费用增量", "rdExpenseIncrease"),
@@ -313,7 +421,11 @@ _EXCLUSION_CUES = ("行业", "不适用", "排除", "负面清单", "不得属�
 
 
 def _check_expression_support(criterion: CriterionInput, verdict: CriterionVerdict) -> None:
-    bounds = [(span, bound) for span in criterion.spans for bound in threshold_bounds(span.quote)]
+    bounds = [
+        (span, bound)
+        for span in criterion.spans
+        for bound in (*threshold_bounds(span.quote), *ratio_bounds(span.quote))
+    ]
     _walk_support(criterion.expression, criterion, verdict, bounds)
 
 
@@ -334,9 +446,14 @@ def _walk_support(
         _walk_support(node.get("child"), criterion, verdict, bounds)
         return
     if op == "compare":
-        family = _METRIC_FAMILY_BY_KEY.get(str(node.get("factKey")))
+        key = str(node.get("factKey"))
+        family = _METRIC_FAMILY_BY_KEY.get(key)
         unit = str(node.get("unit"))
-        if family and unit in ("CNY", "person"):
+        # 按键而不是按 unit 判：unit 写错（如 CNY）时表达式层本应拒绝，但校验器不假设
+        # 上游一定拦住了——漏判这里就等于静默放行。
+        if key == _RATIO_FAMILY:
+            _require_threshold(node, _RATIO_FAMILY, criterion, verdict, bounds)
+        elif family and unit in ("CNY", "person"):
             _require_threshold(node, family, criterion, verdict, bounds)
         elif node.get("factKey") == "rdActivity":
             _require_cue(criterion, verdict, "研发活动", "CITATION_RD_ACTIVITY_NOT_FOUND")
@@ -347,6 +464,10 @@ def _walk_support(
         return
     if op == "date":
         _require_date(node.get("value"), criterion, verdict)
+        return
+    if op == "manual_review":
+        # 不要求引文给出阈值：这条本来就不由程序判。但 span 的逐字比对照旧
+        # （在下游统一做），「判不了」不等于「引文可以随便写」。
         return
     if op == "industry_exclusion":
         excluded = [str(item) for item in node.get("excluded") or []]
@@ -377,6 +498,15 @@ def _require_threshold(
     comparator = str(node.get("comparator"))
     if amount is None:
         return
+    # 「存在」型条件：原文写「实际发生的研发费用」，AST 写成 ``rdExpense > 0``。引文不会
+    # 写「0 元」，这一种写法因此不要求引文给出数值。
+    # 放宽必须窄：早先对**任何**零阈值都直接放行，于是「应纳税所得额不超过 300 万元」被
+    # 误写成 ``lte 0`` 时也照样 passed——数量级写错到 0 反而没人查（fail-wrong）。
+    # 现在只认「这一族 + 这一比较符 + 引文里有『实际发生』类表述」，其余零阈值照常核对。
+    if amount == 0 and _EXISTENCE_EXEMPTIONS.get(family) == comparator:
+        quotes = " ".join(span.quote for span in criterion.spans)
+        if any(cue in quotes for cue in _EXISTENCE_CUES):
+            return
 
     candidates = [(span, bound) for span, bound in bounds if bound.family == family]
     if not candidates:
@@ -391,20 +521,26 @@ def _require_threshold(
         return
 
     for span, bound in candidates:
-        if bound.amount == amount and _same_direction(bound.direction, comparator):
+        if bound.amount == amount and _same_trend(bound.direction, comparator):
             return
 
     span, nearest = candidates[0]
-    verdict.findings.append(
-        Finding(
-            "CITATION_THRESHOLD_MISMATCH",
+    if family == _RATIO_FAMILY:
+        # 比例直接回显原句（「不低于 3%」），不把 0.03 换算回去——读者要看的是原文，
+        # 换算回去还得再猜一次四舍五入。
+        quoted = nearest.source_text or f"{format(nearest.amount, 'f')}（小数）"
+        message = (
+            f"条件写的是 {_comparator_text(comparator)} {format(amount, 'f')}（小数），"
+            f"但引文写的是「{quoted}」，数值或方向不一致，请复核。"
+        )
+    else:
+        message = (
             f"条件写的是 {_comparator_text(comparator)} {format(amount, 'f')}"
             f"{_unit_label(node.get('unit'))}，但引文写的是 "
-            f"{_direction_text(nearest.direction)} {format(nearest.amount, 'f')}{nearest.unit}"
-            "（已换算为单位元/人），数值或方向不一致，请复核。",
-            (span,),
+            f"{_direction_text(nearest.direction)} {format(nearest.amount, 'f')}"
+            f"（原文以「{nearest.unit}」计，已换算到元/人），数值或方向不一致，请复核。"
         )
-    )
+    verdict.findings.append(Finding("CITATION_THRESHOLD_MISMATCH", message, (span,)))
 
 
 def _require_date(value: Any, criterion: CriterionInput, verdict: CriterionVerdict) -> None:
@@ -421,9 +557,20 @@ def _require_date(value: Any, criterion: CriterionInput, verdict: CriterionVerdi
     quotes = [_normalize(span.quote) for span in criterion.spans]
     if any(form in quote for form in forms for quote in quotes):
         return
+    # 原文用相对期间表述时（「注册成立时间在两个会计年度（含）以上」「近两年均已申报」），
+    # 绝对日期是我们为了可复现而换算出来的固定值，原文里当然找不到。此时以相对表述为
+    # 证据，换算依据由标注方记在仲裁说明里，不由校验器反推。
+    if any(_has_relative_period(quote) for quote in quotes):
+        return
     verdict.findings.append(
         Finding("CITATION_DATE_NOT_FOUND", f"引文中找不到日期 {text}，无法支持该条件。", criterion.spans)
     )
+
+
+def _has_relative_period(quote: str) -> bool:
+    if _RELATIVE_PERIOD_RE.search(quote):
+        return True
+    return any(cue in quote for cue in _RELATIVE_PERIOD_CUES)
 
 
 def _require_cue(
@@ -443,38 +590,183 @@ class ThresholdBound:
     amount: Decimal
     direction: str
     unit: str
+    #: 原文片段（如「不低于 3%」），只用于报错文案；换算后的小数读者对不上原句。
+    source_text: str = ""
 
 
-_DIRECTION_INCLUSIVE_LOWER = ("不低于", "不少于", "不得低于", "至少", "大于等于")
+_DIRECTION_INCLUSIVE_LOWER = ("不低于", "不少于", "不得低于", "至少", "大于等于", "达到", "达")
 _DIRECTION_INCLUSIVE_UPPER = ("不超过", "不得高于", "不高于", "至多", "小于等于")
 _DIRECTION_UPPER = ("低于", "少于", "不足", "未超过")
-_DIRECTION_LOWER = ("超过", "高于", "多于", "大于", "达到")
+#: 「达到/达 200 万元」在政策文本里是含本数的下限（「达 2 年以上」同理），归入下限而不是
+#: 严格大于：2026-10-29 修 SRDI-002 时发现原来的归属会让「达到 2000 万元以上」抽成 gt，
+#: 与 AST 的 gte 无端报不一致。
+_DIRECTION_LOWER = ("超过", "高于", "多于", "大于")
 
 _UNIT_MULTIPLIER = {"万元": Decimal(10000), "亿元": Decimal(100000000), "元": Decimal(1), "人": Decimal(1)}
 
-_THRESHOLD_RE = re.compile(
-    r"(不低于|不少于|不得低于|至少|大于等于|不超过|不得高于|不高于|至多|小于等于|低于|少于|不足|未超过|超过|高于|多于|大于|达到)"
-    r"\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万元|亿元|元|人)"
+#: 中文阈值的两种书写顺序。前置式「不低于 100 万元」与后置式「100 万元（含）以上」
+#: 在地方通知里都很常见；只认前置式会让「上年度营业收入总额在 1000 万元以上」这类句子
+#: 抽不出阈值，进而把正确的 AST 判成「引文没有数值阈值」。
+_DIRECTION_WORDS = (
+    "不低于|不少于|不得低于|至少|大于等于|不超过|不得高于|不高于|至多|小于等于"
+    "|低于|少于|不足|未超过|超过|高于|多于|大于|达到|达"
+)
+_THRESHOLD_PREFIX_RE = re.compile(
+    rf"({_DIRECTION_WORDS})\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万元|亿元|元|人)"
+)
+_THRESHOLD_SUFFIX_RE = re.compile(
+    r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万元|亿元|元|人)"
+    r"\s*(?:（含）|\(含\))?\s*(及以上|以上|及以下|以下|以内)"
+)
+
+#: 百分比的三种书写：前置方向词 + 「百分之/千分之」、前置方向词 + 「%」、数字 + 「%」+ 后置词。
+_RATIO_CN_RE = re.compile(rf"({_DIRECTION_WORDS})\s*(百分之|千分之)\s*([0-9][0-9,]*(?:\.[0-9]+)?)")
+_RATIO_SIGN_RE = re.compile(rf"({_DIRECTION_WORDS})\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([%％‰])")
+_RATIO_SUFFIX_RE = re.compile(
+    r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*([%％‰])\s*(及以上|以上|及以下|以下|以内)"
 )
 
 _WHITESPACE = re.compile(r"[\s　]+")
 
+#: 「两个会计年度（含）以上」「近两年」这类**时长型**相对表述：原文没有绝对日期，AST 里
+#: 却是绝对日期（引擎必须用可复现的固定值）。引文出现这些表述即视为支持，绝对日期由
+#: 标注方按申报年度换算并记在仲裁说明里，而不是让校验去猜。
+#:
+#: 刻意不收「上年度」「近两年均已申报」里的期间词：「上年度」是期间不是时长，把它算作
+#: 日期证据会把毫不相关的引文也算成支持。
+_RELATIVE_PERIOD_CUES = (
+    "会计年度",
+    "连续两年",
+    "连续2年",
+    "满两年",
+    "满2年",
+    "近两年",
+    "近2年",
+    "近三年",
+    "近3年",
+    "近五年",
+    "近5年",
+)
+#: 上面是逐条枚举的固定写法，这里是同一类表述的数字/汉字通配形式——「满3年」
+#: 「连续三年」「从事该细分市场不少于5年」「近10年」都会命中。之所以要放宽：
+#: rc.4 的 ``specificMarketSince`` 记的是日期，而原文几乎只会写年数；枚举式清单
+#: 只能覆盖到政策原文恰好用了哪几个写法，换个数字就漏。
+#:
+#: 前缀词是判定关键——必须是表示时长的词（满/连续/近/超过/不少于/达到…），
+#: 「上年度」「本年度」这类**期间**词不在其中，因此不会被误当作时长证据。
+#: 「达到/达」2026-10-30 补：M3 的 SRDI-001 原文是「从事特定细分市场时间达到2年以上」，
+#: 漏了这两个前缀会把正确的日期条件判成「引文里没有日期」。
+_RELATIVE_PERIOD_RE = re.compile(
+    r"(?:满|连续|近|超过|不少于|不低于|至少|达到|达)"
+    r"\s*[一二三四五六七八九十两0-9]+\s*个?\s*(?:会计)?年(?:度)?"
+)
+
 
 def threshold_bounds(quote: str) -> list[ThresholdBound]:
     """从引文里抽出阈值；识别不到就返回空列表，由存在性检查报「找不到阈值」。"""
+    extractions: list[tuple[int, int, str, str, str | None]] = []
+    for match in _THRESHOLD_PREFIX_RE.finditer(quote):
+        extractions.append(
+            (match.start(), match.end(), match.group(2), match.group(3), _direction_of(match.group(1)))
+        )
+    for match in _THRESHOLD_SUFFIX_RE.finditer(quote):
+        direction = "gte" if match.group(3) in ("及以上", "以上") else "lte"
+        extractions.append(
+            (match.start(), match.end(), match.group(1), match.group(2), direction)
+        )
+
     bounds: list[ThresholdBound] = []
-    for match in _THRESHOLD_RE.finditer(quote):
-        word, number, unit = match.groups()
-        direction = _direction_of(word)
-        family = _family_near(quote, match.start())
-        if direction is None or family is None:
+    taken: list[tuple[int, int]] = []
+    # 「达到 200 万元（含）以上」会被前置式（达 200 万元）与后置式（200 万元以上）各命中
+    # 一次，两段区间重叠；只保留靠前的那条，避免同一个阈值被数两次。
+    for start, end, number, unit, direction in sorted(extractions):
+        if direction is None or any(start < other_end and other_start < end for other_start, other_end in taken):
+            continue
+        family = _family_near(quote, start)
+        if family is None:
             continue
         try:
             amount = Decimal(number.replace(",", "")) * _UNIT_MULTIPLIER[unit]
         except InvalidOperation:
             continue
+        taken.append((start, end))
         bounds.append(ThresholdBound(family=family, amount=amount, direction=direction, unit=unit))
     return bounds
+
+
+def ratio_bounds(quote: str) -> list[ThresholdBound]:
+    """从引文里抽出**百分比**阈值，并换算成小数（「不低于 3%」→ ``0.03``，``gte``）。
+
+    与 ``threshold_bounds`` 分开是因为单位不是金额：原文写百分比，AST 里必须是小数
+    （契约规定 3% 存 ``0.03``）。两者合并会让「3% → 300 元」的换算把它算成 300，
+    进而把写错数量级的条件判成一致。
+    """
+
+    extractions: list[tuple[int, int, str, str, str | None, str]] = []
+    for match in _RATIO_CN_RE.finditer(quote):
+        extractions.append(
+            (
+                match.start(),
+                match.end(),
+                match.group(3),
+                match.group(2),
+                _direction_of(match.group(1)),
+                match.group(0),
+            )
+        )
+    for match in _RATIO_SIGN_RE.finditer(quote):
+        extractions.append(
+            (
+                match.start(),
+                match.end(),
+                match.group(2),
+                match.group(3),
+                _direction_of(match.group(1)),
+                match.group(0),
+            )
+        )
+    for match in _RATIO_SUFFIX_RE.finditer(quote):
+        direction = "gte" if match.group(3) in ("及以上", "以上") else "lte"
+        extractions.append(
+            (match.start(), match.end(), match.group(1), match.group(2), direction, match.group(0))
+        )
+
+    bounds: list[ThresholdBound] = []
+    taken: list[tuple[int, int]] = []
+    for start, end, number, scale, direction, raw in sorted(extractions, key=lambda item: item[:3]):
+        if direction is None:
+            continue
+        if any(start < other_end and other_start < end for other_start, other_end in taken):
+            continue
+        if not _ratio_cue_near(quote, start):
+            continue
+        amount = _ratio_to_decimal(number, scale)
+        if amount is None:
+            continue
+        taken.append((start, end))
+        bounds.append(
+            ThresholdBound(
+                family=_RATIO_FAMILY,
+                amount=amount,
+                direction=direction,
+                unit=scale,
+                source_text=raw,
+            )
+        )
+    return bounds
+
+
+def _ratio_cue_near(quote: str, position: int) -> bool:
+    window = quote[max(0, position - 24) : position]
+    return any(cue in window for cue in _RATIO_CUES)
+
+
+def _ratio_to_decimal(number: str, scale: str) -> Decimal | None:
+    divisor = Decimal(100) if scale in ("%", "％", "百分之") else Decimal(1000)
+    try:
+        return Decimal(number.replace(",", "")) / divisor
+    except InvalidOperation:  # pragma: no cover - 正则已挡住
+        return None
 
 
 def _direction_of(word: str) -> str | None:
@@ -497,8 +789,35 @@ def _family_near(quote: str, position: int) -> str | None:
     return None
 
 
-def _same_direction(first: str, second: str) -> bool:
+_LOWER_BOUNDS = frozenset({"gt", "gte"})
+_UPPER_BOUNDS = frozenset({"lt", "lte"})
+
+#: 「存在」型条件免于核对数值：族 → 比较符。见 ``_require_threshold`` 里的说明。
+_EXISTENCE_EXEMPTIONS = {"rdExpense": "gt"}
+_EXISTENCE_CUES = ("实际发生", "实际投入", "已发生")
+
+
+def _same_trend(first: str, second: str) -> bool:
+    """比较方向是否一致——**要求严格相等**。
+
+    「以上 / 以下 / 以内」按立法技术规范含本数，「超过 / 低于」不含本数，中文政策文本
+    里每种书写都能唯一映射到 ``gt`` / ``gte`` / ``lt`` / ``lte``，不存在「同一侧就算一致」
+    的余地：``lte`` 与 ``lt`` 恰好在一个数上分歧，把「不超过 1000 万元」写成 ``lt`` 会把
+    正好 1000 万元的企业判成不达标。
+
+    早先按「同侧即过」放宽过一次，本意是照顾「达到 …（含）以上」这类写法——但那种写法
+    抽出来本身就是 ``gte``，与 AST 的 ``gte`` 严格相等，并不需要放宽。真正要防的方向抽反
+    （「不超过」抽成「不低于」）在严格相等下同样命中。
+    """
     return first == second
+
+
+def _opposite_trend(first: str, second: str) -> bool:
+    """两条阈值一个朝上一个朝下——不依赖 ``_same_trend`` 的严格性，各自按侧判断。"""
+
+    return (first in _LOWER_BOUNDS and second in _UPPER_BOUNDS) or (
+        first in _UPPER_BOUNDS and second in _LOWER_BOUNDS
+    )
 
 
 def _direction_text(direction: str) -> str:
@@ -532,6 +851,7 @@ def _family_label(family: str) -> str:
         "revenue": "营业收入",
         "equityFinancing": "股权融资",
         "rdExpenseIncrease": "研发费用增量",
+        _RATIO_FAMILY: "研发费用占营业收入比重",
     }.get(family, family)
 
 
