@@ -498,10 +498,15 @@ def _require_threshold(
     comparator = str(node.get("comparator"))
     if amount is None:
         return
-    # 0 不是引文会写出来的阈值，而是「存在」这个条件本身（如「实际发生的研发费用」
-    # 对应 rdExpense > 0）。要求引文给出数字会让这类条款永远无法通过校验。
-    if amount == 0:
-        return
+    # 「存在」型条件：原文写「实际发生的研发费用」，AST 写成 ``rdExpense > 0``。引文不会
+    # 写「0 元」，这一种写法因此不要求引文给出数值。
+    # 放宽必须窄：早先对**任何**零阈值都直接放行，于是「应纳税所得额不超过 300 万元」被
+    # 误写成 ``lte 0`` 时也照样 passed——数量级写错到 0 反而没人查（fail-wrong）。
+    # 现在只认「这一族 + 这一比较符 + 引文里有『实际发生』类表述」，其余零阈值照常核对。
+    if amount == 0 and _EXISTENCE_EXEMPTIONS.get(family) == comparator:
+        quotes = " ".join(span.quote for span in criterion.spans)
+        if any(cue in quotes for cue in _EXISTENCE_CUES):
+            return
 
     candidates = [(span, bound) for span, bound in bounds if bound.family == family]
     if not candidates:
@@ -787,24 +792,31 @@ def _family_near(quote: str, position: int) -> str | None:
 _LOWER_BOUNDS = frozenset({"gt", "gte"})
 _UPPER_BOUNDS = frozenset({"lt", "lte"})
 
+#: 「存在」型条件免于核对数值：族 → 比较符。见 ``_require_threshold`` 里的说明。
+_EXISTENCE_EXEMPTIONS = {"rdExpense": "gt"}
+_EXISTENCE_CUES = ("实际发生", "实际投入", "已发生")
+
 
 def _same_trend(first: str, second: str) -> bool:
-    """两个比较方向是否指向同一侧。
+    """比较方向是否一致——**要求严格相等**。
 
-    引文只能可靠表达「上界还是下界」；「1000 万元以下」是否含本数、AST 写 ``lt`` 还是
-    ``lte``，属于标注口径而非引文事实，因此比到「同侧」即算一致。方向抽反（把「不超过
-    300 万元」抽成「不低于」）仍然会命中，那是这条检查真正要防的错。
+    「以上 / 以下 / 以内」按立法技术规范含本数，「超过 / 低于」不含本数，中文政策文本
+    里每种书写都能唯一映射到 ``gt`` / ``gte`` / ``lt`` / ``lte``，不存在「同一侧就算一致」
+    的余地：``lte`` 与 ``lt`` 恰好在一个数上分歧，把「不超过 1000 万元」写成 ``lt`` 会把
+    正好 1000 万元的企业判成不达标。
+
+    早先按「同侧即过」放宽过一次，本意是照顾「达到 …（含）以上」这类写法——但那种写法
+    抽出来本身就是 ``gte``，与 AST 的 ``gte`` 严格相等，并不需要放宽。真正要防的方向抽反
+    （「不超过」抽成「不低于」）在严格相等下同样命中。
     """
-    if first in _LOWER_BOUNDS and second in _LOWER_BOUNDS:
-        return True
-    if first in _UPPER_BOUNDS and second in _UPPER_BOUNDS:
-        return True
     return first == second
 
 
 def _opposite_trend(first: str, second: str) -> bool:
-    return (_same_trend(first, "gt") and _same_trend(second, "lt")) or (
-        _same_trend(second, "gt") and _same_trend(first, "lt")
+    """两条阈值一个朝上一个朝下——不依赖 ``_same_trend`` 的严格性，各自按侧判断。"""
+
+    return (first in _LOWER_BOUNDS and second in _UPPER_BOUNDS) or (
+        first in _UPPER_BOUNDS and second in _LOWER_BOUNDS
     )
 
 

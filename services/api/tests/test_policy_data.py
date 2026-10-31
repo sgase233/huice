@@ -7,10 +7,10 @@
 2. 表达式与引文是否自洽：``validate_criterion`` 的引文层校验（阈值、方向、日期、
    行业排除、逐字存在性）。
 
-**未通过的条款用 ``pytest.xfail`` 标记，不把 CI 打红**：M3 的数据还在整，红一片既
-不区分「新坏」也不区分「还没修」。这样处理能有三种结果——通过（绿）、已知未通过
-（报告里列为 xfailed，附带 finding 代码）、原本通过的条款重新失败（红，说明回归）。
-数据修好后对应的 xfail 自动变 XPASS。
+**任何未通过的条款都是硬失败**，除非它的 ``criterion_id`` 明确列在 ``KNOWN_FAILURES``
+里——只有那样才 ``xfail``，并在报告里注明原因。早先对所有失败一律 ``xfail``，等于把
+「标的条款过不了校验」写成绿色：数据坏了 CI 照样绿，发布时才会在 ``admin_policies``
+的 422 上炸。已知未通过必须逐条署名，修好后从表里删掉，表应当一直为空。
 
 逐字存在性检查需要来源正文。M3 若在 ``data/policies/sources/<policy_id>.txt`` 放了
 正文快照，这里就用它做真正的逐字比对；没有快照时退化为用引文片段自身充当来源文本，
@@ -39,6 +39,10 @@ ROOT = Path(__file__).resolve().parents[3]
 CSV_PATH = ROOT / "data/policies/criteria_review.csv"
 SOURCES_DIR = ROOT / "data/policies/sources"
 
+#: 已知未通过、暂时不挡 CI 的条款：``criterion_id`` → 为什么现在修不了、谁去修。
+#: 空表是常态。往里加东西等于承认「这一条现在发不出去」，要写清原因。
+KNOWN_FAILURES: dict[str, str] = {}
+
 
 def _rows() -> list[dict[str, str]]:
     if not CSV_PATH.exists():
@@ -66,28 +70,18 @@ def _source_text(policy_id: str, fragments: list[str]) -> tuple[SourceText, bool
     return SourceText(id=uuid4(), source_url="https://example.invalid/fragments", text="".join(fragments)), False
 
 
-ROWS = _rows()
-PARAMS = [pytest.param(row, id=row["criterion_id"]) for row in ROWS] or [
-    pytest.param(
-        None,
-        marks=pytest.mark.skip(reason="criteria_review.csv 还没有已仲裁表达式（#9 合并后生效）"),
-    )
-]
+def _problems_for(row: dict[str, str]) -> tuple[list[str], bool]:
+    """这条数据过不了闸门的原因（空列表表示能过），以及是否拿到了正文快照。
 
-
-@pytest.mark.parametrize("row", PARAMS)
-def test_policy_data_passes_citation_checks(row):
-    assert row is not None
-    criterion_id = row["criterion_id"]
-    expression = json.loads(row["adjudicated_expression"])
-
-    problems = validate_expression(expression)
-    if problems:
-        pytest.xfail(f"{criterion_id} 表达式未通过：{[problem.code for problem in problems]}")
+    失败原因用代码表示（``CITATION_THRESHOLD_MISMATCH`` 之类），这样回归报告里能直接
+    看出坏在哪一项，而不只是「某条断言失败」。
+    """
+    problems = [problem.code for problem in validate_expression(json.loads(row["adjudicated_expression"]))]
 
     fragments = _fragments(row)
     if not fragments:
-        pytest.xfail(f"{criterion_id} 缺少 source_span")
+        problems.append("SOURCE_SPAN_MISSING")
+        return problems, False
 
     source, has_snapshot = _source_text(row["policy_id"], fragments)
     version = row["source_version"]
@@ -105,20 +99,77 @@ def test_policy_data_passes_citation_checks(row):
     )
     verdict = validate_criterion(
         CriterionInput(
-            id=criterion_id,
-            title=criterion_id,
+            id=row["criterion_id"],
+            title=row["criterion_id"],
             review_finding="none",
             spans=spans,
-            expression=expression,
+            expression=json.loads(row["adjudicated_expression"]),
         ),
         {source.id: source},
         version=version,
     )
-
     if not verdict.passed:
-        codes = sorted({finding.code for finding in verdict.findings})
-        suffix = "" if has_snapshot else "（无正文快照，逐字检查未做）"
-        pytest.xfail(f"{criterion_id} 未通过：{codes}{suffix}")
+        problems.extend(sorted({finding.code for finding in verdict.findings}))
+    return sorted(set(problems)), has_snapshot
+
+
+ROWS = _rows()
+PARAMS = [pytest.param(row, id=row["criterion_id"]) for row in ROWS] or [
+    pytest.param(
+        None,
+        marks=pytest.mark.skip(reason="criteria_review.csv 还没有已仲裁表达式（#9 合并后生效）"),
+    )
+]
+
+
+@pytest.mark.parametrize("row", PARAMS)
+def test_policy_data_passes_citation_checks(row):
+    assert row is not None
+    criterion_id = row["criterion_id"]
+    problems, has_snapshot = _problems_for(row)
+    # 没有正文快照时逐字检查是跳过的，在失败信息里注明，别让它读起来像已经查过。
+    note = "" if has_snapshot else "（无正文快照，逐字检查未做）"
+
+    if not problems:
+        assert criterion_id not in KNOWN_FAILURES, (
+            f"{criterion_id} 已在 KNOWN_FAILURES 里登记为已知未通过，但现在能过闸门——"
+            f"请把它从表里删掉，别让陈旧的豁免掩盖下一次回归。"
+        )
+        return
+
+    if criterion_id in KNOWN_FAILURES:
+        pytest.xfail(f"{criterion_id} 已知未通过：{problems}；原因：{KNOWN_FAILURES[criterion_id]}")
+    pytest.fail(f"{criterion_id} 未通过闸门：{problems}{note}")
+
+
+def test_the_gate_reports_a_deliberately_broken_row():
+    """闸门本身也要有测试：把一条坏数据喂进去，必须报出具体代码，而不是静静通过。
+
+    没有这条，``_problems_for`` 哪天写成恒返回空列表（例如异常被吞掉），上面那批
+    参数化用例会全绿——那正是这个文件原本的毛病（全 xfail 的另一种写法）。
+    """
+
+    broken = {
+        "criterion_id": "SELFTEST-001",
+        "policy_id": "selftest-not-a-real-policy",
+        "source_version": "1.0.0",
+        "source_page_or_section": "第一条",
+        "source_span": "上年度营业收入总额在1000万元以上",
+        "adjudicated_expression": json.dumps(
+            {
+                "op": "compare",
+                "factKey": "revenue",
+                "period": "assessment",
+                "comparator": "lte",
+                "value": "1000000",
+                "unit": "CNY",
+            },
+            ensure_ascii=False,
+        ),
+    }
+
+    problems, _ = _problems_for(broken)
+    assert "CITATION_THRESHOLD_MISMATCH" in problems
 
 
 def test_the_dataset_is_not_silently_empty():

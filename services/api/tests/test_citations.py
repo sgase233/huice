@@ -570,8 +570,13 @@ def test_dadao_is_a_lower_bound_not_a_strict_one():
     assert verdict.status == "passed", codes(verdict)
 
 
-def test_han_ben_shu_difference_between_lt_and_lte_is_tolerated():
-    """「1000 万元以下」含本数（lte），AST 写 lt 仍是同一侧，不判为方向抽错。"""
+def test_lt_and_lte_at_the_same_number_are_a_real_mismatch():
+    """「1000 万元以下」含本数，抽成 ``lte``；AST 写 ``lt`` 就把正好 1000 万元判成不达标。
+
+    早先按「同侧即过」放行，理由是「含不含本数属于标注口径」——但「以下 / 以内」按立法
+    技术规范一律含本数，「低于 / 不足」一律不含，每种书写都能唯一映射；``lte`` 与 ``lt``
+    恰好在一个数上分歧，那不是口径，是边界算错，必须报出来（M2 的 P2）。
+    """
 
     verdict = validate_criterion(
         criterion(
@@ -582,7 +587,7 @@ def test_han_ben_shu_difference_between_lt_and_lte_is_tolerated():
         version=VERSION,
     )
 
-    assert verdict.status == "passed", codes(verdict)
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
 
 
 def test_a_zero_threshold_needs_no_number_in_the_quote():
@@ -603,6 +608,77 @@ def test_a_zero_threshold_needs_no_number_in_the_quote():
     )
 
     assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_zero_threshold_outside_the_existence_comparator_still_gets_checked():
+    """零阈值免核对只对「存在」型写法（``gt``）成立：``lte 0`` 必须照常核对。
+
+    早先对任何零阈值直接放行，把「不超过 100 万元」这类条件的阈值写成 0 反而没人查
+    （fail-wrong），这是 M2 的 P1。
+    """
+
+    expression = {
+        "op": "compare",
+        "factKey": "rdExpense",
+        "period": "assessment",
+        "comparator": "lte",
+        "value": "0",
+        "unit": "CNY",
+    }
+    verdict = validate_criterion(
+        criterion(local_span("上年度研发费用总额不低于100万元"), expression=expression),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+def test_a_zero_threshold_outside_the_existence_family_still_gets_checked():
+    """免核对按族限定：``revenue > 0`` 即使引文里有「实际发生」也不能免。
+
+    「实际发生的研发费用」只支持研发费用这一族的存在性，不能拿去免掉别的族的数值核对。
+    """
+
+    expression = {
+        "op": "compare",
+        "factKey": "revenue",
+        "period": "assessment",
+        "comparator": "gt",
+        "value": "0",
+        "unit": "CNY",
+    }
+    verdict = validate_criterion(
+        criterion(local_span("企业开展研发活动中实际发生的研发费用"), expression=expression),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_NOT_FOUND" in codes(verdict)
+
+
+def test_rd_expense_existence_still_needs_the_wording_in_the_quote():
+    """``rdExpense > 0`` 只有在引文确实写「实际发生」类表述时才免核对。
+
+    「近两年均已申报享受研发费用税前加计扣除」里也有「研发费用」，但它讲的是申报，
+    不是「发生了研发费用」，不能靠族名把数值核对免掉。
+    """
+
+    zero = {
+        "op": "compare",
+        "factKey": "rdExpense",
+        "period": "assessment",
+        "comparator": "gt",
+        "value": "0",
+        "unit": "CNY",
+    }
+    verdict = validate_criterion(
+        criterion(local_span("近两年均已申报享受研发费用税前加计扣除"), expression=zero),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_NOT_FOUND" in codes(verdict)
 
 
 def test_a_non_zero_threshold_still_needs_a_number_in_the_quote():
@@ -714,8 +790,11 @@ def test_a_period_word_is_not_a_duration_word():
 
 
 def _revenue_pair(operator: str) -> dict:
+    # 「1000 万元以上 / 以下」按立法技术规范都含本数，抽出来是 ``gte`` 与 ``lte``；写成
+    # ``gte | lt`` 会在正好 1000 万元处与引文对不上（``lt`` vs ``lte``），比较符要求严格
+    # 相等后这一对必须如实写成 ``gte / lte``。
     lower = compare("revenue", "10000000.00", "CNY", comparator="gte")
-    upper = compare("revenue", "10000000.00", "CNY", comparator="lt")
+    upper = compare("revenue", "10000000.00", "CNY", comparator="lte")
     return {"op": operator, "children": [lower, upper]}
 
 
