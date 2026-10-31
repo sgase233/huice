@@ -20,6 +20,7 @@ export const factLabels: Record<FactKey, string> = {
   revenue: '营业收入', equityFinancing: '新增股权融资', rdExpenseIncrease: '研发费用增量',
   rdExpenseRevenueRatio: '研发费用占营业收入比重', rdAddDeductionClaimed: '研发费用加计扣除申报',
   creditRecord: '诚信记录',
+  specificMarketSince: '细分市场起始日期', independentLegalEntity: '是否具有独立法人资格',
 };
 
 export const factUnits: Record<FactKey, FactUnit> = {
@@ -27,6 +28,7 @@ export const factUnits: Record<FactKey, FactUnit> = {
   rdActivity: 'boolean', employeeCountStart: 'person', employeeCountEnd: 'person', assetsStart: 'CNY', assetsEnd: 'CNY',
   revenue: 'CNY', equityFinancing: 'CNY', rdExpenseIncrease: 'CNY', rdExpenseRevenueRatio: 'ratio',
   rdAddDeductionClaimed: 'boolean', creditRecord: 'boolean',
+  specificMarketSince: 'date', independentLegalEntity: 'boolean',
 };
 
 export type DemoPolicy = PolicySummary & {
