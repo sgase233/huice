@@ -1,9 +1,16 @@
 # 演示脚本（M3）
 
+> 口径（据 M1 反馈，2026-10-28）：结论永远由规则给出，模型只改解释；四态优先级 conflict > not_satisfied > insufficient_evidence > satisfied，补问清单只在 insufficient_evidence 出现；closed 是读取时派生、不落库；演示只许用合成企业；当前不是云端环境、`MODEL_MODE` 默认仍为 fixture。
+
 1. 30 秒说明企业为什么需要同时核查国家税收政策和地方资金项目。
-2. 展示真实的 CodeArts/Skills/RDS/Redis/MaaS 开发与部署证据。
+2. 展示真实的 RDS/Redis/OBS 部署证据与 DeepSeek 调用记录；开发工具按实际填写（Claude Code 辅助 + 人工复核）。不把未使用的 MaaS/CodeArts 写成已使用。
 3. 输入合成企业，演示行业排除条款使候选项目从“看似匹配”变为“不满足”。
+   - 讲解口径：该结论是规则求值的 `not_satisfied`，不是“AI 判断”；若解释被模型改写，页面 warnings 会带「解释由模型改写，结论以规则结果为准。」，照此讲解。
 4. 改变演示政策版本，展示旧结论失效与原文差异。
 5. 展示税收/资金两类清单、报告、审计轨迹、评测结果与一个失败样例。
+   - 税收清单：资料归集/留存备查/财税复核；资金清单：申报窗口/材料/官方入口。
+   - 清单 `items` 来自已审材料要求（`data/policies/material_requirements.csv`）；未补充前按「待补充材料要求」占位，不展示推测项。
+6. 关于 closed：列表与详情显示的 closed 是读取时按有效期/申报窗口派生的，库里不存这个状态；演示断言不要写成「库里存的 status」。
+7. 关于模型：演示中要出现真实模型改写，需先在 `.env` 切 `MODEL_MODE=deepseek` 并验证（当前默认 fixture，本地尚未切换，也未在云端部署）。
 
 只填写真实运行结果、真实耗时与真实使用的云服务；不要预填获奖或提效数字。
