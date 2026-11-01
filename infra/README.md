@@ -286,7 +286,7 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 `infra/deploy/deploy.ps1` 未删除，仍是占位文件；本阶段以 `deploy/README.md` 的手工步骤为准。
 
-**执行前提**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **003**（`schema_migration` 三行齐全，2026-10-26 补齐），部署时需再补 `004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql`。MaaS 已不在范围内，模型侧首轮部署用 `MODEL_MODE=fixture`（DeepSeek 尚未用真实 Key 联调）；OBS 未在真实桶验证前保持 `OBJECT_STORE_MODE=local`。
+**执行前提**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **003**（`schema_migration` 三行齐全，2026-10-26 补齐），部署时需再补 `004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql`。MaaS 已不在范围内，模型侧首轮部署用 `MODEL_MODE=fixture`（DeepSeek 已于 2026-10-27 用真实 Key 联调通过，见 §4.3；云端切 `deepseek` 随本次部署验证）；OBS 的真实桶联调同样已于 2026-10-27 通过（§4.3），部署时填好 `OBS_*` 即可切 `OBJECT_STORE_MODE=obs`。
 
 上云前的准备项、环境变量对照与目标时间表见第 5 节；本地先行开发不等于可以推迟到 11/14 再部署——计划的云端节点是 11/08。
 
