@@ -1,4 +1,4 @@
-case_id,enterprise_id,policy_id,policy_version,criterion_id,source_span,annotator_b_result,annotator_b_note
+case_id,enterprise_id,policy_id,policy_version,criterion_id,source_span,annotator_b_result(satisfied/not_satisfied/insufficient_evidence/conflict),annotator_b_note
 C001,E-ENT-001,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-001,"从事国家非限制和禁止行业，且同时符合年度应纳税所得额不超过300万元、从业人数不超过300人、资产总额不超过5000万元等三个条件的企业",,
 C001,E-ENT-001,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-002,"年度应纳税所得额不超过300万元",,
 C001,E-ENT-001,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-003,"从业人数不超过300人|从业人数和资产总额指标，应按企业全年的季度平均值确定",,

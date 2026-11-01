@@ -184,7 +184,17 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 独立标注表 `holdout_annotation_sheet.csv` 保留为空白模板，供后续新增留出样本复用。
 
-**开发集待办（2026-11-01）**：开发集 24 组合 / 118 条已导出为 [`data/evaluation/dev_annotation_sheet.csv`](../../data/evaluation/dev_annotation_sheet.csv)（同样的空白 `annotator_b_result/annotator_b_note`，不含 M3 推算结果），待第二标注人独立完成。填完后按 §6 仲裁并回填 `labels.csv`。
+**开发集待办（2026-11-01）**：开发集 26 组合 / 122 条（含新增版本对照 4 条）已导出为 [`data/evaluation/dev_annotation_sheet.csv`](../../data/evaluation/dev_annotation_sheet.csv)（空白 `annotator_b_result/annotator_b_note`，不含 M3 推算结果），待第二标注人独立完成。填完后按 §6 仲裁并回填 `labels.csv`。
+
+**⚠️ 2026-11-01 退回记录**：一位标注人提交的开发集意见为**条款内容描述**（如复述"禁止行业清单""100%/200% 优惠内容"），未按 `satisfied / not_satisfied / insufficient_evidence / conflict` 四态填 `annotator_b_result`，**不能作为第二标注结果**，开发集双人标注仍视为未完成。两张标注表的表头已改为 `annotator_b_result(satisfied/not_satisfied/insufficient_evidence/conflict)`，明确要求四态枚举；下发时必须一并说明"结果是四态之一，不是原文摘抄"。
+
+**该标注人提出并经裁定的三项结构问题**：
+
+| # | 问题 | 裁定 |
+| --- | --- | --- |
+| 1 | `RD-002` 与 `RD-003` 的 `source_span` 完全相同，区分度不足 | **保留**。同句派生两个原子条件（RD-002 判研发活动存在、RD-003 判研发费用>0），符合"一条原子条件一行"；不作区别引文。若确需活动范围/排除清单，应另立条款并引财税〔2015〕119号原文。已记入 `RD-003` 的 `adjudication_note` |
+| 2 | `GXJS-V1-001`（2008 年版）已被 2016 年版废止，是否保留 | **有意保留为历史版本对照样本**，正是 11/03 要求的"版本变化"覆盖；`source_register` 标 `closed`，`criteria` 的 note 已加效力声明"仅用于版本失效对照演示、不得作为现行规则发布" |
+| 3 | `SRDI-001/002/004` 的认定标准源自《暂行办法》，本通知仅转致，来源如何记 | **`source_span` 严格取本政策文字**（已逐字核实存在于通知正文），上位依据写进 `adjudication_note`、不混入 `source_span`。三条已补上位依据说明 |
 
 ## 7. 容易混淆的名词
 
