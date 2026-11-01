@@ -186,7 +186,14 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 **开发集待办（2026-11-01）**：开发集 26 组合 / 122 条（含新增版本对照 4 条）已导出为 [`data/evaluation/dev_annotation_sheet.csv`](../../data/evaluation/dev_annotation_sheet.csv)（空白 `annotator_b_result/annotator_b_note`，不含 M3 推算结果），待第二标注人独立完成。填完后按 §6 仲裁并回填 `labels.csv`。
 
-**⚠️ 2026-11-01 退回记录**：一位标注人提交的开发集意见为**条款内容描述**（如复述"禁止行业清单""100%/200% 优惠内容"），未按 `satisfied / not_satisfied / insufficient_evidence / conflict` 四态填 `annotator_b_result`，**不能作为第二标注结果**，开发集双人标注仍视为未完成。两张标注表的表头已改为 `annotator_b_result(satisfied/not_satisfied/insufficient_evidence/conflict)`，明确要求四态枚举；下发时必须一并说明"结果是四态之一，不是原文摘抄"。
+**⚠️ 2026-11-01 两次退回记录**：
+
+1. **第一次**：标注人提交的是**条款内容描述**（复述"禁止行业清单""100%/200% 优惠内容"），未按四态填 `annotator_b_result`。
+2. **第二次**：改填四态后，判断仍**与具体企业无关**——同一条件在五家企业给出相同结论。例：`SME-002`（应纳税所得额≤300 万）在 C001（280 万）与 C002（**450 万**）均判 `satisfied`，而 450 万应判 `not_satisfied`。这说明标注人是在**审条款是否忠实原文**，不是在**按企业事实判四态**。
+
+**根因（M3 的表设计缺陷）**：原标注表只给 `source_span`，**没有给该企业的相关事实值**，标注人无从判断满足与否，只能按条款文本作答。两张表均已补 `enterprise_facts` 列（按条件所需事实键带出该企业的实际值、单位与期间；无事实键的条件标注"属人工核查项"），表头也写明四态枚举。
+
+**下发标注表时必须同时说明三句话**：① 判的是"这家企业满足不满足"，不是"条款写得对不对"；② 只能填 `satisfied / not_satisfied / insufficient_evidence / conflict` 四个词之一；③ 所需企业事实已在 `enterprise_facts` 列，缺该值就是 `insufficient_evidence`。
 
 **该标注人提出并经裁定的三项结构问题**：
 
