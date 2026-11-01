@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 test('five-page synthetic flow keeps results separate from profile edits', async ({ page }) => {
   const requests: string[] = [];
   page.on('request', request => requests.push(request.url()));
-  await page.goto('/');
+  await page.goto('/?mode=demo');
   await expect(page.getByText('静态合成演示 · 未进行真实资格判断')).toBeVisible();
   const income = page.locator('fieldset').nth(2);
   await income.getByRole('checkbox', { name: '未知' }).uncheck();
@@ -39,7 +39,7 @@ test('five-page synthetic flow keeps results separate from profile edits', async
 });
 
 test('all four static states remain labelled and filters change the candidate set', async ({ page }) => {
-  await page.goto('/#opportunities');
+  await page.goto('/?mode=demo#opportunities');
   await page.getByLabel('政策类型').selectOption('tax');
   await expect(page.getByText('2 项合成候选')).toBeVisible();
   await page.getByLabel('政策类型').selectOption('all');
@@ -53,7 +53,7 @@ test('all four static states remain labelled and filters change the candidate se
 
 test('mobile layout has no horizontal overflow and keyboard navigation works', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto('/');
+  await page.goto('/?mode=demo');
   await page.screenshot({ path: 'test-results/enterprise-375.png', fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.keyboard.press('Tab');

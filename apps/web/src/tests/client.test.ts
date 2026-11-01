@@ -55,7 +55,25 @@ describe('HTTP contract boundary', () => {
   });
 
   it('exposes an unknown judgement enum as a contract error', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'run1', assessments: [{ result: 'maybe', validity: 'current' }] })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'run1', policyVersionMap: {}, assessments: [{ result: 'maybe', validity: 'current' }] })));
     await expect(api.getRun('run1')).rejects.toThrow('未知判断状态');
+  });
+
+  it('rejects unknown criterion states instead of rendering an unlabelled result', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'run1', policyVersionMap: {}, assessments: [{ result: 'satisfied', validity: 'current', missingFacts: [], staleReasons: [], warnings: [], criteriaResults: [{ result: 'maybe', factRefs: [], evidenceRefs: [] }] }] })));
+    await expect(api.getRun('run1')).rejects.toThrow('条件结果无效');
+  });
+
+  it('rejects missing policy criteria and unsafe evidence links as contract errors', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(response({ id: 'p', title: '政策', version: 'v1', status: 'published' }))
+      .mockResolvedValueOnce(response({ id: 'p', title: '政策', version: 'v1', status: 'published', criteria: [{ id: 'c', title: '条件', sourceSpans: [{ quote: '原文', sourceUrl: 'javascript:alert(1)', sourceVersion: 'v1', textHash: 'x' }] }] }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(api.getPolicy('p')).rejects.toThrow('政策详情字段缺失');
+    await expect(api.getPolicy('p')).rejects.toThrow('政策条件或引用无效');
+  });
+
+  it('rejects unknown policy status rather than treating it as open', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ items: [{ id: 'p', title: '政策', version: 'v1', type: 'tax', status: 'unknown' }], nextCursor: null })));
+    await expect(api.listPolicies()).rejects.toThrow('政策列表内容无效');
   });
 });

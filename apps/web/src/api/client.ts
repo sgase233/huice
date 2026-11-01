@@ -36,6 +36,8 @@ function query(values: Record<string, string | number | undefined>) {
 }
 
 const segment = (value: string) => encodeURIComponent(value);
+const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const safeEvidence = (value: unknown) => isObject(value) && typeof value.quote === 'string' && typeof value.sourceUrl === 'string' && /^https:\/\//i.test(value.sourceUrl) && typeof value.sourceVersion === 'string' && typeof value.textHash === 'string';
 
 function assertShape(value: unknown, kind: string): void {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`接口契约错误：${kind} 不是对象`);
@@ -43,13 +45,31 @@ function assertShape(value: unknown, kind: string): void {
   if (kind === 'PolicyList' || kind === 'PolicyDraftList' || kind === 'TraceResponse') {
     if (!Array.isArray(kind === 'TraceResponse' ? record.steps : record.items)) throw new Error(`接口契约错误：${kind} 缺少列表`);
   }
+  if (kind === 'PolicyList') {
+    for (const item of record.items as unknown[]) {
+      if (!isObject(item) || typeof item.id !== 'string' || typeof item.title !== 'string' || typeof item.version !== 'string' || !['tax', 'grant'].includes(String(item.type)) || !['published', 'closed'].includes(String(item.status))) throw new Error('接口契约错误：政策列表内容无效');
+    }
+    if (record.nextCursor !== null && typeof record.nextCursor !== 'string') throw new Error('接口契约错误：政策列表游标无效');
+  }
   if (kind === 'Enterprise' && (typeof record.id !== 'string' || !Array.isArray(record.facts))) throw new Error('接口契约错误：Enterprise 字段缺失');
+  if (kind === 'PolicyDetail') {
+    if (typeof record.id !== 'string' || typeof record.version !== 'string' || typeof record.title !== 'string' || !['published', 'closed'].includes(String(record.status)) || !Array.isArray(record.criteria)) throw new Error('接口契约错误：政策详情字段缺失');
+    for (const criterion of record.criteria) {
+      if (!isObject(criterion) || typeof criterion.id !== 'string' || typeof criterion.title !== 'string' || !Array.isArray(criterion.sourceSpans) || !criterion.sourceSpans.every(safeEvidence)) throw new Error('接口契约错误：政策条件或引用无效');
+    }
+  }
   if (kind === 'AssessmentRun') {
-    if (typeof record.id !== 'string' || !Array.isArray(record.assessments)) throw new Error('接口契约错误：AssessmentRun 字段缺失');
+    if (typeof record.id !== 'string' || !Array.isArray(record.assessments) || !record.policyVersionMap || typeof record.policyVersionMap !== 'object' || Array.isArray(record.policyVersionMap)) throw new Error('接口契约错误：AssessmentRun 字段缺失');
     for (const assessment of record.assessments as Record<string, unknown>[]) {
+      if (!isObject(assessment)) throw new Error('接口契约错误：判断结果无效');
       if (!['satisfied', 'not_satisfied', 'insufficient_evidence', 'conflict'].includes(String(assessment.result)) ||
           !['current', 'stale'].includes(String(assessment.validity))) {
         throw new Error('接口契约错误：未知判断状态');
+      }
+      if (!Array.isArray(assessment.criteriaResults)) throw new Error('接口契约错误：缺少条件结果');
+      if (!Array.isArray(assessment.missingFacts) || !Array.isArray(assessment.staleReasons) || !Array.isArray(assessment.warnings)) throw new Error('接口契约错误：判断结果字段缺失');
+      for (const criterion of assessment.criteriaResults as Record<string, unknown>[]) {
+        if (!isObject(criterion) || !['satisfied', 'not_satisfied', 'insufficient_evidence', 'conflict'].includes(String(criterion.result)) || !Array.isArray(criterion.factRefs) || !Array.isArray(criterion.evidenceRefs) || !criterion.evidenceRefs.every(safeEvidence)) throw new Error('接口契约错误：条件结果无效');
       }
     }
   }

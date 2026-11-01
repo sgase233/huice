@@ -112,3 +112,10 @@ dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .shell-layout { display: block; } .side-nav { border-right: 0; border-bottom: 1px solid var(--line); padding: .8rem 0; display: flex; overflow-x: auto; gap: .25rem; } .side-nav a { flex: none; padding: .4rem .62rem; } .nav-caption, .nav-foot { display: none; } .main-content { padding-top: 1.2rem; } .policy-grid { grid-template-columns: 1fr; } .page-heading { flex-direction: column; } .banner-detail { width: 100%; margin-left: 1.2rem; } }
 @media (max-width: 520px) { .header-caption { display: none; } .form-grid, .prep-grid { grid-template-columns: 1fr; } .filter-panel label { width: 100%; } .result-count { margin-left: 0; } .draft-row { align-items: flex-start; flex-direction: column; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+.real-nav button { width: 100%; min-height: 48px; display: block; text-align: left; padding: .6rem .75rem; border: 0; border-radius: .65rem; margin-bottom: .3rem; background: transparent; color: #29414b; font: inherit; font-weight: 600; cursor: pointer; }
+.real-nav button:hover { background: #e8f0f1; }
+.real-nav button[aria-current="page"] { background: #e0eef0; color: #073f4b; }
+.real-nav button:disabled { opacity: .55; cursor: wait; }
+@media (max-width: 760px) { .real-nav button { width: auto; flex: none; margin-bottom: 0; } }
+.real-nav ~ .main-content blockquote, .real-nav ~ .main-content details { overflow-wrap: anywhere; }
