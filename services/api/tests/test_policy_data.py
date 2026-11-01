@@ -22,7 +22,8 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from uuid import uuid4
+from urllib.parse import quote
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -44,15 +45,32 @@ SOURCES_DIR = ROOT / "data/policies/sources"
 KNOWN_FAILURES: dict[str, str] = {}
 
 
-def _rows() -> list[dict[str, str]]:
-    if not CSV_PATH.exists():
+def _rows(path: Path | None = None) -> list[dict[str, str]]:
+    """已仲裁的行。``path`` 只给闸门自身的用例换一份 CSV 用。
+
+    冲突条目也要进闸门：它们可能没有表达式（``adjudicated_expression`` 为空，靠
+    ``review_finding=conflict`` 表达结论），以前只按表达式非空筛选，等于把冲突条目
+    整条跳过——数据坏了 CI 照样绿，正是这个文件想避免的那类「静默放行」。
+
+    这里刻意**不**要求 ``review_finding`` 拼对：写成 ``confict`` 的无表达式行也必须
+    进来，否则 ``REVIEW_FINDING_INVALID`` 永远没机会报出来。只有「没表达式 + 没填
+    ``review_finding``（或填 none）」才算未仲裁的草稿，不进闸门。
+    """
+    path = path or CSV_PATH
+    if not path.exists():
         return []
-    text = CSV_PATH.read_text(encoding="utf-8-sig")
-    return [
-        row
-        for row in csv.DictReader(text.splitlines())
-        if (row.get("adjudicated_expression") or "").strip()
-    ]
+    text = path.read_text(encoding="utf-8-sig")
+    rows: list[dict[str, str]] = []
+    for row in csv.DictReader(text.splitlines()):
+        expression = (row.get("adjudicated_expression") or "").strip()
+        finding = (row.get("review_finding") or "").strip()
+        if expression or finding not in ("", "none"):
+            rows.append(row)
+    return rows
+
+
+#: 契约里 ``reviewFinding`` 只有这两个取值；写错时按「标注没做完」处理，不当成 none。
+REVIEW_FINDINGS = frozenset({"none", "conflict"})
 
 
 def _fragments(row: dict[str, str]) -> list[str]:
@@ -61,51 +79,126 @@ def _fragments(row: dict[str, str]) -> list[str]:
     return [part.strip() for part in raw.split("|") if part.strip()]
 
 
-def _source_text(policy_id: str, fragments: list[str]) -> tuple[SourceText, bool]:
-    """返回来源文本与「是否拿到真实正文」。"""
-    snapshot = SOURCES_DIR / f"{policy_id}.txt"
+def _aligned(row: dict[str, str], column: str, count: int) -> tuple[list[str] | None, bool]:
+    """把 ``|`` 分隔的列按段对齐到 ``count`` 段引文；留空表示整列未填。"""
+    raw = (row.get(column) or "").strip()
+    if not raw:
+        return [""] * count, True
+    parts = [part.strip() for part in raw.split("|")]
+    if len(parts) != count:
+        return None, False
+    return parts, True
+
+
+def _documents(row: dict[str, str], fragments: list[str]) -> tuple[list[tuple[str, bool]], list[str]]:
+    """每段引文出自哪份文档，以及这一处是否由 ``source_document`` 明确点名。
+
+    ``source_document`` 与 ``source_span`` 按 ``|`` 逐段对齐，留空表示该段出自政策本体。
+    一条条款的两处引文可以来自不同文件（条款冲突本来就常出在两份规范性文件之间），
+    以前一律按政策本体的正文去查，第二份文件的引文必然报 ``SPAN_QUOTE_NOT_FOUND``。
+
+    第二项 ``explicit`` 区分「写了文件名」与「没写、按政策本体处理」：前者文件不存在
+    必须报错，后者沿用原来的退化行为。
+    """
+    raw = (row.get("source_document") or "").strip()
+    if not raw:
+        return [(row["policy_id"], False)] * len(fragments), []
+    parts, ok = _aligned(row, "source_document", len(fragments))
+    if not ok:
+        return [], ["SOURCE_DOCUMENT_MISALIGNED"]
+    return [(part or row["policy_id"], bool(part)) for part in parts or []], []
+
+
+def _source_for(name: str, fragments: list[str], sources_dir: Path) -> tuple[SourceText, bool]:
+    """返回来源文本与「是否拿到真实正文」。
+
+    没有 ``sources/<name>.txt`` 时退化为用引文片段自身充当来源文本，并在返回值里如实
+    标出没拿到正文，好让失败信息写明「逐字检查未做」，而不是假装查过。
+
+    这条退化**只给没写 ``source_document`` 的旧数据用**：明确点名了文档却找不到文件，
+    由 ``_problems_for`` 直接报 ``SOURCE_DOCUMENT_NOT_FOUND``，不走到这里。否则文件名
+    拼错时，引文能在「自己拼出来的正文」里逐字查到，闸门等于没查。
+    """
+    snapshot = sources_dir / f"{name}.txt"
     if snapshot.exists():
-        body = snapshot.read_text(encoding="utf-8-sig")
-        return SourceText(id=uuid4(), source_url="https://example.invalid/snapshot", text=body), True
+        return (
+            SourceText(
+                id=uuid4(),
+                source_url=f"https://example.invalid/{quote(name, safe='')}",
+                text=snapshot.read_text(encoding="utf-8-sig"),
+            ),
+            True,
+        )
     return SourceText(id=uuid4(), source_url="https://example.invalid/fragments", text="".join(fragments)), False
 
 
-def _problems_for(row: dict[str, str]) -> tuple[list[str], bool]:
+def _problems_for(row: dict[str, str], sources_dir: Path | None = None) -> tuple[list[str], bool]:
     """这条数据过不了闸门的原因（空列表表示能过），以及是否拿到了正文快照。
 
     失败原因用代码表示（``CITATION_THRESHOLD_MISMATCH`` 之类），这样回归报告里能直接
-    看出坏在哪一项，而不只是「某条断言失败」。
+    看出坏在哪一项，而不只是「某条断言失败」。``sources_dir`` 只给闸门自身的用例换
+    一个来源目录用，正式跑一律读 ``data/policies/sources``。
     """
-    problems = [problem.code for problem in validate_expression(json.loads(row["adjudicated_expression"]))]
+    sources_dir = sources_dir or SOURCES_DIR
+    review_finding = (row.get("review_finding") or "").strip() or "none"
+    raw_expression = (row.get("adjudicated_expression") or "").strip()
+    expression = json.loads(raw_expression) if raw_expression else None
+
+    problems: list[str] = []
+    if review_finding not in REVIEW_FINDINGS:
+        problems.append("REVIEW_FINDING_INVALID")
+    if expression is not None:
+        problems.extend(problem.code for problem in validate_expression(expression))
 
     fragments = _fragments(row)
     if not fragments:
         problems.append("SOURCE_SPAN_MISSING")
-        return problems, False
+        return sorted(set(problems)), False
 
-    source, has_snapshot = _source_text(row["policy_id"], fragments)
+    documents, alignment = _documents(row, fragments)
+    if alignment:
+        problems.extend(alignment)
+        return sorted(set(problems)), False
+
+    # 章节通常只有一段、适用于本条所有引文；能按 ``|`` 逐段对齐时才逐段用。
+    sections, _ = _aligned(row, "source_page_or_section", len(fragments))
+    whole_section = (row.get("source_page_or_section") or "").strip() or None
     version = row["source_version"]
-    spans = tuple(
-        SourceSpanCheck(
-            source_id=source.id,
-            source_url=source.source_url,
-            source_version=version,
-            page=None,
-            section=row.get("source_page_or_section") or None,
-            quote=fragment,
-            text_hash=quote_hash(fragment),
+    # 明确点名了文档却找不到文件 = 数据错，不是「没快照」。名单先整体核对一遍，
+    # 免得一边报错一边又用片段冒充正文把引文查过去。
+    missing = [name for name, explicit in documents if explicit and not (sources_dir / f"{name}.txt").exists()]
+    if missing:
+        problems.append("SOURCE_DOCUMENT_NOT_FOUND")
+        return sorted(set(problems)), False
+
+    sources: dict[UUID, SourceText] = {}
+    spans = []
+    has_snapshot = True
+    for index, (fragment, (document, _explicit)) in enumerate(zip(fragments, documents)):
+        source, snapshot_available = _source_for(document, fragments, sources_dir)
+        has_snapshot = has_snapshot and snapshot_available
+        sources[source.id] = source
+        spans.append(
+            SourceSpanCheck(
+                source_id=source.id,
+                source_url=source.source_url,
+                source_version=version,
+                page=None,
+                section=(sections[index].strip() or None) if sections else whole_section,
+                quote=fragment,
+                text_hash=quote_hash(fragment),
+            )
         )
-        for fragment in fragments
-    )
+
     verdict = validate_criterion(
         CriterionInput(
             id=row["criterion_id"],
             title=row["criterion_id"],
-            review_finding="none",
-            spans=spans,
-            expression=json.loads(row["adjudicated_expression"]),
+            review_finding=review_finding,
+            spans=tuple(spans),
+            expression=expression,
         ),
-        {source.id: source},
+        sources,
         version=version,
     )
     if not verdict.passed:
@@ -140,6 +233,148 @@ def test_policy_data_passes_citation_checks(row):
     if criterion_id in KNOWN_FAILURES:
         pytest.xfail(f"{criterion_id} 已知未通过：{problems}；原因：{KNOWN_FAILURES[criterion_id]}")
     pytest.fail(f"{criterion_id} 未通过闸门：{problems}{note}")
+
+
+def _conflict_row(spans: list[str], documents: list[str], *, expression: str = "") -> dict[str, str]:
+    return {
+        "criterion_id": "SELFTEST-CONFLICT",
+        "policy_id": "selftest-policy",
+        "source_version": "1.0.0",
+        "source_page_or_section": "第一条|第二条",
+        "source_span": "|".join(spans),
+        "source_document": "|".join(documents),
+        "review_finding": "conflict",
+        "adjudicated_expression": expression,
+    }
+
+
+@pytest.fixture
+def two_documents(tmp_path):
+    """两份互不相同的来源正文，用来验证「两处引文各出自一份文件」。"""
+    (tmp_path / "甲文.txt").write_text("甲文：其他费用不得超过 10%。", encoding="utf-8")
+    (tmp_path / "乙文.txt").write_text("乙文：其他费用不得超过 20%。", encoding="utf-8")
+    return tmp_path
+
+
+def test_a_conflict_row_over_two_documents_passes(two_documents):
+    """冲突条目的两处引文常出在两份规范性文件之间，各按自己的正文逐字核对。"""
+    row = _conflict_row(["其他费用不得超过 10%", "其他费用不得超过 20%"], ["甲文", "乙文"])
+    problems, has_snapshot = _problems_for(row, sources_dir=two_documents)
+    assert problems == []
+    assert has_snapshot
+
+
+def test_conflict_needs_two_spans_even_without_an_expression(two_documents):
+    """以前 ``review_finding`` 写死成 none，单条引文的冲突条目会静静通过。"""
+    row = _conflict_row(["其他费用不得超过 10%"], ["甲文"])
+    problems, _ = _problems_for(row, sources_dir=two_documents)
+    assert "CONFLICT_NEEDS_TWO_SPANS" in problems
+
+
+def test_two_identical_quotes_are_not_conflict_evidence(two_documents):
+    quote_text = "其他费用不得超过 10%"
+    row = _conflict_row([quote_text, quote_text], ["甲文", "乙文"])
+    problems, _ = _problems_for(row, sources_dir=two_documents)
+    assert "CONFLICT_SPANS_IDENTICAL" in problems
+
+
+def test_a_span_pointing_at_a_document_without_the_quote_is_reported(two_documents):
+    """文档标错了（引文不在那份文件里）必须报出来，而不是退回政策本体凑合。"""
+    row = _conflict_row(["其他费用不得超过 10%", "其他费用不得超过 20%"], ["甲文", "甲文"])
+    problems, _ = _problems_for(row, sources_dir=two_documents)
+    assert "SPAN_QUOTE_NOT_FOUND" in problems
+
+
+def test_a_misaligned_source_document_column_is_reported(two_documents):
+    row = _conflict_row(["其他费用不得超过 10%", "其他费用不得超过 20%"], ["甲文"])
+    problems, _ = _problems_for(row, sources_dir=two_documents)
+    assert "SOURCE_DOCUMENT_MISALIGNED" in problems
+
+
+def test_an_unknown_review_finding_is_not_treated_as_none(two_documents):
+    row = _conflict_row(["其他费用不得超过 10%"], ["甲文"])
+    row["review_finding"] = "confict"
+    problems, _ = _problems_for(row, sources_dir=two_documents)
+    assert "REVIEW_FINDING_INVALID" in problems
+
+
+def test_a_source_document_that_does_not_exist_is_reported(two_documents):
+    """文件名拼错不许退回用引文片段冒充正文——那样引文必然「查得到」，等于没查。"""
+    row = _conflict_row(["其他费用不得超过 10%", "其他费用不得超过 20%"], ["甲文", "丙文"])
+    problems, has_snapshot = _problems_for(row, sources_dir=two_documents)
+    assert "SOURCE_DOCUMENT_NOT_FOUND" in problems
+    assert has_snapshot is False
+
+
+def test_a_row_without_a_source_document_keeps_the_legacy_fallback(two_documents):
+    """没写 ``source_document`` 的旧数据不受影响：仍用片段兜底，只标注逐字检查未做。"""
+    row = _conflict_row(["其他费用不得超过 10%", "其他费用不得超过 20%"], ["", ""])
+    problems, has_snapshot = _problems_for(row, sources_dir=two_documents)
+    assert problems == []
+    assert has_snapshot is False
+
+
+def _write_csv(path: Path, rows: list[dict[str, str]]) -> Path:
+    columns = [
+        "criterion_id",
+        "policy_id",
+        "source_version",
+        "source_page_or_section",
+        "source_span",
+        "source_document",
+        "review_finding",
+        "adjudicated_expression",
+    ]
+    lines = [",".join(columns)]
+    lines += [",".join(row.get(column, "") for column in columns) for row in rows]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_a_misspelled_finding_without_an_expression_still_enters_the_gate(tmp_path):
+    """`_rows` 若按「精确等于 conflict」筛选，拼错的无表达式行到不了后面那道校验。"""
+    path = _write_csv(
+        tmp_path / "criteria_review.csv",
+        [
+            {
+                "criterion_id": "SELFTEST-FINDING",
+                "policy_id": "selftest-policy",
+                "source_version": "1.0.0",
+                "source_page_or_section": "第一条",
+                "source_span": "其他费用不得超过 10%",
+                "review_finding": "confict",
+            }
+        ],
+    )
+    rows = _rows(path)
+    assert [row["criterion_id"] for row in rows] == ["SELFTEST-FINDING"]
+    problems, _ = _problems_for(rows[0], sources_dir=tmp_path)
+    assert "REVIEW_FINDING_INVALID" in problems
+
+
+def test_an_unadjudicated_row_is_not_pulled_into_the_gate(tmp_path):
+    """没表达式、``review_finding`` 也没填（或填 none）的是草稿，仍然不进闸门。"""
+    path = _write_csv(
+        tmp_path / "criteria_review.csv",
+        [
+            {
+                "criterion_id": "SELFTEST-DRAFT",
+                "policy_id": "selftest-policy",
+                "source_version": "1.0.0",
+                "source_page_or_section": "第一条",
+                "source_span": "其他费用不得超过 10%",
+                "review_finding": "none",
+            },
+            {
+                "criterion_id": "SELFTEST-BLANK",
+                "policy_id": "selftest-policy",
+                "source_version": "1.0.0",
+                "source_page_or_section": "第一条",
+                "source_span": "其他费用不得超过 10%",
+            },
+        ],
+    )
+    assert _rows(path) == []
 
 
 def test_the_gate_reports_a_deliberately_broken_row():

@@ -108,6 +108,23 @@ def test_only_policies_missing_the_question_get_it(client, repository):
     assert by_policy[str(industry_policy.id)]["nextQuestion"] is None
 
 
+def test_decided_policy_reports_no_missing_facts_even_with_an_unknown_criterion(client, repository):
+    """政策已判不满足时，另一条条件缺的事实不挡结论，也不该进 missingFacts 或补问。"""
+
+    policy = published_draft(expressions=[INDUSTRY_GATE, INCOME_GATE])
+    repository.drafts.append(policy)
+    enterprise = create_enterprise(client)  # industry=F51 已排除；taxableIncome 未知
+
+    run = create_run(client, enterprise["id"], [str(policy.id)])
+
+    assessment = run["assessments"][0]
+    assert assessment["result"] == "not_satisfied"
+    assert assessment["missingFacts"] == []
+    assert assessment["nextQuestion"] is None
+    # 条件级仍如实标出自己的未知事实，只是不再冒充「挡住结论」的政策级缺失。
+    assert assessment["criteriaResults"][1]["result"] == "insufficient_evidence"
+
+
 def test_skipped_fact_refs_remove_the_question_but_not_the_result(client, repository):
     policy = published_draft(expressions=[INCOME_GATE])
     repository.drafts.append(policy)
