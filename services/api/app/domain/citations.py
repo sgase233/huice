@@ -399,7 +399,12 @@ _RATIO_CUES = ("比重", "占比", "比例", "百分比", "占")
 _FAMILY_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("研发费用增量", "rdExpenseIncrease"),
     ("研发投入增量", "rdExpenseIncrease"),
+    # 「销售收入」是《高新技术企业认定管理办法》等文件里对营收的写法（第十条/第十一条
+    # 的三档比例都以「最近一年销售收入」划段）。不认这个词，这类引文的金额阈值会被判
+    # 为「找不到」，条款挡住发不出去——2026-11-01 M3 的 GXJS 两条就是这样卡住的。
+    # 只收「销售收入」，不收「总收入」：高企认定里「总收入」是另一个口径（含投资收益等）。
     ("营业收入", "revenue"),
+    ("销售收入", "revenue"),
     ("股权融资", "equityFinancing"),
     ("研发费用", "rdExpense"),
     ("研发投入", "rdExpense"),
@@ -596,7 +601,10 @@ class ThresholdBound:
 
 _DIRECTION_INCLUSIVE_LOWER = ("不低于", "不少于", "不得低于", "至少", "大于等于", "达到", "达")
 _DIRECTION_INCLUSIVE_UPPER = ("不超过", "不得高于", "不高于", "至多", "小于等于")
-_DIRECTION_UPPER = ("低于", "少于", "不足", "未超过")
+#: 「小于」是含本数之外的上限写法：《高新技术企业认定管理办法》第十条（四）三档就是
+#: 「销售收入小于 5,000 万元」，不收这个词会把整条引文的金额阈值判成「找不到」。
+#: 它必须排在 ``小于等于`` 之后——否则「小于等于 100 万元」会被截成「小于」再匹配失败。
+_DIRECTION_UPPER = ("低于", "少于", "不足", "未超过", "小于")
 #: 「达到/达 200 万元」在政策文本里是含本数的下限（「达 2 年以上」同理），归入下限而不是
 #: 严格大于：2026-10-29 修 SRDI-002 时发现原来的归属会让「达到 2000 万元以上」抽成 gt，
 #: 与 AST 的 gte 无端报不一致。
@@ -609,14 +617,21 @@ _UNIT_MULTIPLIER = {"万元": Decimal(10000), "亿元": Decimal(100000000), "元
 #: 抽不出阈值，进而把正确的 AST 判成「引文没有数值阈值」。
 _DIRECTION_WORDS = (
     "不低于|不少于|不得低于|至少|大于等于|不超过|不得高于|不高于|至多|小于等于"
-    "|低于|少于|不足|未超过|超过|高于|多于|大于|达到|达"
+    "|低于|少于|不足|未超过|超过|高于|多于|大于|达到|达|小于"
 )
+_NUMBER = r"[0-9][0-9,]*(?:\.[0-9]+)?"
+_UNITS = r"万元|亿元|元|人"
+_INCLUSIVE_MARK = r"（含）|\(含\)"
 _THRESHOLD_PREFIX_RE = re.compile(
-    rf"({_DIRECTION_WORDS})\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万元|亿元|元|人)"
+    rf"({_DIRECTION_WORDS})\s*({_NUMBER})\s*({_UNITS})(?:\s*({_INCLUSIVE_MARK}))?"
 )
 _THRESHOLD_SUFFIX_RE = re.compile(
-    r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万元|亿元|元|人)"
-    r"\s*(?:（含）|\(含\))?\s*(及以上|以上|及以下|以下|以内)"
+    rf"({_NUMBER})\s*({_UNITS})\s*(?:{_INCLUSIVE_MARK})?\s*(及以上|以上|及以下|以下|以内)"
+)
+#: 区间写法「在 5,000 万元至 20,000 万元」：两端都含本数，等价于下限 gte + 上限 lte。
+#: 高企认定的三档比例就是这种写法，不认区间等于整条引文给不出金额阈值。
+_THRESHOLD_RANGE_RE = re.compile(
+    rf"({_NUMBER})\s*({_UNITS})\s*(?:至|到)\s*({_NUMBER})\s*({_UNITS})"
 )
 
 #: 百分比的三种书写：前置方向词 + 「百分之/千分之」、前置方向词 + 「%」、数字 + 「%」+ 后置词。
@@ -666,14 +681,19 @@ def threshold_bounds(quote: str) -> list[ThresholdBound]:
     """从引文里抽出阈值；识别不到就返回空列表，由存在性检查报「找不到阈值」。"""
     extractions: list[tuple[int, int, str, str, str | None]] = []
     for match in _THRESHOLD_PREFIX_RE.finditer(quote):
-        extractions.append(
-            (match.start(), match.end(), match.group(2), match.group(3), _direction_of(match.group(1)))
-        )
+        direction = _direction_of(match.group(1))
+        # 「小于 5,000 万元（含）」是含本数的上限：按严格小于会与 AST 的 lte 报不一致。
+        if match.group(4):
+            direction = _inclusive(direction)
+        extractions.append((match.start(), match.end(), match.group(2), match.group(3), direction))
     for match in _THRESHOLD_SUFFIX_RE.finditer(quote):
         direction = "gte" if match.group(3) in ("及以上", "以上") else "lte"
         extractions.append(
             (match.start(), match.end(), match.group(1), match.group(2), direction)
         )
+    for match in _THRESHOLD_RANGE_RE.finditer(quote):
+        extractions.append((match.start(1), match.end(1), match.group(1), match.group(2), "gte"))
+        extractions.append((match.start(3), match.end(3), match.group(3), match.group(4), "lte"))
 
     bounds: list[ThresholdBound] = []
     taken: list[tuple[int, int]] = []
@@ -779,6 +799,11 @@ def _direction_of(word: str) -> str | None:
     if word in _DIRECTION_LOWER:
         return "gt"
     return None
+
+
+def _inclusive(direction: str | None) -> str | None:
+    """严格比较符升成含本数：``小于 X（含）`` 是 ``lte``，``大于 X（含）`` 是 ``gte``。"""
+    return {"lt": "lte", "gt": "gte"}.get(str(direction), direction)
 
 
 def _family_near(quote: str, position: int) -> str | None:

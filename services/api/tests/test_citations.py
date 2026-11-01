@@ -868,3 +868,90 @@ def test_mismatch_message_does_not_double_count_the_unit():
     message = next(f.message for f in verdict.findings if f.code == "CITATION_THRESHOLD_MISMATCH")
     assert "20000000万元" not in message
     assert "原文以「万元」计" in message
+
+
+#: 《高新技术企业认定管理办法》第十条（四）三档的原文写法，2026-11-01 由 M3 的 GXJS 引出：
+#: 营收写作「销售收入」，「小于」是严格上限，「A 至 B」是两端含本数的区间，「（含）」把
+#: 严格上限升成含本数。三种写法漏一种，整条条款的金额阈值就抽不出来，正确 AST 反被判成
+#: 「引文没有数值阈值」而挡住发布。
+GXJS_TEXT = (
+    "第十条（四）近三个会计年度的研究开发费用总额占销售收入总额的比例符合如下要求："
+    "1. 最近一年销售收入小于5,000万元的企业，比例不低于6%；"
+    "2. 最近一年销售收入在5,000万元至20,000万元的企业，比例不低于4%；"
+    "3. 最近一年销售收入在20,000万元以上的企业，比例不低于3%。"
+)
+GXJS = SourceText(id=uuid4(), source_url=SOURCE_URL, text=GXJS_TEXT)
+GXJS_SOURCES = {GXJS.id: GXJS}
+
+
+def gxjs_span(quote: str) -> SourceSpanCheck:
+    return span(quote, source_id=GXJS.id, section="第十条（四）")
+
+
+@pytest.mark.parametrize(
+    ("quote", "expected"),
+    [
+        ("最近一年销售收入小于5,000万元的企业", [(50_000_000, "lt")]),
+        ("最近一年销售收入在5,000万元至20,000万元的企业", [(50_000_000, "gte"), (200_000_000, "lte")]),
+        ("最近一年销售收入在20,000万元以上的企业", [(200_000_000, "gte")]),
+        ("最近1年销售收入小于5,000万元（含）的企业", [(50_000_000, "lte")]),
+        ("最近1年销售收入在5,000万元至2亿元（含）的企业", [(50_000_000, "gte"), (200_000_000, "lte")]),
+    ],
+)
+def test_sales_income_tier_phrasings_are_recognised(quote, expected):
+    """「销售收入」也是营收族：不认这个词，这几档的金额阈值一条都抽不出来。"""
+
+    bounds = threshold_bounds(quote)
+    assert [(int(bound.amount), bound.direction) for bound in bounds] == expected
+    assert {bound.family for bound in bounds} == {"revenue"}
+
+
+def test_a_sales_income_tier_condition_passes_against_its_own_quote():
+    expression = {
+        "op": "and",
+        "children": [
+            compare("revenue", "50000000.00", "CNY", comparator="lt"),
+            compare("rdExpenseRevenueRatio", "0.06", "ratio"),
+        ],
+    }
+
+    verdict = validate_criterion(
+        criterion(
+            gxjs_span("1. 最近一年销售收入小于5,000万元的企业，比例不低于6%"),
+            expression=expression,
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_sales_income_number_is_checked_not_ignored():
+    """认了营收族就得真核对：金额写错要报不一致，而不是退化成「没有阈值」。"""
+
+    verdict = validate_criterion(
+        criterion(
+            gxjs_span("最近一年销售收入在20,000万元以上的企业"),
+            expression=compare("revenue", "50000000.00", "CNY"),
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+def test_a_strict_comparator_against_an_inclusive_tier_is_reported():
+    """「20,000 万元以上」含本数：AST 写 ``gt`` 会把正好 2 亿元的企业判成不达标。"""
+
+    verdict = validate_criterion(
+        criterion(
+            gxjs_span("3. 最近一年销售收入在20,000万元以上的企业，比例不低于3%"),
+            expression=compare("revenue", "200000000.00", "CNY", comparator="gt"),
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
