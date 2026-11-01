@@ -16,10 +16,10 @@ export const factLabels: Record<FactKey, string> = {
   region: '地区代码', industry: '行业代码', establishedDate: '成立日期', taxableIncome: '应纳税所得额',
   rdExpense: '研发费用', rdActivity: '研发活动', employeeCountStart: '期初人数',
   employeeCountEnd: '期末人数', assetsStart: '期初资产', assetsEnd: '期末资产',
-  // rc.3 新增 6 键（2026-10-29，M1 契约连带补齐，措辞请 M2 复核）
+  // rc.3 新增事实键，布尔标签与 true 的含义保持同向。
   revenue: '营业收入', equityFinancing: '新增股权融资', rdExpenseIncrease: '研发费用增量',
-  rdExpenseRevenueRatio: '研发费用占营业收入比重', rdAddDeductionClaimed: '研发费用加计扣除申报',
-  creditRecord: '诚信记录',
+  rdExpenseRevenueRatio: '研发费用占营业收入比重', rdAddDeductionClaimed: '是否已申报研发费用加计扣除',
+  creditRecord: '诚信记录是否良好',
   specificMarketSince: '细分市场起始日期', independentLegalEntity: '是否具有独立法人资格',
 };
 
