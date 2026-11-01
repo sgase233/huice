@@ -1065,7 +1065,7 @@ def test_swapped_tier_ratios_inside_one_block_are_reported():
     assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
 
 
-#: 同一张档位表写成一句话、只用逗号隔开。句级切分会把三档并成一句，必须再按逗号分句，
+#: 同一张档位表写成一句话、只用逗号隔开。句级切分会把三档并成一句，必须再按比例开窗口，
 #: 才能确认每个金额和它旁边那个比例是同一档——2026-11-01 补在 M2 的单段引文场景之后。
 COMPACT_TIER_TEXT = (
     "第十条（四）研发费用比例符合如下要求："
@@ -1073,10 +1073,20 @@ COMPACT_TIER_TEXT = (
     "最近一年销售收入在5,000万元至20,000万元的企业比例不低于4%，"
     "最近一年销售收入在20,000万元以上的企业比例不低于3%。"
 )
-def _one_sentence_tier_verdict(separator: str, *, first_ratio, second_ratio, third_ratio):
-    """整张档位表写成一句话，用 ``separator`` 分隔三档，跑一遍校验。"""
 
-    text = COMPACT_TIER_TEXT.replace("，", separator)
+#: M2 在 #20 又指出的近邻写法：一句话里每档的金额与比例之间还各有一个逗号（正常断句）。
+#: 按标点分句会把每档拆成「只有金额」和「只有比例」两半，正确标注反而被拒。
+SPLIT_PHRASE_TIER_TEXT = (
+    "第十条（四）研发费用比例符合如下要求："
+    "销售收入小于5,000万元的企业，比例不低于6%，"
+    "销售收入在5,000万元至20,000万元的企业，比例不低于4%，"
+    "销售收入在20,000万元以上的企业，比例不低于3%。"
+)
+
+
+def _tier_verdict_for_text(text: str, *, first_ratio: str, second_ratio: str, third_ratio: str):
+    """把整张档位表写成一段话作为唯一引文，跑一遍校验。"""
+
     source = SourceText(id=uuid4(), source_url=SOURCE_URL, text=text)
     return validate_criterion(
         tier_criterion(
@@ -1088,6 +1098,17 @@ def _one_sentence_tier_verdict(separator: str, *, first_ratio, second_ratio, thi
         ),
         {source.id: source},
         version=VERSION,
+    )
+
+
+def _one_sentence_tier_verdict(separator: str, *, first_ratio, second_ratio, third_ratio):
+    """整张档位表写成一句话，用 ``separator`` 分隔三档，跑一遍校验。"""
+
+    return _tier_verdict_for_text(
+        COMPACT_TIER_TEXT.replace("，", separator),
+        first_ratio=first_ratio,
+        second_ratio=second_ratio,
+        third_ratio=third_ratio,
     )
 
 
@@ -1106,10 +1127,34 @@ def test_a_tier_table_written_as_one_sentence_passes(separator):
 
 @pytest.mark.parametrize("separator", ONE_SENTENCE_SEPARATORS)
 def test_swapped_ratios_in_one_sentence_are_reported(separator):
-    """一句里有三个比例时，不允许退到整句比对——否则金额与比例的归属无从确认。"""
+    """一句里有三个比例时，金额与比例必须落在同一个窗口里——对调后金额落在别的窗口。"""
 
     verdict = _one_sentence_tier_verdict(
         separator, first_ratio="0.04", second_ratio="0.06", third_ratio="0.03"
+    )
+
+    assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
+
+
+def test_a_comma_before_each_ratio_does_not_break_a_correct_annotation():
+    """M2 在 #20 提的 P2：一句话里每档都写成「……的企业，比例不低于 N%」。
+
+    按逗号分句会把同一档拆成「只有金额」「只有比例」两半，正确标注反而被拒。现在按比例的
+    位置开窗口，逗号只当断句用。
+    """
+
+    verdict = _tier_verdict_for_text(
+        SPLIT_PHRASE_TIER_TEXT, first_ratio="0.06", second_ratio="0.04", third_ratio="0.03"
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_swapped_ratios_with_a_comma_before_each_ratio_are_still_reported():
+    """同一种写法下对调比例：金额落在别的窗口里，必须报出来，不能借断句蒙混过去。"""
+
+    verdict = _tier_verdict_for_text(
+        SPLIT_PHRASE_TIER_TEXT, first_ratio="0.04", second_ratio="0.06", third_ratio="0.03"
     )
 
     assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)

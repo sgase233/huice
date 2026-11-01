@@ -453,19 +453,19 @@ def _check_branch_sources(
     按句号、分号与换行切开后，每一支要求金额与比例出自同一句；跨句才配齐的报
     ``CITATION_BRANCH_SOURCE_MIXED`` 交人工复核，而不是默认它们是同一档。
 
-    再往下沉一层「逗号分句」：三档也可能写成一句话、只用逗号隔开（「小于 5,000 万元的
-    比例为 6%，在 5,000 万元至 20,000 万元之间的比例为 4%……」）。但逗号也用于「……
-    （含）的企业，比例不低于 5%」这类正常断句，切逗号会把同一档拆成两半。所以两级都用：
-    先按逗号分句比对；分句配不齐时，只有整句里**只有一个比例**才允许退到整句——一句里
-    出现多个比例时必须各自在自己的分句里配齐，否则金额与比例的归属无从确认。
+    再往下按**比例**切窗口：一句话里也可能排着好几档，且每档的金额与比例未必挨在一起
+    （「销售收入小于 5,000 万元的企业，比例不低于 6%，销售收入在 5,000 万元至 20,000 万元
+    的企业，比例不低于 4%」——逗号只起断句作用）。这里不猜分隔符，而是以每处比例为准，
+    把「上一处比例之后、这一处比例为止」的原文当作一个窗口：金额与比例落在同一窗口，才算
+    同一档。对调比例后，金额落在别的窗口里，配不齐。
 
     只看纯阈值分支：分支里出现日期、行业排除、``manual_review`` 或嵌套 ``or`` 时跳过——
     那些条件的证据本来就可以分散在不同引文里，拿这条规则去卡会误伤。
     """
     sentences = _bounds_by(criterion.spans, _SENTENCE_SPLIT_RE)
-    phrases = _bounds_by(criterion.spans, _PHRASE_SPLIT_RE)
     if not sentences:
         return
+    windows = [window for sentence in sentences for window in _ratio_windows(sentence)]
     for index, branches in enumerate(_or_branch_groups(criterion.expression)):
         atoms_by_branch = [_threshold_atoms(branch) for branch in branches]
         if not all(atoms_by_branch):
@@ -477,12 +477,7 @@ def _check_branch_sources(
         if len(families) != 1 or len(next(iter(families))) < 2:
             continue
         for branch_index, atoms in enumerate(atoms_by_branch):
-            if any(_supports_atoms(atoms, phrase) for phrase in phrases):
-                continue
-            if any(
-                _ratio_count(sentence) == 1 and _supports_atoms(atoms, sentence)
-                for sentence in sentences
-            ):
+            if any(_supports_atoms(atoms, window) for window in windows):
                 continue
             if not _supports_atoms(atoms, bounds):
                 # 汇总都撑不住，已有的 CITATION_THRESHOLD_* 已经报过，不重复报。
@@ -574,8 +569,23 @@ def _bounds_by(
     return groups
 
 
-def _ratio_count(bounds: list[tuple[SourceSpanCheck, "ThresholdBound"]]) -> int:
-    return sum(1 for _span, bound in bounds if bound.family == _RATIO_FAMILY)
+def _ratio_windows(
+    sentence: list[tuple[SourceSpanCheck, "ThresholdBound"]],
+) -> list[list[tuple[SourceSpanCheck, "ThresholdBound"]]]:
+    """把一句话按比例的位置切成窗口：上一个窗口止于这一处比例。
+
+    金额写在比例之前是政策的常规语序（「销售收入小于 5,000 万元的企业，比例不低于 6%」），
+    所以只向前并、不向后并——否则比例会「认领」后面那一档的金额，对调又能蒙混过去。
+    末尾没有比例收束的残余不单独成窗：它们的档位归属无从确认，交给跨句汇总那一步判。
+    """
+    windows: list[list[tuple[SourceSpanCheck, "ThresholdBound"]]] = []
+    window: list[tuple[SourceSpanCheck, "ThresholdBound"]] = []
+    for item in sorted(sentence, key=lambda pair: pair[1].start):
+        window.append(item)
+        if item[1].family == _RATIO_FAMILY:
+            windows.append(window)
+            window = []
+    return windows
 
 
 def _supports_atoms(
@@ -760,6 +770,9 @@ class ThresholdBound:
     unit: str
     #: 原文片段（如「不低于 3%」），只用于报错文案；换算后的小数读者对不上原句。
     source_text: str = ""
+    #: 在**被抽取的那段文本**里的起始下标。档位配对靠它判断金额与比例是否相邻，
+    #: 因此只对 ``threshold_bounds`` / ``ratio_bounds`` 直接抽出来的 bound 有意义。
+    start: int = -1
 
 
 _DIRECTION_INCLUSIVE_LOWER = ("不低于", "不少于", "不得低于", "至少", "大于等于", "达到", "达")
@@ -806,11 +819,10 @@ _RATIO_SUFFIX_RE = re.compile(
 
 _WHITESPACE = re.compile(r"[\s　]+")
 
-#: 逐句核对阈值用的两级切分。句级只切句号、分号与换行；分句级再加上全角逗号，因为三档也
-#: 可能写成一句话「小于 5,000 万元的比例为 6%，在 5,000 万元至 20,000 万元之间的比例为 4%」。
-#: 半角逗号不切：它是数字的千分位（「5,000 万元」），切了会把金额拆坏。
+#: 逐句核对阈值时用的切分。只切句号、分号与换行——逗号/顿号在政策里既断句又做并列，
+#: 切了会把「……的企业，比例不低于 5%」这种同一档拆成两半，所以句内不再按标点切，
+#: 改按比例出现的位置开窗口（见 ``_ratio_windows``）。
 _SENTENCE_SPLIT_RE = re.compile(r"[。；;\n]+")
-_PHRASE_SPLIT_RE = re.compile(r"[。；;\n，、]+")
 
 #: 「两个会计年度（含）以上」「近两年」这类**时长型**相对表述：原文没有绝对日期，AST 里
 #: 却是绝对日期（引擎必须用可复现的固定值）。引文出现这些表述即视为支持，绝对日期由
@@ -879,7 +891,7 @@ def threshold_bounds(quote: str) -> list[ThresholdBound]:
         except InvalidOperation:
             continue
         taken.append((start, end))
-        bounds.append(ThresholdBound(family=family, amount=amount, direction=direction, unit=unit))
+        bounds.append(ThresholdBound(family=family, amount=amount, direction=direction, unit=unit, start=start))
     return bounds
 
 
@@ -940,6 +952,7 @@ def ratio_bounds(quote: str) -> list[ThresholdBound]:
                 direction=direction,
                 unit=scale,
                 source_text=raw,
+                start=start,
             )
         )
     return bounds
