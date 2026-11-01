@@ -303,3 +303,95 @@ test('人工核查条件保持证据不足并展示后端理由', async ({ page 
   await expect(page.getByText('还缺资料').first()).toBeVisible();
   await expect(page.getByText('条件初步满足')).toHaveCount(0);
 });
+
+test('补问写入事实并重算，跳过不修改事实，报告按版本下载', async ({ page }) => {
+  const question = { factRef: { key: 'taxableIncome', period }, prompt: '请填写应纳税所得额', reason: '影响一项政策', rank: 1 };
+  const prep = { type: 'tax', handlingMode: 'tax_self_assessment', officialEntryUrl: 'https://www.gov.cn/', deadline: null, items: [{ title: '留存凭证', description: '核对材料', requiredFactRefs: [question.factRef], missing: true }] };
+  const first = { ...run, assessments: [{ ...assessment, result: 'insufficient_evidence', nextQuestion: question, preparation: prep }] };
+  const secondId = '44444444-4444-4444-8444-444444444444';
+  const second = { ...first, id: secondId, supersedesRunId: rid, assessments: [{ ...first.assessments[0], nextQuestion: { ...question, factRef: { key: 'creditRecord', period }, prompt: '诚信记录是否良好' } }] };
+  const thirdId = '55555555-5555-4555-8555-555555555555';
+  const third = { ...second, id: thirdId, supersedesRunId: secondId, assessments: [{ ...second.assessments[0], nextQuestion: null }] };
+  let enterprise: any; let creates = 0; let patches = 0; let failReport = false;
+  await page.route('**/api/v1/**', async route => {
+    const req = route.request(); const url = new URL(req.url());
+    if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise, headers: { ETag: '"abc"', 'Access-Control-Expose-Headers': 'ETag' } }); }
+    if (url.pathname.endsWith('/facts/taxableIncome')) { patches++; expect(req.headers()['if-match']).toBe('"abc"'); expect(req.postDataJSON()).toEqual({ value: '0', unit: 'CNY', period, source: 'user_input' }); enterprise = { ...enterprise, factVersion: 'def', facts: [...enterprise.facts, { key: 'taxableIncome', ...req.postDataJSON(), verified: false }] }; return route.fulfill({ json: enterprise, headers: { ETag: '"def"', 'Access-Control-Expose-Headers': 'ETag' } }); }
+    if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (url.pathname.endsWith('/assessment-runs') && req.method() === 'POST') { creates++; const body = req.postDataJSON(); if (creates === 2) expect(body.supersedesRunId).toBe(rid); if (creates === 3) { expect(body.supersedesRunId).toBe(secondId); expect(body.skippedFactRefs).toEqual([{ key: 'creditRecord', period }]); } return route.fulfill({ json: creates === 1 ? first : creates === 2 ? second : third }); }
+    if (url.pathname.endsWith(`/assessment-runs/${thirdId}/report.md`)) { expect(req.headers().accept).toBe('text/markdown'); if (failReport) return route.fulfill({ status: 503, json: { error: { message: '报告暂不可用' }, traceId: 'report-trace' } }); return route.fulfill({ body: '# 测试报告', contentType: 'text/markdown' }); }
+    if (url.pathname.endsWith(`/assessment-runs/${thirdId}`)) return route.fulfill({ json: third });
+    if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: first });
+    if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: [{ id, title: '行业条件', sourceSpans: [ref] }] } });
+    return route.abort();
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await page.getByLabel('回答（CNY）').fill('1.234'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await expect(page.getByLabel('回答（CNY）')).toBeFocused(); await expect(page.getByLabel('回答（CNY）')).toHaveAttribute('aria-invalid', 'true');
+  expect(patches).toBe(0);
+  await page.getByLabel('回答（CNY）').fill('0'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await expect(page.getByText('诚信记录是否良好')).toBeVisible(); await page.getByRole('button', { name: '跳过（未知或不确定）' }).click();
+  await expect(page.getByText(/当前没有需要补充的问题/)).toBeVisible(); expect(patches).toBe(1);
+  await page.getByLabel('本次会话的分析历史').selectOption(rid);
+  await expect(page.getByText('依据已失效，待复核')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '优先补充问题' })).toHaveCount(0);
+  await page.getByLabel('本次会话的分析历史').selectOption(thirdId);
+  await page.getByRole('button', { name: '清单与报告' }).click(); await expect(page.getByText('留存凭证')).toBeVisible();
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 850 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(page.getByRole('heading', { name: '准备清单与报告' })).toBeVisible();
+  }
+  const downloadButton = page.getByRole('button', { name: '下载 Markdown 报告' });
+  await downloadButton.focus(); await expect(downloadButton).toBeFocused();
+  const download = page.waitForEvent('download'); await page.keyboard.press('Enter'); expect((await download).suggestedFilename()).toBe(`assessment-${thirdId}.md`);
+  failReport = true;
+  await page.getByRole('button', { name: '下载 Markdown 报告' }).click();
+  await expect(page.getByRole('alert')).toContainText('报告暂不可用');
+  await expect(page.getByRole('alert')).toContainText('report-trace');
+});
+
+test('补问冲突保留输入并读取当前画像；重算失败只重试分析', async ({ page }) => {
+  const question = { factRef: { key: 'taxableIncome', period }, prompt: '补充所得额', reason: '需要数据', rank: 1 };
+  const first = { ...run, assessments: [{ ...assessment, result: 'insufficient_evidence', nextQuestion: question }] };
+  const next = { ...first, id: '66666666-6666-4666-8666-666666666666', assessments: [{ ...first.assessments[0], nextQuestion: null }] };
+  let enterprise: any; let patches = 0; let creates = 0; let reads = 0;
+  await page.route('**/api/v1/**', async route => {
+    const req = route.request(); const path = new URL(req.url()).pathname;
+    const headers = { ETag: '"version"', 'Access-Control-Expose-Headers': 'ETag' };
+    if (path.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise, headers }); }
+    if (path.endsWith(`/enterprises/${id}`)) { reads++; return route.fulfill({ json: enterprise, headers }); }
+    if (path.endsWith('/facts/taxableIncome')) { patches++; if (patches === 1) return route.fulfill({ status: 409, json: { error: { message: '画像已更改' }, traceId: 'conflict-id' } }); return route.fulfill({ json: enterprise, headers }); }
+    if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (path.endsWith('/assessment-runs') && req.method() === 'POST') { creates++; if (creates === 2) return route.fulfill({ status: 503, json: { error: { message: '分析暂不可用' } } }); return route.fulfill({ json: creates === 1 ? first : next }); }
+    return route.abort();
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  const answer = page.getByLabel('回答（CNY）'); await answer.fill('200'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await expect(page.getByRole('alert')).toContainText('画像已更改'); await expect(answer).toHaveValue('200'); expect(reads).toBe(1); expect(patches).toBe(1);
+  await page.getByRole('button', { name: '保存并重新分析' }).click(); await expect(page.getByRole('alert')).toContainText('事实已保存，但分析未完成');
+  await page.getByRole('button', { name: '重试分析' }).click(); await expect(page.getByText(/当前没有需要补充的问题/)).toBeVisible(); expect(patches).toBe(2); expect(creates).toBe(3);
+});
+
+test('补问写入网络中断后先读取画像且不自动重发', async ({ page }) => {
+  const question = { factRef: { key: 'taxableIncome', period }, prompt: '补充所得额', reason: '需要数据', rank: 1 };
+  const snapshot = { ...run, assessments: [{ ...assessment, result: 'insufficient_evidence', nextQuestion: question }] };
+  let enterprise: any; let patches = 0; let reads = 0;
+  await page.route('**/api/v1/**', async route => {
+    const req = route.request(); const path = new URL(req.url()).pathname;
+    const headers = { ETag: '"updated"', 'Access-Control-Expose-Headers': 'ETag' };
+    if (path.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise, headers }); }
+    if (path.endsWith(`/enterprises/${id}`)) { reads++; return route.fulfill({ json: enterprise, headers }); }
+    if (path.endsWith('/facts/taxableIncome')) { patches++; enterprise = { ...enterprise, facts: [...enterprise.facts.filter((fact: { key: string }) => fact.key !== 'taxableIncome'), { key: 'taxableIncome', value: '200', unit: 'CNY', period, source: 'user_input', verified: false }] }; return route.abort('failed'); }
+    if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (path.endsWith('/assessment-runs')) return route.fulfill({ json: snapshot });
+    return route.abort();
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await page.getByLabel('回答（CNY）').fill('200'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await expect(page.getByRole('alert')).toContainText('请重新读取画像并核对后重试');
+  await expect(page.getByText('当前画像中的值：200')).toBeVisible();
+  await expect(page.getByLabel('回答（CNY）')).toHaveValue('200');
+  expect(reads).toBe(1); expect(patches).toBe(1);
+});
