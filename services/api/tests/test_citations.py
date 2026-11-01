@@ -1073,43 +1073,43 @@ COMPACT_TIER_TEXT = (
     "最近一年销售收入在5,000万元至20,000万元的企业比例不低于4%，"
     "最近一年销售收入在20,000万元以上的企业比例不低于3%。"
 )
-COMPACT = SourceText(id=uuid4(), source_url=SOURCE_URL, text=COMPACT_TIER_TEXT)
-COMPACT_SOURCES = {COMPACT.id: COMPACT}
+def _one_sentence_tier_verdict(separator: str, *, first_ratio, second_ratio, third_ratio):
+    """整张档位表写成一句话，用 ``separator`` 分隔三档，跑一遍校验。"""
 
-
-def compact_span(quote: str) -> SourceSpanCheck:
-    return span(quote, source_id=COMPACT.id, section="第十条（四）")
-
-
-def test_a_tier_table_written_as_one_sentence_passes():
-    verdict = validate_criterion(
+    text = COMPACT_TIER_TEXT.replace("，", separator)
+    source = SourceText(id=uuid4(), source_url=SOURCE_URL, text=text)
+    return validate_criterion(
         tier_criterion(
-            first_ratio="0.06",
-            second_ratio="0.04",
-            third_ratio="0.03",
-            spans=(COMPACT_TIER_TEXT,),
-            span_of=compact_span,
+            first_ratio=first_ratio,
+            second_ratio=second_ratio,
+            third_ratio=third_ratio,
+            spans=(text,),
+            span_of=lambda quote: span(quote, source_id=source.id, section="第十条（四）"),
         ),
-        COMPACT_SOURCES,
+        {source.id: source},
         version=VERSION,
+    )
+
+
+#: 一句话三档的两种分隔：全角逗号与顿号。顿号常被漏掉，「、」分隔时整张表又并成一段。
+ONE_SENTENCE_SEPARATORS = ("，", "、")
+
+
+@pytest.mark.parametrize("separator", ONE_SENTENCE_SEPARATORS)
+def test_a_tier_table_written_as_one_sentence_passes(separator):
+    verdict = _one_sentence_tier_verdict(
+        separator, first_ratio="0.06", second_ratio="0.04", third_ratio="0.03"
     )
 
     assert verdict.status == "passed", codes(verdict)
 
 
-def test_swapped_ratios_in_one_comma_separated_sentence_are_reported():
+@pytest.mark.parametrize("separator", ONE_SENTENCE_SEPARATORS)
+def test_swapped_ratios_in_one_sentence_are_reported(separator):
     """一句里有三个比例时，不允许退到整句比对——否则金额与比例的归属无从确认。"""
 
-    verdict = validate_criterion(
-        tier_criterion(
-            first_ratio="0.04",
-            second_ratio="0.06",
-            third_ratio="0.03",
-            spans=(COMPACT_TIER_TEXT,),
-            span_of=compact_span,
-        ),
-        COMPACT_SOURCES,
-        version=VERSION,
+    verdict = _one_sentence_tier_verdict(
+        separator, first_ratio="0.04", second_ratio="0.06", third_ratio="0.03"
     )
 
     assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
