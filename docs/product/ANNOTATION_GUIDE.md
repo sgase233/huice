@@ -26,7 +26,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `source_page_or_section` | 页码或条款 | 如「第五条」「第一条」「附件申报指南第3页」；页码与段落至少一个非空 |
 | `source_span` | 原文片段 | 逐字摘录，能回查数字、比较方向、否定词和期间 |
 | `field` | 事实 key / 指标 | 见 §4 事实字典及 §4.1 扩展键（共 18 键） |
-| `operator` | 操作符 | 比较符 `lt/lte/eq/ne/gte/gt`，或 `industry_exclusion`、`quarterly_average` |
+| `operator` | 操作符 | 比较符 `lt/lte/eq/ne/gte/gt`，或 `industry_exclusion`、`quarterly_average`、`manual_review` |
 | `value` | 阈值/列表 | 金额十进制字符串；行业排除为行业码列表，用 `\|` 分隔 |
 | `unit` | 单位 | `code/CNY/person/boolean/date/ratio` |
 | `period` | 所属期间 | `assessment`（本次判断所属年度）或显式 `YYYY-MM-DD/YYYY-MM-DD` |
@@ -58,11 +58,12 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `op` | 参数 | 示例 |
 | --- | --- | --- |
 | `compare` | `factKey,period,comparator,value,unit` | `{"op":"compare","factKey":"taxableIncome","period":"assessment","comparator":"lte","value":"3000000.00","unit":"CNY"}` |
-| `date` | `factKey=establishedDate,period,comparator,value(YYYY-MM-DD)` | `{"op":"date","factKey":"establishedDate","period":"assessment","comparator":"gte","value":"2020-01-01"}` |
+| `date` | `factKey=establishedDate/specificMarketSince,period,comparator,value(YYYY-MM-DD)` | `{"op":"date","factKey":"specificMarketSince","period":"assessment","comparator":"lte","value":"2023-10-13"}` |
 | `quarterly_average` | `metric=employeeCount/assets,period,comparator,value,unit` | `{"op":"quarterly_average","metric":"employeeCount","period":"assessment","comparator":"lte","value":"300","unit":"person"}` |
 | `industry_exclusion` | `factKey=industry,period,excluded[]` | `{"op":"industry_exclusion","factKey":"industry","period":"assessment","excluded":["H62"]}` |
 | `and` / `or` | `children:[...]`（至少两个） | 政策级默认 AND；**原文「或」必须写进同一条 AST 的 `or` 节点**（引擎不读 logic_group，分行会被纯 AND 合并成空集） |
 | `not` | `child` | 仅在原文明确「不属于…但…」时用 |
+| `manual_review` | `reason`（必填非空，≤200 字） | `{"op":"manual_review","reason":"本条须人工核查：…"}`；求值恒为 `insufficient_evidence`、理由回显 reason，绝不判满足 |
 
 - 数值一律十进制字符串，禁止用 JS float 预计算结果；金额最多 2 位小数。
 - 布尔条件 `rdActivity` 的 `value` 必须是 JSON 布尔值 `true`/`false`（不带引号），不能写成字符串 `"true"`。
@@ -70,6 +71,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 - `quarterly_average` 的 `field` 列填指标名 `employeeCount`/`assets`（对应 §4 的 `employeeCountStart/End`、`assetsStart/End` 八个季度起止输入）。
 - 区间用 AND 的上下界表达，不另加操作符；比例以 `unit=ratio` 的十进制字符串表达。
 - 冲突节点先单独检测并向上传播为 `conflict`，不得被 OR 短路掩盖。
+- `manual_review`（rc.5）与「待核实」是两个不同状态：`manual_review` 是**有效、可发布、进库**的 AST，表达「本条按政策口径本就不由程序判、须人工核查」，求值恒 `insufficient_evidence`（AND 上层随之降级，绝不判满足）；「待核实」是 AST 留空、**不进库**（API-06 以 422 拒绝）。只有在确实拿不到可执行口径、又必须让整版政策发得出去时，才用 `manual_review`，且 `reason` 必须写明核查什么。
 
 > **行业排除的码表与三条口径**（财税〔2015〕119号第四条负面清单 → GB/T 4754-2017 大类码、按前缀命中；三条口径：兜底项不落码、大类覆盖不到中/小类时 `excluded` 写细码、小微「国家非限制和禁止行业」为粗粒度近似）以 [IMPLEMENTATION_AND_INTERFACE.md §2.2](../IMPLEMENTATION_AND_INTERFACE.md) 为准。
 
@@ -88,9 +90,9 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 季度平均值口径：各季度 `(期初+期末)/2`，再对完整四季度求平均；`quarterly_average` 需保留八个输入与中间值。从业人数含与单位建立劳动关系的职工及接受的劳务派遣用工。
 
-## 4.1 地方通知扩展事实键（预计算事实口径，rc.4 已解锁，共 18 键）
+## 4.1 地方通知扩展事实键（预计算事实口径，rc.3+rc.4 已合入 main，共 18 键）
 
-第二阶段地方通知（`SZ-GRANT-RD-SUBSIDY-2026`、`SZ-GRANT-SRDI-2025`）需要的事实键超出原 10 键字典，现共 18 键。按「**预计算事实**」口径处理：增量与占比由 M3 在 `enterprises.csv`/`labels.csv` 里给出已算好的数值，M1 只做 `compare`，**不新增 delta/ratio 算子**。以下键已由 M1 在 PR #10 扩展 `FACT_UNITS` 与 OpenAPI `FactKey` 枚举：
+第二阶段地方通知（`SZ-GRANT-RD-SUBSIDY-2026`、`SZ-GRANT-SRDI-2025`）需要的事实键超出原 10 键字典，现共 18 键。按「**预计算事实**」口径处理：增量与占比由 M3 在 `enterprises.csv`/`labels.csv` 里给出已算好的数值，M1 只做 `compare`，**不新增 delta/ratio 算子**。以下键已由 M1 扩展 `FACT_UNITS` 与 OpenAPI `FactKey` 枚举（rc.3 扩 6 键 + rc.4 扩 2 键，现已合入 main）：
 
 | key | 含义与计算口径 | value 与 unit | period（事实侧与 AST 侧一致，均显式日期） | 需求来源 |
 | --- | --- | --- | --- | --- |
