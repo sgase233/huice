@@ -156,6 +156,19 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 4. 仲裁记录保留原双方意见，不覆盖、不删除。
 5. `待核实` 的行只能进复核清单，不能直接升「可发布」：必须先补出可执行、引用校验通过的 `adjudicated_expression`，再走双人标注 + 仲裁，才能标「可发布」。
 
+### 6.1 当前标注状态（如实记录，2026-11-01）
+
+`labels.csv` 的 `annotator_a_result` / `annotator_b_result` / `adjudicated_result` 三列**目前同值**，系单人（M3）依 AST + 合成事实推算，**尚未完成两人独立标注**。按 §6 第 1 条，这不算双人标注，也不是可发布真值。
+
+为补上这一环，已生成独立标注表 [`data/evaluation/holdout_annotation_sheet.csv`](../../data/evaluation/holdout_annotation_sheet.csv)：
+
+- 只含留出集 6 个组合、26 条条件级记录；
+- 只给 `case_id/enterprise_id/policy_id/policy_version/criterion_id/source_span` 与**空白的** `annotator_b_result/annotator_b_note`；
+- **不含 M3 的推算结果**，避免第二标注人被锚定；
+- 第二标注人独立填完后，与本表比对：一致→记为两人一致；不一致→由第三人或指导教师按原文仲裁，回填 `labels.csv` 的 `adjudicated_result`，并在 `notes` 写明分歧依据。
+
+未完成双人标注前，`labels.csv` 只能作为**开发集调试参照**，不得当作评测真值对外报告。
+
 ## 7. 容易混淆的名词
 
 | 名词 | 准确含义 | 不要误解为 |
@@ -170,6 +183,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 - 本规范 §1 的字段顺序即 `criteria_review.csv` 表头顺序，M1 据此导入。
 - `enterprises.csv` 一行一个 `key+期间`；`region/industry` 为每行复用的企业属性列，不单独占 `fact_key` 行；`period` 用 `YYYY-MM-DD/YYYY-MM-DD`；`verified=false` 直到有已复核的合成材料。
 - `labels.csv` 是条件级四态真值与仲裁结果，`split` 分开发/留出，留出集看结果前冻结（见 ACCEPTANCE 与 M3_HANDOFF）。
+- `holdout_annotation_sheet.csv` 是留出集的第二标注人独立标注表（空白结果列），口径见 §6.1。
 - `material_requirements.csv` 是税/资金两类「已审材料要求」（必交/条件交 + 材料→事实键映射），字段口径与对接说明见 [MATERIAL_REQUIREMENTS.md](./MATERIAL_REQUIREMENTS.md)，不由本规范 §1 覆盖。
 
 ## 9. 已确认口径备忘（2026-11-01 labels 审核确认）

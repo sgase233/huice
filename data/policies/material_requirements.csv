@@ -13,3 +13,4 @@ grant,GRANT-05,社保缴纳证明、职工名册或从业人数统计,条件交,
 grant,GRANT-06,信用报告或诚信承诺书,条件交,政策含诚信要求（财政性资金惩戒/超期验收）,证明诚信记录良好,creditRecord,SZ-GRANT-SRDI-2025;SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,待双人复核
 grant,GRANT-07,研发费用加计扣除申报表/税务受理凭证,条件交,政策含加计扣除申报要求（近两年/上年度）,证明已申报享受研发费用加计扣除,rdAddDeductionClaimed,SZ-GRANT-RD-SUBSIDY-2026;SZ-GRANT-HIGHTECH-2021,深科创规〔2026〕1号；深科技创新规〔2021〕5号,待双人复核
 grant,GRANT-08,近2年新增股权融资凭证（验资报告/银行凭证/股东实缴记录）,条件交,政策含近2年新增股权融资门槛,证明新增股权融资总额,equityFinancing,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,待双人复核
+grant,GRANT-09,细分市场经营证明材料（专项合同/订单、产品收入分类明细、主营业务说明）,条件交,政策含从事特定细分市场年限门槛,佐证进入细分市场的时间起点；是否属同一细分市场仍需人工判断,specificMarketSince,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,待双人复核

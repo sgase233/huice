@@ -60,8 +60,11 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
 | 研发费用加计扣除申报表/税务受理凭证 | `rdAddDeductionClaimed` |
 | 近2年新增股权融资凭证（验资报告/银行凭证） | `equityFinancing` |
 | 信用报告/诚信承诺书 | `creditRecord` |
+| 细分市场经营证明材料（专项合同/订单、产品收入分类明细、主营业务说明） | `specificMarketSince` |
 
-不直接对应事实键的材料/事实（如申请书、`specificMarketSince` 细分市场年限）`proves_fact_keys` 留空——它们仍是申报要件或须人工核查，只是不驱动 `verified=true`。
+不直接对应事实键的材料（如申请书）`proves_fact_keys` 留空——它们是申报要件，只是不驱动 `verified=true`。
+
+> `specificMarketSince`（进入特定细分市场的起始日期）由企业主营业务材料佐证，属企业自述+材料辅助，通常仍需人工判断「是否属同一细分市场」；材料只证明时间线起点，不证明目录归类。
 
 ## 4. 与 `preparation.items[]`、`verified=true` 的对接
 
@@ -73,4 +76,4 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
 
 1. 资金政策条件标注已覆盖 SRDI、RD-SUBSIDY、HIGHTECH 三项（2026-11-01），材料映射已按 18 键补齐；`applies_to_policy_ids` 与 `condition_desc` 待双人复核。
 2. 「必交/条件交」是否需要契约字段（见 §4），待 M1 回告。
-3. 全部 14 行材料要求均为「待双人复核」，未经两人独立核对 + 仲裁不得交 M1 当作可发布真值。
+3. 全部 15 行材料要求均为「待双人复核」，未经两人独立核对 + 仲裁不得交 M1 当作可发布真值。
