@@ -68,6 +68,19 @@ test('隔离后端真实 HTTP：行业排除与缺失事实', async ({ page }) =
   await expect(page.getByText('此处仅为接口结构演示，不是真实政策。')).toBeVisible();
   await page.screenshot({ path: 'test-results/live-missing.png', fullPage: true });
   await page.getByRole('button', { name: '机会列表' }).click();
+  await expect(page.getByRole('heading', { name: '优先补充问题' })).toBeVisible();
+  await page.getByRole('button', { name: '跳过（未知或不确定）' }).click();
+  await expect(page.getByText(/当前没有需要补充的问题/)).toBeVisible();
+  await page.getByRole('button', { name: '分析所选政策' }).click();
+  await page.getByLabel('回答（CNY）').fill('10000');
+  await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await expect(page.getByLabel('本次会话的分析历史')).toBeVisible();
+  await page.getByRole('button', { name: '清单与报告' }).click();
+  await expect(page.getByRole('heading', { name: '准备清单与报告' })).toBeVisible();
+  const report = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载 Markdown 报告' }).click();
+  expect((await report).suggestedFilename()).toMatch(/^assessment-.*\.md$/);
+  await page.getByRole('button', { name: '机会列表' }).click();
   await page.getByRole('button', { name: '清空选择' }).click();
   const manual = page.locator('article').filter({ hasText: '合成联调：人工核查' });
   await manual.getByRole('checkbox').check();
@@ -75,4 +88,27 @@ test('隔离后端真实 HTTP：行业排除与缺失事实', async ({ page }) =
   await expect(manual.getByText('还缺资料')).toBeVisible();
   await manual.getByRole('button', { name: '查看详情' }).click();
   await expect(page.getByText(/请人工核查合成条件/).first()).toBeVisible();
+});
+
+test('隔离后端：税收与资金清单及多问题跳过', async ({ page }) => {
+  test.skip(process.env.HUICE_LIVE !== '1', '仅在明确启动隔离联调服务时运行');
+  await page.route('**/api/v1/**', route => new URL(route.request().url()).origin === 'http://127.0.0.1:8000' ? route.continue() : route.abort('blockedbyclient'));
+  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.getByRole('button', { name: '机会列表' }).click();
+  const tax = page.locator('article').filter({ hasText: '合成联调：缺少所得额' });
+  const grant = page.locator('article').filter({ hasText: '合成联调：资金多问题' });
+  await tax.getByRole('checkbox').check(); await grant.getByRole('checkbox').check();
+  await page.getByRole('button', { name: '分析所选政策' }).click();
+  const question = page.getByRole('region', { name: '优先补充问题' });
+  const first = await question.locator('p').first().textContent();
+  await page.getByRole('button', { name: '跳过（未知或不确定）' }).click();
+  await expect(question.locator('p').first()).not.toHaveText(first ?? '');
+  await page.getByRole('button', { name: '清单与报告' }).click();
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 850 });
+    await expect(page.getByRole('heading', { name: '税收优惠 · 自行判断' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '资金项目 · 申请材料' })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (width === 375) await page.screenshot({ path: 'test-results/live-report-375.png', fullPage: true });
+  }
 });

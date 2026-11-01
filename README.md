@@ -1,12 +1,12 @@
 # 惠策协同
 
-后端已实现契约全部 16 个端点（API-01—API-16，2026-10-27 合入 PR #8），前端仍是注释骨架。功能实现、参数传递、前后端约束和逐文件分工见[功能实现逻辑与接口协作约定](./docs/IMPLEMENTATION_AND_INTERFACE.md)。环境配置仍参考[原开发计划](./docs/brief/惠策协同_三人分工与开发计划_截至11月15日.md)第 4.1 节。
+后端已实现契约全部 16 个端点（API-01—API-16，2026-10-27 合入 PR #8）；前端默认进入真实接口模式，已完成企业画像、机会列表、政策详情、清单与报告四个页面（四态判断与原文证据、补问重算、税收与资金两类清单、Markdown 报告下载），访问 `?mode=demo` 或页头「切换固定样例演示」可切到固定样例演示，审核页与轨迹页仍待接入（11/08）。功能实现、参数传递、前后端约束和逐文件分工见[功能实现逻辑与接口协作约定](./docs/IMPLEMENTATION_AND_INTERFACE.md)。环境配置见 [infra/local/README.md](./infra/local/README.md)、[infra/README.md](./infra/README.md) 与 [apps/web/README.md](./apps/web/README.md)，工具版本基线仍按[原开发计划](./docs/brief/惠策协同_三人分工与开发计划_截至11月15日.md)第 4.1 节。
 
 团队 Git 分支、提交和推送要求见[工作手册](./WORKING_GUIDE.md)：M1/M2/M3 各自建分支；每次提交和远程推送前均须取得明确同意。
 
 2026-10-24 负责人确认：允许 DeepSeek 替代 MaaS、其他 AI 编码助手替代 CodeArts；最终材料可统一写“AI 辅助编码”，工具使用说明须符合实际。完整规则及旧计划的修订口径见[工作手册“模型与编码工具规则”](./WORKING_GUIDE.md)。
 
-`contracts/openapi.yaml` 是 16 个接口的 OpenAPI 3.1 契约，当前为 `1.0.0-rc.5`（原14个接口加后台草稿列表/详情；rc.2 将模型模式枚举 `maas` 改为 `deepseek`；rc.3 将事实字典扩到 16 键并新增 `ratio` 单位；rc.4 再扩到 18 键，`date` 算子不再只认成立日期；rc.5 新增 `manual_review` 算子表达「本条须人工核查」），`apps/web/src/api/types.ts` 由它生成；M2 复核后再定版 `1.0.0`。后端 16 个接口均已实现（逐项状态见 `contracts/README.md`），前端页面尚未接完。
+`contracts/openapi.yaml` 是 16 个接口的 OpenAPI 3.1 契约，当前为 `1.0.0-rc.5`（原14个接口加后台草稿列表/详情；rc.2 将模型模式枚举 `maas` 改为 `deepseek`；rc.3 将事实字典扩到 16 键并新增 `ratio` 单位；rc.4 再扩到 18 键，`date` 算子不再只认成立日期；rc.5 新增 `manual_review` 算子表达「本条须人工核查」），`apps/web/src/api/types.ts` 由它生成；M2 复核后再定版 `1.0.0`。后端 16 个接口均已实现（逐项状态见 `contracts/README.md`）；前端四个真实接口页面已接入，审核页与轨迹页待 11/08 阶段完成。
 
 - M1：`services/api/`、`infra/`、`contracts/` 与根配置。
 - M2：`apps/web/`。
@@ -39,9 +39,9 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health
 
 ```powershell
 cd services\api
-.\.venv\Scripts\python.exe -m pytest -q          # 489 项通过，47 项外部依赖用例跳过
+.\.venv\Scripts\python.exe -m pytest -q          # 583 项通过，48 项外部依赖用例跳过（2026-11-01 实测）
 $env:HUICE_TEST_DATABASE_URL = "postgresql://...(本地测试库)"
-.\.venv\Scripts\python.exe -m pytest -m db -q    # 需真实 PostgreSQL 16 + pgvector；2026-10-29 实测 36 项通过
+.\.venv\Scripts\python.exe -m pytest -m db -q    # 需真实 PostgreSQL 16 + pgvector；现共 37 项（2026-11-01 统计），2026-10-29 带库实测 36 项通过
 ```
 
 静态契约检查（从 `huice/` 运行，不连接数据库或云端）：
@@ -51,4 +51,4 @@ python contracts/generate_types.py --check
 python -m unittest discover -s services/api/tests -p test_contract.py -v
 ```
 
-M1 修改契约后，由 M2 在其目录内执行 `python contracts/generate_types.py` 重新生成 `apps/web/src/api/types.ts` 并审查类型差异（`apps/web/**` 一律不在 M1 的改动范围内，生成物也一样）；在 M2 重新生成之前，`generate_types.py --check` 会如实报不一致。依赖版本记录在 `services/api/requirements.lock`，契约版本与实现范围见 `contracts/README.md`。数据库验收在本地 PostgreSQL 16.15 + pgvector 0.8.7 上执行（建表脚本与迁移 002/003/004/005/006 各连跑两遍、37 个 db 用例、导入/读回冒烟），结果见 `infra/local/README.md`；真实 Redis、OBS 桶与 DeepSeek Key 的用例由环境变量门控，默认跳过，命令见 `infra/README.md` §4.3 与 `infra/local/README.md`。前端浏览器验收仍待 M2 补齐，未执行的检查不计作通过。
+M1 修改契约后，由 M2 在其目录内执行 `python contracts/generate_types.py` 重新生成 `apps/web/src/api/types.ts` 并审查类型差异（`apps/web/**` 一律不在 M1 的改动范围内，生成物也一样）；在 M2 重新生成之前，`generate_types.py --check` 会如实报不一致。依赖版本记录在 `services/api/requirements.lock`，契约版本与实现范围见 `contracts/README.md`。数据库验收在本地 PostgreSQL 16.15 + pgvector 0.8.7 上执行（建表脚本与迁移 002/003/004/005/006 各连跑两遍、37 个 db 用例、导入/读回冒烟），结果见 `infra/local/README.md`；真实 Redis、OBS 桶与 DeepSeek Key 的用例由环境变量门控，默认跳过，命令见 `infra/README.md` §4.3 与 `infra/local/README.md`。前端浏览器验收由 M2 按阶段交付，第三、四阶段的记录见 `apps/web/PHASE3_ACCEPTANCE.md` 与 `apps/web/PHASE4_ACCEPTANCE.md`；审核页与轨迹页的验收在 11/08 阶段补，未执行的检查不计作通过。
