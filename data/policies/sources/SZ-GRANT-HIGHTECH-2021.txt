@@ -1,0 +1,469 @@
+深圳市科技创新委员会关于印发《深圳市高新技术企业培育资助管理办法》的通知--2021年第35期（总第1215期） 
+ $(function() {
+ LoadXlCss();
+ $.ajax({
+ type:"get",
+ url:"https://search.gd.gov.cn/jsonp/listKeywordJsonp/?callback=CALLBACK&site=755001",
+ cache : false,
+ dataType : "jsonp",
+ success:function(data){
+ var datalist = data.results;
+ var sr_html="热门搜索：";
+ var list_html = "";
+ var en_url =""
+ var hotNum = 8;
+ if(hotNum > datalist.length){
+ hotNum = datalist.length;
+ }
+ for(var i=0;i<hotNum;i++){
+ en_url = encodeURI("https://search.gd.gov.cn/search/all/755001?keywords="+datalist[i].keyword);
+ if(i<6)
+ sr_html+=""+datalist[i].keyword+"";
+ var num=i+1;
+ list_html+=""+num+""+datalist[i].keyword+"";
+ }
+ $(".guanjz").html(sr_html);
+ $(".mt10").html(list_html);
+ },error: function(XMLHttpRequest, textStatus, errorThrown) {
+ }
+ }); 
+ })
+ function checkForm() {
+ var searchword = $("#sr").val();
+ if(searchword == null || searchword == "") {
+ alert("请输入关键词");
+ return false;
+ }
+ $("#searchform").attr("action", "https://search.gd.gov.cn/search/all/755001");
+ document.charset = "utf-8";
+ $("#searchform").submit();
+ }
+ function loadBrowser() {
+ var userAgent = navigator.userAgent.toLocaleLowerCase();
+ if((userAgent.match(/(mqqbrowser|juc|fennec|symbian|windows phone|android|blackberry|webos|browserng|iemobile|wosbrowser|iphone)/i))) {
+ return "mobile"
+ }
+ }
+ function LoadXlCss() {
+ var ljhref = window.location.href;
+ ljhref = ljhref.replace(/^http:\/\/[^/]+/, "");
+ var addr = ljhref.substr(ljhref.lastIndexOf('/', ljhref.lastIndexOf('/') - 1) + 1);
+ var index = addr.lastIndexOf("\/");
+ var lasthtml = decodeURI(addr.substring(index + 1, addr.length));
+ var changehref = ljhref.replace(/\//g, '');
+ if(lasthtml.length > 20) {
+ if(changehref.indexOf("zlgbm") == -1) {
+ var link = document.createElement('link');
+ link.type = 'text/css';
+ link.rel = 'stylesheet';
+ // link.href = '/commcss/ZfzxXltyYddCss20180629.css';
+ link.href = '/zsycss/ZfzxXltyYddCss20180629.css';
+ document.getElementsByTagName("head")[0].appendChild(link);
+ if(loadBrowser() == 'mobile') {
+ var navhtml = " "
+ $(".top_con").append(navhtml);
+ }
+ }
+ }
+ }
+.zx_ml_list ul li .list_name{
+text-overflow:ellipsis;
+}
+body{min-width:1200px;}
+.backstretch{overflow:unset !important;}
+$(function(){
+ if(136271==101639 && 'normal'=='normal'){
+ if('' !=''){
+ window.location.href = ''; 
+ }
+ }
+}); 
+.backstretch{ display : none }
+ var date= new Date();
+ var hours=date.getHours();
+ if(parseInt(hours)>=6 && parseInt(hours)<17){
+ $.backstretch([ 
+ "/pubimages/web/P020180511601473426208.png"
+ ], {
+ fade: 50,
+ duration: 1000
+ });
+ }else if(parseInt(hours)>=17 && parseInt(hours)<19) {
+ $.backstretch([
+ "/pubimages/web/P020180511601473426208.png"
+ ], {
+ fade: 50, 
+ duration: 1000
+ });
+ }else if((parseInt(hours)>=19 && parseInt(hours)=0 && parseInt(hours)<6)) {
+ $.backstretch([
+ "/pubimages/web/P020180511601473426208.png"
+ ], {
+ fade: 50,
+ duration: 1000 
+ }); 
+ }
+ .audio-container{margin: 1em auto;}
+ /*外链弹窗 start*/
+ .otherlink-bg { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 10000; background: rgba(0,0,0,.8); opacity: 0;filter:alpha(opacity=0);transition:.3s;}
+ /* .otherlink-bg.in { opacity: 1;filter:alpha(opacity=100);} */
+ .otherlink-pop { position: fixed; top: -25%; left: 50%; z-index: 10001; width: 560px; height: 280px; margin: -250px 0 0 -280px;background-color: #ffffff;border: 1px solid #999;border: 1px solid rgba(0, 0, 0, 0.3);-webkit-border-radius: 6px;-moz-border-radius: 6px;border-radius: 6px;-webkit-box-shadow: 0 3px 7px rgba(0, 0, 0, 0.3);-moz-box-shadow: 0 3px 7px rgba(0, 0, 0, 0.3);box-shadow: 0 3px 7px rgba(0, 0, 0, 0.3); overflow: hidden;transition:.4s;}
+ .otherlink-pop.in {top: 50%;}
+ .otherlink-pop a.offBtn {text-decoration: none; position: absolute; top: 5px; right:8px; font-size: 20px; padding: 5px 10px; color: #ccc; font-weight: 700; line-height: 20px;}
+ .otherlink-pop h2 { padding: 15px 20px; font-size: 16px; font-weight:normal; text-indent: 2em;}
+ .otherlink-pop p.btns { position: absolute; bottom: 0; left: 0; width: 100%; height: 50px; background: #F5F5F5; border-top: 1px solid #ddd; text-align: right;}
+ .otherlink-pop p.btns a {text-decoration: none; display: inline-block;margin:9px 15px 0 0; height: 30px; line-height: 30px; padding: 0 15px; font-size: 14px; border: 1px solid #bbbbbb; color: #333; border-radius: 5px; }
+ .otherlink-pop p.btns a:hover { background: #E6E6E6}
+ .otherlink-pop p.btns a.toOtherLink { border: 1px solid #2d72e5; background: #2d72e5; color: #fff;}
+ .otherlink-pop p.btns a.toOtherLink:hover { background: #2d72e5}
+ /*外链弹窗 end */
+ .moreLang > ul{
+ visibility: hidden;
+ } 
+ .moreLang:hover > ul{
+ visibility: visible;
+ }
+ 长者助手| -->
+ 无障碍浏览| -->
+ 无障碍浏览|
+ // 无障碍
+ window.onload = function() { cnillWzaInstance.startInit("https://www.sz.gov.cn/js/cnill_polyfill.swf"); }
+ document.getElementById("dkwza").onclick = function() {
+ // 执行实例的init方法
+ cnillWzaInstance.init(); // cnillWzaInstance为全局变量
+ };
+ // 适老化
+ $("#dkslh").on("click", function() {
+ slhInstance.init(); 
+ })
+ -->
+ 繁體版|
+ English| 
+ 移动版|
+ 数据开放|
+ 站群导航|
+ 政务机器人
+var url_address = window.location.href;
+url_address = url_address.substring(0,20);
+if(url_address=="https://www.sz.gov.cn"||url_address=="http://wza.sz.gov.cn"){
+ $("#ftb").show();
+ $("#jtb").remove();
+}else{
+ $("#jtb").show();
+ $("#ftb").remove();
+}
+ -->
+ .search a.voice{
+ background: url(/index/zfzxht20200528_13.png) center center no-repeat;
+ width: 60px;;
+ float: left;
+ height: 46px;
+ text-decoration : none;
+ }
+ .search a.voice:hover{text-decoration : none;}
+ -->
+ 热门搜索排行 
+ 热门搜索： 
+.zx_menu ul li{width: 239px;}
+ 首 页 
+ 政务公开 
+ 政务服务 
+ 政民互动 
+ 走进深圳 
+var rootid=new Array();
+var cont=0;
+if("125615" == ""){
+ var catParId = 240;
+}else{
+ var catParId = "125615";
+}
+ myfun(catParId);
+ function myfun(parentid){
+ var url="/postmeta/c/"+parentid+".json";
+ $.ajax({
+ type: "get", 
+ url: url, 
+ async:false,
+ dataType: "json",
+ success: function(data) {
+ if(data.id == 103426){
+ rootid[cont]=data.id;
+ }
+ if(data.parent>0){
+ rootid[cont]=data.id;
+ cont++;
+ myfun(data.parent);
+ }
+ }
+ });
+ }
+$(function () {
+ if(rootid[rootid.length-1]==240 || rootid[rootid.length-1]==103426){
+ $("#xxgk").addClass("hover");
+ }else if(rootid[rootid.length-1]==205){
+ $("#zjsz").addClass("hover");
+ }else if(rootid[rootid.length-1]==138){
+ $("#bmfw").addClass("hover");
+ }else if(rootid[rootid.length-1]==104){
+ $("#hdjl").addClass("hover");
+ }else{
+ $("#sy1").addClass("hover");
+ }
+});
+ 2021年第35期（总第1215期） 
+ 您现在的位置 
+ 政府公报 > 2021年政府公报 > 2021年第35期（总第1215期） 
+ 索 引 号：
+ 分 类：部门文件
+ 发布机构：深圳市科技创新委员会
+ 发布日期：2021-09-18 09:26
+ 名 称：深圳市科技创新委员会关于印发《深圳市高新技术企业培育资助管理办法》的通知
+ 文 号：
+ 深科技创新规〔2021〕5号
+ 主 题 词：
+ -->
+ 深圳市科技创新委员会关于印发《深圳市高新技术企业培育资助管理办法》的通知
+ 信息来源：深圳市科技创新委员会
+ 信息提供日期：2021-09-18 
+ 【字体：大中小 】
+ 深科技创新规〔2021〕5号
+ 各有关单位：　　为了引导企业持续加大研发投入，增强企业自主创新能力，促进我市高新技术企业培育和发展，我委制定了《深圳市高新技术企业培育资助管理办法》。现予印发，请遵照执行。　　深圳市科技创新委员会　　2021年9月7日　　深圳市高新技术企业培育资助管理办法　　第一章 总 则　　第一条 为了引导企业持续加大研发投入，增强企业自主创新能力，促进本市高新技术企业培育和发展，结合实际，制定本办法。　　第二条 深圳市科技行政主管部门（以下简称市科技行政主管部门）在市科技研发资金中设立高新技术企业培育资助资金，对本市符合《科技部 财政部 国家税务总局关于修订印发〈高新技术企业认定管理办法〉的通知》（国科发火〔2016〕32号）规定的“国家重点支持的高新技术领域”，并且开展研究开发活动（以下简称研发活动）的企业，针对研究开发费用（以下简称研发费用）情况，予以事后补助。　　第三条 高新技术企业培育资助的企业研发活动及研发费用应当符合《财政部 国家税务总局 科技部关于完善研究开发费用税前加计扣除政策的通知》（财税〔2015〕119号）、《国家税务总局关于研发费用税前加计扣除归集范围有关问题的公告》（国家税务总局公告2017年第40号）以及《财政部 国家税务总局 科技部关于企业委托境外研究开发费用税前加计扣除有关政策问题的通知》（财税〔2018〕64号）规定的归集范围。　　国家对税前加计扣除涉及的企业研发活动及研发费用归集范围如有调整的，按照调整后规定执行。　　第四条 市科技行政主管部门是高新技术企业培育资助工作的主管部门，负责编制和发布申请指南，组织或者委托第三方机构开展项目受理、审计、鉴证、评审和管理等工作。　　申请单位应当根据市科技行政主管部门发布的申请指南提交资助申请，确保申请材料完整性和合规性，并且委托第三方审计和鉴证机构对研发费用进行归集、计算、审计或者鉴证。　　第五条 高新技术企业培育资助工作遵循规范、高效的原则组织实施。　　第二章 资助条件及标准　　第六条 申请高新技术企业培育资助的单位，应当同时符合以下条件：　　（一）在本市（含深汕特别合作区）依法注册、具有法人资格的高新技术企业和上年度高新技术企业培育入库企业；　　（二）企业上年度研发费用不低于100万元或者规模以上企业上年度研发费用不低于50万元；　　（三）企业应当向税务部门办理上年度加计扣除申报；　　（四）国家统计法规要求填报科技统计报表的企业应当完成上年度科技统计报表填报；　　（五）企业诚信记录良好。　　第七条 申请单位通过“深圳市科技业务管理系统”在线填报项目申请书，并向市科技行政主管部门提交以下材料：　　（一）通过系统打印已填报确认的申请书；　　（二）第三方审计或者鉴证机构出具的上年度研发费用专项审计报告或者鉴证报告。　　本条前款第（二）项所称的第三方审计或者鉴证机构应当符合《高新技术企业认定管理工作指引》（国科发火〔2016〕195号）规定的，具备独立执业资格，成立3年以上，近3年内无不良记录等要求。第三方审计或者鉴证机构资质如有调整的，按照调整后规定执行。　　第八条 对符合本办法第六条规定的申请单位，市科技行政主管部门根据核定后申请单位上年度研发费用，结合当年度申请单位数量和预算规模，以阶梯式形式确定具体资助金额。　　单个申请单位年度内资助资金最低不少于10万元，最高不超过300万元。　　第九条 本办法第六条第（一）项所称高新技术企业培育入库企业是指市科技行政主管部门按照《关于促进科技创新的若干措施》（深发〔2016〕7号）要求，负责建立的高新技术企业培育库中的入库企业。入库企业应当符合下列条件：　　（一）未获得过高新技术企业资格；　　（二）未获得过高新技术企业培育库入库资格；　　（三）符合市科技行政主管部门确定的当年高新技术企业认定专家评审成绩达标线，且不高于当年高新技术企业认定资格线。　　企业申请高新技术企业培育入库，应当同时申请高新技术企业认定。　　入库企业培育期为3年，培育期内通过高新技术企业认定的，自动出库；3年期满后，未通过高新技术企业认定的，调整出库，且不再受理入库申请。　　第三章 立项拨付　　第十条 市科技行政主管部门根据年度科技研发资金支出预算，编制和发布高新技术企业培育资助申请指南。　　未按照申请指南规定时间内提交申请的，市科技行政主管部门不予受理。　　第十一条 市科技行政主管部门牵头建立跨部门工作协商机制，对高新技术企业培育资助申报材料进行核查。核查要点包括下列事项：　　（一）会同市税务部门核查企业申报研发费用加计扣除情况；　　（二）会同市统计部门核查科技统计报表填报情况；　　（三）会同市注册会计师协会、注册税务师协会对研发费用专项审计报告或者鉴证报告的有关情况进行核查；　　（四）核查企业诚信及风险情况；　　（五）综合企业在市科技行政主管部门和税务部门申报的研发费用，核定企业上年度研发费用。　　第十二条 高新技术企业培育资助企业名单以及资助金额，由市科技行政主管部门向社会公示，公示期10日。公示期间的异议处理按照本市科技计划项目管理的有关规定执行。　　第十三条 公示期满后，市科技行政主管部门应当及时出具立项文件。高新技术企业培育资助资金由市科技行政主管部门拨付。　　第十四条 高新技术企业培育资助不签订合同书或者任务书，资助资金由获得资助的企业统筹用于本单位研发活动。　　第四章 监督管理　　第十五条 市科技行政主管部门按照市财政专项资金管理规定要求，实行年度财政资金绩效评价制度。　　第十六条 申请单位应当对申报数据的真实性负责，并承担不实申报的相关责任。对上年度研发费用申报金额比对税务部门申报金额高的企业，市科技行政主管部门会同税务部门加强监测和抽查力度。　　第十七条 申请单位使用虚假材料或者其他不正当手段骗取、套取专项资金的，一经查实，由市科技行政主管部门终止项目，并且追回全部资助资金及孳生利息。　　市科技行政主管部门综合考虑科研失信行为的事实、性质、情节、所造成的后果等情况，对相关申请单位和责任人员依法进行惩戒。　　第十八条 市科技行政主管部门配合市注册会计师协会、市注册税务师协会对出具研发费用专项审计报告或者鉴证报告的第三方审计机构或者鉴证机构失信行为进行监督管理，适时向市财政和税务主管部门通知有关情况，并依法共同实施失信联合惩戒措施。　　第五章 附 则　　第十九条 市政府对企业研究开发活动资助另有规定的，市科技行政主管部门制定单行资助方案。　　第二十条 本办法未尽事宜，按照本市有关科技计划项目、资金、过程管理与验收、诚信管理等有关规定执行。　　第二十一条 本办法自2021年9月8日起施行，有效期5年。《深圳市企业研发项目与高新技术企业培育资助管理办法》（深科技创新规〔2019〕5号）同时废止。 
+ var ids= 9146987;
+ var one = Math.floor(ids/1000000);
+ var two = Math.floor(ids/1000);
+ var urlAt= "/postmeta/p/"+one+"/"+two+"/"+ids+".json";
+  $.ajax({
+                                        type: "get",
+                                        url: urlAt, 
+                                        dataType: "json", 
+                                        success: function(data){
+ $('#zzly').append('转载来源：'+data.EXT_zaly);
+ if(!data.EXT_zzsj||data.EXT_zzsj==''||data.EXT_zzsj==undefined){
+ $('#zzsj').append('转载时间：'+data.EXT_zzsj);
+ }else{
+ $('#zzsj').append('转载时间：'+data.EXT_zzsj.substring(0, 10));
+ }
+ $('#zzlj').append('转载链接：'+data.EXT_zzurl);
+ if(data.EXT_zaly=='undefined'){
+ $('#xx_cons').hide()
+ }
+ }
+ });
+ let zzly=$('#zzly').html();
+ if(zzly==''||zzly==undefined){
+ $('#xx_cons').html('');
+ $('#xx_cons').css('display','none');
+ }
+.zx_xxgk_pr .code{height: 30px;line-height: 30px;color: #003d93;font-size: 14px;margin: 0 20px;overflow: hidden;margin-bottom: 20px;}
+.zx_xxgk_pr .code input{color: #8e8e8f;height: 26px;border: 1px solid #e2e2e2;line-height: 26px;width: 100px;margin: 0 20px 0 0;}
+.fjdown{margin-left: 10px;}
+.fjdown h3{font-size: 24px;color: #206ad4;font-weight: normal;padding: 0 0 10px 0;}
+.fjdown p{height: 30px;font-size: 14px;line-height: 30px;}
+.fjdown p a{color: #040404;padding: 0 5px 0 0;}
+.fjdown p a:hover{color:#003d93;}
+body{min-width:1200px;}
+.backstretch{overflow:unset !important;}
+.footer_bg{min-width:1200px;}
+.fenx_con .fjdown p {
+ height: auto;
+}
+ if ($("#fujian").length == 0) {
+ $(".m-attachment-title").hide();
+ }
+ function prints() {
+ var api = 'https://app.gd.gov.cn/cms-bulletin/api/generate';
+ var url = api + '?id=9146987&siteId=755001';
+ $.ajax({
+ url: url, 
+ dataType: 'jsonp', 
+ jsonp: "callback",
+ jsonpCallback: "callback",
+ success: function(data) { 
+ if (data.errcode == 0) {
+ window.open(data.data)
+ } else {
+ console.log(data.errmessage);
+ window.print();
+ }
+ },error: function(error) {
+ console.error(error);
+ }
+ });
+ }
+ 相关政策解读
+ 《深圳市高新技术企业培育资助管理办法》政策解读
+ $(function(){
+ // 政府公报下面政策解读下面的“相关政策解读”应修改为：相关政策法规 2020-10-30
+ if(136271==101639){
+ $('#xggjDiv').find('h3').html('相关政策法规');
+ }
+ });
+ .fenx_left{ display : none }
+ .daying{ display : none }
+分享到
+<a title="分享到更多" href="http://www.bShare.cn/" id="bshare-shareto" class="bshare-more" style="
+ background: #1baf09;
+ padding: 0px 5px !important;
+ display: inline-block;
+ color: #fff !important;
+ text-align: center;
+ font-size: 20px;
+ line-height: 20px;
+ border-radius: 4px;
+">+
+ -->
+ .fenx_left{ display : none }
+ .daying{ display : none }
+ 分享到：
+ $('#share-1').share();
+ $('#share-2').share({sites: ['qzone', 'qq', 'weibo','wechat']});
+ $('#share-3').share();
+ $('#share-4').share();
+ 【内容纠错】【打印本页】【关闭窗口】
+.footer{width:100%; position:relative; height:115px;}
+.footer_bg{filter:alpha(opacity=50);position:absolute; width:100%; height:100%; left:0px; top:0px; z-index:1;}
+.footer_con{ width:1200px; margin:0 auto; font-size:14px; overflow:hidden; z-index:9; position:relative;}
+.footer_con .con_left{float:left; width:365px; padding:50px 0 0 0;}
+.footer_con .con_left span{ padding:0 20px 0 0;}
+.footer_con .con_con{ width:530px; float:left; line-height:24px; text-align:center;}
+.footer_con .con_con .link { padding: 15px 0; color: #fff;}
+.footer_con .con_right{float:right; width:109px;}
+@media (max-width: 1199px){
+ .footer_con .con_right{float:unset;}
+ .footer_con .con_right img{width:100%;}
+ #slywza-icon{display: none;margin: 0 0.5rem;}
+ .footer_con .con_right{position: relative;display: flex;justify-content: center;padding: 0;left: auto;float: none;}
+}
+/* @media (max-width: 1199px){
+ #slywza-icon{display: none !important;}
+} */
+ 关于我们 
+ - 
+ 版权保护 
+ - 
+ 隐私声明 
+ - 
+ 联系我们 
+ - 
+ 网站地图 
+ 备案序号：粤ICP备05017767号 
+ 粤公网安备 44030402001126号 
+ 网站标识码4403000016 
+ 主办：深圳市人民政府办公厅 
+ 技术支持单位：深圳市大数据资源管理中心 
+$(document).ready(function(){
+ var hasTable= $('.news_cont_d_wrap table');
+ if(hasTable.length>0) $(".news_cont_d_wrap").addClass("overflow_table");
+ if(typeof LoadXlCss !== 'undefined'){
+ LoadXlCss();
+ }
+});
+ $(".con_left img").attr("title","党政机关").attr("alt","党政机关");
+$("#_span_jiucuo img").attr("title","政府网站找错").attr("alt","政府网站找错");
+//点击图标
+function Link(site_code) {
+ //获取该站点需要纠错页面的url地址
+ var url = getCurrUrl();
+ url = decodeURIComponent(url);
+ url = decodeURIComponent(url);
+ url = decodeURIComponent(url);
+ url = encodeURIComponent(url).replace(/%257B/g, '%7B');
+ url = url.replace(/%257D/g, '%7D'); 
+ // var arr = url.split('?');
+ // var origin = encodeURIComponent(arr[0] + '?');
+ // url = arr.length > 1 ? origin + arr[1] : origin;
+ //跳转至纠错系统填写页面 
+ window.open("https://zfwzgl.www.gov.cn/exposure/jiucuo.html?site_code=" + site_code + "&url=" + url);
+}
+//获取该站点需要纠错页面的url地址
+function getCurrUrl() {
+ var url = "";
+ if (parent !== window) {
+ try {
+ url = window.top.location.href;
+ } catch (e) {
+ url = window.top.document.referrer;
+ }
+ }
+ if (url.length == 0)
+ url = document.location.href;
+ return url;
+}
+$(document).ready(function(){
+ $(document).on('click', 'a', function () {
+ // 获取当前页面链接
+ const currentPageUrl = window.location.href;
+ // 判断当前页面链接是否包含特定字符串
+ if (currentPageUrl.indexOf('www.sz.gov.cn/xxgk/ztzl/mlqyhlsz') > -1) {
+ return;
+ }
+ if ($(this).is('[href]')) {
+ var url=$(this).attr('href').replace(/^\s+|\s+$/g,"");
+ if(!url||url == 0){
+ return;
+ }else{
+ if($.trim(url).indexOf("gov.cn")>-1||($.trim(url).substr(0,2).indexOf("./")>-1|| $.trim(url).substr(0,1).indexOf("/")>-1|| $.trim(url).substr(0,1).indexOf(".")>-1 || $.trim(url).substr(0,1).indexOf("#")>-1 || $.trim(url).indexOf("javascript")>-1) || $.trim(url).indexOf("www.szcredit.org.cn")>-1){
+ return;
+ }else{
+ return confirm('您访问的链接即将离开“深圳政府在线”门户网站，是否继续？');
+ }
+ }
+ } else {
+ return;
+ }
+ });
+})
+ -->
+.right-navBox{ display : none }
+.rightNav{ display : none }
+ .ai {
+ width: 80px;
+ opacity: 100;
+ height: 100px;
+ color: rgb(255, 255, 255);
+ position: absolute;
+ right: 80px;
+ top: 10%;
+ cursor: pointer;
+ z-index: 99;
+ vertical-align: middle;
+ text-align: center;
+ }
+ .ai .aiimg {
+ width: 100%;
+ }
+ .ai .aiewm {
+ position: absolute;
+ right: 80px;
+ top: 20px;
+ width: 200px;
+ height: 100px;
+ }
+ .hand {
+ top: 40%;
+ }
+ 触碰右侧展开
+ 微信公众号
+ 微 博
+ 移动应用
+ 咨询 
+ 投诉 
+ 个性化定制
+ $(document).ready(function(){
+ setTimeout(ycaiwem,2000);
+});
+ $(".ai").hover(function(){
+ $(".aiewm").stop().animate({"width":"200px","height":"100px","top":"0"}, 520) 
+ },
+ function abc(){
+ $(".aiewm").stop().animate({"width":"0","height":"0","top":"20px"}, 520) 
+ }
+ );
+function ycaiwem(){
+ $(".aiewm").stop().animate({"width":"0","height":"0","top":"20px"}, 600) 
+}
+ $(function(){
+ $("#backTop").click(function(){
+ $(window).scrollTop(0);
+ })
+ });
