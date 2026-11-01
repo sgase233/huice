@@ -184,6 +184,8 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 独立标注表 `holdout_annotation_sheet.csv` 保留为空白模板，供后续新增留出样本复用。
 
+**开发集待办（2026-11-01）**：开发集 24 组合 / 118 条已导出为 [`data/evaluation/dev_annotation_sheet.csv`](../../data/evaluation/dev_annotation_sheet.csv)（同样的空白 `annotator_b_result/annotator_b_note`，不含 M3 推算结果），待第二标注人独立完成。填完后按 §6 仲裁并回填 `labels.csv`。
+
 ## 7. 容易混淆的名词
 
 | 名词 | 准确含义 | 不要误解为 |
