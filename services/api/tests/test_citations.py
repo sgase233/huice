@@ -868,3 +868,323 @@ def test_mismatch_message_does_not_double_count_the_unit():
     message = next(f.message for f in verdict.findings if f.code == "CITATION_THRESHOLD_MISMATCH")
     assert "20000000万元" not in message
     assert "原文以「万元」计" in message
+
+
+#: 《高新技术企业认定管理办法》第十条（四）三档的原文写法，2026-11-01 由 M3 的 GXJS 引出：
+#: 营收写作「销售收入」，「小于」是严格上限，「A 至 B」是两端含本数的区间，「（含）」把
+#: 严格上限升成含本数。三种写法漏一种，整条条款的金额阈值就抽不出来，正确 AST 反被判成
+#: 「引文没有数值阈值」而挡住发布。
+GXJS_TEXT = (
+    "第十条（四）近三个会计年度的研究开发费用总额占销售收入总额的比例符合如下要求："
+    "1. 最近一年销售收入小于5,000万元的企业，比例不低于6%；"
+    "2. 最近一年销售收入在5,000万元至20,000万元的企业，比例不低于4%；"
+    "3. 最近一年销售收入在20,000万元以上的企业，比例不低于3%。"
+)
+GXJS = SourceText(id=uuid4(), source_url=SOURCE_URL, text=GXJS_TEXT)
+GXJS_SOURCES = {GXJS.id: GXJS}
+
+
+def gxjs_span(quote: str) -> SourceSpanCheck:
+    return span(quote, source_id=GXJS.id, section="第十条（四）")
+
+
+@pytest.mark.parametrize(
+    ("quote", "expected"),
+    [
+        ("最近一年销售收入小于5,000万元的企业", [(50_000_000, "lt")]),
+        ("最近一年销售收入在5,000万元至20,000万元的企业", [(50_000_000, "gte"), (200_000_000, "lte")]),
+        ("最近一年销售收入在20,000万元以上的企业", [(200_000_000, "gte")]),
+        ("最近1年销售收入小于5,000万元（含）的企业", [(50_000_000, "lte")]),
+        ("最近1年销售收入在5,000万元至2亿元（含）的企业", [(50_000_000, "gte"), (200_000_000, "lte")]),
+    ],
+)
+def test_sales_income_tier_phrasings_are_recognised(quote, expected):
+    """「销售收入」也是营收族：不认这个词，这几档的金额阈值一条都抽不出来。"""
+
+    bounds = threshold_bounds(quote)
+    assert [(int(bound.amount), bound.direction) for bound in bounds] == expected
+    assert {bound.family for bound in bounds} == {"revenue"}
+
+
+def test_a_sales_income_tier_condition_passes_against_its_own_quote():
+    expression = {
+        "op": "and",
+        "children": [
+            compare("revenue", "50000000.00", "CNY", comparator="lt"),
+            compare("rdExpenseRevenueRatio", "0.06", "ratio"),
+        ],
+    }
+
+    verdict = validate_criterion(
+        criterion(
+            gxjs_span("1. 最近一年销售收入小于5,000万元的企业，比例不低于6%"),
+            expression=expression,
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_sales_income_number_is_checked_not_ignored():
+    """认了营收族就得真核对：金额写错要报不一致，而不是退化成「没有阈值」。"""
+
+    verdict = validate_criterion(
+        criterion(
+            gxjs_span("最近一年销售收入在20,000万元以上的企业"),
+            expression=compare("revenue", "50000000.00", "CNY"),
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+def test_a_strict_comparator_against_an_inclusive_tier_is_reported():
+    """「20,000 万元以上」含本数：AST 写 ``gt`` 会把正好 2 亿元的企业判成不达标。"""
+
+    verdict = validate_criterion(
+        criterion(
+            gxjs_span("3. 最近一年销售收入在20,000万元以上的企业，比例不低于3%"),
+            expression=compare("revenue", "200000000.00", "CNY", comparator="gt"),
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+TIER_SPANS = (
+    "1. 最近一年销售收入小于5,000万元的企业，比例不低于6%",
+    "2. 最近一年销售收入在5,000万元至20,000万元的企业，比例不低于4%",
+    "3. 最近一年销售收入在20,000万元以上的企业，比例不低于3%",
+)
+
+
+def tier_criterion(
+    *,
+    first_ratio: str,
+    second_ratio: str,
+    third_ratio: str,
+    spans: tuple[str, ...] = TIER_SPANS,
+    span_of=gxjs_span,
+) -> CriterionInput:
+    """三档条件，比例与引文可换：用来验证「金额与比例必须出自同一处原文」。
+
+    ``spans`` 可以让三档分三段引文标注，也可以整段引在同一处——后者是高企认定原文的
+    实际排版，也是 M2 在 #20 指出的漏网场景。``span_of`` 决定引文指向哪份来源，
+    换一份「三档写成一句话」的原文时用得上。
+    """
+
+    def branch(revenue_children, ratio: str) -> dict:
+        return {"op": "and", "children": [*revenue_children, compare("rdExpenseRevenueRatio", ratio, "ratio")]}
+
+    return criterion(
+        *(span_of(quote) for quote in spans),
+        expression={
+            "op": "or",
+            "children": [
+                branch([compare("revenue", "50000000.00", "CNY", comparator="lt")], first_ratio),
+                branch(
+                    [
+                        compare("revenue", "50000000.00", "CNY"),
+                        compare("revenue", "200000000.00", "CNY", comparator="lte"),
+                    ],
+                    second_ratio,
+                ),
+                branch([compare("revenue", "200000000.00", "CNY")], third_ratio),
+            ],
+        },
+    )
+
+
+def test_a_tier_table_with_matching_ratios_passes():
+    verdict = validate_criterion(
+        tier_criterion(first_ratio="0.06", second_ratio="0.04", third_ratio="0.03"),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_swapped_tier_ratios_are_reported():
+    """把 6% 与 4% 对调：金额与比例各自在原文里都找得到，但配错档位会改变企业结论。
+
+    汇总比对只要求「这个数值在整条条款的引文里出现过」，所以对调能过；这条用例要求
+    同一支的金额与比例出自同一段引文。
+    """
+
+    verdict = validate_criterion(
+        tier_criterion(first_ratio="0.04", second_ratio="0.06", third_ratio="0.03"),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
+
+
+def test_a_tier_table_quoted_as_one_block_passes():
+    """三档整段引在同一处（高企认定第十条（四）的原文排版）时，正确搭配仍要通过。
+
+    2026-11-01 M2 在 #20 指出：只按「引文」归集时，单段引文里三档的金额与比例又被汇总，
+    把 6% 与 4% 对调照样各找得到。核对粒度因此下沉到句读。
+    """
+
+    verdict = validate_criterion(
+        tier_criterion(
+            first_ratio="0.06",
+            second_ratio="0.04",
+            third_ratio="0.03",
+            spans=(GXJS_TEXT,),
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_swapped_tier_ratios_inside_one_block_are_reported():
+    """整段引在同一处时，6% 与 4% 对调也必须报出来——两句里的数字互换了归属。"""
+
+    verdict = validate_criterion(
+        tier_criterion(
+            first_ratio="0.04",
+            second_ratio="0.06",
+            third_ratio="0.03",
+            spans=(GXJS_TEXT,),
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
+
+
+#: 同一张档位表写成一句话、只用逗号隔开。句级切分会把三档并成一句，必须再按比例开窗口，
+#: 才能确认每个金额和它旁边那个比例是同一档——2026-11-01 补在 M2 的单段引文场景之后。
+COMPACT_TIER_TEXT = (
+    "第十条（四）研发费用比例符合如下要求："
+    "最近一年销售收入小于5,000万元的企业比例不低于6%，"
+    "最近一年销售收入在5,000万元至20,000万元的企业比例不低于4%，"
+    "最近一年销售收入在20,000万元以上的企业比例不低于3%。"
+)
+
+#: M2 在 #20 又指出的近邻写法：一句话里每档的金额与比例之间还各有一个逗号（正常断句）。
+#: 按标点分句会把每档拆成「只有金额」和「只有比例」两半，正确标注反而被拒。
+SPLIT_PHRASE_TIER_TEXT = (
+    "第十条（四）研发费用比例符合如下要求："
+    "销售收入小于5,000万元的企业，比例不低于6%，"
+    "销售收入在5,000万元至20,000万元的企业，比例不低于4%，"
+    "销售收入在20,000万元以上的企业，比例不低于3%。"
+)
+
+
+def _tier_verdict_for_text(text: str, *, first_ratio: str, second_ratio: str, third_ratio: str):
+    """把整张档位表写成一段话作为唯一引文，跑一遍校验。"""
+
+    source = SourceText(id=uuid4(), source_url=SOURCE_URL, text=text)
+    return validate_criterion(
+        tier_criterion(
+            first_ratio=first_ratio,
+            second_ratio=second_ratio,
+            third_ratio=third_ratio,
+            spans=(text,),
+            span_of=lambda quote: span(quote, source_id=source.id, section="第十条（四）"),
+        ),
+        {source.id: source},
+        version=VERSION,
+    )
+
+
+def _one_sentence_tier_verdict(separator: str, *, first_ratio, second_ratio, third_ratio):
+    """整张档位表写成一句话，用 ``separator`` 分隔三档，跑一遍校验。"""
+
+    return _tier_verdict_for_text(
+        COMPACT_TIER_TEXT.replace("，", separator),
+        first_ratio=first_ratio,
+        second_ratio=second_ratio,
+        third_ratio=third_ratio,
+    )
+
+
+#: 一句话三档的两种分隔：全角逗号与顿号。顿号常被漏掉，「、」分隔时整张表又并成一段。
+ONE_SENTENCE_SEPARATORS = ("，", "、")
+
+
+@pytest.mark.parametrize("separator", ONE_SENTENCE_SEPARATORS)
+def test_a_tier_table_written_as_one_sentence_passes(separator):
+    verdict = _one_sentence_tier_verdict(
+        separator, first_ratio="0.06", second_ratio="0.04", third_ratio="0.03"
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+@pytest.mark.parametrize("separator", ONE_SENTENCE_SEPARATORS)
+def test_swapped_ratios_in_one_sentence_are_reported(separator):
+    """一句里有三个比例时，金额与比例必须落在同一个窗口里——对调后金额落在别的窗口。"""
+
+    verdict = _one_sentence_tier_verdict(
+        separator, first_ratio="0.04", second_ratio="0.06", third_ratio="0.03"
+    )
+
+    assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
+
+
+def test_a_comma_before_each_ratio_does_not_break_a_correct_annotation():
+    """M2 在 #20 提的 P2：一句话里每档都写成「……的企业，比例不低于 N%」。
+
+    按逗号分句会把同一档拆成「只有金额」「只有比例」两半，正确标注反而被拒。现在按比例的
+    位置开窗口，逗号只当断句用。
+    """
+
+    verdict = _tier_verdict_for_text(
+        SPLIT_PHRASE_TIER_TEXT, first_ratio="0.06", second_ratio="0.04", third_ratio="0.03"
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_swapped_ratios_with_a_comma_before_each_ratio_are_still_reported():
+    """同一种写法下对调比例：金额落在别的窗口里，必须报出来，不能借断句蒙混过去。"""
+
+    verdict = _tier_verdict_for_text(
+        SPLIT_PHRASE_TIER_TEXT, first_ratio="0.04", second_ratio="0.06", third_ratio="0.03"
+    )
+
+    assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
+
+
+def test_alternating_branches_over_different_metrics_are_not_flagged():
+    """「营收 1000 万元以上」与「营收 1000 万元以下**且**股权融资 2000 万元以上」是交替
+    分支，两支指标构成不同，本来就该跨句取证——同段规则不该误伤它（SRDI-002 就是这样）。"""
+
+    verdict = validate_criterion(
+        criterion(
+            local_span("上年度营业收入总额在1000万元以上"),
+            local_span("上年度营业收入总额在1000万元以下"),
+            local_span("近2年新增股权融资总额达到2000万元以上"),
+            expression={
+                "op": "or",
+                "children": [
+                    compare("revenue", "10000000.00", "CNY"),
+                    {
+                        "op": "and",
+                        "children": [
+                            compare("revenue", "10000000.00", "CNY", comparator="lte"),
+                            compare("equityFinancing", "20000000.00", "CNY"),
+                        ],
+                    },
+                ],
+            },
+        ),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
