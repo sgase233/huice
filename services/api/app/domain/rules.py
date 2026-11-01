@@ -492,10 +492,11 @@ def _evaluate(node: Any, facts: FactTable, *, period: tuple[date, date]) -> Eval
         return _evaluate_boolean(op, node, facts, period=period)
     if op == "not":
         inner = _evaluate(node.get("child"), facts, period=period)
+        # 取反只翻转结论；子条件已定性时补事实改变不了结论，缺失事实到此为止。
         if inner.result == SATISFIED:
-            return Evaluation(NOT_SATISFIED, "取反后不成立：" + inner.reason, inner.fact_refs, inner.missing, inner.calculation)
+            return Evaluation(NOT_SATISFIED, "取反后不成立：" + inner.reason, inner.fact_refs, [], inner.calculation)
         if inner.result == NOT_SATISFIED:
-            return Evaluation(SATISFIED, "取反后成立：" + inner.reason, inner.fact_refs, inner.missing, inner.calculation)
+            return Evaluation(SATISFIED, "取反后成立：" + inner.reason, inner.fact_refs, [], inner.calculation)
         return inner
     if op == "compare":
         return _evaluate_compare(node, facts, period=period)
@@ -523,31 +524,36 @@ def _evaluate_boolean(
 ) -> Evaluation:
     results = [_evaluate(child, facts, period=period) for child in node.get("children") or []]
     fact_refs = _merge([item.fact_refs for item in results])
-    missing = _merge([item.missing for item in results])
+
+    # 缺失事实只来自尚未定性的子条件：整棵表达式一旦定了性（成立、不成立、冲突），
+    # 补事实也改变不了结论；仍悬着时，已成立的分支与已判不成立的分支同样不计入，
+    # 因为结论只取决于那些 INSUFFICIENT 的子项。这样 ``missing`` 始终是「挡住结论的事实」。
+    def undecided_missing() -> list[tuple[str, date, date]]:
+        return _merge([item.missing for item in results if item.result == INSUFFICIENT])
 
     # 冲突最先检测并向上传播，OR 成立也不能把它掩盖（实现约定 2.2）。
     for item in results:
         if item.result == CONFLICT:
-            return Evaluation(CONFLICT, item.reason, fact_refs, missing)
+            return Evaluation(CONFLICT, item.reason, fact_refs, [])
 
     if op == "and":
         # 硬性条件优先：任何一个子条件已判定不成立，整体就不成立，缺事实不能掩盖它。
         for item in results:
             if item.result == NOT_SATISFIED:
-                return Evaluation(NOT_SATISFIED, item.reason, fact_refs, missing)
+                return Evaluation(NOT_SATISFIED, item.reason, fact_refs, [])
         for item in results:
             if item.result == INSUFFICIENT:
-                return Evaluation(INSUFFICIENT, item.reason, fact_refs, missing)
-        return Evaluation(SATISFIED, "全部子条件成立。", fact_refs, missing)
+                return Evaluation(INSUFFICIENT, item.reason, fact_refs, undecided_missing())
+        return Evaluation(SATISFIED, "全部子条件成立。", fact_refs, [])
 
     for item in results:
         if item.result == SATISFIED:
-            return Evaluation(SATISFIED, item.reason, fact_refs, missing)
+            return Evaluation(SATISFIED, item.reason, fact_refs, [])
     for item in results:
         if item.result == INSUFFICIENT:
-            return Evaluation(INSUFFICIENT, item.reason, fact_refs, missing)
+            return Evaluation(INSUFFICIENT, item.reason, fact_refs, undecided_missing())
     reason = results[0].reason if results else "没有子条件成立。"
-    return Evaluation(NOT_SATISFIED, reason, fact_refs, missing)
+    return Evaluation(NOT_SATISFIED, reason, fact_refs, [])
 
 
 def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]) -> Evaluation:

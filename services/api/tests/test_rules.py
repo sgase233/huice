@@ -274,6 +274,30 @@ def test_or_branch_that_holds_is_not_blocked_by_unrelated_missing_fact():
         expression, table(fact("taxableIncome", Decimal("3200000"))), period=YEAR
     )
     assert outcome.result == SATISFIED
+    # 未走的那一支虽然缺 rdExpense，但结论已成立，缺失事实到此为止。
+    assert outcome.missing == []
+
+
+def test_decided_and_reports_no_missing_facts():
+    """and 已判不成立时，另一支缺的事实不构成「挡住结论」，不该报出来。"""
+    expression = {
+        "op": "and",
+        "children": [INDUSTRY_GATE, compare("taxableIncome", "gte", "3000000")],
+    }
+    outcome = evaluate_expression(expression, table(fact("industry", "F51")), period=YEAR)
+    assert outcome.result == NOT_SATISFIED
+    assert outcome.missing == []
+
+
+def test_insufficient_and_only_reports_the_undecided_branch():
+    """还没定性时，缺失事实只来自 INSUFFICIENT 的子条件。"""
+    expression = {
+        "op": "and",
+        "children": [INDUSTRY_GATE, compare("taxableIncome", "gte", "3000000")],
+    }
+    outcome = evaluate_expression(expression, table(fact("industry", "C39")), period=YEAR)
+    assert outcome.result == INSUFFICIENT
+    assert outcome.missing == [("taxableIncome", YEAR[0], YEAR[1])]
 
 
 def test_or_without_any_holding_branch_is_not_satisfied():

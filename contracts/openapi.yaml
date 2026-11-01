@@ -2264,6 +2264,7 @@ components:
           items:
             $ref: '#/components/schemas/CriterionResult'
         missingFacts:
+          description: 只列出仍挡住本项结论的事实。结论已定（satisfied、not_satisfied、conflict）时恒为空数组——个别条款缺事实也不影响这个结论；仅当 result 为 insufficient_evidence 时才有内容，且只含仍在等待条件的事实。
           type: array
           items: *id052
         nextQuestion:

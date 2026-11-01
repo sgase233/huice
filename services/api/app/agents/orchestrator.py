@@ -114,7 +114,7 @@ def assess(
     question = questioning.choose_next_question(pending, skipped)
     trace.add(
         "questioning",
-        input_summary=f"待定政策 {sum(1 for item in pending if item.missing)} 项",
+        input_summary=f"待定政策 {sum(1 for item in pending if item.result == rules.INSUFFICIENT)} 项",
         output_summary=(
             f"下一个问题：{question.fact_ref[0]}，影响 {sum(1 for item in pending if question.fact_ref in item.missing)} 项政策"
             if question
@@ -259,6 +259,13 @@ def _enterprise_facts(enterprise: Enterprise) -> list[NormalizedFact]:
 
 
 def _missing_refs(evaluation: rules.PolicyEvaluation) -> list[tuple[str, date, date]]:
+    """政策级缺失事实：只有结论仍悬着时才有。
+
+    政策一旦定性（成立、不成立、冲突），个别条件缺事实也不影响这一结论，
+    再报出来只会让 ``missingFacts`` 和补问都带上无关项。
+    """
+    if evaluation.result != rules.INSUFFICIENT:
+        return []
     refs: list[tuple[str, date, date]] = []
     for criterion in evaluation.criteria:
         for ref in criterion.missing:
