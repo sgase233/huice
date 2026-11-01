@@ -32,28 +32,22 @@
 | 模型（DeepSeek）降级 | 解释内容为已保存结果，规则判断不受影响 | 模型失败时规则结果照常返回，不伪称实时调用 |
 | 无权限访问后台/轨迹 | 无访问权限 | 管理接口需授权，不展示后台数据 |
 
-## 4. 补问提示（事实键 → 中文提问）
+## 4. 补问提示（业务口径）
 
-补问只对 `insufficient_evidence` 出现，页面一次显示一问。下表是 M3 给每个事实键的中文提问，M2 直接用于 `NextQuestion.prompt`，不自行改写业务含义。
+补问只对 `insufficient_evidence` 出现，页面一次显示一问。
 
-| fact_key | 补问提示（页面展示） |
-| --- | --- |
-| `region` | 企业工商注册地在哪个地区（行政区划码）？ |
-| `industry` | 企业所属行业（GB/T 4754-2017 行业代码）？ |
-| `establishedDate` | 企业成立日期是？ |
-| `taxableIncome` | 年度应纳税所得额是多少元？ |
-| `rdExpense` | 年度研发费用发生额是多少元？ |
-| `rdActivity` | 本年度是否开展了研发活动？ |
-| `employeeCountStart` / `employeeCountEnd` | 各季度期初/期末从业人数分别是多少？ |
-| `assetsStart` / `assetsEnd` | 各季度期初/期末资产总额分别是多少元？ |
-| `revenue` | 上年度营业收入总额是多少元？ |
-| `equityFinancing` | 近两年新增股权融资总额（合格机构投资者实缴额）是多少元？ |
-| `rdExpenseIncrease` | 上年度研发费用增量是多少元（＝上年度研发费用 − 前年度研发费用）？ |
-| `rdExpenseRevenueRatio` | 上年度研发费用占营业收入比重是多少？ |
-| `rdAddDeductionClaimed` | 是否已申报享受研发费用税前加计扣除？ |
-| `creditRecord` | 单位诚信记录是否良好（无被限制申请财政性资金惩戒、无超期未验收未退款）？ |
-| `specificMarketSince` | 进入特定细分市场的日期是？ |
-| `independentLegalEntity` | 是否具有独立法人资格？ |
+**文案的唯一实现口径是 `services/api/app/domain/questioning.py` 的 `PROMPTS` 常量**（同 §5 档位口径：M3 定业务含义、M1 定实现，本文件不复制具体文字，避免两份文案各说各话）。前端直接展示 `NextQuestion.prompt` 原文，不自行改写。本节只规定该常量必须满足的业务规则：
+
+| 规则 | 要求 | 违反后果 |
+| --- | --- | --- |
+| **禁相对年份** | 文案不得出现「本年度 / 上年度 / 近两年 / 本次判断所属年度」等相对词，统一说「该期间」；期间由界面单独展示 | 用户按字面填错年份，数值仍合法、校验全过 → **fail-wrong** |
+| **增量写公式** | `rdExpenseIncrease` 必须写明「该期间研发费用 − 上一期间研发费用」，下降填负数 | 标注方预计算与用户自算的数对不上 |
+| **比例给样例** | `rdExpenseRevenueRatio` 必须给出换算样例（如 3% 填 0.03） | 用户填成 3 而非 0.03，差 100 倍 |
+| **布尔给方向** | `creditRecord`（true=记录良好）、`independentLegalEntity`（true=具有法人资格）必须写明「是→true、否→false」及反例 | 反向存值，规则判反 |
+| **申报类三态** | `rdAddDeductionClaimed` 必须区分「已申报 / 确认未申报 / 尚未申报或不确定（跳过，按未知处理）」，不得把「尚未申报」诱成为「否」 | 未知被记成 false |
+| **日期非年数** | `specificMarketSince` 必须说明填起始日期、不是年数 | 用户填「3」这类年数 |
+
+各键覆盖清单（M1 常量须含全部 18 键）：`region`、`industry`、`establishedDate`、`taxableIncome`、`rdExpense`、`rdActivity`、`employeeCountStart/End`、`assetsStart/End`、`revenue`、`equityFinancing`、`rdExpenseIncrease`、`rdExpenseRevenueRatio`、`rdAddDeductionClaimed`、`creditRecord`、`specificMarketSince`、`independentLegalEntity`。
 
 ## 5. 两类准备清单文案
 
