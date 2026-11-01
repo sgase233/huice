@@ -143,3 +143,7 @@ C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-004,sa
 C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-005,satisfied,insufficient_evidence,insufficient_evidence,国家统计法规要求填报科技统计报表的企业应当完成上年度科技统计报表填报,holdout,分歧同HT-002：AST为manual_review恒insufficient_evidence
 C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-006,satisfied,satisfied,satisfied,企业诚信记录良好,holdout,A/B一致
 C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-007,conflict,conflict,conflict,与研发活动直接相关的其他相关费用总额不得超过可加计扣除研发费用总额的10%|其他费用（与研发直接相关的）一般不得超过研究开发总费用的20%,holdout,A/B一致；B建议拆分并注明10%与20%各自来源——已在adjudication_note记119号10%与195号20%（32号认定办法同载20%）
+C031,E-ENT-006,CN-TAX-GXJS,国科发火〔2008〕172号,GXJS-V1-001,not_satisfied,not_satisfied,not_satisfied,"1. 最近一年销售收入小于5,000万元的企业，比例不低于6%",dev,版本变化对照 v1：蓝海上年度营收2000万元小于5000万元、研发费占比5%低于6% → 不满足；单人推算待双人标注
+C032,E-ENT-006,CN-TAX-GXJS,国科发火〔2016〕32号,GXJS-V2-001,satisfied,satisfied,satisfied,"1.最近1年销售收入小于5,000万元（含）的企业，比例不低于5%",dev,版本变化对照 v2：同一企业同一事实、2016版档一降为5% → 满足；与C031构成版本差异样本；单人推算待双人标注
+C033,E-ENT-001,CN-TAX-GXJS,国科发火〔2008〕172号,GXJS-V1-001,not_satisfied,not_satisfied,not_satisfied,"1. 最近一年销售收入小于5,000万元的企业，比例不低于6%",dev,对照：云启营收3000万元、研发费占比4%低于6% → v1不满足；单人推算待双人标注
+C034,E-ENT-001,CN-TAX-GXJS,国科发火〔2016〕32号,GXJS-V2-001,not_satisfied,not_satisfied,not_satisfied,"1.最近1年销售收入小于5,000万元（含）的企业，比例不低于5%",dev,对照：同一企业4%仍低于5% → v2同样不满足、结论未变；证明版本变化只在阈值边界附近翻转；单人推算待双人标注
