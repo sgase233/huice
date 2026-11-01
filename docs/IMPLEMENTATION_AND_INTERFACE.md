@@ -371,14 +371,14 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 | ECS | 已开通并登录 | `huice-api-01`，Ubuntu 24.04.4、Python 3.12.3、内网 `192.168.0.86`，22 端口实测可连 |
 | RDS for PostgreSQL | **已实测（2026-10-24 复测；2026-10-26 补齐迁移）** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器），`vector` 0.8.0（本地 0.8.7）；`schema_migration` 三行齐全（`001_init` 10-23 17:37、`002_evaluation_and_idempotency` 10-26 23:47:03、`003_trace_step_details` 10-26 23:47:13，`applied_at` 显示 `+08` 即实例默认 `Asia/Shanghai`；`004_invalidation_event_period` 待 11/08 部署补齐）；`trace_step` 六列与 `trace_step_status_check`/`trace_step_stage_check`、`trace_step_no_update_delete` 均已核对；`policy` 与 `policy_version` 仍 0 行 |
 | Redis（DCS） | **已实测** | `huice-redis` 主备 1GB，小版本 `7.2.11.5`，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG`；2026-10-24 复测时实例未开启（端口拒绝），2026-10-26 在 ECS 上复测恢复：端口可连、`--askpass PING` 返回 `PONG`、白名单已含 ECS `192.168.0.86`。判断链路的版本化求值缓存已实现（2026-10-26），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；云端 API 尚未部署，该项在云端的命中待部署后复测 |
-| OBS | 已建桶，代码已实现，**未在真实桶验证** | 桶 `huice-policies`（私有，`cn-south-1`）；`ObsObjectStore` 用 `esdk-obs-python` 3.26.6 实现，只用假客户端做过单元测试 |
+| OBS | **已实测（2026-10-27，真实桶）** | 桶 `huice-policies`（私有，`cn-south-1`）；`ObsObjectStore`（`esdk-obs-python` 3.26.6）在真实桶上 `-m obs` 5 项通过：写入→独立客户端读回字节、删除后 404、两次写入键不冲突、导入正文真正落桶、不可写桶 503 且不泄露凭证（命令与输出见 `infra/README.md` §4.3） |
 | DeepSeek | 已接入，**2026-10-27 用真实 Key 联调通过**（`tests/test_deepseek_live.py` 3 项：补全返回文本/用量、错误 Key→503 不回显、整链 `explanationMode=deepseek` 而结论仍由规则给出） | `app/integrations/llm.py`（`fixture`/`deepseek` 两模式，OpenAI 兼容 `/chat/completions`）；契约 rc.2 中 `ModelUsage.mode`/`explanationMode` 的 `maas` 已改为 `deepseek`；`MODEL_MODE` 默认值仍为 `fixture`，由 `.env` 切换 |
 | CodeArts / Skills | **不作为要求** | 账号据本人告知已开通、未接入；队长 2026-10-23 同意开发记录以实际使用的工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
 
 **仍未执行**（未执行即不计作通过）：
 
 - 云端 API 部署（`infra/deploy/` 的 systemd/nginx 文件已就绪，尚未在 ECS 上执行），因此云端健康检查、`app→RDS` 内网链路尚未有实测证据
-- OBS 真实桶的文件上传/删除验证；验证前 `OBJECT_STORE_MODE` 保持 `local`
+- 云端部署时切到 `OBJECT_STORE_MODE=obs` 并复测一次导入（真实桶联调已于 2026-10-27 在本地完成 5 项，见上表与 `infra/README.md` §4.3）
 - `restricted` 模式的网关侧会话下发与绕过拦截：后端已改为校验签名与有效期的 cookie（2026-10-24 按 M2 审查 R1 修复），但网关那层尚未配置和验收
 - 前端 TypeScript 编译与浏览器验收（属 M2）
 - 11/15 要求的「从空环境复现部署」，需先用已推送的提交重做一遍

@@ -130,7 +130,7 @@ curl -i http://139.9.33.46/api/v1/health
 ## 5. 已知限制（M1）
 
 - `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；尚未完成的是网关侧的自动下发、`Secure` 所需的 TLS，以及云端真实链路验证（见 `infra/README.md` §5.2 B）。在网关下发或手工注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
-- `OBJECT_STORE_MODE=obs` 的代码已实现，但**尚未在真实桶上验证**；在验证前保持 `local`。
+- `OBJECT_STORE_MODE=obs` 已于 2026-10-27 在真实桶上联调通过（`-m obs` 5 项，见 `infra/README.md` §4.3）；首轮部署仍先留在 `local`，填好 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK` 后再切 `obs`，切换后按 §4 复测一次导入。
 - 未配置域名与证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示。
 - `infra/deploy/deploy.ps1` 仍是占位文件，本阶段以本文档的手工步骤为准。
 
