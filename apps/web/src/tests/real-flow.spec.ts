@@ -395,3 +395,28 @@ test('补问写入网络中断后先读取画像且不自动重发', async ({ pa
   await expect(page.getByLabel('回答（CNY）')).toHaveValue('200');
   expect(reads).toBe(1); expect(patches).toBe(1);
 });
+
+test('历史切换保留各运行跳过记录，报告加载失败提示不可用', async ({ page }) => {
+  const otherId = '77777777-7777-4777-8777-777777777777';
+  const ref1 = { key: 'taxableIncome', period }; const ref2 = { key: 'creditRecord', period };
+  const q = (factRef: object, prompt: string) => ({ factRef, prompt, reason: '缺少事实', rank: 1 });
+  const first = { ...run, assessments: [{ ...assessment, nextQuestion: q(ref1, '第一问') }] };
+  const second = { ...first, id: otherId, assessments: [{ ...first.assessments[0], nextQuestion: q(ref2, '第二问') }] };
+  let posts = 0; let failRun = false; let lastSkipped: unknown;
+  await page.route('**/api/v1/**', route => {
+    const req = route.request(); const path = new URL(req.url()).pathname;
+    if (path.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); return route.fulfill({ json: { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) } }); }
+    if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (path.endsWith('/assessment-runs') && req.method() === 'POST') { posts++; if (posts === 3) { lastSkipped = req.postDataJSON().skippedFactRefs; return route.fulfill({ status: 503, json: { error: { message: '测试终止' } } }); } return route.fulfill({ json: posts === 1 ? first : second }); }
+    if (path.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: first });
+    if (path.endsWith(`/assessment-runs/${otherId}`)) return failRun ? route.fulfill({ status: 503, json: { error: { message: '加载失败' } } }) : route.fulfill({ json: second });
+    return route.abort();
+  });
+  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await page.getByRole('button', { name: '跳过（未知或不确定）' }).click(); await expect(page.getByText('第二问')).toBeVisible();
+  await page.getByLabel('本次会话的分析历史').selectOption(rid); await page.getByLabel('本次会话的分析历史').selectOption(otherId);
+  await page.getByRole('button', { name: '跳过（未知或不确定）' }).click(); await expect(page.getByRole('alert')).toContainText('测试终止'); expect(lastSkipped).toEqual([ref1, ref2]);
+  failRun = true; await page.getByRole('button', { name: '清单与报告' }).click();
+  await expect(page.getByRole('alert')).toContainText('加载失败'); await expect(page.getByText('报告暂不可用。', { exact: true })).toBeVisible();
+  await expect(page.getByText('请先完成分析，再打开报告。')).toHaveCount(0);
+});
