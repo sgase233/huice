@@ -637,10 +637,11 @@ def _evaluate_industry_exclusion(
         return Evaluation(INSUFFICIENT, "缺少行业信息，无法判断是否属于排除行业。", [ref], [ref])
     excluded = [str(item) for item in node.get("excluded") or []]
     value = str(fact.value)
+    if not value.strip():
+        return Evaluation(INSUFFICIENT, "行业值为空，无法判断是否属于排除行业。", [ref], [ref])
     # 清单按**大类**粒度写（如「C16」），企业行业可能记到中类/小类（如「C1621」）。
     # 精确相等会让粗粒度清单对填得细的企业完全失效，把本该排除的企业判成「不排除」——
-    # 是 fail-wrong 的方向，所以按前缀命中。反向（清单比企业更细）不命中，属于清单写法
-    # 的问题，标注时补细即可，运行时宁可不动结论。
+    # 是 fail-wrong 的方向，所以按前缀命中。
     hit = next((code for code in excluded if code and value.startswith(code)), None)
     if hit is not None:
         return Evaluation(
@@ -648,6 +649,22 @@ def _evaluate_industry_exclusion(
             f"行业 {value} 属于排除清单（命中 {hit}），不满足该条款。",
             [ref],
             [],
+        )
+    # 反向：清单写的是企业行业**更细**的下级码（企业「C16」、清单「C1621」）。企业可能正
+    # 落在那个被排除的小类里，也可能不在，手上的事实不足以判断——只能报证据不足。
+    # 早先这里直接落到下面的「不在排除清单内」，等于把「不知道」写成「确认不排除」，又
+    # 是一次 fail-wrong（M2 在 PR #12 指出）：企业行业只填到大类时，排除清单会静默失效。
+    finer = next(
+        (code for code in excluded if code and code != value and code.startswith(value)),
+        None,
+    )
+    if finer is not None:
+        return Evaluation(
+            INSUFFICIENT,
+            f"行业只记到 {value}，排除清单写的是更细的 {finer}，无法判断是否属于该类别，"
+            f"请把企业行业补到小类，或转人工核查。",
+            [ref],
+            [ref],
         )
     return Evaluation(SATISFIED, f"行业 {value} 不在排除清单内。", [ref], [])
 

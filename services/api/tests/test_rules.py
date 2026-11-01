@@ -189,11 +189,31 @@ def test_a_coarse_exclusion_code_does_not_leak_into_the_next_class():
     assert outcome.result == SATISFIED
 
 
-def test_a_finer_exclusion_code_does_not_catch_a_coarser_industry_code():
-    """清单比企业行业更细时不命中：此时无法判断，不能猜成「排除」。"""
+def test_a_finer_exclusion_code_leaves_a_coarser_industry_undecided():
+    """清单比企业行业更细（企业「C16」、清单「C1621」）时是**证据不足**，不是「不排除」。
+
+    企业只填到大类，既可能落在那个被排除的小类里，也可能不在——手上的事实判断不了。
+    早先这里返回 ``satisfied``（理由串还写着「不在排除清单内」），等于把「不知道」说成
+    「确认不排除」，企业恰好在 ``C1621`` 时会被放行（M2 在 PR #12 指出）。
+    """
     gate = {**INDUSTRY_GATE, "excluded": ["C1621"]}
     outcome = evaluate_expression(gate, table(fact("industry", "C16")), period=YEAR)
+    assert outcome.result == INSUFFICIENT
+    assert "C1621" in outcome.reason and "无法判断" in outcome.reason
+
+
+def test_a_coarser_industry_that_is_unrelated_to_the_list_stays_satisfied():
+    """企业行业与清单里的下级码毫无关系时仍然是满足，别把证据不足做成大范围误伤。"""
+    gate = {**INDUSTRY_GATE, "excluded": ["C1621"]}
+    outcome = evaluate_expression(gate, table(fact("industry", "F51")), period=YEAR)
     assert outcome.result == SATISFIED
+
+
+def test_an_exact_and_a_finer_code_in_one_list_still_reports_the_exact_hit():
+    """清单里同时有企业那一级和更细的一级时，精确命中优先，直接判不满足。"""
+    gate = {**INDUSTRY_GATE, "excluded": ["C16", "C1621"]}
+    outcome = evaluate_expression(gate, table(fact("industry", "C16")), period=YEAR)
+    assert outcome.result == NOT_SATISFIED
 
 
 def test_missing_fact_is_insufficient_not_satisfied():
