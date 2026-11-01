@@ -38,7 +38,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `review_status` | 复核状态 | `待双人复核`（默认）→ `已仲裁` → `可发布`；未仲裁不得写「可发布」。`待核实` 表示条件暂无法写成可执行 AST，该行仅保留在 CSV 供复核、**不进库**——`adjudicated_expression` 留空，导入时会被 API-06 以 422 拒绝（这是护栏，不是被忍受的状态）；转「可发布」前必须先补齐 AST |
 | `adjudication_note` | 裁决备注 | 仲裁结论、兜底说明、日期读法等；仅需要时填写，多数行为空 |
 
-**注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。**例外**：合并条款（如 SRDI-002、RDSUB-001）的 `operator=and/or`，`field/value/unit/period` 留空，本就不可能对应单行投影，只以 AST 为准、不回改。
+**注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。**例外**：合并条款（如 SRDI-002、RDSUB-001）的 `operator=and/or` 与 `manual_review` 行（如 SME-001、SRDI-004~008）的 `field/value/unit/period` 均留空——前者本就不可能对应单行投影，只以 AST 为准、不回改；后者语义全在 `reason` 里、不涉及事实键，同样只以 AST 为准。
 
 ## 2. 原文定位与核对要点
 
