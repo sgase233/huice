@@ -955,3 +955,91 @@ def test_a_strict_comparator_against_an_inclusive_tier_is_reported():
     )
 
     assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+TIER_SPANS = (
+    "1. 最近一年销售收入小于5,000万元的企业，比例不低于6%",
+    "2. 最近一年销售收入在5,000万元至20,000万元的企业，比例不低于4%",
+    "3. 最近一年销售收入在20,000万元以上的企业，比例不低于3%",
+)
+
+
+def tier_criterion(*, first_ratio: str, second_ratio: str, third_ratio: str) -> CriterionInput:
+    """三档条件，比例可换：用来验证「金额与比例必须出自同一段引文」。"""
+
+    def branch(revenue_children, ratio: str) -> dict:
+        return {"op": "and", "children": [*revenue_children, compare("rdExpenseRevenueRatio", ratio, "ratio")]}
+
+    return criterion(
+        *(gxjs_span(quote) for quote in TIER_SPANS),
+        expression={
+            "op": "or",
+            "children": [
+                branch([compare("revenue", "50000000.00", "CNY", comparator="lt")], first_ratio),
+                branch(
+                    [
+                        compare("revenue", "50000000.00", "CNY"),
+                        compare("revenue", "200000000.00", "CNY", comparator="lte"),
+                    ],
+                    second_ratio,
+                ),
+                branch([compare("revenue", "200000000.00", "CNY")], third_ratio),
+            ],
+        },
+    )
+
+
+def test_a_tier_table_with_matching_ratios_passes():
+    verdict = validate_criterion(
+        tier_criterion(first_ratio="0.06", second_ratio="0.04", third_ratio="0.03"),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_swapped_tier_ratios_are_reported():
+    """把 6% 与 4% 对调：金额与比例各自在原文里都找得到，但配错档位会改变企业结论。
+
+    汇总比对只要求「这个数值在整条条款的引文里出现过」，所以对调能过；这条用例要求
+    同一支的金额与比例出自同一段引文。
+    """
+
+    verdict = validate_criterion(
+        tier_criterion(first_ratio="0.04", second_ratio="0.06", third_ratio="0.03"),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
+
+
+def test_alternating_branches_over_different_metrics_are_not_flagged():
+    """「营收 1000 万元以上」与「营收 1000 万元以下**且**股权融资 2000 万元以上」是交替
+    分支，两支指标构成不同，本来就该跨句取证——同段规则不该误伤它（SRDI-002 就是这样）。"""
+
+    verdict = validate_criterion(
+        criterion(
+            local_span("上年度营业收入总额在1000万元以上"),
+            local_span("上年度营业收入总额在1000万元以下"),
+            local_span("近2年新增股权融资总额达到2000万元以上"),
+            expression={
+                "op": "or",
+                "children": [
+                    compare("revenue", "10000000.00", "CNY"),
+                    {
+                        "op": "and",
+                        "children": [
+                            compare("revenue", "10000000.00", "CNY", comparator="lte"),
+                            compare("equityFinancing", "20000000.00", "CNY"),
+                        ],
+                    },
+                ],
+            },
+        ),
+        LOCAL_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)

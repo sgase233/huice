@@ -432,6 +432,131 @@ def _check_expression_support(criterion: CriterionInput, verdict: CriterionVerdi
         for bound in (*threshold_bounds(span.quote), *ratio_bounds(span.quote))
     ]
     _walk_support(criterion.expression, criterion, verdict, bounds)
+    _check_branch_sources(criterion, verdict, bounds)
+
+
+def _check_branch_sources(
+    criterion: CriterionInput,
+    verdict: CriterionVerdict,
+    bounds: list[tuple[SourceSpanCheck, "ThresholdBound"]],
+) -> None:
+    """「或」的每一支，阈值要能由**同一条引文**同时支撑。
+
+    三档比例表格（「小于 5,000 万元对应 6%」「5,000 万元至 20,000 万元对应 4%」…）把
+    金额阈值与比例阈值分散在同一条款的多段引文里。只把整条条款的阈值汇总起来逐个比对，
+    金额和比例各自都找得到，于是把 6% 与 4% 对调也能通过——而企业结论会因此改变。这里
+    要求每一支在同一段引文里配齐；配不齐时报 ``CITATION_BRANCH_SOURCE_MIXED`` 交人工复核，
+    而不是默认它们是同一档。
+
+    只看纯阈值分支：分支里出现日期、行业排除、``manual_review`` 或嵌套 ``or`` 时跳过——
+    那些条件的证据本来就可以分散在不同引文里，拿这条规则去卡会误伤。
+    """
+    if len(criterion.spans) < 2:
+        return
+    for index, branches in enumerate(_or_branch_groups(criterion.expression)):
+        atoms_by_branch = [_threshold_atoms(branch) for branch in branches]
+        if not all(atoms_by_branch):
+            continue
+        families = {frozenset(family for family, _amount, _comparator in atoms) for atoms in atoms_by_branch}
+        # 只有「每支都由同一组指标构成」的「或」才是档位表：不同指标之间才有配对问题。
+        # 「营业收入 1000 万元以上」与「营业收入 1000 万元以下 且 股权融资 2000 万元以上」
+        # 这类交替分支本来就该跨句取证，用同段规则去卡是误伤。
+        if len(families) != 1 or len(next(iter(families))) < 2:
+            continue
+        for branch_index, atoms in enumerate(atoms_by_branch):
+            if any(_span_supports(span, atoms, bounds) for span in criterion.spans):
+                continue
+            if not all(_pooled_supports(atom, bounds) for atom in atoms):
+                # 汇总都撑不住，已有的 CITATION_THRESHOLD_* 已经报过，不重复报。
+                continue
+            verdict.findings.append(
+                Finding(
+                    "CITATION_BRANCH_SOURCE_MIXED",
+                    f"第 {index + 1} 个「或」的第 {branch_index + 1} 支，阈值分散在多条引文里"
+                    f"（金额与比例不在同一处），无法确认它们属于同一档，可能把不同档的条件与"
+                    f"比例配在一起；请把同一档的原文放进同一条引文，或拆成单独条款后再标注。",
+                    criterion.spans,
+                )
+            )
+            break
+
+
+def _or_branch_groups(expression: Any) -> list[list[Any]]:
+    """表达式里每个「或」节点的分支列表（含嵌套），用于逐支核对证据来源。"""
+    groups: list[list[Any]] = []
+    if not isinstance(expression, Mapping):
+        return groups
+    op = expression.get("op")
+    if op == "or":
+        children = [child for child in expression.get("children") or [] if isinstance(child, Mapping)]
+        if len(children) >= 2:
+            groups.append(children)
+        for child in children:
+            groups.extend(_or_branch_groups(child))
+        return groups
+    if op == "and":
+        for child in expression.get("children") or []:
+            groups.extend(_or_branch_groups(child))
+        return groups
+    if op == "not":
+        groups.extend(_or_branch_groups(expression.get("child")))
+    return groups
+
+
+def _threshold_atoms(branch: Any) -> list[tuple[str, Decimal, str]]:
+    """分支里的阈值条件 ``(家族, 数值, 比较符)``；含非阈值条件时返回空表示不适用。
+
+    零阈值（存在性条件）不参与：原文本来就不会写「0 元」，不构成档位配对问题。
+    """
+    atoms: list[tuple[str, Decimal, str]] = []
+    stack = [branch]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, Mapping):
+            return []
+        op = node.get("op")
+        if op == "and":
+            stack.extend(node.get("children") or [])
+            continue
+        if op != "compare":
+            return []
+        key = str(node.get("factKey"))
+        if key == _RATIO_FAMILY:
+            family = _RATIO_FAMILY
+        else:
+            family = _METRIC_FAMILY_BY_KEY.get(key)
+            if family is None or str(node.get("unit")) not in ("CNY", "person"):
+                return []
+        amount = _to_decimal(node.get("value"))
+        if amount is None or amount == 0:
+            continue
+        atoms.append((family, amount, str(node.get("comparator"))))
+    return atoms
+
+
+def _span_supports(
+    span: SourceSpanCheck,
+    atoms: list[tuple[str, Decimal, str]],
+    bounds: list[tuple[SourceSpanCheck, "ThresholdBound"]],
+) -> bool:
+    """这一支的全部阈值能否都由**同一段**引文支撑。
+
+    按 span 对象本身归集，不按 ``source_id``：同一份政策的多段引文共用一个来源正文，
+    按来源归集等于又把整条条款的阈值汇总起来，这条检查就没意义了。
+    """
+    own = [(candidate, bound) for candidate, bound in bounds if candidate is span]
+    return all(_pooled_supports(atom, own) for atom in atoms)
+
+
+def _pooled_supports(
+    atom: tuple[str, Decimal, str],
+    bounds: list[tuple[SourceSpanCheck, "ThresholdBound"]],
+) -> bool:
+    family, amount, comparator = atom
+    return any(
+        bound.family == family and bound.amount == amount and _same_trend(bound.direction, comparator)
+        for _span, bound in bounds
+    )
 
 
 def _walk_support(
