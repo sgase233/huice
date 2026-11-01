@@ -4,6 +4,7 @@ import type {
   PolicyDraftList, PolicyImportMetadata, PolicyList, PublishPolicyInput,
   SaveCriteriaInput, SaveCriteriaResult, TraceResponse,
 } from './types';
+import { factUnits } from '../demo';
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1').replace(/\/$/, '');
 let adminToken: string | null = null;
@@ -68,6 +69,10 @@ function assertShape(value: unknown, kind: string): void {
       }
       if (!Array.isArray(assessment.criteriaResults)) throw new Error('接口契约错误：缺少条件结果');
       if (!Array.isArray(assessment.missingFacts) || !Array.isArray(assessment.staleReasons) || !Array.isArray(assessment.warnings)) throw new Error('接口契约错误：判断结果字段缺失');
+      if (assessment.nextQuestion !== null && assessment.nextQuestion !== undefined) {
+        const question = assessment.nextQuestion;
+        if (!isObject(question) || typeof question.prompt !== 'string' || typeof question.reason !== 'string' || question.rank !== 1 || !isObject(question.factRef) || typeof question.factRef.key !== 'string' || !Object.hasOwn(factUnits, question.factRef.key) || !isObject(question.factRef.period) || typeof question.factRef.period.startDate !== 'string' || typeof question.factRef.period.endDate !== 'string') throw new Error('接口契约错误：优先问题无效');
+      }
       for (const criterion of assessment.criteriaResults as Record<string, unknown>[]) {
         if (!isObject(criterion) || !['satisfied', 'not_satisfied', 'insufficient_evidence', 'conflict'].includes(String(criterion.result)) || !Array.isArray(criterion.factRefs) || !Array.isArray(criterion.evidenceRefs) || !criterion.evidenceRefs.every(safeEvidence)) throw new Error('接口契约错误：条件结果无效');
       }
@@ -119,7 +124,7 @@ export const api = {
     request<Enterprise>(`/enterprises/${segment(enterpriseId)}/facts/${segment(key)}`, 'Enterprise', { method: 'PATCH', headers: match(etag), body: json(input) }),
   createRun: (input: AssessmentInput) => request<AssessmentRun>('/assessment-runs', 'AssessmentRun', { method: 'POST', body: json(input) }),
   getRun: (runId: string) => request<AssessmentRun>(`/assessment-runs/${segment(runId)}`, 'AssessmentRun'),
-  downloadReport: (runId: string) => request<string>(`/assessment-runs/${segment(runId)}/report.md`, 'markdown'),
+  downloadReport: (runId: string) => request<string>(`/assessment-runs/${segment(runId)}/report.md`, 'markdown', { headers: { Accept: 'text/markdown' } }),
   getTrace: (runId: string) => request<TraceResponse>(`/assessment-runs/${segment(runId)}/trace`, 'TraceResponse'),
   listAdminPolicies: (filters: { status?: string; type?: string; cursor?: string; limit?: number } = {}) =>
     request<PolicyDraftList>(`/admin/policies${query(filters)}`, 'PolicyDraftList'),

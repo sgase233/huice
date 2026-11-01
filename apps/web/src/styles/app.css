@@ -97,6 +97,8 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .evidence-index { color: var(--brand); font-weight: 700; font-variant-numeric: tabular-nums; }
 .checklist { list-style: none; margin: 1rem 0; padding: 0; }
 .prep-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.real-report { overflow-wrap: anywhere; }
+.real-report .prep-grid > * { min-width: 0; }
 .checklist li { display: flex; gap: .75rem; border-bottom: 1px solid var(--line); padding: .8rem 0; }
 .check-square { flex: none; height: 1.15rem; width: 1.15rem; border: 2px solid #67858f; border-radius: .2rem; margin-top: .15rem; }
 .draft-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-top: 1px solid var(--line); padding: 1.1rem 0; }

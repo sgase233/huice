@@ -7,6 +7,10 @@ const response = (body: unknown, status = 200, extra: Record<string, string> = {
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'X-Trace-Id': 'trace-1', ...extra } });
 
 describe('HTTP contract boundary', () => {
+  it('rejects a question with an unknown fact key', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'r', policyVersionMap: {}, assessments: [{ result: 'insufficient_evidence', validity: 'current', criteriaResults: [], missingFacts: [], staleReasons: [], warnings: [], nextQuestion: { prompt: '问题', reason: '理由', rank: 1, factRef: { key: 'notAKey', period: { startDate: '2026-01-01', endDate: '2026-12-31' } } } }] })));
+    await expect(api.getRun('r')).rejects.toThrow('优先问题无效');
+  });
   it('encodes queries and includes credentials', async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ items: [], nextCursor: null }));
     vi.stubGlobal('fetch', fetcher);

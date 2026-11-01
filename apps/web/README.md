@@ -47,6 +47,8 @@ M1 现有代码包含 API-02/03/08—14 路由；真实服务及数据需联调�
 # 从仓库根目录执行；<...> 替换为临时测试数据库的专用凭据
 $env:HUICE_M2_TEST_DSN = 'postgresql://<用户名>:<测试密码>@127.0.0.1:55432/huice_m2_phase3_test'
 <测试环境Python> -X utf8 apps/web/scripts/seed_phase3.py
+  # 阶段四：在上述专用测试库追加一条合成资金政策；重复执行会拒绝。
+  <测试环境Python> -X utf8 apps/web/scripts/seed_phase4_grant.py
 # 用同一 URL 作为后端 DATABASE_URL，配置 local/fixture 模式和本机专用 ADMIN_TOKEN；
 # 按后端说明启动 FastAPI 到 127.0.0.1:8000，再检查 health。
 cd apps/web
