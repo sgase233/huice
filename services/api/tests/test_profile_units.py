@@ -270,3 +270,55 @@ def test_ratio_is_stored_as_a_plain_decimal_and_kept_on_the_wire():
 def test_ratio_rejects_negative_values():
     with pytest.raises(ApiProblem):
         normalize_profile(profile_with(fact_body("rdExpenseRevenueRatio", "-0.01", "ratio")))
+
+
+# ------------------------------------------------- rc.4 新增键的归一化口径
+
+
+def test_specific_market_since_is_a_date_and_reports_under_its_own_name():
+    """两个日期键共用一个分支；报错文案若一律写「成立日期」，会把用户引向错的字段。"""
+
+    profile = normalize_profile(profile_with(fact_body("specificMarketSince", "2020-05-01", "date")))
+    item = next(entry for entry in profile.facts if entry.key == "specificMarketSince")
+    assert item.value == date(2020, 5, 1)
+
+    with pytest.raises(ApiProblem) as rejected:
+        normalize_profile(profile_with(fact_body("specificMarketSince", "2020/05/01", "date")))
+
+    messages = [entry["message"] for entry in rejected.value.details["fieldErrors"]]
+    assert any("细分市场起始日期必须是 YYYY-MM-DD" in message for message in messages)
+    assert not any("成立日期" in message for message in messages)
+
+
+def test_specific_market_since_must_sit_on_the_profile_year():
+    """与 establishedDate 同口径：事实表按 (key, period) 精确匹配，期间错一格就查不到。"""
+
+    with pytest.raises(ApiProblem) as rejected:
+        normalize_profile(
+            profile_with(
+                {
+                    "key": "specificMarketSince",
+                    "value": "2020-05-01",
+                    "unit": "date",
+                    "period": {"startDate": "2025-01-01", "endDate": "2025-12-31"},
+                    "source": "user_input",
+                }
+            )
+        )
+
+    assert rejected.value.status_code == 422
+    assert "必须等于画像年度" in str(rejected.value.details)
+
+
+def test_independent_legal_entity_only_accepts_a_json_boolean():
+    profile = normalize_profile(
+        profile_with(fact_body("independentLegalEntity", True, "boolean"))
+    )
+    item = next(entry for entry in profile.facts if entry.key == "independentLegalEntity")
+    assert item.value is True
+
+    with pytest.raises(ApiProblem) as rejected:
+        normalize_profile(profile_with(fact_body("independentLegalEntity", "true", "boolean")))
+
+    messages = [entry["message"] for entry in rejected.value.details["fieldErrors"]]
+    assert any("布尔类事实必须是 JSON 布尔值" in message for message in messages)

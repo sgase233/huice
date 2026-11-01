@@ -16,7 +16,7 @@ export type Period = {
   endDate: Date;
 };
 
-export type FactKey = "region" | "industry" | "establishedDate" | "taxableIncome" | "rdExpense" | "rdActivity" | "employeeCountStart" | "employeeCountEnd" | "assetsStart" | "assetsEnd" | "revenue" | "equityFinancing" | "rdExpenseIncrease" | "rdExpenseRevenueRatio" | "rdAddDeductionClaimed" | "creditRecord";
+export type FactKey = "region" | "industry" | "establishedDate" | "taxableIncome" | "rdExpense" | "rdActivity" | "employeeCountStart" | "employeeCountEnd" | "assetsStart" | "assetsEnd" | "revenue" | "equityFinancing" | "rdExpenseIncrease" | "rdExpenseRevenueRatio" | "rdAddDeductionClaimed" | "creditRecord" | "specificMarketSince" | "independentLegalEntity";
 
 export type FactUnit = "code" | "date" | "CNY" | "boolean" | "person" | "ratio";
 
@@ -117,7 +117,7 @@ export type SourceDocument = {
 
 export type ExpressionPeriod = ("assessment") | (Period);
 
-export type Expression = (AndExpression) | (OrExpression) | (NotExpression) | (CompareExpression) | (DateExpression) | (IndustryExclusionExpression) | (QuarterlyAverageExpression);
+export type Expression = (AndExpression) | (OrExpression) | (NotExpression) | (CompareExpression) | (DateExpression) | (IndustryExclusionExpression) | (QuarterlyAverageExpression) | (ManualReviewExpression);
 
 export type AndExpression = {
   op: "and";
@@ -145,7 +145,7 @@ export type CompareExpression = {
 
 export type DateExpression = {
   op: "date";
-  factKey: "establishedDate";
+  factKey: "establishedDate" | "specificMarketSince";
   period: ExpressionPeriod;
   comparator: Comparator;
   value: Date;
@@ -165,6 +165,11 @@ export type QuarterlyAverageExpression = {
   comparator: Comparator;
   value: DecimalString;
   unit: "person" | "CNY";
+};
+
+export type ManualReviewExpression = {
+  op: "manual_review";
+  reason: string;
 };
 
 export type CriterionDraft = {

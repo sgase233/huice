@@ -381,6 +381,55 @@ def test_publish_succeeds_once_the_branches_are_merged_into_one_or(client, auth,
     assert response.status_code == 200
 
 
+MANUAL_REVIEW_EXPRESSION = {
+    "op": "manual_review",
+    "reason": "「国家非限制和禁止行业」指向《产业结构调整指导目录》，没有 GB/T 码，须人工核查",
+}
+INDUSTRY_QUOTE = "第二条 本通知不适用于批发和零售业等限制类行业。"
+
+
+def test_a_manual_review_criterion_does_not_block_publishing(client, auth, repository):
+    """M2 在 PR #9 的 P1：判不了的条件不能只剩「退回待核实、整版政策发不出去」一条路。"""
+
+    draft = seed_draft(repository)
+    saved = save_criteria(
+        client,
+        auth,
+        draft,
+        [criterion_payload(draft, quote=INDUSTRY_QUOTE, expression=MANUAL_REVIEW_EXPRESSION)],
+    ).json()
+
+    # 校验状态仍是 passed——「passed」说的是引文与结构没问题，不是「这条判定为真」。
+    assert [item["validationStatus"] for item in saved["criteria"]] == ["passed"]
+    assert saved["validationFindings"] == []
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/publish",
+        headers=headers(auth, saved["draft"]["revision"]),
+        json={"version": draft.version, "reviewConfirmed": True},
+    )
+    assert response.status_code == 200
+
+
+def test_a_manual_review_criterion_still_fails_on_a_bad_quote(client, auth, repository):
+    draft = seed_draft(repository)
+    saved = save_criteria(
+        client,
+        auth,
+        draft,
+        [
+            criterion_payload(
+                draft,
+                quote="本条由税务机关另行核定",
+                expression=MANUAL_REVIEW_EXPRESSION,
+            )
+        ],
+    ).json()
+
+    assert [item["validationStatus"] for item in saved["criteria"]] == ["failed"]
+    assert any(finding["code"].startswith("SPAN_") for finding in saved["validationFindings"])
+
+
 # ------------------------------------------------------------------ API-07
 
 

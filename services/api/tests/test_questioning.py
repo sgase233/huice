@@ -167,8 +167,24 @@ def test_rd_add_deduction_question_is_positive_too():
     question = choose_next_question([pending("a", ("rdAddDeductionClaimed", *YEAR))])
 
     assert question is not None
-    # true = 期间内各年度均已申报；问句要写明「每个年度都申报填是」。
-    assert "每个年度都申报填「是」" in question.prompt
+    # true = 期间内各年度均已申报；问句要写明「每个年度都已申报填是」。
+    assert "每个年度都已申报填「是」" in question.prompt
+
+
+def test_rd_add_deduction_question_keeps_not_yet_filed_out_of_no():
+    """「还没申报」和「申报了但没享受」是两回事，不能都落到 `false`。
+
+    补问文案原来是「否则填「否」」：申报期还没到的企业只能答「否」，
+    ``rdAddDeductionClaimed = false`` 立刻让条件判 ``not_satisfied``——
+    把「未知」写成了否定事实。文案改成三态后，「尚未申报」走 ``value=null``
+    （未知，求值得证据不足），``false`` 只留给「确定没申报享受」。
+    """
+
+    prompt = PROMPTS["rdAddDeductionClaimed"]
+
+    assert "尚未申报" in prompt
+    assert "跳过" in prompt
+    assert "未知" in prompt
 
 
 #: 补问文案是按 key 静态定义的，并不知道这次 ``factRef.period`` 是哪一年；界面会把期间
@@ -205,3 +221,34 @@ def test_expense_increase_prompt_states_the_formula():
     assert "该期间的研发费用" in prompt
     assert "上一期间的研发费用" in prompt
     assert "负数" in prompt
+
+
+# ------------------------------------------------- rc.4 新增键的补问（2026-10-29）
+
+
+def test_every_fact_key_has_a_prompt_and_both_tiers():
+    """事实字典扩键时最容易漏的就是这三张静态表：漏一条补问，页面只能显示键名。"""
+
+    from app.domain.rules import FACT_UNITS
+
+    assert set(FACT_UNITS) - set(PROMPTS) == set()
+    assert set(FACT_UNITS) - set(DEFAULT_COST) == set()
+    assert set(FACT_UNITS) - set(DEFAULT_SENSITIVITY) == set()
+
+
+def test_specific_market_question_asks_for_a_date_not_a_number_of_years():
+    """年限是相对量：问「几年」会存下一个随判断年份漂移的数，同一份快照重算结果不同。"""
+
+    question = choose_next_question([pending("a", ("specificMarketSince", *YEAR))])
+
+    assert question is not None
+    assert "YYYY-MM-DD" in question.prompt
+    assert "不是年数" in question.prompt
+
+
+def test_independent_legal_entity_question_is_positive_too():
+    question = choose_next_question([pending("a", ("independentLegalEntity", *YEAR))])
+
+    assert question is not None
+    assert "具有独立法人资格" in question.prompt
+    assert "是否不具有" not in question.prompt

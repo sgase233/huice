@@ -242,6 +242,8 @@ FactKey = Literal[
     "rdExpenseRevenueRatio",
     "rdAddDeductionClaimed",
     "creditRecord",
+    "specificMarketSince",
+    "independentLegalEntity",
 ]
 FactUnit = Literal["code", "date", "CNY", "boolean", "person", "ratio"]
 FactSource = Literal["user_input", "synthetic_material"]

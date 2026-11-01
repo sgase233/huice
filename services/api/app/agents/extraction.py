@@ -291,7 +291,7 @@ _SYSTEM_PROMPT = (
     "factKey 只能取 region/industry/establishedDate/taxableIncome/rdExpense/"
     "assetsStart/assetsEnd/employeeCountStart/employeeCountEnd/rdActivity/"
     "revenue/equityFinancing/rdExpenseIncrease/rdExpenseRevenueRatio/"
-    "rdAddDeductionClaimed/creditRecord；"
+    "rdAddDeductionClaimed/creditRecord/specificMarketSince/independentLegalEntity；"
     "数值用十进制字符串，unit 用 CNY/person/code/date/boolean/ratio"
     "（rdExpenseRevenueRatio 只能用 ratio，取值是小数，3% 写 0.03）。"
     "quote 必须是原文中一字不差的片段，找不到原文就不要输出该项。"
@@ -329,6 +329,14 @@ def _extract_with_model(
                 "模型给出的引文在正文中找不到，已丢弃该项。",
             )
             continue
+        if _has_manual_review(expression):
+            # 提示词里没有这个算子，但模型仍可能自己编一个「这条我判不了」。
+            # 谁有权宣布「须人工核查」是标注方的事，不能让模型替人卸责。
+            outcome.add(
+                "EXTRACTION_MANUAL_REVIEW_NOT_ALLOWED",
+                "模型不能把条件标成 manual_review，该由标注方决定，已丢弃该项。",
+            )
+            continue
         problems = validate_expression(expression)
         if problems:
             outcome.add(
@@ -355,6 +363,18 @@ def _extract_with_model(
     if not outcome.criteria and outcome.status == "ok":
         outcome.add("EXTRACTION_NO_CRITERIA", "模型没有给出可用条款，请人工录入。")
     return outcome
+
+
+def _has_manual_review(node: Any) -> bool:
+    """表达式里任意位置出现 ``manual_review`` 即为真（含嵌在 and/or 子项里的）。"""
+
+    if isinstance(node, Mapping):
+        if node.get("op") == "manual_review":
+            return True
+        return any(_has_manual_review(value) for value in node.values())
+    if isinstance(node, (list, tuple)):
+        return any(_has_manual_review(item) for item in node)
+    return False
 
 
 def _parse_model_json(text: str) -> list[Any] | None:

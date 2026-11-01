@@ -18,8 +18,8 @@ export function validateEnterprise(input: EnterpriseInput): string[] {
     if (!validDate(fact.period.startDate) || !validDate(fact.period.endDate) || fact.period.startDate > fact.period.endDate) errors.push(`${factLabels[fact.key]}的期间无效。`);
     if (fact.unit !== factUnits[fact.key]) errors.push(`${factLabels[fact.key]}的单位不正确。`);
     if (fact.value === null) continue;
-    if (fact.key === 'rdActivity') {
-      if (typeof fact.value !== 'boolean') errors.push('研发活动必须为“是”“否”或未知。');
+    if (fact.unit === 'boolean') {
+      if (typeof fact.value !== 'boolean') errors.push(`${factLabels[fact.key]}必须为“是”“否”或未知。`);
     } else if (typeof fact.value !== 'string' || !fact.value.trim()) {
       errors.push(`${factLabels[fact.key]}不能是空字符串。`);
     } else if (fact.unit === 'CNY' || fact.unit === 'person') {
@@ -76,7 +76,7 @@ export default function EnterprisePage({ value, onSave }: Props) {
               const key = event.target.value as FactKey;
               editFact(index, { key, unit: factUnits[key], value: null });
             }}>{keys.map(key => <option key={key} value={key}>{factLabels[key]}</option>)}</select></label>
-            <label>值{fact.value === null ? <input value="未知" disabled aria-label={`${factLabels[fact.key]}未知`} /> : fact.key === 'rdActivity' ?
+            <label>值{fact.value === null ? <input value="未知" disabled aria-label={`${factLabels[fact.key]}未知`} /> : fact.unit === 'boolean' ?
               <select value={String(fact.value)} onChange={event => editFact(index, { value: event.target.value === 'true' })}><option value="true">是</option><option value="false">否</option></select> :
               <input type={fact.unit === 'date' ? 'date' : 'text'} inputMode={fact.unit === 'CNY' || fact.unit === 'person' ? 'decimal' : undefined} value={String(fact.value)} onChange={event => editFact(index, { value: event.target.value })} />}</label>
             <label>单位<input value={fact.unit} disabled /></label>
@@ -84,7 +84,7 @@ export default function EnterprisePage({ value, onSave }: Props) {
             <label>期间结束<input type="date" value={fact.period.endDate} onChange={event => editFact(index, { period: { ...fact.period, endDate: event.target.value } })} /></label>
             <label>来源<select value={fact.source} onChange={event => editFact(index, { source: event.target.value as FactInput['source'] })}><option value="user_input">用户输入</option><option value="synthetic_material">合成材料</option></select></label>
           </div>
-          <div className="fact-actions"><label className="inline-check"><input type="checkbox" checked={fact.value === null} onChange={event => editFact(index, { value: event.target.checked ? null : fact.key === 'rdActivity' ? false : fact.unit === 'date' ? draft.period.startDate : '' })} />未知</label>
+          <div className="fact-actions"><label className="inline-check"><input type="checkbox" checked={fact.value === null} onChange={event => editFact(index, { value: event.target.checked ? null : fact.unit === 'boolean' ? false : fact.unit === 'date' ? draft.period.startDate : '' })} />未知</label>
             {fact.key !== 'region' && fact.key !== 'industry' && <button type="button" className="text-button" onClick={() => setDraft(current => ({ ...current, facts: current.facts.filter((_, i) => i !== index) }))}>移除此事实</button>}</div>
         </fieldset>)}
       </div>
