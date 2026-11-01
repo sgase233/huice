@@ -33,7 +33,7 @@ paths:
                 $ref: '#/components/schemas/HealthResponse'
               example:
                 status: ok
-                version: 1.0.0-rc.3
+                version: 1.0.0-rc.5
         default:
           $ref: '#/components/responses/ApiFailure'
         '400': &id004

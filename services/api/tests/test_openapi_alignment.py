@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
+from app.config import APP_VERSION
 from app.main import API_PREFIX, create_app
 from support import CONTRACT_PATH
 
@@ -84,8 +85,14 @@ def test_unimplemented_endpoints_are_not_served(schema):
     assert served == set(IMPLEMENTED)
 
 
-def test_contract_version_is_release_candidate(contract):
-    assert contract["info"]["version"] == "1.0.0-rc.5"
+def test_served_version_matches_the_contract(contract):
+    """健康检查自报的版本必须等于契约的 ``info.version``。
+
+    这条原先只断言契约是某个 rc 字面量，``config.APP_VERSION`` 却没人管——它在 rc.3
+    之后就没再跟，契约走到 rc.5 时 ``/health`` 仍对外报 ``1.0.0-rc.3``（2026-11-01
+    评审指出）。改成两边比对后，以后只改一侧会直接转红。
+    """
+    assert APP_VERSION == contract["info"]["version"]
 
 
 # --------------------------------------------------- 事实字典的三处同步（rc.4 起）
