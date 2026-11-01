@@ -15,7 +15,7 @@
 表头固定（不得任意改，M1 导入时映射 camelCase）：
 
 ```
-policy_id,criterion_id,source_version,source_page_or_section,source_span,field,operator,value,unit,period,logic_group,negation,annotator_a,annotator_b,adjudicated_expression,review_status,adjudication_note
+policy_id,criterion_id,source_version,source_page_or_section,source_span,field,operator,value,unit,period,logic_group,negation,annotator_a,annotator_b,adjudicated_expression,source_document,review_finding,review_status,adjudication_note
 ```
 
 | 列 | 含义 | 填写要求与允许取值 |
@@ -35,10 +35,12 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `annotator_a` | 标注人 A | 独立填写，留空=尚未标注 |
 | `annotator_b` | 标注人 B | 独立填写，留空=尚未标注 |
 | `adjudicated_expression` | 仲裁后 AST | JSON 字符串，须 CSV 转义（内部双引号写成 `""`），操作符见 §3 |
+| `source_document` | 引文来源文档 | 与 `source_span` 的段对齐、`\|` 分隔，每段为该引文所在文档的文号（对应 `data/policies/sources/<文号>.txt`）。留空表示用政策本体来源正文（`<policy_id>.txt`）；仅当引文出自政策本体之外的文件时填写 |
+| `review_finding` | 冲突标记 | `conflict`（已审核冲突）或留空（`none`）。标 `conflict` 时：`adjudicated_expression` 用 `manual_review` 表达式占位（契约必填、不能留空）、`source_span` 必须含**两处不同**的权威原文（`\|` 分隔）、`source_document` 标注每段出处，规则引擎固定返回 `conflict`，可发布 |
 | `review_status` | 复核状态 | `待双人复核`（默认）→ `已仲裁` → `可发布`；未仲裁不得写「可发布」。`待核实` 表示条件暂无法写成可执行 AST，该行仅保留在 CSV 供复核、**不进库**——`adjudicated_expression` 留空，导入时会被 API-06 以 422 拒绝（这是护栏，不是被忍受的状态）；转「可发布」前必须先补齐 AST |
 | `adjudication_note` | 裁决备注 | 仲裁结论、兜底说明、日期读法等；仅需要时填写，多数行为空 |
 
-**注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。**例外**：合并条款（如 SRDI-002、RDSUB-001）的 `operator=and/or` 与 `manual_review` 行（如 SME-001、SRDI-004~008）的 `field/value/unit/period` 均留空——前者本就不可能对应单行投影，只以 AST 为准、不回改；后者语义全在 `reason` 里、不涉及事实键，同样只以 AST 为准。
+**注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。**例外**：合并条款（如 SRDI-002、RDSUB-001）的 `operator=and/or`、`manual_review` 行（如 SME-001、SRDI-004~008）与冲突行（`review_finding=conflict`，如 RD-004）的 `field/value/unit/period` 均留空；其中合并行与 manual_review 行只以 AST 为准、不回改，冲突行的 `adjudicated_expression` 也留空——冲突由 `review_finding` 表达、不写 AST。
 
 ## 2. 原文定位与核对要点
 
@@ -169,3 +171,15 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 - `enterprises.csv` 一行一个 `key+期间`；`region/industry` 为每行复用的企业属性列，不单独占 `fact_key` 行；`period` 用 `YYYY-MM-DD/YYYY-MM-DD`；`verified=false` 直到有已复核的合成材料。
 - `labels.csv` 是条件级四态真值与仲裁结果，`split` 分开发/留出，留出集看结果前冻结（见 ACCEPTANCE 与 M3_HANDOFF）。
 - `material_requirements.csv` 是税/资金两类「已审材料要求」（必交/条件交 + 材料→事实键映射），字段口径与对接说明见 [MATERIAL_REQUIREMENTS.md](./MATERIAL_REQUIREMENTS.md)，不由本规范 §1 覆盖。
+
+## 9. 已确认口径备忘（2026-11-01 labels 审核确认）
+
+以下口径经 `labels.csv` 审核确认，标注与复核时不得按右栏误解：
+
+| 政策/名词 | 准确口径（本项目采用） | 不要误解为 |
+| --- | --- | --- |
+| SRDI 年限 | 2022《优质中小企业梯度培育管理暂行办法》（工信部企业〔2022〕63号）「从事特定细分市场 2 年以上」；本项目为 2025 年申报 | 2026 新办法（工信部企业〔2026〕2 号）「截至上年末 3 年以上」——2026 申报才适用 |
+| SRDI 前置条件 | 「须先获创新型中小企业称号」已标注为 SRDI-004 manual_review | 漏掉该前置条件 |
+| RDSUB | 《深圳市研发投入补助计划项目管理办法》（深科创规〔2026〕1号），属财政资金资助（grant），第八条（三）明文含「诚信记录良好」等要件 | 研发费用加计扣除税收政策（其要件无诚信排除项） |
+| SME | 小型微利企业口径：应纳税所得额≤300 万 + 从业人数≤300 + 资产总额≤5000 万 + 非限制禁止行业（财政部 税务总局公告2023年第12号） | 工信部《中小企业划型标准规定》（工信部联企业〔2011〕300 号）——划型是 SRDI-005 的 manual_review |
+| HIGHTECH 门槛 | 第六条（二）固定金额：上年度研发费用≥100 万（规上≥50 万） | 高企认定研发费用占比（5%/4%/3%）与高新收入≥60%——那是「是否为高企」的资格问题（HT-002 manual_review） |

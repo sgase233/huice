@@ -45,20 +45,23 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
 
 ## 3. 材料 → 事实键映射（`proves_fact_keys`）
 
-事实键只允许取 [`ANNOTATION_GUIDE.md`](./ANNOTATION_GUIDE.md) §4 事实字典与 `services/api/app/domain/rules.py` `FACT_UNITS` 的十键之一：`region / industry / establishedDate / taxableIncome / rdExpense / rdActivity / employeeCountStart / employeeCountEnd / assetsStart / assetsEnd`。映射口径：
+事实键只允许取 [`ANNOTATION_GUIDE.md`](./ANNOTATION_GUIDE.md) §4 事实字典与 `services/api/app/domain/rules.py` `FACT_UNITS` 的 18 键之一：`region / industry / establishedDate / taxableIncome / rdExpense / rdActivity / employeeCountStart / employeeCountEnd / assetsStart / assetsEnd / revenue / equityFinancing / rdExpenseIncrease / rdExpenseRevenueRatio / rdAddDeductionClaimed / creditRecord / specificMarketSince / independentLegalEntity`。映射口径：
 
 | 材料 | 证明的事实键 |
 | --- | --- |
-| 营业执照 | `region`、`industry`、`establishedDate` |
+| 营业执照 | `region`、`industry`、`establishedDate`、`independentLegalEntity` |
 | 企业所得税年度纳税申报表 | `taxableIncome` |
 | 研发费用加计扣除优惠明细表/归集辅助账 | `rdExpense`、`rdActivity` |
 | 研发项目立项文件与实施记录 | `rdActivity` |
 | 各季度资产负债表 | `assetsStart`、`assetsEnd` |
 | 各季度从业人数统计 | `employeeCountStart`、`employeeCountEnd` |
-| 财务审计报告/财务报表 | `taxableIncome`、`rdExpense`、`assetsStart`、`assetsEnd`（按报告是否覆盖） |
+| 财务审计报告/财务报表 | `taxableIncome`、`rdExpense`、`assetsStart`、`assetsEnd`、`revenue`、`rdExpenseIncrease`、`rdExpenseRevenueRatio`（按报告是否覆盖；增量/占比为预计算） |
 | 研发费用专项归集表/专项审计报告 | `rdExpense` |
+| 研发费用加计扣除申报表/税务受理凭证 | `rdAddDeductionClaimed` |
+| 近2年新增股权融资凭证（验资报告/银行凭证） | `equityFinancing` |
+| 信用报告/诚信承诺书 | `creditRecord` |
 
-不直接对应事实键的材料（如申请书、信用报告）`proves_fact_keys` 留空，但仍出现在材料清单里——它们是申报要件，只是不驱动 `verified=true`。
+不直接对应事实键的材料/事实（如申请书、`specificMarketSince` 细分市场年限）`proves_fact_keys` 留空——它们仍是申报要件或须人工核查，只是不驱动 `verified=true`。
 
 ## 4. 与 `preparation.items[]`、`verified=true` 的对接
 
@@ -68,6 +71,6 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
 
 ## 5. 待核实与未决
 
-1. 资金政策的条件标注尚未全量完成（`criteria_review.csv` 目前只有 SME/RD 两税收政策），资金类材料的 `applies_to_policy_ids` 与 `condition_desc` 随资金条件标注补齐后回填。
+1. 资金政策条件标注已覆盖 SRDI、RD-SUBSIDY、HIGHTECH 三项（2026-11-01），材料映射已按 18 键补齐；`applies_to_policy_ids` 与 `condition_desc` 待双人复核。
 2. 「必交/条件交」是否需要契约字段（见 §4），待 M1 回告。
-3. 全部 12 行材料要求均为「待双人复核」，未经两人独立核对 + 仲裁不得交 M1 当作可发布真值。
+3. 全部 14 行材料要求均为「待双人复核」，未经两人独立核对 + 仲裁不得交 M1 当作可发布真值。
