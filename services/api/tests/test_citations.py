@@ -964,14 +964,24 @@ TIER_SPANS = (
 )
 
 
-def tier_criterion(*, first_ratio: str, second_ratio: str, third_ratio: str) -> CriterionInput:
-    """三档条件，比例可换：用来验证「金额与比例必须出自同一段引文」。"""
+def tier_criterion(
+    *,
+    first_ratio: str,
+    second_ratio: str,
+    third_ratio: str,
+    spans: tuple[str, ...] = TIER_SPANS,
+) -> CriterionInput:
+    """三档条件，比例与引文可换：用来验证「金额与比例必须出自同一处原文」。
+
+    ``spans`` 可以让三档分三段引文标注，也可以整段引在同一处——后者是高企认定原文的
+    实际排版，也是 M2 在 #20 指出的漏网场景。
+    """
 
     def branch(revenue_children, ratio: str) -> dict:
         return {"op": "and", "children": [*revenue_children, compare("rdExpenseRevenueRatio", ratio, "ratio")]}
 
     return criterion(
-        *(gxjs_span(quote) for quote in TIER_SPANS),
+        *(gxjs_span(quote) for quote in spans),
         expression={
             "op": "or",
             "children": [
@@ -1008,6 +1018,44 @@ def test_swapped_tier_ratios_are_reported():
 
     verdict = validate_criterion(
         tier_criterion(first_ratio="0.04", second_ratio="0.06", third_ratio="0.03"),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
+
+
+def test_a_tier_table_quoted_as_one_block_passes():
+    """三档整段引在同一处（高企认定第十条（四）的原文排版）时，正确搭配仍要通过。
+
+    2026-11-01 M2 在 #20 指出：只按「引文」归集时，单段引文里三档的金额与比例又被汇总，
+    把 6% 与 4% 对调照样各找得到。核对粒度因此下沉到句读。
+    """
+
+    verdict = validate_criterion(
+        tier_criterion(
+            first_ratio="0.06",
+            second_ratio="0.04",
+            third_ratio="0.03",
+            spans=(GXJS_TEXT,),
+        ),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_swapped_tier_ratios_inside_one_block_are_reported():
+    """整段引在同一处时，6% 与 4% 对调也必须报出来——两句里的数字互换了归属。"""
+
+    verdict = validate_criterion(
+        tier_criterion(
+            first_ratio="0.04",
+            second_ratio="0.06",
+            third_ratio="0.03",
+            spans=(GXJS_TEXT,),
+        ),
         GXJS_SOURCES,
         version=VERSION,
     )

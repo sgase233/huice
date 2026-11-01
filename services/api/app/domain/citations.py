@@ -22,6 +22,8 @@
   写出 0）。
 - 日期条件接受「两个会计年度（含）以上」这类**时长型**相对表述：绝对日期是按规定换算
   出来的固定值，换算依据记在标注说明里。
+- 档位表的金额与比例只比到「同一句」：同一句里配齐即算同一档；三档的比例单独列在别处、
+  无法对应到档位时报 ``CITATION_BRANCH_SOURCE_MIXED`` 交人工复核，不默认同档。
 
 ``reviewFinding=conflict`` 的条款**可以**发布：它本身就是「经人工确认的冲突记录」，
 规则引擎会固定返回 ``conflict``。这与「引用不支持表达式」是两回事，后者不能发布。
@@ -440,18 +442,22 @@ def _check_branch_sources(
     verdict: CriterionVerdict,
     bounds: list[tuple[SourceSpanCheck, "ThresholdBound"]],
 ) -> None:
-    """「或」的每一支，阈值要能由**同一条引文**同时支撑。
+    """「或」的每一支，金额与比例要由**同一处**原文同时支撑。
 
     三档比例表格（「小于 5,000 万元对应 6%」「5,000 万元至 20,000 万元对应 4%」…）把
-    金额阈值与比例阈值分散在同一条款的多段引文里。只把整条条款的阈值汇总起来逐个比对，
-    金额和比例各自都找得到，于是把 6% 与 4% 对调也能通过——而企业结论会因此改变。这里
-    要求每一支在同一段引文里配齐；配不齐时报 ``CITATION_BRANCH_SOURCE_MIXED`` 交人工复核，
-    而不是默认它们是同一档。
+    金额阈值与比例阈值放在同一条款的不同位置。只把整条条款的阈值汇总起来逐个比对，金额
+    和比例各自都找得到，于是把 6% 与 4% 对调也能通过——而企业结论会因此改变。
+
+    核对粒度取「句读」而不是「引文」：档位表常常整段写在同一处（高企认定第十条第（五）项
+    的三档就是一整段），只按引文归集时，一整段里三档的金额与比例仍然被汇总，对调照样通过。
+    按句号、分号与换行切开后，每一支要求金额与比例出自同一句；跨句才配齐的报
+    ``CITATION_BRANCH_SOURCE_MIXED`` 交人工复核，而不是默认它们是同一档。
 
     只看纯阈值分支：分支里出现日期、行业排除、``manual_review`` 或嵌套 ``or`` 时跳过——
     那些条件的证据本来就可以分散在不同引文里，拿这条规则去卡会误伤。
     """
-    if len(criterion.spans) < 2:
+    clauses = _clause_bounds(criterion.spans)
+    if not clauses:
         return
     for index, branches in enumerate(_or_branch_groups(criterion.expression)):
         atoms_by_branch = [_threshold_atoms(branch) for branch in branches]
@@ -464,17 +470,18 @@ def _check_branch_sources(
         if len(families) != 1 or len(next(iter(families))) < 2:
             continue
         for branch_index, atoms in enumerate(atoms_by_branch):
-            if any(_span_supports(span, atoms, bounds) for span in criterion.spans):
+            if any(_supports_atoms(atoms, clause) for clause in clauses):
                 continue
-            if not all(_pooled_supports(atom, bounds) for atom in atoms):
+            if not _supports_atoms(atoms, bounds):
                 # 汇总都撑不住，已有的 CITATION_THRESHOLD_* 已经报过，不重复报。
                 continue
             verdict.findings.append(
                 Finding(
                     "CITATION_BRANCH_SOURCE_MIXED",
-                    f"第 {index + 1} 个「或」的第 {branch_index + 1} 支，阈值分散在多条引文里"
-                    f"（金额与比例不在同一处），无法确认它们属于同一档，可能把不同档的条件与"
-                    f"比例配在一起；请把同一档的原文放进同一条引文，或拆成单独条款后再标注。",
+                    f"第 {index + 1} 个「或」的第 {branch_index + 1} 支，金额与比例分散在不同"
+                    f"句子里，无法确认它们属于同一档，可能把不同档的条件与比例配在一起；"
+                    f"请让同一档的金额与比例出现在同一句原文里并作为同一段引文标注，"
+                    f"无法对应时请人工复核。",
                     criterion.spans,
                 )
             )
@@ -534,18 +541,32 @@ def _threshold_atoms(branch: Any) -> list[tuple[str, Decimal, str]]:
     return atoms
 
 
-def _span_supports(
-    span: SourceSpanCheck,
+def _clause_bounds(
+    spans: Sequence[SourceSpanCheck],
+) -> list[list[tuple[SourceSpanCheck, "ThresholdBound"]]]:
+    """按句读切开每条引文，逐句归集阈值。
+
+    不按 ``source_id`` 归集：同一份政策的多段引文共用一个来源正文，按来源归集等于又把
+    整条条款的阈值汇总起来，这条检查就没意义了。也不只按引文归集——三档表格常整段写在
+    同一处，那样一整段里的金额与比例仍会被汇总。
+    """
+    clauses: list[list[tuple[SourceSpanCheck, "ThresholdBound"]]] = []
+    for span in spans:
+        for clause in _CLAUSE_SPLIT_RE.split(span.quote):
+            if not clause.strip():
+                continue
+            found = [*threshold_bounds(clause), *ratio_bounds(clause)]
+            if found:
+                clauses.append([(span, bound) for bound in found])
+    return clauses
+
+
+def _supports_atoms(
     atoms: list[tuple[str, Decimal, str]],
     bounds: list[tuple[SourceSpanCheck, "ThresholdBound"]],
 ) -> bool:
-    """这一支的全部阈值能否都由**同一段**引文支撑。
-
-    按 span 对象本身归集，不按 ``source_id``：同一份政策的多段引文共用一个来源正文，
-    按来源归集等于又把整条条款的阈值汇总起来，这条检查就没意义了。
-    """
-    own = [(candidate, bound) for candidate, bound in bounds if candidate is span]
-    return all(_pooled_supports(atom, own) for atom in atoms)
+    """这一支的全部阈值能否由同一处原文（同一句或整条汇总）支撑。"""
+    return all(_pooled_supports(atom, bounds) for atom in atoms)
 
 
 def _pooled_supports(
@@ -767,6 +788,10 @@ _RATIO_SUFFIX_RE = re.compile(
 )
 
 _WHITESPACE = re.compile(r"[\s　]+")
+
+#: 逐句核对阈值时用的句读切分。只切句号、分号与换行：档位条款里常见「……（含）的企业，
+#: 比例不低于 5%」这种逗号连接，切逗号会把金额与比例拆到两句，反而误判成「不在同一处」。
+_CLAUSE_SPLIT_RE = re.compile(r"[。；;\n]+")
 
 #: 「两个会计年度（含）以上」「近两年」这类**时长型**相对表述：原文没有绝对日期，AST 里
 #: 却是绝对日期（引擎必须用可复现的固定值）。引文出现这些表述即视为支持，绝对日期由
