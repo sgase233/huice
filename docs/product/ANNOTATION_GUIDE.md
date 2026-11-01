@@ -195,6 +195,17 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 **下发标注表时必须同时说明三句话**：① 判的是"这家企业满足不满足"，不是"条款写得对不对"；② 只能填 `satisfied / not_satisfied / insufficient_evidence / conflict` 四个词之一；③ 所需企业事实已在 `enterprise_facts` 列，缺该值就是 `insufficient_evidence`。
 
+**✅ 2026-11-01 开发集双人标注完成**：补齐事实列后重新下发，标注人给出的是按企业的四态判定。开发集 122 条：**A/B 一致 110 条、分歧 12 条**，分歧已逐条仲裁、全部维持 A，依据写入 `labels.csv` 的 `notes`：
+
+| 分歧条目 | 条数 | A / B | 仲裁理由 |
+| --- | --- | --- | --- |
+| `SME-001` | 1（C002） | insufficient_evidence / not_satisfied | 本条只判「非限制和禁止行业」，数值条件已拆为 SME-002~004；B 把整段第五条当合成条件。**已收窄 `source_span` 至「从事国家非限制和禁止行业」**，从源头消除歧义 |
+| `RD-002` | 5 | satisfied / insufficient_evidence | 本条判「是否开展研发活动」（`rdActivity=true`），不判费用金额；费用>0 由 RD-003 承担，B 将两条混同 |
+| `HT-004` | 1（C027） | satisfied / insufficient_evidence | 本政策申报年度 2025 的上一会计年度 = **2024**，企业该期间 `rdAddDeductionClaimed=true`；B 误把上年度当作 2025 |
+| `HT-007` | 5 | conflict / insufficient_evidence | 本条是经人工确认的条款冲突（`review_finding=conflict`），引擎固定返回 conflict、与具体企业无关；B 漏掉冲突优先级 |
+
+至此 **留出集 + 开发集均完成双人标注与仲裁**；`labels.csv` 可作为评测真值使用（仍标注为合成的、非真实税务结论）。
+
 **该标注人提出并经裁定的三项结构问题**：
 
 | # | 问题 | 裁定 |
