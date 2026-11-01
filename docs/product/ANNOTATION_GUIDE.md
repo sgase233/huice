@@ -156,18 +156,33 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 4. 仲裁记录保留原双方意见，不覆盖、不删除。
 5. `待核实` 的行只能进复核清单，不能直接升「可发布」：必须先补出可执行、引用校验通过的 `adjudicated_expression`，再走双人标注 + 仲裁，才能标「可发布」。
 
-### 6.1 当前标注状态（如实记录，2026-11-01）
+### 6.1 当前标注状态（2026-11-01 更新：留出集已双人标注并仲裁）
 
-`labels.csv` 的 `annotator_a_result` / `annotator_b_result` / `adjudicated_result` 三列**目前同值**，系单人（M3）依 AST + 合成事实推算，**尚未完成两人独立标注**。按 §6 第 1 条，这不算双人标注，也不是可发布真值。
+**留出集（6 组合 / 26 条）已完成两人独立标注 + 仲裁。** `labels.csv` 中：
 
-为补上这一环，已生成独立标注表 [`data/evaluation/holdout_annotation_sheet.csv`](../../data/evaluation/holdout_annotation_sheet.csv)：
+- `annotator_a_result` = 标注人 A 的原始判定；
+- `annotator_b_result` = 标注人 B 的原始判定；
+- `adjudicated_result` = 仲裁结论，分歧依据写入 `notes`；
+- 双方原始意见保留，不覆盖（§6 第 4 条）。
 
-- 只含留出集 6 个组合、26 条条件级记录；
-- 只给 `case_id/enterprise_id/policy_id/policy_version/criterion_id/source_span` 与**空白的** `annotator_b_result/annotator_b_note`；
-- **不含 M3 的推算结果**，避免第二标注人被锚定；
-- 第二标注人独立填完后，与本表比对：一致→记为两人一致；不一致→由第三人或指导教师按原文仲裁，回填 `labels.csv` 的 `adjudicated_result`，并在 `notes` 写明分歧依据。
+仲裁统计：**A/B 分歧 11 条**，全部裁定为与 B 一致（即与 AST 语义 + `enterprises.csv` 实际事实一致）。分歧集中在两类：
 
-未完成双人标注前，`labels.csv` 只能作为**开发集调试参照**，不得当作评测真值对外报告。
+| 分歧类型 | 条数 | 仲裁口径 |
+| --- | --- | --- |
+| A 假定企业"满足"某人工核查条件（如假定为创新型中小企业、高企、已完成科技统计）→ 判 `satisfied` | 7（SRDI-004~008、HT-002、HT-005） | 这些条的 AST 是 `manual_review`，**恒为 `insufficient_evidence`**，不得按假定判满足；企业也未提供对应事实 |
+| A 以"行业整体排除"否决单个条件 → 判 `not_satisfied` | 2（RD-002、RD-003） | 条件级只看本条：`rdActivity=true`、`rdExpense=800000>0` → `satisfied`；行业排除由 RD-001 承担，政策级聚合才是不满足 |
+| A 称企业缺人数/资产数据 → 判 `insufficient_evidence` | 2（SME-003、SME-004） | `enterprises.csv` 实际有四季度人数与资产，季均人数 16、季均资产 540 万，均在阈值内 → `satisfied` |
+
+**开发集（24 组合 / 118 条）仍为单人推算**，尚未双人标注；不得当作评测真值对外报告。
+
+**标注人提出的内容质量问题（已记录，待处理）**：
+
+1. **RD-001 出处**：负面清单出自财税〔2015〕119号，非 2023 年第 7 号公告。`criteria_review.csv` 的 `source_version` 已标 119 号；`labels.csv` 的 `policy_version` 记政策版本（7 号），两者不矛盾。
+2. **RD-002 与 RD-003 的 `source_span` 相同**（同句派生）。语义上分别对应"有研发活动"与"研发费用>0"，可接受；如需更强的引文区分，待与 M1 商定后调整并重跑闸门。
+3. **HT-007 引文归属**：10% 出自财税〔2015〕119号，20% 出自国科发火〔2016〕195号（《高企认定管理办法》国科发火〔2016〕32号亦载同一 20% 条款）；已在 `adjudication_note` 写明，两位标注人均建议保留并注明来源。
+4. **SRDI-001 年限版本**：两位标注人均提示 2026 新办法改为"3 年"；本项目 2025 申报适用 2022 暂行办法"2 年"，见 §9 备忘。
+
+独立标注表 `holdout_annotation_sheet.csv` 保留为空白模板，供后续新增留出样本复用。
 
 ## 7. 容易混淆的名词
 
