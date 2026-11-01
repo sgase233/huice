@@ -970,18 +970,20 @@ def tier_criterion(
     second_ratio: str,
     third_ratio: str,
     spans: tuple[str, ...] = TIER_SPANS,
+    span_of=gxjs_span,
 ) -> CriterionInput:
     """三档条件，比例与引文可换：用来验证「金额与比例必须出自同一处原文」。
 
     ``spans`` 可以让三档分三段引文标注，也可以整段引在同一处——后者是高企认定原文的
-    实际排版，也是 M2 在 #20 指出的漏网场景。
+    实际排版，也是 M2 在 #20 指出的漏网场景。``span_of`` 决定引文指向哪份来源，
+    换一份「三档写成一句话」的原文时用得上。
     """
 
     def branch(revenue_children, ratio: str) -> dict:
         return {"op": "and", "children": [*revenue_children, compare("rdExpenseRevenueRatio", ratio, "ratio")]}
 
     return criterion(
-        *(gxjs_span(quote) for quote in spans),
+        *(span_of(quote) for quote in spans),
         expression={
             "op": "or",
             "children": [
@@ -1057,6 +1059,56 @@ def test_swapped_tier_ratios_inside_one_block_are_reported():
             spans=(GXJS_TEXT,),
         ),
         GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_BRANCH_SOURCE_MIXED" in codes(verdict)
+
+
+#: 同一张档位表写成一句话、只用逗号隔开。句级切分会把三档并成一句，必须再按逗号分句，
+#: 才能确认每个金额和它旁边那个比例是同一档——2026-11-01 补在 M2 的单段引文场景之后。
+COMPACT_TIER_TEXT = (
+    "第十条（四）研发费用比例符合如下要求："
+    "最近一年销售收入小于5,000万元的企业比例不低于6%，"
+    "最近一年销售收入在5,000万元至20,000万元的企业比例不低于4%，"
+    "最近一年销售收入在20,000万元以上的企业比例不低于3%。"
+)
+COMPACT = SourceText(id=uuid4(), source_url=SOURCE_URL, text=COMPACT_TIER_TEXT)
+COMPACT_SOURCES = {COMPACT.id: COMPACT}
+
+
+def compact_span(quote: str) -> SourceSpanCheck:
+    return span(quote, source_id=COMPACT.id, section="第十条（四）")
+
+
+def test_a_tier_table_written_as_one_sentence_passes():
+    verdict = validate_criterion(
+        tier_criterion(
+            first_ratio="0.06",
+            second_ratio="0.04",
+            third_ratio="0.03",
+            spans=(COMPACT_TIER_TEXT,),
+            span_of=compact_span,
+        ),
+        COMPACT_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_swapped_ratios_in_one_comma_separated_sentence_are_reported():
+    """一句里有三个比例时，不允许退到整句比对——否则金额与比例的归属无从确认。"""
+
+    verdict = validate_criterion(
+        tier_criterion(
+            first_ratio="0.04",
+            second_ratio="0.06",
+            third_ratio="0.03",
+            spans=(COMPACT_TIER_TEXT,),
+            span_of=compact_span,
+        ),
+        COMPACT_SOURCES,
         version=VERSION,
     )
 

@@ -453,11 +453,18 @@ def _check_branch_sources(
     按句号、分号与换行切开后，每一支要求金额与比例出自同一句；跨句才配齐的报
     ``CITATION_BRANCH_SOURCE_MIXED`` 交人工复核，而不是默认它们是同一档。
 
+    再往下沉一层「逗号分句」：三档也可能写成一句话、只用逗号隔开（「小于 5,000 万元的
+    比例为 6%，在 5,000 万元至 20,000 万元之间的比例为 4%……」）。但逗号也用于「……
+    （含）的企业，比例不低于 5%」这类正常断句，切逗号会把同一档拆成两半。所以两级都用：
+    先按逗号分句比对；分句配不齐时，只有整句里**只有一个比例**才允许退到整句——一句里
+    出现多个比例时必须各自在自己的分句里配齐，否则金额与比例的归属无从确认。
+
     只看纯阈值分支：分支里出现日期、行业排除、``manual_review`` 或嵌套 ``or`` 时跳过——
     那些条件的证据本来就可以分散在不同引文里，拿这条规则去卡会误伤。
     """
-    clauses = _clause_bounds(criterion.spans)
-    if not clauses:
+    sentences = _bounds_by(criterion.spans, _SENTENCE_SPLIT_RE)
+    phrases = _bounds_by(criterion.spans, _PHRASE_SPLIT_RE)
+    if not sentences:
         return
     for index, branches in enumerate(_or_branch_groups(criterion.expression)):
         atoms_by_branch = [_threshold_atoms(branch) for branch in branches]
@@ -470,7 +477,12 @@ def _check_branch_sources(
         if len(families) != 1 or len(next(iter(families))) < 2:
             continue
         for branch_index, atoms in enumerate(atoms_by_branch):
-            if any(_supports_atoms(atoms, clause) for clause in clauses):
+            if any(_supports_atoms(atoms, phrase) for phrase in phrases):
+                continue
+            if any(
+                _ratio_count(sentence) == 1 and _supports_atoms(atoms, sentence)
+                for sentence in sentences
+            ):
                 continue
             if not _supports_atoms(atoms, bounds):
                 # 汇总都撑不住，已有的 CITATION_THRESHOLD_* 已经报过，不重复报。
@@ -478,8 +490,8 @@ def _check_branch_sources(
             verdict.findings.append(
                 Finding(
                     "CITATION_BRANCH_SOURCE_MIXED",
-                    f"第 {index + 1} 个「或」的第 {branch_index + 1} 支，金额与比例分散在不同"
-                    f"句子里，无法确认它们属于同一档，可能把不同档的条件与比例配在一起；"
+                    f"第 {index + 1} 个「或」的第 {branch_index + 1} 支，金额与比例不在同一句"
+                    f"原文里，无法确认它们属于同一档，可能把不同档的条件与比例配在一起；"
                     f"请让同一档的金额与比例出现在同一句原文里并作为同一段引文标注，"
                     f"无法对应时请人工复核。",
                     criterion.spans,
@@ -541,24 +553,29 @@ def _threshold_atoms(branch: Any) -> list[tuple[str, Decimal, str]]:
     return atoms
 
 
-def _clause_bounds(
+def _bounds_by(
     spans: Sequence[SourceSpanCheck],
+    pattern: re.Pattern[str],
 ) -> list[list[tuple[SourceSpanCheck, "ThresholdBound"]]]:
-    """按句读切开每条引文，逐句归集阈值。
+    """按 ``pattern`` 切开每条引文，逐段归集阈值。
 
     不按 ``source_id`` 归集：同一份政策的多段引文共用一个来源正文，按来源归集等于又把
     整条条款的阈值汇总起来，这条检查就没意义了。也不只按引文归集——三档表格常整段写在
     同一处，那样一整段里的金额与比例仍会被汇总。
     """
-    clauses: list[list[tuple[SourceSpanCheck, "ThresholdBound"]]] = []
+    groups: list[list[tuple[SourceSpanCheck, "ThresholdBound"]]] = []
     for span in spans:
-        for clause in _CLAUSE_SPLIT_RE.split(span.quote):
-            if not clause.strip():
+        for piece in pattern.split(span.quote):
+            if not piece.strip():
                 continue
-            found = [*threshold_bounds(clause), *ratio_bounds(clause)]
+            found = [*threshold_bounds(piece), *ratio_bounds(piece)]
             if found:
-                clauses.append([(span, bound) for bound in found])
-    return clauses
+                groups.append([(span, bound) for bound in found])
+    return groups
+
+
+def _ratio_count(bounds: list[tuple[SourceSpanCheck, "ThresholdBound"]]) -> int:
+    return sum(1 for _span, bound in bounds if bound.family == _RATIO_FAMILY)
 
 
 def _supports_atoms(
@@ -789,9 +806,11 @@ _RATIO_SUFFIX_RE = re.compile(
 
 _WHITESPACE = re.compile(r"[\s　]+")
 
-#: 逐句核对阈值时用的句读切分。只切句号、分号与换行：档位条款里常见「……（含）的企业，
-#: 比例不低于 5%」这种逗号连接，切逗号会把金额与比例拆到两句，反而误判成「不在同一处」。
-_CLAUSE_SPLIT_RE = re.compile(r"[。；;\n]+")
+#: 逐句核对阈值用的两级切分。句级只切句号、分号与换行；分句级再加上全角逗号，因为三档也
+#: 可能写成一句话「小于 5,000 万元的比例为 6%，在 5,000 万元至 20,000 万元之间的比例为 4%」。
+#: 半角逗号不切：它是数字的千分位（「5,000 万元」），切了会把金额拆坏。
+_SENTENCE_SPLIT_RE = re.compile(r"[。；;\n]+")
+_PHRASE_SPLIT_RE = re.compile(r"[。；;\n，]+")
 
 #: 「两个会计年度（含）以上」「近两年」这类**时长型**相对表述：原文没有绝对日期，AST 里
 #: 却是绝对日期（引擎必须用可复现的固定值）。引文出现这些表述即视为支持，绝对日期由
