@@ -1127,3 +1127,71 @@ def test_the_same_nested_stricter_tier_does_not_degrade_away_from_the_boundary()
     )
 
     assert verdict.result == SATISFIED
+
+
+def test_swapping_branch_order_does_not_change_the_verdict():
+    """M2 在 #21 第四轮的反例：另有一条并列支也成立时，档位歧义不能随书写顺序变化。
+
+    企业同时满足较松档与融资条件，就该判成立；原实现在较松档排第一时降级、融资条件
+    排第一时成立，同一表达式换个次序结论就变。
+    """
+
+    financing = compare("equityFinancing", "gte", "20000000.00", period=TIER_PERIOD)
+    facts = table(
+        fact("revenue", Decimal("50000000")),
+        fact("rdExpenseRevenueRatio", Decimal("0.045")),
+        fact("equityFinancing", Decimal("25000000")),
+    )
+    tiers_first = evaluate_expression(
+        {"op": "or", "children": [*TIER_EXPRESSION["children"], financing]}, facts, period=YEAR
+    )
+    financing_first = evaluate_expression(
+        {"op": "or", "children": [financing, *TIER_EXPRESSION["children"]]}, facts, period=YEAR
+    )
+
+    assert tiers_first.result == financing_first.result == SATISFIED
+
+
+def test_an_or_inside_the_stricter_tier_that_holds_does_not_hide_the_boundary():
+    """M2 在 #21 第四轮的反例：较严档的 ``and`` 里嵌一个已成立的「或」，不能因此漏判。"""
+
+    tier1_with_or = {
+        "op": "and",
+        "children": [
+            compare("revenue", "lte", "50000000.00", period=TIER_PERIOD),
+            {
+                "op": "or",
+                "children": [
+                    compare("equityFinancing", "gte", "20000000.00", period=TIER_PERIOD),
+                    compare("equityFinancing", "gte", "30000000.00", period=TIER_PERIOD),
+                ],
+            },
+            compare("rdExpenseRevenueRatio", "gte", "0.05", period=TIER_PERIOD),
+        ],
+    }
+    verdict = evaluate_expression(
+        {"op": "or", "children": [tier1_with_or, *TIER_EXPRESSION["children"][1:]]},
+        table(
+            fact("revenue", Decimal("50000000")),
+            fact("rdExpenseRevenueRatio", Decimal("0.045")),
+            fact("equityFinancing", Decimal("25000000")),
+        ),
+        period=YEAR,
+    )
+
+    assert verdict.result == INSUFFICIENT
+
+
+def test_an_uncomparable_fact_unit_is_reported_as_conflict_not_a_crash():
+    """单位无法比较时返回 ``CONFLICT``；之前这条分支少传一个参数，会抛 ``TypeError``。"""
+
+    snapshot = FactSnapshot(
+        key="mysteryMetric",
+        period_start=YEAR[0],
+        period_end=YEAR[1],
+        unit="CNY",
+        value=Decimal("2"),
+    )
+    verdict = evaluate_expression(compare("mysteryMetric", "gte", "1"), table(snapshot), period=YEAR)
+
+    assert verdict.result == CONFLICT

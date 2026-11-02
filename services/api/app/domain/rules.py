@@ -598,22 +598,22 @@ def _boundary_overlap(
     的要求没达到，就降级。
     """
 
-    branches: list[list[dict] | None] = [_branch_leaves(child) for child in children]
-    if len(branches) != len(results):
+    if len(children) != len(results):
+        return None
+    satisfied = [index for index, item in enumerate(results) if item.result == SATISFIED]
+    if len(satisfied) > 1:
+        # 有两条以上并列支成立时，企业本来就有别的路径达标，档位怎么算都不改变结论；
+        # 而且「先碰到哪一支」会和书写顺序挂上钩，同一条条件换个次序结论就变。
         return None
     references = _satisfied_groups(children[satisfied_index], facts, period=period)
     if not references:
         return None
 
     candidates = [
-        [] if index == satisfied_index else _failed_groups(child)
+        [] if index == satisfied_index else _failed_groups(child, facts, period=period)
         for index, child in enumerate(children)
     ]
-    split_keys = _split_keys(
-        [leaves for leaves in branches if leaves is not None]
-        + [leaves for groups in candidates for leaves in groups]
-        + references
-    )
+    split_keys = _split_keys([leaves for groups in candidates for leaves in groups] + references)
 
     for index, item in enumerate(results):
         if index == satisfied_index or item.result != NOT_SATISFIED:
@@ -637,7 +637,7 @@ def _satisfied_groups(
     普通 ``and``/原子只有一组；嵌套 ``or`` 只取其中成立的子支，并递归展开。
     """
 
-    leaves = _branch_leaves(node)
+    leaves = _and_leaves(node, facts, period=period)
     if leaves is not None:
         return [leaves]
     if isinstance(node, dict) and node.get("op") == "or":
@@ -650,33 +650,47 @@ def _satisfied_groups(
     return []
 
 
-def _failed_groups(node: Any) -> list[list[dict]]:
+def _failed_groups(
+    node: Any, facts: FactTable, *, period: tuple[date, date]
+) -> list[list[dict]]:
     """一条不成立的分支，展开成它的全部叶子组；展开不出来返回空列表。
 
     整条 ``or`` 都不成立意味着每个子支都不成立，所以不筛子支——逐组检查，由
     ``_unmet_stricter`` 判定哪一组才是「落在交界点、要求更严却没达到」。
     """
 
-    leaves = _branch_leaves(node)
+    leaves = _and_leaves(node, facts, period=period)
     if leaves is not None:
         return [leaves]
     if isinstance(node, dict) and node.get("op") == "or":
         groups: list[list[dict]] = []
         for child in node.get("children") or []:
-            groups.extend(_failed_groups(child))
+            groups.extend(_failed_groups(child, facts, period=period))
         return groups
     return []
 
 
-def _branch_leaves(node: Any) -> list[dict] | None:
-    """把一个 ``or`` 分支展开成叶子条件；出现嵌套 ``or``/``not`` 时返回 ``None``。"""
+def _and_leaves(
+    node: Any, facts: FactTable, *, period: tuple[date, date]
+) -> list[dict] | None:
+    """把一个 ``and`` 组展开成叶子条件；展开不了返回 ``None``。
+
+    组里嵌着的 ``or``：已成立时不影响这一档怎么判，直接略过（「比例 ≥5% 且（有专利
+    或有软著）」里的括号条件对已满足的企业来说就是个恒真项）；没成立时这一组失败的
+    原因说不清，返回 ``None``。``not`` 一律不展开——它没有可以对照的方向。
+    """
+
     if not isinstance(node, dict):
         return None
     op = node.get("op")
     if op == "and":
         leaves: list[dict] = []
         for child in node.get("children") or []:
-            got = _branch_leaves(child)
+            if isinstance(child, dict) and child.get("op") == "or":
+                if _evaluate(child, facts, period=period).result != SATISFIED:
+                    return None
+                continue
+            got = _and_leaves(child, facts, period=period)
             if got is None:
                 return None
             leaves.extend(got)
@@ -801,7 +815,7 @@ def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]
     key = str(node.get("factKey"))
     span = _node_period(node, period)
     if span is None:
-        return Evaluation(CONFLICT, "条件缺少可用的期间。", [])
+        return Evaluation(CONFLICT, "条件缺少可用的期间。", [], [])
     fact = facts.get(key, *span)
     ref = (key, span[0], span[1])
     if fact is None or not fact.known:
@@ -818,7 +832,7 @@ def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]
         left = fact.value if isinstance(fact.value, Decimal) else _to_decimal(fact.value)
         right = _to_decimal(node.get("value"))
         if left is None or right is None:
-            return Evaluation(CONFLICT, f"事实 {key} 的取值无法用十进制比较。", [ref])
+            return Evaluation(CONFLICT, f"事实 {key} 的取值无法用十进制比较。", [ref], [])
         ok = _compare_numbers(left, right, comparator)
         reason = (
             f"{key}={_fmt(left)}{_unit_label(unit)} "
@@ -840,7 +854,7 @@ def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]
         reason = f"{key}={fact.value} {'满足' if ok else '不满足'} {node.get('value')}。"
         return Evaluation(SATISFIED if ok else NOT_SATISFIED, reason, [ref], [])
 
-    return Evaluation(CONFLICT, f"事实 {key} 的单位无法比较。", [ref])
+    return Evaluation(CONFLICT, f"事实 {key} 的单位无法比较。", [ref], [])
 
 
 #: 日期类事实的补问/理由文案用的中文名。
@@ -852,7 +866,7 @@ def _evaluate_date(node: dict, facts: FactTable, *, period: tuple[date, date]) -
     label = _DATE_LABELS.get(key, key)
     span = _node_period(node, period)
     if span is None:
-        return Evaluation(CONFLICT, "条件缺少可用的期间。", [])
+        return Evaluation(CONFLICT, "条件缺少可用的期间。", [], [])
     ref = (key, span[0], span[1])
     fact = facts.get(key, *span)
     if fact is None or not fact.known:
@@ -865,7 +879,7 @@ def _evaluate_date(node: dict, facts: FactTable, *, period: tuple[date, date]) -
     left = fact.value if isinstance(fact.value, date) else _as_date(str(fact.value))
     right = _as_date(node.get("value"))
     if left is None or right is None:
-        return Evaluation(CONFLICT, "日期取值无法解析。", [ref])
+        return Evaluation(CONFLICT, "日期取值无法解析。", [ref], [])
     comparator = str(node.get("comparator"))
     ok = _compare_scalar(left.isoformat(), right.isoformat(), comparator)
     reason = f"{label} {left.isoformat()} {'满足' if ok else '不满足'} {comparator} {right.isoformat()}。"
@@ -877,7 +891,7 @@ def _evaluate_industry_exclusion(
 ) -> Evaluation:
     span = _node_period(node, period)
     if span is None:
-        return Evaluation(CONFLICT, "条件缺少可用的期间。", [])
+        return Evaluation(CONFLICT, "条件缺少可用的期间。", [], [])
     ref = ("industry", span[0], span[1])
     fact = facts.get("industry", *span)
     if fact is None or not fact.known:
@@ -921,7 +935,7 @@ def _evaluate_quarterly_average(
 ) -> Evaluation:
     metric = str(node.get("metric"))
     if metric not in QUARTERLY_METRICS:
-        return Evaluation(CONFLICT, "季度平均指标不在枚举内。", [])
+        return Evaluation(CONFLICT, "季度平均指标不在枚举内。", [], [])
     start_key, end_key, unit = QUARTERLY_METRICS[metric]
 
     year = _natural_year_of(node, period)
@@ -974,7 +988,7 @@ def _evaluate_quarterly_average(
     average = (sum(mids) / Decimal(len(mids))).quantize(Decimal("0.000001"))
     right = _to_decimal(node.get("value"))
     if right is None:
-        return Evaluation(CONFLICT, "季度平均的比较值无法解析。", refs)
+        return Evaluation(CONFLICT, "季度平均的比较值无法解析。", refs, [])
     comparator = str(node.get("comparator"))
     ok = _compare_numbers(average, right, comparator)
     reason = (
