@@ -838,3 +838,116 @@ def test_a_manual_review_condition_needs_a_usable_reason_and_nothing_else(node):
 
 def test_a_valid_manual_review_condition_passes_structure_checks():
     assert validate_expression(MANUAL) == []
+
+
+# ---------------------------------------------- 档位表的边界重叠（2026-11-02）
+#
+# 三档写成 or 时，相邻两档在交界点会同时接住同一个企业。AST 表达不出「按更严的
+# 档判定」，所以「只满足较松的一档」时不能直接判成立——那是把档判松了。约束是
+# 「较严的一档确实不成立」才降级：两支都成立时结论本来就对，不能误伤；纯并列的
+# 「或」（two branches with different facts）也不能误伤。
+
+TIER_PERIOD = {"startDate": "2026-01-01", "endDate": "2026-12-31"}
+
+TIER_EXPRESSION = {
+    "op": "or",
+    "children": [
+        {
+            "op": "and",
+            "children": [
+                compare("revenue", "lte", "50000000.00", period=TIER_PERIOD),
+                compare("rdExpenseRevenueRatio", "gte", "0.05", period=TIER_PERIOD),
+            ],
+        },
+        {
+            "op": "and",
+            "children": [
+                compare("revenue", "gte", "50000000.00", period=TIER_PERIOD),
+                compare("revenue", "lte", "200000000.00", period=TIER_PERIOD),
+                compare("rdExpenseRevenueRatio", "gte", "0.04", period=TIER_PERIOD),
+            ],
+        },
+        {
+            "op": "and",
+            "children": [
+                compare("revenue", "gte", "200000000.00", period=TIER_PERIOD),
+                compare("rdExpenseRevenueRatio", "gte", "0.03", period=TIER_PERIOD),
+            ],
+        },
+    ],
+}
+
+
+def tier_outcome(revenue: str, ratio: str):
+    return evaluate_expression(
+        TIER_EXPRESSION,
+        table(
+            fact("revenue", Decimal(revenue)),
+            fact("rdExpenseRevenueRatio", Decimal(ratio)),
+        ),
+        period=YEAR,
+    )
+
+
+def test_on_a_tier_boundary_only_the_looser_tier_holding_is_left_to_a_human():
+    """营收恰好 5,000 万、比例 4.5%：档 2 成立、档 1（要求 5%）不成立，不能判成立。"""
+
+    assert tier_outcome("50000000", "0.045").result == INSUFFICIENT
+
+
+def test_on_a_tier_boundary_where_the_stricter_tier_also_holds_stays_satisfied():
+    """营收恰好 5,000 万、比例 5.5%：两支都成立，结论本来就对，不能误伤。"""
+
+    assert tier_outcome("50000000", "0.055").result == SATISFIED
+
+
+def test_inside_a_tier_the_boundary_rule_changes_nothing():
+    assert tier_outcome("100000000", "0.045").result == SATISFIED
+
+
+def test_the_two_hundred_million_boundary_is_downgraded_too():
+    """营收恰好 2 亿、比例 3.5%：档 3 成立、档 2（要求 4%）不成立。"""
+
+    assert tier_outcome("200000000", "0.035").result == INSUFFICIENT
+
+
+def test_below_every_tier_is_still_not_satisfied():
+    assert tier_outcome("300000000", "0.02").result == NOT_SATISFIED
+
+
+EITHER_OR = {
+    "op": "or",
+    "children": [
+        compare("revenue", "gte", "10000000.00", period=TIER_PERIOD),
+        {
+            "op": "and",
+            "children": [
+                compare("revenue", "lte", "10000000.00", period=TIER_PERIOD),
+                compare("equityFinancing", "gte", "20000000.00", period=TIER_PERIOD),
+            ],
+        },
+    ],
+}
+
+
+def either_or_outcome(revenue: str, financing: str):
+    return evaluate_expression(
+        EITHER_OR,
+        table(
+            fact("revenue", Decimal(revenue)),
+            fact("equityFinancing", Decimal(financing)),
+        ),
+        period=YEAR,
+    )
+
+
+def test_both_branches_of_an_either_or_holding_is_still_satisfied():
+    """营收恰好 1,000 万、股权融资够：两支同时成立，这是并列选项，不是档位。"""
+
+    assert either_or_outcome("10000000", "25000000").result == SATISFIED
+
+
+def test_an_either_or_branch_failing_on_another_fact_is_not_downgraded():
+    """支 2 因股权融资不成立，不是「同一指标要求更严」，不降级。"""
+
+    assert either_or_outcome("10000000", "5000000").result == SATISFIED

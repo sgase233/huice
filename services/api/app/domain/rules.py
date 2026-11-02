@@ -546,14 +546,166 @@ def _evaluate_boolean(
                 return Evaluation(INSUFFICIENT, item.reason, fact_refs, undecided_missing())
         return Evaluation(SATISFIED, "全部子条件成立。", fact_refs, [])
 
-    for item in results:
+    children = node.get("children") or []
+    for index, item in enumerate(results):
         if item.result == SATISFIED:
+            overlap = _boundary_overlap(children, results, index, facts, period=period)
+            if overlap is not None:
+                satisfied_index, stricter_index = overlap
+                return Evaluation(
+                    INSUFFICIENT,
+                    f"边界重叠：第 {satisfied_index + 1} 支成立，但第 {stricter_index + 1} 支"
+                    "在另一指标上有更严格的要求且不成立，无法确定应按哪一档判定，需人工确认。",
+                    fact_refs,
+                    [],
+                )
             return Evaluation(SATISFIED, item.reason, fact_refs, [])
     for item in results:
         if item.result == INSUFFICIENT:
             return Evaluation(INSUFFICIENT, item.reason, fact_refs, undecided_missing())
     reason = results[0].reason if results else "没有子条件成立。"
     return Evaluation(NOT_SATISFIED, reason, fact_refs, [])
+
+
+_LOWER_COMPARATORS = ("gt", "gte")
+_UPPER_COMPARATORS = ("lt", "lte")
+
+
+def _boundary_overlap(
+    children: list[Any],
+    results: list[Evaluation],
+    satisfied_index: int,
+    facts: FactTable,
+    *,
+    period: tuple[date, date],
+) -> tuple[int, int] | None:
+    """成立的那一支旁边，是否还压着一支「落在区间内、要求更严却不成立」的分支。
+
+    档位表写成 ``or`` 时，相邻两档在交界点会同时接住同一个企业（例如「5,000 万元
+    以下 5%」与「5,000 万元至 2 亿元 4%」），而 AST 表达不出「按更严的档判定」：
+    企业恰好落在交界、只满足较松的一档时，直接返回成立会把档判松了。这种情况既
+    可能落在 ``satisfied`` 上（较严的一档不成立），也可能两支同时成立（结论本来就
+    对，不必降级），所以只在「较严的一档确实不成立」时降级，交给人工确认档位。
+
+    纯并列的「或」（如「营收 1,000 万元以上，或营收 1,000 万元以下但股权融资
+    ≥2,000 万元」）不会被误伤：两支对 ``revenue`` 的界方向相反，``revenue`` 因此
+    被认成分档键，它在候选支上不成立只说明企业在别的区间，不触发降级。
+    """
+
+    branches: list[list[dict]] = []
+    for child in children:
+        leaves = _branch_leaves(child)
+        if leaves is None:
+            return None
+        branches.append(leaves)
+    if len(branches) != len(results):
+        return None
+
+    split_keys = _split_keys(branches)
+    reference = branches[satisfied_index]
+
+    for index, item in enumerate(results):
+        if index == satisfied_index or item.result != NOT_SATISFIED:
+            continue
+        if _unmet_stricter(branches[index], reference, facts, period=period, split_keys=split_keys):
+            return satisfied_index, index
+    return None
+
+
+def _branch_leaves(node: Any) -> list[dict] | None:
+    """把一个 ``or`` 分支展开成叶子条件；出现嵌套 ``or``/``not`` 时返回 ``None``。"""
+    if not isinstance(node, dict):
+        return None
+    op = node.get("op")
+    if op == "and":
+        leaves: list[dict] = []
+        for child in node.get("children") or []:
+            got = _branch_leaves(child)
+            if got is None:
+                return None
+            leaves.extend(got)
+        return leaves
+    if op in ("or", "not"):
+        return None
+    return [node]
+
+
+def _direction_of(comparator: str) -> str | None:
+    if comparator in _LOWER_COMPARATORS:
+        return "lower"
+    if comparator in _UPPER_COMPARATORS:
+        return "upper"
+    return None
+
+
+def _split_keys(branches: list[list[dict]]) -> set[str]:
+    """被两侧夹住的指标——即分档键（``revenue`` 既有 ``lte`` 又有 ``gte``）。"""
+    sides: dict[str, set[str]] = {}
+    for leaves in branches:
+        for leaf in leaves:
+            if leaf.get("op") != "compare":
+                continue
+            direction = _direction_of(str(leaf.get("comparator")))
+            if direction is not None:
+                sides.setdefault(str(leaf.get("factKey")), set()).add(direction)
+    return {key for key, seen in sides.items() if len(seen) > 1}
+
+
+def _unmet_stricter(
+    candidate: list[dict],
+    reference: list[dict],
+    facts: FactTable,
+    *,
+    period: tuple[date, date],
+    split_keys: set[str],
+) -> bool:
+    """候选支是否「区间内、要求更严却不成立」。"""
+    for leaf in candidate:
+        if leaf.get("op") != "compare":
+            return False
+        outcome = _evaluate(leaf, facts, period=period)
+        if outcome.result == INSUFFICIENT:
+            return False
+        if outcome.result == SATISFIED:
+            continue
+        if str(leaf.get("factKey")) in split_keys:
+            # 分档键不成立：企业在另一段区间，不是「更严的要求没达到」。
+            return False
+        counterpart = _counterpart(leaf, reference, period)
+        if counterpart is None or not _stricter(leaf, counterpart):
+            return False
+    return True
+
+
+def _counterpart(leaf: dict, reference: list[dict], period: tuple[date, date]) -> dict | None:
+    direction = _direction_of(str(leaf.get("comparator")))
+    span = _node_period(leaf, period)
+    for other in reference:
+        if other.get("op") != "compare":
+            continue
+        if str(other.get("factKey")) != str(leaf.get("factKey")):
+            continue
+        if _direction_of(str(other.get("comparator"))) != direction:
+            continue
+        if _node_period(other, period) != span:
+            continue
+        return other
+    return None
+
+
+def _stricter(first: dict, second: dict) -> bool:
+    """同一指标、同一方向上，``first`` 的界是否严格严于 ``second``。"""
+    direction = _direction_of(str(first.get("comparator")))
+    if direction is None or direction != _direction_of(str(second.get("comparator"))):
+        return False
+    left, right = _to_decimal(first.get("value")), _to_decimal(second.get("value"))
+    if left is None or right is None:
+        return False
+    if left != right:
+        return left > right if direction == "lower" else left < right
+    first_strict = str(first.get("comparator")) in ("gt", "lt")
+    second_strict = str(second.get("comparator")) in ("gt", "lt")
+    return first_strict and not second_strict
 
 
 def _evaluate_compare(node: dict, facts: FactTable, *, period: tuple[date, date]) -> Evaluation:
