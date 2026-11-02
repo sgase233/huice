@@ -40,7 +40,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `review_status` | 复核状态 | `待双人复核`（默认）→ `已仲裁` → `可发布`；未仲裁不得写「可发布」。`待核实` 表示条件暂无法写成可执行 AST，该行仅保留在 CSV 供复核、**不进库**——`adjudicated_expression` 留空，导入时会被 API-06 以 422 拒绝（这是护栏，不是被忍受的状态）；转「可发布」前必须先补齐 AST |
 | `adjudication_note` | 裁决备注 | 仲裁结论、兜底说明、日期读法等；仅需要时填写，多数行为空 |
 
-**注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。**例外**：合并条款（如 SRDI-002、RDSUB-001）的 `operator=and/or`、`manual_review` 行（如 SME-001、SRDI-004~008）与冲突行（`review_finding=conflict`，如 HT-007）的 `field/value/unit/period` 均留空；合并行与 manual_review 行只以 AST 为准、不回改。冲突行的 AST 用 `manual_review` 占位（契约与库均要求非空，不能留空），求值时被 `review_finding=conflict` 短路，不参与实际判断。
+**注意：** `field/operator/value/unit/period` 是给人复核的扁平投影，M1 导入以 `adjudicated_expression` 的 JSON AST 为唯一程序口径；两者不一致时以 AST 为准并回改投影列。**例外**：合并条款（如 SRDI-002、RDSUB-001）的 `operator=and/or`、`manual_review` 行（如 SME-001、SRDI-004~008）与冲突行（`review_finding=conflict`）的 `field/value/unit/period` 均留空；合并行与 manual_review 行只以 AST 为准、不回改。冲突行的 AST 用 `manual_review` 占位（契约与库均要求非空，不能留空），求值时被 `review_finding=conflict` 短路，不参与实际判断。**2026-11-02 复核后本数据集暂无 `review_finding=conflict` 样本**：原 HT-007 引用的 195号 20% 超出本政策适用范围，已改判为 `manual_review`，理由见该条的 `adjudication_note`；补真冲突样本前，`labels.csv` 的 `conflict` 态无覆盖（见 §6.2）。
 
 ## 2. 原文定位与核对要点
 
@@ -179,7 +179,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 1. **RD-001 出处**：负面清单出自财税〔2015〕119号，非 2023 年第 7 号公告。`criteria_review.csv` 的 `source_version` 已标 119 号；`labels.csv` 的 `policy_version` 记政策版本（7 号），两者不矛盾。
 2. **RD-002 与 RD-003 的 `source_span` 相同**（同句派生）。语义上分别对应"有研发活动"与"研发费用>0"，可接受；如需更强的引文区分，待与 M1 商定后调整并重跑闸门。
-3. **HT-007 引文归属**：10% 出自财税〔2015〕119号，20% 出自国科发火〔2016〕195号（《高企认定管理办法》国科发火〔2016〕32号亦载同一 20% 条款）；已在 `adjudication_note` 写明，两位标注人均建议保留并注明来源。
+3. **HT-007 引文归属（2026-11-02 复核后改判）**：10% 出自财税〔2015〕119号，20% 出自国科发火〔2016〕195号。复核确认深科技创新规〔2021〕5号 **第三条** 明文采用 119号 的研发费用归集范围，而 195号 的 20% 在本政策中仅见于**第七条**（第三方研发费用审计/鉴证机构资质要求），不适用于归集口径——两者不是同一条件的冲突，原 `review_finding=conflict` 作废，改为单引 119号 的 `manual_review`（其他相关费用占比无事实键）。
 4. **SRDI-001 年限版本**：两位标注人均提示 2026 新办法改为"3 年"；本项目 2025 申报适用 2022 暂行办法"2 年"，见 §9 备忘。
 
 独立标注表 `holdout_annotation_sheet.csv` 保留为空白模板，供后续新增留出样本复用。
@@ -202,7 +202,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | `SME-001` | 1（C002） | insufficient_evidence / not_satisfied | 本条只判「非限制和禁止行业」，数值条件已拆为 SME-002~004；B 把整段第五条当合成条件。**已收窄 `source_span` 至「从事国家非限制和禁止行业」**，从源头消除歧义 |
 | `RD-002` | 5 | satisfied / insufficient_evidence | 本条判「是否开展研发活动」（`rdActivity=true`），不判费用金额；费用>0 由 RD-003 承担，B 将两条混同 |
 | `HT-004` | 1（C027） | satisfied / insufficient_evidence | 本政策申报年度 2025 的上一会计年度 = **2024**，企业该期间 `rdAddDeductionClaimed=true`；B 误把上年度当作 2025 |
-| `HT-007` | 5 | conflict / insufficient_evidence | 本条是经人工确认的条款冲突（`review_finding=conflict`），引擎固定返回 conflict、与具体企业无关；B 漏掉冲突优先级 |
+| `HT-007` | 5 | conflict / insufficient_evidence | 本条是经人工确认的条款冲突（`review_finding=conflict`），引擎固定返回 conflict、与具体企业无关；B 漏掉冲突优先级。**2026-11-02 复核改判：该 conflict 结论不成立**（深创〔2021〕5号 第三条采用 119号 归集范围），本轮仲裁作废，对应 6 条标签改判为 `insufficient_evidence` |
 
 至此 **留出集 + 开发集均完成双人标注与仲裁**；`labels.csv` 可作为评测真值使用（仍标注为合成的、非真实税务结论）。
 
@@ -213,6 +213,14 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | 1 | `RD-002` 与 `RD-003` 的 `source_span` 完全相同，区分度不足 | **保留**。同句派生两个原子条件（RD-002 判研发活动存在、RD-003 判研发费用>0），符合"一条原子条件一行"；不作区别引文。若确需活动范围/排除清单，应另立条款并引财税〔2015〕119号原文。已记入 `RD-003` 的 `adjudication_note` |
 | 2 | `GXJS-V1-001`（2008 年版）已被 2016 年版废止，是否保留 | **有意保留为历史版本对照样本**，正是 11/03 要求的"版本变化"覆盖；`source_register` 标 `closed`，`criteria` 的 note 已加效力声明"仅用于版本失效对照演示、不得作为现行规则发布" |
 | 3 | `SRDI-001/002/004` 的认定标准源自《暂行办法》，本通知仅转致，来源如何记 | **`source_span` 严格取本政策文字**（已逐字核实存在于通知正文），上位依据写进 `adjudication_note`、不混入 `source_span`。三条已补上位依据说明 |
+
+### 6.2 conflict 态样本与真冲突判定（2026-11-02）
+
+`review_finding=conflict` 是 `labels.csv` 中 `conflict` 态的唯一来源：引擎对该条固定返回 `conflict`（与具体企业事实无关），政策级按「存在冲突即 conflict」聚合。**当前数据集暂无该样本**（原 HT-007 改判后归零）。
+
+判定真冲突须同时满足：① 同一制度、同一适用对象；② 两份权威文本或同一文本的两处条款，对**同一条件**给出互斥要求（数值不同、方向相反、口径互斥）；③ 都适用于本政策（本政策明文援引，或就是政策自身条款）。**排除**：跨制度口径差异、版本废止（已有 GXJS 版本对覆盖）、期间或适用范围不同。
+
+2026-11-02 对 9 份来源快照逐条检索，候选与排除理由见 `docs/devlog/M3.md` 同日条目。唯一待裁定的候选是深科创〔2021〕5号 第六条（一）「高新技术企业**和**上年度高新技术企业培育入库企业」与第九条（一）「未获得过高新技术企业资格」：若「和」按合取读，则同一申请人须同时「有高企资格」与「未获得过高企资格」，构成同文互斥；若按列举读（两类主体各自可申请），则不构成冲突。**该判定取决于「和」的读法，需 M2 确认后再决定是否落为 conflict 样本，不硬凑。**
 
 ## 7. 容易混淆的名词
 
