@@ -587,27 +587,31 @@ def _boundary_overlap(
     可能落在 ``satisfied`` 上（较严的一档不成立），也可能两支同时成立（结论本来就
     对，不必降级），所以只在「较严的一档确实不成立」时降级，交给人工确认档位。
 
-    纯并列的「或」（如「营收 1,000 万元以上，或营收 1,000 万元以下但股权融资
-    ≥2,000 万元」）不会被误伤：两支对 ``revenue`` 的界方向相反，``revenue`` 因此
-    被认成分档键，它在候选支上不成立只说明企业在别的区间，不触发降级。
+    只有确认两支是同一分档键上的相邻两档（一支上界、一支下界）才降级：
+    「比例 ≥5% 或 比例 ≥4%」这类普通并列里，较严的一支不成立是常态，结论本来就是
+    成立，不能拖进人工。纯并列的另一形态（「营收 1,000 万元以上，或营收 1,000 万元
+    以下但股权融资 ≥2,000 万元」）也不会被误伤——``revenue`` 是分档键，它在候选支
+    上不成立只说明企业在另一段区间。
+
+    展开不了的分支（含嵌套 ``or``/``not``）单独跳过，不让它连累其他分支的检查。
     """
 
-    branches: list[list[dict]] = []
-    for child in children:
-        leaves = _branch_leaves(child)
-        if leaves is None:
-            return None
-        branches.append(leaves)
+    branches: list[list[dict] | None] = [_branch_leaves(child) for child in children]
     if len(branches) != len(results):
         return None
-
-    split_keys = _split_keys(branches)
     reference = branches[satisfied_index]
+    if reference is None:
+        return None
+
+    split_keys = _split_keys([leaves for leaves in branches if leaves is not None])
 
     for index, item in enumerate(results):
         if index == satisfied_index or item.result != NOT_SATISFIED:
             continue
-        if _unmet_stricter(branches[index], reference, facts, period=period, split_keys=split_keys):
+        candidate = branches[index]
+        if candidate is None or not _is_adjacent_tier(candidate, reference):
+            continue
+        if _unmet_stricter(candidate, reference, facts, period=period, split_keys=split_keys):
             return satisfied_index, index
     return None
 
@@ -636,6 +640,30 @@ def _direction_of(comparator: str) -> str | None:
     if comparator in _UPPER_COMPARATORS:
         return "upper"
     return None
+
+
+def _is_adjacent_tier(candidate: list[dict], reference: list[dict]) -> bool:
+    """两支是否同一指标上的相邻两档：一支写的是上界，另一支写的是下界。
+
+    没有这个前提，普通并列的「或」也会被当成档位交界——「比例 ≥5% 或 ≥4%」在
+    4.5% 时较松的一支成立、较严的一支不成立，但那本来就该判成立。
+    """
+
+    for leaf in candidate:
+        if leaf.get("op") != "compare":
+            continue
+        direction = _direction_of(str(leaf.get("comparator")))
+        if direction is None:
+            continue
+        for other in reference:
+            if other.get("op") != "compare":
+                continue
+            if str(other.get("factKey")) != str(leaf.get("factKey")):
+                continue
+            other_direction = _direction_of(str(other.get("comparator")))
+            if other_direction is not None and other_direction != direction:
+                return True
+    return False
 
 
 def _split_keys(branches: list[list[dict]]) -> set[str]:

@@ -951,3 +951,48 @@ def test_an_either_or_branch_failing_on_another_fact_is_not_downgraded():
     """支 2 因股权融资不成立，不是「同一指标要求更严」，不降级。"""
 
     assert either_or_outcome("10000000", "5000000").result == SATISFIED
+
+
+def test_a_plain_or_of_the_same_metric_is_not_a_tier_boundary():
+    """「比例 ≥5% 或 ≥4%」是普通并列，4.5% 时较松的一支成立就该判成立。
+
+    M2 在 #21 的反例：没有分档键、两支只差一个更严的阈值，不能当成档位交界降级。
+    """
+
+    expression = {
+        "op": "or",
+        "children": [
+            compare("rdExpenseRevenueRatio", "gte", "0.05", period=TIER_PERIOD),
+            compare("rdExpenseRevenueRatio", "gte", "0.04", period=TIER_PERIOD),
+        ],
+    }
+    verdict = evaluate_expression(
+        expression, table(fact("rdExpenseRevenueRatio", Decimal("0.045"))), period=YEAR
+    )
+
+    assert verdict.result == SATISFIED
+
+
+def test_an_unrelated_nested_or_does_not_disable_the_boundary_check():
+    """M2 在 #21 的反例：多一支展开不了的「或」，不能把其他分支的边界检查关掉。"""
+
+    expression = {
+        "op": "or",
+        "children": [
+            *TIER_EXPRESSION["children"],
+            {
+                "op": "or",
+                "children": [
+                    compare("revenue", "lt", "10000000.00", period=TIER_PERIOD),
+                    compare("revenue", "gt", "300000000.00", period=TIER_PERIOD),
+                ],
+            },
+        ],
+    }
+    verdict = evaluate_expression(
+        expression,
+        table(fact("revenue", Decimal("50000000")), fact("rdExpenseRevenueRatio", Decimal("0.045"))),
+        period=YEAR,
+    )
+
+    assert verdict.result == INSUFFICIENT
