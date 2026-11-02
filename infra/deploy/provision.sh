@@ -110,4 +110,6 @@ cat <<EOF
   2) sudo systemctl restart huice-api
   3) curl -i http://127.0.0.1:8000/api/v1/health        # 期望 200
   4) journalctl -u huice-api -n 50 --no-pager           # 失败时先看这里
+  5) 评审演示需要 HTTPS（restricted 模式的会话 cookie 带 Secure，浏览器在
+     http://<EIP> 下不保存）：sudo bash ${SCRIPT_DIR}/enable-tls.sh <公网IP>，见 README §3.2
 EOF

@@ -110,6 +110,29 @@ set -a; . /etc/huice/api.env; set +a      # 仅为取到 DEMO_SESSION_SECRET，�
 
 签名密钥是**独立的 `DEMO_SESSION_SECRET`**，与后台 Bearer 使用的 `ADMIN_TOKEN` 互不派生：持有 Bearer 不能签发会话，持有会话密钥也不能调用后台接口。两个值都要按机密对待，**不要把密钥或输出写进日志、文档或群聊**。
 
+### 3.2 自签 HTTPS（评审演示，ICP 备案前的临时方案）
+
+`restricted` 模式的会话 cookie 带 `Secure`，浏览器在 `http://<EIP>`（非 localhost）**不会保存**它，页面会一直 403 `DEMO_SESSION_REQUIRED`。备案下来之前，用自签证书把 443 打开：
+
+```bash
+sudo bash /opt/huice/app/infra/deploy/enable-tls.sh 139.9.33.46
+```
+
+- 脚本用 IP SAN（`subjectAltName=IP:...`）签一年期自签证书到 `/etc/huice/tls/huice.{crt,key}`，装 `nginx-huice-tls.conf`，`nginx -t` 通过后重载。私钥权限 600，只落服务器，**不进仓库、不贴聊天**。
+- **华为云安全组需含 TCP 443 入方向**（`infra/README.md` 的规则清单里已列；实例上如果没有，补一条），否则外网访问超时——表现为「连不上」，不是证书问题。
+- 已有证书默认保留，避免重跑脚本把在演示的证书换掉；换 EIP 或要重签时加 `--force`，有效期用 `TLS_DAYS` 调整。
+- 浏览器第一次访问 `https://<EIP>` 会拦「您的连接不是私密连接」：高级 → 继续前往。过完这次，同一浏览器配置后续不再拦；换电脑、换无痕窗口会再来一次。
+- 写会话 cookie：F12 → Application → Cookies → `https://<EIP>` → 新建 `huice_demo_session`，值取 §3.1 输出的 `value:`，勾 `Secure`、`HttpOnly`、`SameSite=Lax`，Path `/`。在 https 页面的 Console 里写 `document.cookie = "huice_demo_session=<value>; path=/; secure; samesite=lax"` 也可以（这条不带 `HttpOnly`，演示够用）。
+- 前端若也挂在这台 nginx 下，`CORS_ORIGINS` 填 `https://<EIP>`；前端在别处就填那个确切源。前端页面在 https 下不能调 http 接口，否则被浏览器当混合内容拦掉。
+- 80 端口保留不动，§4 的健康检查与 curl 冒烟不受影响。
+
+验证：
+
+```bash
+curl -k -i https://127.0.0.1/api/v1/health     # ECS 上
+curl -k -i https://139.9.33.46/api/v1/health   # 自己电脑上，期望 200 + X-Trace-Id
+```
+
 ## 4. 验证
 
 ECS 本机：
@@ -129,9 +152,9 @@ curl -i http://139.9.33.46/api/v1/health
 
 ## 5. 已知限制（M1）
 
-- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；尚未完成的是网关侧的自动下发、`Secure` 所需的 TLS，以及云端真实链路验证（见 `infra/README.md` §5.2 B）。在网关下发或手工注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
+- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；云端真实链路已于 2026-11-02 验证（健康检查 200、401/403 分层、写路径冒烟通过）。仍待自动化的是**网关侧的 cookie 下发**——目前要按 §3.2 在浏览器里手工写入；`Secure` 所需的 TLS 由 §3.2 的自签 443 提供。在注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
 - `OBJECT_STORE_MODE=obs` 已于 2026-10-27 在真实桶上联调通过（`-m obs` 5 项，见 `infra/README.md` §4.3）；首轮部署仍先留在 `local`，填好 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK` 后再切 `obs`，切换后按 §4 复测一次导入。
-- 未配置域名与证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示。
+- 未配置域名与正式证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示，评审期临时走 §3.2 的自签 443；备案后换正式证书并去掉浏览器的自签警告。
 - `infra/deploy/deploy.ps1` 仍是占位文件，本阶段以本文档的手工步骤为准。
 
 ## 6. 回滚
@@ -149,4 +172,4 @@ systemctl restart huice-api
 - `/etc/huice/api.env` 含数据库与 Redis 密码、OBS 密钥，权限必须是 `640 root:huice`，不得复制到仓库目录、不得贴进聊天记录。
 - `ADMIN_TOKEN` 只做服务端校验，不作为任何前端构建变量。
 - 启动失败时日志只输出变量名；若看到具体值，按缺陷处理。
-- nginx 只暴露 80（证书就绪后加 443），ECS 安全组不额外开放 8000。
+- nginx 只暴露 80 与评审期自签的 443（§3.2），ECS 安全组不额外开放 8000。
