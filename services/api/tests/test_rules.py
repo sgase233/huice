@@ -1084,3 +1084,46 @@ def test_an_unsatisfied_nested_child_does_not_supply_the_stricter_counterpart():
     )
 
     assert verdict.result == SATISFIED
+
+
+def _tier_with_extra_first_branch() -> dict:
+    """把较严的一档包进一个嵌套「或」，第二个子支刻意不成立。"""
+
+    return {
+        "op": "or",
+        "children": [
+            {
+                "op": "or",
+                "children": [
+                    TIER_EXPRESSION["children"][0],
+                    _tier([compare("revenue", "gte", "300000000.00", period=TIER_PERIOD),
+                           compare("rdExpenseRevenueRatio", "gte", "0.03", period=TIER_PERIOD)]),
+                ],
+            },
+            *TIER_EXPRESSION["children"][1:],
+        ],
+    }
+
+
+def test_a_stricter_tier_wrapped_in_a_nested_or_still_triggers_the_check():
+    """M2 在 #21 第三轮的反例：较严的那档包进嵌套「或」后，不能因此放行较松档。"""
+
+    verdict = evaluate_expression(
+        _tier_with_extra_first_branch(),
+        table(fact("revenue", Decimal("50000000")), fact("rdExpenseRevenueRatio", Decimal("0.045"))),
+        period=YEAR,
+    )
+
+    assert verdict.result == INSUFFICIENT
+
+
+def test_the_same_nested_stricter_tier_does_not_degrade_away_from_the_boundary():
+    """同一写法、企业不在交界点（1 亿元）时仍判成立，嵌套展开不能反过来扩大降级面。"""
+
+    verdict = evaluate_expression(
+        _tier_with_extra_first_branch(),
+        table(fact("revenue", Decimal("100000000")), fact("rdExpenseRevenueRatio", Decimal("0.045"))),
+        period=YEAR,
+    )
+
+    assert verdict.result == SATISFIED

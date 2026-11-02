@@ -593,8 +593,9 @@ def _boundary_overlap(
     重叠的并列选项，企业落在重叠区内部也不该降级。
 
     成立支本身是嵌套 ``or`` 时，只取其中成立的子支做对照——不成立的子支解释不了这条
-    为什么成立，并进来反而会把「靠另一支达标」误判成档位重叠。候选支展开不了则跳过
-    那一支，不让它连累其他分支的检查。
+    为什么成立，并进来反而会把「靠另一支达标」误判成档位重叠。不成立的候选支正好相反：
+    整支都没成立，说明每个子支都不成立，所以逐个子支检查，哪一支落在交界点上、又有更严
+    的要求没达到，就降级。
     """
 
     branches: list[list[dict] | None] = [_branch_leaves(child) for child in children]
@@ -604,19 +605,27 @@ def _boundary_overlap(
     if not references:
         return None
 
-    split_keys = _split_keys([leaves for leaves in branches if leaves is not None])
+    candidates = [
+        [] if index == satisfied_index else _failed_groups(child)
+        for index, child in enumerate(children)
+    ]
+    split_keys = _split_keys(
+        [leaves for leaves in branches if leaves is not None]
+        + [leaves for groups in candidates for leaves in groups]
+        + references
+    )
 
     for index, item in enumerate(results):
         if index == satisfied_index or item.result != NOT_SATISFIED:
             continue
-        candidate = branches[index]
-        if candidate is None:
-            continue
-        for reference in references:
-            if not _is_adjacent_tier(candidate, reference, period=period):
-                continue
-            if _unmet_stricter(candidate, reference, facts, period=period, split_keys=split_keys):
-                return satisfied_index, index
+        for candidate in candidates[index]:
+            for reference in references:
+                if not _is_adjacent_tier(candidate, reference, period=period):
+                    continue
+                if _unmet_stricter(
+                    candidate, reference, facts, period=period, split_keys=split_keys
+                ):
+                    return satisfied_index, index
     return None
 
 
@@ -637,6 +646,24 @@ def _satisfied_groups(
             if _evaluate(child, facts, period=period).result != SATISFIED:
                 continue
             groups.extend(_satisfied_groups(child, facts, period=period))
+        return groups
+    return []
+
+
+def _failed_groups(node: Any) -> list[list[dict]]:
+    """一条不成立的分支，展开成它的全部叶子组；展开不出来返回空列表。
+
+    整条 ``or`` 都不成立意味着每个子支都不成立，所以不筛子支——逐组检查，由
+    ``_unmet_stricter`` 判定哪一组才是「落在交界点、要求更严却没达到」。
+    """
+
+    leaves = _branch_leaves(node)
+    if leaves is not None:
+        return [leaves]
+    if isinstance(node, dict) and node.get("op") == "or":
+        groups: list[list[dict]] = []
+        for child in node.get("children") or []:
+            groups.extend(_failed_groups(child))
         return groups
     return []
 
