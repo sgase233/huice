@@ -32,7 +32,62 @@
 | 模型（DeepSeek）降级 | 解释内容为已保存结果，规则判断不受影响 | 模型失败时规则结果照常返回，不伪称实时调用 |
 | 无权限访问后台/轨迹 | 无访问权限 | 管理接口需授权，不展示后台数据 |
 
-## 4. 待办
+## 4. 补问提示（业务口径）
+
+补问只对 `insufficient_evidence` 出现，页面一次显示一问。
+
+**文案的唯一实现口径是 `services/api/app/domain/questioning.py` 的 `PROMPTS` 常量**（同 §5 档位口径：M3 定业务含义、M1 定实现，本文件不复制具体文字，避免两份文案各说各话）。前端直接展示 `NextQuestion.prompt` 原文，不自行改写。本节只规定该常量必须满足的业务规则：
+
+| 规则 | 要求 | 违反后果 |
+| --- | --- | --- |
+| **禁相对年份** | 文案不得出现「本年度 / 上年度 / 近两年 / 本次判断所属年度」等相对词，统一说「该期间」；期间由界面单独展示 | 用户按字面填错年份，数值仍合法、校验全过 → **fail-wrong** |
+| **增量写公式** | `rdExpenseIncrease` 必须写明「该期间研发费用 − 上一期间研发费用」，下降填负数 | 标注方预计算与用户自算的数对不上 |
+| **比例给样例** | `rdExpenseRevenueRatio` 必须给出换算样例（如 3% 填 0.03） | 用户填成 3 而非 0.03，差 100 倍 |
+| **布尔给方向** | `creditRecord`（true=记录良好）、`independentLegalEntity`（true=具有法人资格）必须写明「是→true、否→false」及反例 | 反向存值，规则判反 |
+| **申报类三态** | `rdAddDeductionClaimed` 必须区分「已申报 / 确认未申报 / 尚未申报或不确定（跳过，按未知处理）」，不得把「尚未申报」诱成为「否」 | 未知被记成 false |
+| **日期非年数** | `specificMarketSince` 必须说明填起始日期、不是年数 | 用户填「3」这类年数 |
+
+各键覆盖清单（M1 常量须含全部 18 键）：`region`、`industry`、`establishedDate`、`taxableIncome`、`rdExpense`、`rdActivity`、`employeeCountStart/End`、`assetsStart/End`、`revenue`、`equityFinancing`、`rdExpenseIncrease`、`rdExpenseRevenueRatio`、`rdAddDeductionClaimed`、`creditRecord`、`specificMarketSince`、`independentLegalEntity`。
+
+## 5. 两类准备清单文案
+
+两类清单**必须分栏**，不得混排；条目来源与数据字段如下。
+
+### 5.1 税收类（`handlingMode=tax_self_assessment`）
+
+定位：**资料归集 → 留存备查 → 财税复核**，不代申报。
+
+| 分组 | 条目来源 | 页面要素 |
+| --- | --- | --- |
+| 资料归集 | `material_requirements.csv` 中 `policy_type=tax` 且 `必交` 的材料 + 本政策条件触发到的 `条件交` 材料 | 材料名称、办理说明、对应事实是否已具备（`missing`） |
+| 留存备查 | 同上材料清单的说明中「留存备查」口径 | 提示：相关资料应自行留存备查，不需事前审批 |
+| 财税复核 | 固定文案 | 「涉税事项请企业财税人员或税务师复核后再自行申报」 |
+
+固定提示（页面与报告一致）：
+
+> 政策信息辅助整理；非税务专业意见；申报前请企业财税人员核对。本平台不代企业申报。
+
+### 5.2 资金类（`handlingMode=grant_application`）
+
+定位：**申报窗口 → 申请材料 → 官方入口**，不代提交。
+
+| 分组 | 条目来源 | 页面要素 |
+| --- | --- | --- |
+| 申报窗口 | `source_register.csv` 的 `application_open` / `application_close` | 起止日期；窗口已关闭时显示「申报窗口已关闭」并**不显示**立即可办动作 |
+| 申请材料 | `material_requirements.csv` 中 `policy_type=grant` 的材料（按 `applies_to_policy_ids` 过滤） | 材料名称、必交/条件交、办理说明 |
+| 官方入口 | `source_register.csv` 的 `source_url`（及通知正文给出的申报平台） | 官方链接，标注「以官方通知为准」 |
+
+固定提示（页面与报告一致）：
+
+> 不承诺补贴到账，不代企业提交申报；窗口与材料以官方通知为准。
+
+### 5.3 通用约束
+
+- `closed` / `stale` 的政策**不得出现立即申报动作**；窗口已关闭只展示历史信息。
+- 清单条目不得由模型编造：`items[]` 必须来自已审材料要求，未补充前显示「待补充材料要求」占位。
+- 税收与资金**不得复用同一套文案**（前者强调留存备查与自行申报，后者强调窗口与提交）。
+
+## 6. 待办
 
 - M2 落地组件后，M3 复核各状态文案与四态/失效/关闭三者的呈现是否同时可读。
 - 涉税提示在报告页与页面固定一致，由 M3 统一，M2 不自行改动业务含义。

@@ -1,1 +1,149 @@
 case_id,enterprise_id,policy_id,policy_version,criterion_id,annotator_a_result,annotator_b_result,adjudicated_result,source_span,split,notes
+C001,E-ENT-001,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-001,insufficient_evidence,insufficient_evidence,insufficient_evidence,从事国家非限制和禁止行业，且同时符合年度应纳税所得额不超过300万元、从业人数不超过300人、资产总额不超过5000万元等三个条件的企业,dev,
+C001,E-ENT-001,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-002,satisfied,satisfied,satisfied,年度应纳税所得额不超过300万元,dev,
+C001,E-ENT-001,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-003,satisfied,satisfied,satisfied,从业人数不超过300人|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C001,E-ENT-001,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-004,satisfied,satisfied,satisfied,资产总额不超过5000万元|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C002,E-ENT-002,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-001,insufficient_evidence,not_satisfied,insufficient_evidence,从事国家非限制和禁止行业，且同时符合年度应纳税所得额不超过300万元、从业人数不超过300人、资产总额不超过5000万元等三个条件的企业,dev,分歧：A=insufficient_evidence，B=not_satisfied；仲裁=insufficient_evidence——SME-001 只判「非限制和禁止行业」这一条（另一条事实键的数值条件已拆为 SME-002~004），其 AST 为 manual_review，恒为 insufficient_evidence；B 把整段第五条当合成条件判 not_satisfied，属条件边界误解。产品不可自动判行业是否属目录，故不能在数值已超标时直接降为不满足（政策级会由 SME-002 聚合为 not_satisfied）。已建议收窄 source_span 至「从事国家非限制和禁止行业」以消除歧义。
+C002,E-ENT-002,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-002,not_satisfied,not_satisfied,not_satisfied,年度应纳税所得额不超过300万元,dev,
+C002,E-ENT-002,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-003,satisfied,satisfied,satisfied,从业人数不超过300人|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C002,E-ENT-002,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-004,satisfied,satisfied,satisfied,资产总额不超过5000万元|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C003,E-ENT-003,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-001,insufficient_evidence,insufficient_evidence,insufficient_evidence,从事国家非限制和禁止行业，且同时符合年度应纳税所得额不超过300万元、从业人数不超过300人、资产总额不超过5000万元等三个条件的企业,dev,
+C003,E-ENT-003,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-002,satisfied,satisfied,satisfied,年度应纳税所得额不超过300万元,dev,
+C003,E-ENT-003,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-003,satisfied,satisfied,satisfied,从业人数不超过300人|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C003,E-ENT-003,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-004,satisfied,satisfied,satisfied,资产总额不超过5000万元|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C005,E-ENT-005,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-001,insufficient_evidence,insufficient_evidence,insufficient_evidence,从事国家非限制和禁止行业，且同时符合年度应纳税所得额不超过300万元、从业人数不超过300人、资产总额不超过5000万元等三个条件的企业,dev,
+C005,E-ENT-005,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-002,satisfied,satisfied,satisfied,年度应纳税所得额不超过300万元,dev,
+C005,E-ENT-005,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-003,satisfied,satisfied,satisfied,从业人数不超过300人|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C005,E-ENT-005,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-004,satisfied,satisfied,satisfied,资产总额不超过5000万元|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C006,E-ENT-006,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-001,insufficient_evidence,insufficient_evidence,insufficient_evidence,从事国家非限制和禁止行业，且同时符合年度应纳税所得额不超过300万元、从业人数不超过300人、资产总额不超过5000万元等三个条件的企业,dev,
+C006,E-ENT-006,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-002,satisfied,satisfied,satisfied,年度应纳税所得额不超过300万元,dev,
+C006,E-ENT-006,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-003,satisfied,satisfied,satisfied,从业人数不超过300人|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C006,E-ENT-006,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-004,satisfied,satisfied,satisfied,资产总额不超过5000万元|从业人数和资产总额指标，应按企业全年的季度平均值确定,dev,
+C007,E-ENT-001,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-001,satisfied,satisfied,satisfied,不适用税前加计扣除政策的行业|烟草制造业|住宿和餐饮业|批发和零售业|房地产业|租赁和商务服务业|娱乐业|财政部和国家税务总局规定的其他行业,dev,
+C007,E-ENT-001,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-002,satisfied,insufficient_evidence,satisfied,企业开展研发活动中实际发生的研发费用,dev,分歧：A=satisfied，B=insufficient_evidence；仲裁=satisfied——RD-002 判的是「是否开展研发活动」（rdActivity=true），不判费用金额；企业事实已给 rdActivity=true，故 satisfied。费用是否大于零由 RD-003 承担，B 将两条混同。
+C007,E-ENT-001,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-003,satisfied,satisfied,satisfied,企业开展研发活动中实际发生的研发费用,dev,
+C009,E-ENT-003,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-001,satisfied,satisfied,satisfied,不适用税前加计扣除政策的行业|烟草制造业|住宿和餐饮业|批发和零售业|房地产业|租赁和商务服务业|娱乐业|财政部和国家税务总局规定的其他行业,dev,
+C009,E-ENT-003,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-002,satisfied,insufficient_evidence,satisfied,企业开展研发活动中实际发生的研发费用,dev,分歧：A=satisfied，B=insufficient_evidence；仲裁=satisfied——RD-002 判的是「是否开展研发活动」（rdActivity=true），不判费用金额；企业事实已给 rdActivity=true，故 satisfied。费用是否大于零由 RD-003 承担，B 将两条混同。
+C009,E-ENT-003,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-003,satisfied,satisfied,satisfied,企业开展研发活动中实际发生的研发费用,dev,
+C010,E-ENT-004,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-001,satisfied,satisfied,satisfied,不适用税前加计扣除政策的行业|烟草制造业|住宿和餐饮业|批发和零售业|房地产业|租赁和商务服务业|娱乐业|财政部和国家税务总局规定的其他行业,dev,
+C010,E-ENT-004,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-002,satisfied,insufficient_evidence,satisfied,企业开展研发活动中实际发生的研发费用,dev,分歧：A=satisfied，B=insufficient_evidence；仲裁=satisfied——RD-002 判的是「是否开展研发活动」（rdActivity=true），不判费用金额；企业事实已给 rdActivity=true，故 satisfied。费用是否大于零由 RD-003 承担，B 将两条混同。
+C010,E-ENT-004,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-003,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业开展研发活动中实际发生的研发费用,dev,
+C011,E-ENT-005,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-001,satisfied,satisfied,satisfied,不适用税前加计扣除政策的行业|烟草制造业|住宿和餐饮业|批发和零售业|房地产业|租赁和商务服务业|娱乐业|财政部和国家税务总局规定的其他行业,dev,
+C011,E-ENT-005,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-002,satisfied,insufficient_evidence,satisfied,企业开展研发活动中实际发生的研发费用,dev,分歧：A=satisfied，B=insufficient_evidence；仲裁=satisfied——RD-002 判的是「是否开展研发活动」（rdActivity=true），不判费用金额；企业事实已给 rdActivity=true，故 satisfied。费用是否大于零由 RD-003 承担，B 将两条混同。
+C011,E-ENT-005,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-003,satisfied,satisfied,satisfied,企业开展研发活动中实际发生的研发费用,dev,
+C012,E-ENT-006,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-001,satisfied,satisfied,satisfied,不适用税前加计扣除政策的行业|烟草制造业|住宿和餐饮业|批发和零售业|房地产业|租赁和商务服务业|娱乐业|财政部和国家税务总局规定的其他行业,dev,
+C012,E-ENT-006,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-002,satisfied,insufficient_evidence,satisfied,企业开展研发活动中实际发生的研发费用,dev,分歧：A=satisfied，B=insufficient_evidence；仲裁=satisfied——RD-002 判的是「是否开展研发活动」（rdActivity=true），不判费用金额；企业事实已给 rdActivity=true，故 satisfied。费用是否大于零由 RD-003 承担，B 将两条混同。
+C012,E-ENT-006,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-003,satisfied,satisfied,satisfied,企业开展研发活动中实际发生的研发费用,dev,
+C013,E-ENT-001,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-001,satisfied,satisfied,satisfied,从事特定细分市场时间达到2年以上,dev,
+C013,E-ENT-001,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-002,satisfied,satisfied,satisfied,上年度研发费用总额不低于100万元|且占营业收入总额比重不低于3%|上年度营业收入总额在1000万元以上|上年度营业收入总额在1000万元以下|但近2年新增股权融资总额（合格机构投资者的实缴额）达到2000万元以上,dev,
+C013,E-ENT-001,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-003,satisfied,satisfied,satisfied,申报企业需在深圳市（含深汕特别合作区）工商注册登记、具有独立法人资格,dev,
+C013,E-ENT-001,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-004,insufficient_evidence,insufficient_evidence,insufficient_evidence,且为有效期内的深圳市创新型中小企业,dev,
+C013,E-ENT-001,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,符合《中小企业划型标准规定》（工信部联企业〔2011〕300号）的中小企业,dev,
+C013,E-ENT-001,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-006,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业未被列入经营异常名录或严重失信主体名单,dev,
+C013,E-ENT-001,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-007,insufficient_evidence,insufficient_evidence,insufficient_evidence,提供的产品（服务）不属于国家禁止、限制或淘汰类,dev,
+C013,E-ENT-001,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-008,insufficient_evidence,insufficient_evidence,insufficient_evidence,近三年未发生重大安全（含网络安全、数据安全）、质量、环境污染等事故以及偷漏税等违法违规行为,dev,
+C014,E-ENT-002,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-001,satisfied,satisfied,satisfied,从事特定细分市场时间达到2年以上,dev,
+C014,E-ENT-002,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-002,not_satisfied,not_satisfied,not_satisfied,上年度研发费用总额不低于100万元|且占营业收入总额比重不低于3%|上年度营业收入总额在1000万元以上|上年度营业收入总额在1000万元以下|但近2年新增股权融资总额（合格机构投资者的实缴额）达到2000万元以上,dev,
+C014,E-ENT-002,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-003,satisfied,satisfied,satisfied,申报企业需在深圳市（含深汕特别合作区）工商注册登记、具有独立法人资格,dev,
+C014,E-ENT-002,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-004,insufficient_evidence,insufficient_evidence,insufficient_evidence,且为有效期内的深圳市创新型中小企业,dev,
+C014,E-ENT-002,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,符合《中小企业划型标准规定》（工信部联企业〔2011〕300号）的中小企业,dev,
+C014,E-ENT-002,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-006,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业未被列入经营异常名录或严重失信主体名单,dev,
+C014,E-ENT-002,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-007,insufficient_evidence,insufficient_evidence,insufficient_evidence,提供的产品（服务）不属于国家禁止、限制或淘汰类,dev,
+C014,E-ENT-002,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-008,insufficient_evidence,insufficient_evidence,insufficient_evidence,近三年未发生重大安全（含网络安全、数据安全）、质量、环境污染等事故以及偷漏税等违法违规行为,dev,
+C016,E-ENT-004,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-001,satisfied,satisfied,satisfied,从事特定细分市场时间达到2年以上,dev,
+C016,E-ENT-004,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-002,insufficient_evidence,insufficient_evidence,insufficient_evidence,上年度研发费用总额不低于100万元|且占营业收入总额比重不低于3%|上年度营业收入总额在1000万元以上|上年度营业收入总额在1000万元以下|但近2年新增股权融资总额（合格机构投资者的实缴额）达到2000万元以上,dev,
+C016,E-ENT-004,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-003,satisfied,satisfied,satisfied,申报企业需在深圳市（含深汕特别合作区）工商注册登记、具有独立法人资格,dev,
+C016,E-ENT-004,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-004,insufficient_evidence,insufficient_evidence,insufficient_evidence,且为有效期内的深圳市创新型中小企业,dev,
+C016,E-ENT-004,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,符合《中小企业划型标准规定》（工信部联企业〔2011〕300号）的中小企业,dev,
+C016,E-ENT-004,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-006,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业未被列入经营异常名录或严重失信主体名单,dev,
+C016,E-ENT-004,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-007,insufficient_evidence,insufficient_evidence,insufficient_evidence,提供的产品（服务）不属于国家禁止、限制或淘汰类,dev,
+C016,E-ENT-004,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-008,insufficient_evidence,insufficient_evidence,insufficient_evidence,近三年未发生重大安全（含网络安全、数据安全）、质量、环境污染等事故以及偷漏税等违法违规行为,dev,
+C017,E-ENT-005,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-001,satisfied,satisfied,satisfied,从事特定细分市场时间达到2年以上,dev,
+C017,E-ENT-005,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-002,not_satisfied,not_satisfied,not_satisfied,上年度研发费用总额不低于100万元|且占营业收入总额比重不低于3%|上年度营业收入总额在1000万元以上|上年度营业收入总额在1000万元以下|但近2年新增股权融资总额（合格机构投资者的实缴额）达到2000万元以上,dev,
+C017,E-ENT-005,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-003,satisfied,satisfied,satisfied,申报企业需在深圳市（含深汕特别合作区）工商注册登记、具有独立法人资格,dev,
+C017,E-ENT-005,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-004,insufficient_evidence,insufficient_evidence,insufficient_evidence,且为有效期内的深圳市创新型中小企业,dev,
+C017,E-ENT-005,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,符合《中小企业划型标准规定》（工信部联企业〔2011〕300号）的中小企业,dev,
+C017,E-ENT-005,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-006,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业未被列入经营异常名录或严重失信主体名单,dev,
+C017,E-ENT-005,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-007,insufficient_evidence,insufficient_evidence,insufficient_evidence,提供的产品（服务）不属于国家禁止、限制或淘汰类,dev,
+C017,E-ENT-005,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-008,insufficient_evidence,insufficient_evidence,insufficient_evidence,近三年未发生重大安全（含网络安全、数据安全）、质量、环境污染等事故以及偷漏税等违法违规行为,dev,
+C018,E-ENT-006,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-001,satisfied,satisfied,satisfied,从事特定细分市场时间达到2年以上,dev,
+C018,E-ENT-006,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-002,satisfied,satisfied,satisfied,上年度研发费用总额不低于100万元|且占营业收入总额比重不低于3%|上年度营业收入总额在1000万元以上|上年度营业收入总额在1000万元以下|但近2年新增股权融资总额（合格机构投资者的实缴额）达到2000万元以上,dev,
+C018,E-ENT-006,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-003,satisfied,satisfied,satisfied,申报企业需在深圳市（含深汕特别合作区）工商注册登记、具有独立法人资格,dev,
+C018,E-ENT-006,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-004,insufficient_evidence,insufficient_evidence,insufficient_evidence,且为有效期内的深圳市创新型中小企业,dev,
+C018,E-ENT-006,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,符合《中小企业划型标准规定》（工信部联企业〔2011〕300号）的中小企业,dev,
+C018,E-ENT-006,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-006,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业未被列入经营异常名录或严重失信主体名单,dev,
+C018,E-ENT-006,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-007,insufficient_evidence,insufficient_evidence,insufficient_evidence,提供的产品（服务）不属于国家禁止、限制或淘汰类,dev,
+C018,E-ENT-006,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-008,insufficient_evidence,insufficient_evidence,insufficient_evidence,近三年未发生重大安全（含网络安全、数据安全）、质量、环境污染等事故以及偷漏税等违法违规行为,dev,
+C020,E-ENT-002,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-001,not_satisfied,not_satisfied,not_satisfied,在本市（含深汕特别合作区）实际从事经营活动|注册成立时间在两个会计年度（含）以上|近两年均已申报享受研发费用税前加计扣除|且上年度研发费用增量达200万元（含）以上|当年度已申报享受研发费用税前加计扣除|且上年度研发费用达200万元（含）以上|单位诚信记录良好，不存在被限制申请财政性资金项目惩戒情形，不存在项目超期未申请验收和超期未退款情形,dev,
+C020,E-ENT-002,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-002,satisfied,satisfied,satisfied,依法注册|具有独立法人资格的企业,dev,
+C021,E-ENT-003,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-001,satisfied,satisfied,satisfied,在本市（含深汕特别合作区）实际从事经营活动|注册成立时间在两个会计年度（含）以上|近两年均已申报享受研发费用税前加计扣除|且上年度研发费用增量达200万元（含）以上|当年度已申报享受研发费用税前加计扣除|且上年度研发费用达200万元（含）以上|单位诚信记录良好，不存在被限制申请财政性资金项目惩戒情形，不存在项目超期未申请验收和超期未退款情形,dev,
+C021,E-ENT-003,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-002,satisfied,satisfied,satisfied,依法注册|具有独立法人资格的企业,dev,
+C022,E-ENT-004,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-001,insufficient_evidence,insufficient_evidence,insufficient_evidence,在本市（含深汕特别合作区）实际从事经营活动|注册成立时间在两个会计年度（含）以上|近两年均已申报享受研发费用税前加计扣除|且上年度研发费用增量达200万元（含）以上|当年度已申报享受研发费用税前加计扣除|且上年度研发费用达200万元（含）以上|单位诚信记录良好，不存在被限制申请财政性资金项目惩戒情形，不存在项目超期未申请验收和超期未退款情形,dev,
+C022,E-ENT-004,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-002,satisfied,satisfied,satisfied,依法注册|具有独立法人资格的企业,dev,
+C023,E-ENT-005,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-001,not_satisfied,not_satisfied,not_satisfied,在本市（含深汕特别合作区）实际从事经营活动|注册成立时间在两个会计年度（含）以上|近两年均已申报享受研发费用税前加计扣除|且上年度研发费用增量达200万元（含）以上|当年度已申报享受研发费用税前加计扣除|且上年度研发费用达200万元（含）以上|单位诚信记录良好，不存在被限制申请财政性资金项目惩戒情形，不存在项目超期未申请验收和超期未退款情形,dev,
+C023,E-ENT-005,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-002,satisfied,satisfied,satisfied,依法注册|具有独立法人资格的企业,dev,
+C025,E-ENT-001,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-001,satisfied,satisfied,satisfied,在本市（含深汕特别合作区）依法注册、具有法人资格,dev,
+C025,E-ENT-001,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-002,insufficient_evidence,insufficient_evidence,insufficient_evidence,高新技术企业和上年度高新技术企业培育入库企业,dev,
+C025,E-ENT-001,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-003,satisfied,satisfied,satisfied,企业上年度研发费用不低于100万元或者规模以上企业上年度研发费用不低于50万元,dev,
+C025,E-ENT-001,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-004,satisfied,satisfied,satisfied,企业应当向税务部门办理上年度加计扣除申报,dev,
+C025,E-ENT-001,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,国家统计法规要求填报科技统计报表的企业应当完成上年度科技统计报表填报,dev,
+C025,E-ENT-001,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-006,satisfied,satisfied,satisfied,企业诚信记录良好,dev,
+C026,E-ENT-002,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-001,satisfied,satisfied,satisfied,在本市（含深汕特别合作区）依法注册、具有法人资格,dev,
+C026,E-ENT-002,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-002,insufficient_evidence,insufficient_evidence,insufficient_evidence,高新技术企业和上年度高新技术企业培育入库企业,dev,
+C026,E-ENT-002,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-003,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业上年度研发费用不低于100万元或者规模以上企业上年度研发费用不低于50万元,dev,
+C026,E-ENT-002,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-004,not_satisfied,not_satisfied,not_satisfied,企业应当向税务部门办理上年度加计扣除申报,dev,
+C026,E-ENT-002,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,国家统计法规要求填报科技统计报表的企业应当完成上年度科技统计报表填报,dev,
+C026,E-ENT-002,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-006,satisfied,satisfied,satisfied,企业诚信记录良好,dev,
+C027,E-ENT-003,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-001,satisfied,satisfied,satisfied,在本市（含深汕特别合作区）依法注册、具有法人资格,dev,
+C027,E-ENT-003,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-002,insufficient_evidence,insufficient_evidence,insufficient_evidence,高新技术企业和上年度高新技术企业培育入库企业,dev,
+C027,E-ENT-003,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-003,satisfied,satisfied,satisfied,企业上年度研发费用不低于100万元或者规模以上企业上年度研发费用不低于50万元,dev,
+C027,E-ENT-003,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-004,satisfied,insufficient_evidence,satisfied,企业应当向税务部门办理上年度加计扣除申报,dev,分歧：A=satisfied，B=insufficient_evidence；仲裁=satisfied——HT-004 的期间口径是本政策申报年度(2025)的上一会计年度=2024-01-01/2024-12-31；企业 E-ENT-003 在该期间 rdAddDeductionClaimed=true，故 satisfied。B 误把上年度当作 2025 并认为事实缺失。
+C027,E-ENT-003,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,国家统计法规要求填报科技统计报表的企业应当完成上年度科技统计报表填报,dev,
+C027,E-ENT-003,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-006,satisfied,satisfied,satisfied,企业诚信记录良好,dev,
+C028,E-ENT-004,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-001,satisfied,satisfied,satisfied,在本市（含深汕特别合作区）依法注册、具有法人资格,dev,
+C028,E-ENT-004,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-002,insufficient_evidence,insufficient_evidence,insufficient_evidence,高新技术企业和上年度高新技术企业培育入库企业,dev,
+C028,E-ENT-004,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-003,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业上年度研发费用不低于100万元或者规模以上企业上年度研发费用不低于50万元,dev,
+C028,E-ENT-004,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-004,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业应当向税务部门办理上年度加计扣除申报,dev,
+C028,E-ENT-004,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,国家统计法规要求填报科技统计报表的企业应当完成上年度科技统计报表填报,dev,
+C028,E-ENT-004,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-006,insufficient_evidence,insufficient_evidence,insufficient_evidence,企业诚信记录良好,dev,
+C030,E-ENT-006,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-001,satisfied,satisfied,satisfied,在本市（含深汕特别合作区）依法注册、具有法人资格,dev,
+C030,E-ENT-006,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-002,insufficient_evidence,insufficient_evidence,insufficient_evidence,高新技术企业和上年度高新技术企业培育入库企业,dev,
+C030,E-ENT-006,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-003,satisfied,satisfied,satisfied,企业上年度研发费用不低于100万元或者规模以上企业上年度研发费用不低于50万元,dev,
+C030,E-ENT-006,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-004,satisfied,satisfied,satisfied,企业应当向税务部门办理上年度加计扣除申报,dev,
+C030,E-ENT-006,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-005,insufficient_evidence,insufficient_evidence,insufficient_evidence,国家统计法规要求填报科技统计报表的企业应当完成上年度科技统计报表填报,dev,
+C030,E-ENT-006,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-006,not_satisfied,not_satisfied,not_satisfied,企业诚信记录良好,dev,
+C025,E-ENT-001,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-007,conflict,insufficient_evidence,insufficient_evidence,与研发活动直接相关的其他相关费用总额不得超过可加计扣除研发费用总额的10%,dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：撤销 review_finding=conflict——深科技创新规〔2021〕5号 第三条明文采用财税〔2015〕119号 的归集范围，195号 20% 在本政策中仅见第七条（第三方审计/鉴证机构资质），不属本政策归集口径；AST 改为单引 119号 的 manual_review（其他相关费用占比无事实键），求值恒 insufficient_evidence，故仲裁结果由 conflict 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原 conflict 结论作废。
+C026,E-ENT-002,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-007,conflict,insufficient_evidence,insufficient_evidence,与研发活动直接相关的其他相关费用总额不得超过可加计扣除研发费用总额的10%,dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：撤销 review_finding=conflict——深科技创新规〔2021〕5号 第三条明文采用财税〔2015〕119号 的归集范围，195号 20% 在本政策中仅见第七条（第三方审计/鉴证机构资质），不属本政策归集口径；AST 改为单引 119号 的 manual_review（其他相关费用占比无事实键），求值恒 insufficient_evidence，故仲裁结果由 conflict 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原 conflict 结论作废。
+C027,E-ENT-003,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-007,conflict,insufficient_evidence,insufficient_evidence,与研发活动直接相关的其他相关费用总额不得超过可加计扣除研发费用总额的10%,dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：撤销 review_finding=conflict——深科技创新规〔2021〕5号 第三条明文采用财税〔2015〕119号 的归集范围，195号 20% 在本政策中仅见第七条（第三方审计/鉴证机构资质），不属本政策归集口径；AST 改为单引 119号 的 manual_review（其他相关费用占比无事实键），求值恒 insufficient_evidence，故仲裁结果由 conflict 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原 conflict 结论作废。
+C028,E-ENT-004,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-007,conflict,insufficient_evidence,insufficient_evidence,与研发活动直接相关的其他相关费用总额不得超过可加计扣除研发费用总额的10%,dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：撤销 review_finding=conflict——深科技创新规〔2021〕5号 第三条明文采用财税〔2015〕119号 的归集范围，195号 20% 在本政策中仅见第七条（第三方审计/鉴证机构资质），不属本政策归集口径；AST 改为单引 119号 的 manual_review（其他相关费用占比无事实键），求值恒 insufficient_evidence，故仲裁结果由 conflict 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原 conflict 结论作废。
+C030,E-ENT-006,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-007,conflict,insufficient_evidence,insufficient_evidence,与研发活动直接相关的其他相关费用总额不得超过可加计扣除研发费用总额的10%,dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：撤销 review_finding=conflict——深科技创新规〔2021〕5号 第三条明文采用财税〔2015〕119号 的归集范围，195号 20% 在本政策中仅见第七条（第三方审计/鉴证机构资质），不属本政策归集口径；AST 改为单引 119号 的 manual_review（其他相关费用占比无事实键），求值恒 insufficient_evidence，故仲裁结果由 conflict 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原 conflict 结论作废。
+C004,E-ENT-004,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-001,insufficient_evidence,insufficient_evidence,insufficient_evidence,从事国家非限制和禁止行业，且同时符合年度应纳税所得额不超过300万元、从业人数不超过300人、资产总额不超过5000万元等三个条件的企业,holdout,A/B一致：企业缺应纳税所得额且行业条件为人工核查
+C004,E-ENT-004,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-002,insufficient_evidence,insufficient_evidence,insufficient_evidence,年度应纳税所得额不超过300万元,holdout,A/B一致：企业未提供应纳税所得额
+C004,E-ENT-004,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-003,insufficient_evidence,satisfied,satisfied,从业人数不超过300人|从业人数和资产总额指标，应按企业全年的季度平均值确定,holdout,分歧：A称无人数数据；实际四季度人数12至20人、季均16人不超过300人，仲裁satisfied
+C004,E-ENT-004,CN-TAX-SME-2023-012,财政部 税务总局公告2023年第12号,SME-004,insufficient_evidence,satisfied,satisfied,资产总额不超过5000万元|从业人数和资产总额指标，应按企业全年的季度平均值确定,holdout,分歧：A称无资产数据；实际四季度资产500万至580万、季均540万不超过5000万，仲裁satisfied
+C008,E-ENT-002,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-001,not_satisfied,not_satisfied,not_satisfied,不适用税前加计扣除政策的行业|烟草制造业|住宿和餐饮业|批发和零售业|房地产业|租赁和商务服务业|娱乐业|财政部和国家税务总局规定的其他行业,holdout,A/B一致；A指出负面清单出自财税2015年119号而非7号公告——criteria_review的source_version已标119号
+C008,E-ENT-002,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-002,not_satisfied,satisfied,satisfied,企业开展研发活动中实际发生的研发费用,holdout,分歧：A以行业整体排除否决；条件级rdActivity=true应判satisfied、行业排除由RD-001承担；B未给四态仅建议补span内容
+C008,E-ENT-002,CN-TAX-RD-2023-007,财政部 税务总局公告2023年第7号,RD-003,not_satisfied,satisfied,satisfied,企业开展研发活动中实际发生的研发费用,holdout,分歧同RD-002；rdExpense=800000大于0判satisfied；另记RD-002与RD-003的source_span同为一句派生、待改进
+C015,E-ENT-003,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-001,not_satisfied,not_satisfied,not_satisfied,从事特定细分市场时间达到2年以上,holdout,A/B一致；A提示2026新办法改3年，本项目2025申报适用2022暂行办法2年见规范第9节
+C015,E-ENT-003,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-002,satisfied,satisfied,satisfied,上年度研发费用总额不低于100万元|且占营业收入总额比重不低于3%|上年度营业收入总额在1000万元以上|上年度营业收入总额在1000万元以下|但近2年新增股权融资总额（合格机构投资者的实缴额）达到2000万元以上,holdout,A/B一致
+C015,E-ENT-003,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-003,satisfied,satisfied,satisfied,申报企业需在深圳市（含深汕特别合作区）工商注册登记、具有独立法人资格,holdout,A/B一致
+C015,E-ENT-003,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-004,satisfied,insufficient_evidence,insufficient_evidence,且为有效期内的深圳市创新型中小企业,holdout,分歧：A以假定为创新型中小企业判satisfied；企业无此事实且AST为manual_review恒insufficient_evidence
+C015,E-ENT-003,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-005,satisfied,insufficient_evidence,insufficient_evidence,符合《中小企业划型标准规定》（工信部联企业〔2011〕300号）的中小企业,holdout,分歧同SRDI-004：AST为manual_review恒insufficient_evidence
+C015,E-ENT-003,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-006,satisfied,insufficient_evidence,insufficient_evidence,企业未被列入经营异常名录或严重失信主体名单,holdout,分歧同SRDI-004：AST为manual_review恒insufficient_evidence
+C015,E-ENT-003,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-007,satisfied,insufficient_evidence,insufficient_evidence,提供的产品（服务）不属于国家禁止、限制或淘汰类,holdout,分歧同SRDI-004：AST为manual_review恒insufficient_evidence
+C015,E-ENT-003,SZ-GRANT-SRDI-2025,深工信规〔2025〕8号,SRDI-008,satisfied,insufficient_evidence,insufficient_evidence,近三年未发生重大安全（含网络安全、数据安全）、质量、环境污染等事故以及偷漏税等违法违规行为,holdout,分歧同SRDI-004：AST为manual_review恒insufficient_evidence
+C019,E-ENT-001,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-001,satisfied,satisfied,satisfied,在本市（含深汕特别合作区）实际从事经营活动|注册成立时间在两个会计年度（含）以上|近两年均已申报享受研发费用税前加计扣除|且上年度研发费用增量达200万元（含）以上|当年度已申报享受研发费用税前加计扣除|且上年度研发费用达200万元（含）以上|单位诚信记录良好，不存在被限制申请财政性资金项目惩戒情形，不存在项目超期未申请验收和超期未退款情形,holdout,A/B一致
+C019,E-ENT-001,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-002,satisfied,satisfied,satisfied,依法注册|具有独立法人资格的企业,holdout,A/B一致
+C024,E-ENT-006,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-001,not_satisfied,not_satisfied,not_satisfied,在本市（含深汕特别合作区）实际从事经营活动|注册成立时间在两个会计年度（含）以上|近两年均已申报享受研发费用税前加计扣除|且上年度研发费用增量达200万元（含）以上|当年度已申报享受研发费用税前加计扣除|且上年度研发费用达200万元（含）以上|单位诚信记录良好，不存在被限制申请财政性资金项目惩戒情形，不存在项目超期未申请验收和超期未退款情形,holdout,A/B一致：诚信一票否决
+C024,E-ENT-006,SZ-GRANT-RD-SUBSIDY-2026,深科创规〔2026〕1号,RDSUB-002,satisfied,satisfied,satisfied,依法注册|具有独立法人资格的企业,holdout,A/B一致
+C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-001,satisfied,satisfied,satisfied,在本市（含深汕特别合作区）依法注册、具有法人资格,holdout,A/B一致
+C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-002,satisfied,insufficient_evidence,insufficient_evidence,高新技术企业和上年度高新技术企业培育入库企业,holdout,分歧：A假定为高企或入库企业判satisfied；该条为manual_review恒insufficient_evidence
+C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-003,not_satisfied,not_satisfied,not_satisfied,企业上年度研发费用不低于100万元或者规模以上企业上年度研发费用不低于50万元,holdout,A/B一致：上年度研发费用30万低于100万
+C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-004,satisfied,satisfied,satisfied,企业应当向税务部门办理上年度加计扣除申报,holdout,A/B一致
+C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-005,satisfied,insufficient_evidence,insufficient_evidence,国家统计法规要求填报科技统计报表的企业应当完成上年度科技统计报表填报,holdout,分歧同HT-002：AST为manual_review恒insufficient_evidence
+C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-006,satisfied,satisfied,satisfied,企业诚信记录良好,holdout,A/B一致
+C029,E-ENT-005,SZ-GRANT-HIGHTECH-2021,深科技创新规〔2021〕5号,HT-007,conflict,conflict,insufficient_evidence,与研发活动直接相关的其他相关费用总额不得超过可加计扣除研发费用总额的10%,holdout,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：撤销 review_finding=conflict——深科技创新规〔2021〕5号 第三条明文采用财税〔2015〕119号 的归集范围，195号 20% 在本政策中仅见第七条（第三方审计/鉴证机构资质），不属本政策归集口径；AST 改为单引 119号 的 manual_review（其他相关费用占比无事实键），求值恒 insufficient_evidence，故仲裁结果由 conflict 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原 conflict 结论作废。
+C031,E-ENT-006,CN-TAX-GXJS,国科发火〔2008〕172号,GXJS-V1-001,not_satisfied,not_satisfied,insufficient_evidence,"1. 最近一年销售收入小于5,000万元的企业，比例不低于6%|2. 最近一年销售收入在5,000万元至20,000万元的企业，比例不低于4%|3. 最近一年销售收入在20,000万元以上的企业，比例不低于3%",dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：保留三档 revenue 边界结构、每档比例条件降为 manual_review（原文为近三个会计年度研发费用总额占同期销售收入总额比例，事实字典只有单年度 rdExpenseRevenueRatio；分档边界在 or 下取宽松档），整条求值恒 insufficient_evidence，故仲裁结果由原 satisfied / not_satisfied 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原标签作废。
+C032,E-ENT-006,CN-TAX-GXJS,国科发火〔2016〕32号,GXJS-V2-001,satisfied,satisfied,insufficient_evidence,"1.最近1年销售收入小于5,000万元（含）的企业，比例不低于5%|2.最近1年销售收入在5,000万元至2亿元（含）的企业，比例不低于4%|3.最近1年销售收入在2亿元以上的企业，比例不低于3%",dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：保留三档 revenue 边界结构、每档比例条件降为 manual_review（原文为近三个会计年度研发费用总额占同期销售收入总额比例，事实字典只有单年度 rdExpenseRevenueRatio；分档边界在 or 下取宽松档），整条求值恒 insufficient_evidence，故仲裁结果由原 satisfied / not_satisfied 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原标签作废。
+C033,E-ENT-001,CN-TAX-GXJS,国科发火〔2008〕172号,GXJS-V1-001,not_satisfied,not_satisfied,insufficient_evidence,"1. 最近一年销售收入小于5,000万元的企业，比例不低于6%|2. 最近一年销售收入在5,000万元至20,000万元的企业，比例不低于4%|3. 最近一年销售收入在20,000万元以上的企业，比例不低于3%",dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：保留三档 revenue 边界结构、每档比例条件降为 manual_review（原文为近三个会计年度研发费用总额占同期销售收入总额比例，事实字典只有单年度 rdExpenseRevenueRatio；分档边界在 or 下取宽松档），整条求值恒 insufficient_evidence，故仲裁结果由原 satisfied / not_satisfied 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原标签作废。
+C034,E-ENT-001,CN-TAX-GXJS,国科发火〔2016〕32号,GXJS-V2-001,not_satisfied,not_satisfied,insufficient_evidence,"1.最近1年销售收入小于5,000万元（含）的企业，比例不低于5%|2.最近1年销售收入在5,000万元至2亿元（含）的企业，比例不低于4%|3.最近1年销售收入在2亿元以上的企业，比例不低于3%",dev,保留原始 A/B 判断（见本行 annotator_a_result / annotator_b_result，未改动）。2026-11-02 第 2 轮仲裁：保留三档 revenue 边界结构、每档比例条件降为 manual_review（原文为近三个会计年度研发费用总额占同期销售收入总额比例，事实字典只有单年度 rdExpenseRevenueRatio；分档边界在 or 下取宽松档），整条求值恒 insufficient_evidence，故仲裁结果由原 satisfied / not_satisfied 改为 insufficient_evidence。本轮为规则变更后的重新仲裁，非重新独立标注；原标签作废。
