@@ -1188,3 +1188,43 @@ def test_alternating_branches_over_different_metrics_are_not_flagged():
     )
 
     assert verdict.status == "passed", codes(verdict)
+
+
+def test_a_pure_manual_review_expression_does_not_trip_the_threshold_conflict_check():
+    """整条交给人工核查时，分档表的互补阈值不算冲突。
+
+    「小于 5,000 万元 6%」与「5,000 万元至 2 亿元 4%」在交界处本来就重叠，这是分档表的
+    常规写法；既然没有可执行表达式、结论交由人工，就别要求标注人为了过校验硬写成 ``or``。
+    一旦表达式里出现了可判定的原子，这条豁免必须消失——见下方那条。
+    """
+
+    expression = {
+        "op": "manual_review",
+        "reason": "近三个会计年度累计口径无事实来源，须人工核查",
+    }
+    verdict = validate_criterion(
+        criterion(gxjs_span(TIER_SPANS[0]), gxjs_span(TIER_SPANS[1]), expression=expression),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_the_same_tier_spans_with_a_decidable_atom_still_report_the_conflict():
+    """同一批引文，只要表达式里有一个能判定的原子，互补阈值就要照常报冲突。"""
+
+    expression = {
+        "op": "and",
+        "children": [
+            compare("revenue", "50000000.00", "CNY", comparator="lt"),
+            {"op": "manual_review", "reason": "比例口径须人工核查"},
+        ],
+    }
+    verdict = validate_criterion(
+        criterion(gxjs_span(TIER_SPANS[0]), gxjs_span(TIER_SPANS[1]), expression=expression),
+        GXJS_SOURCES,
+        version=VERSION,
+    )
+
+    assert "CITATION_THRESHOLD_CONFLICT" in codes(verdict)

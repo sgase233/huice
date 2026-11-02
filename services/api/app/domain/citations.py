@@ -260,6 +260,13 @@ def _check_threshold_conflict(criterion: CriterionInput, verdict: CriterionVerdi
     if criterion.review_finding == "conflict":
         return
 
+    # 只有「写了表达式、但整条交给人工核查」才放行；没有表达式说明还没处理完。
+    if criterion.expression is not None and not _has_decision_atom(criterion.expression):
+        # 整条表达式都交给人工核查时，引文里的互补阈值不会被拿来判定；分档表的相邻
+        # 两档（「5,000 万元以下 5%」「5,000 万元至 2 亿元 4%」）本来就只在交界处
+        # 重叠，没有义务为了通过校验而硬写成 `or` 分支。
+        return
+
     bounds = [
         (span, bound)
         for span in criterion.spans
@@ -288,6 +295,20 @@ def _check_threshold_conflict(criterion: CriterionInput, verdict: CriterionVerdi
                 )
             )
             return
+
+
+_DECISION_OPS = frozenset({"compare", "date", "industry_exclusion", "quarterly_average"})
+
+
+def _has_decision_atom(node: Any) -> bool:
+    """表达式里是否有能被程序判定的原子；只有 ``manual_review``/``and``/``or`` 时返回假。"""
+    if isinstance(node, dict):
+        if node.get("op") in _DECISION_OPS:
+            return True
+        return any(_has_decision_atom(value) for value in node.values())
+    if isinstance(node, (list, tuple)):
+        return any(_has_decision_atom(item) for item in node)
+    return False
 
 
 def _or_branch_trails(expression: Any) -> dict[int, tuple[tuple[int, int], ...]]:
