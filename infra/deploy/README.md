@@ -165,7 +165,7 @@ cp /opt/huice/app.bak/* /opt/huice/app/   # 恢复上一份代码（若事先备
 systemctl restart huice-api
 ```
 
-数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `005_fact_dictionary_extension.sql`，下一份是 `006_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
+数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `006_fact_dictionary_extension_rc4.sql`，下一份是 `007_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
 
 ## 7. 安全约束
 
