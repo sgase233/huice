@@ -996,3 +996,91 @@ def test_an_unrelated_nested_or_does_not_disable_the_boundary_check():
     )
 
     assert verdict.result == INSUFFICIENT
+
+
+def _tier(children) -> dict:
+    return {"op": "and", "children": children}
+
+
+def test_overlapping_ranges_with_different_bounds_are_not_a_tier_boundary():
+    """「收入 ≤1 亿 5%」或「收入 ≥5,000 万 4%」是区间重叠的并列选项，不是分档表。
+
+    M2 在 #21 第二轮的反例：5,000 万至 1 亿这条重叠带内部，第二项成立就该判成立；
+    真正的分档表只在交界的一个点上重叠，边界值必须相等。
+    """
+
+    expression = {
+        "op": "or",
+        "children": [
+            _tier([compare("revenue", "lte", "100000000.00", period=TIER_PERIOD),
+                   compare("rdExpenseRevenueRatio", "gte", "0.05", period=TIER_PERIOD)]),
+            _tier([compare("revenue", "gte", "50000000.00", period=TIER_PERIOD),
+                   compare("rdExpenseRevenueRatio", "gte", "0.04", period=TIER_PERIOD)]),
+        ],
+    }
+    verdict = evaluate_expression(
+        expression,
+        table(fact("revenue", Decimal("75000000")), fact("rdExpenseRevenueRatio", Decimal("0.045"))),
+        period=YEAR,
+    )
+
+    assert verdict.result == SATISFIED
+
+
+def test_a_looser_tier_wrapped_in_a_nested_or_still_triggers_the_check():
+    """M2 在 #21 第二轮的反例：成立的那档包进嵌套「或」后，边界检查不能失效。"""
+
+    expression = {
+        "op": "or",
+        "children": [
+            *TIER_EXPRESSION["children"][:1],
+            {
+                "op": "or",
+                "children": [
+                    *TIER_EXPRESSION["children"][1:2],
+                    _tier([compare("revenue", "gte", "300000000.00", period=TIER_PERIOD),
+                           compare("rdExpenseRevenueRatio", "gte", "0.03", period=TIER_PERIOD)]),
+                ],
+            },
+            *TIER_EXPRESSION["children"][2:],
+        ],
+    }
+    verdict = evaluate_expression(
+        expression,
+        table(fact("revenue", Decimal("50000000")), fact("rdExpenseRevenueRatio", Decimal("0.045"))),
+        period=YEAR,
+    )
+
+    assert verdict.result == INSUFFICIENT
+
+
+def test_an_unsatisfied_nested_child_does_not_supply_the_stricter_counterpart():
+    """嵌套「或」里没成立的子支不参与对照：企业靠另一支达标时，不能拿没成立的那支来降级。"""
+
+    expression = {
+        "op": "or",
+        "children": [
+            *TIER_EXPRESSION["children"][:1],
+            {
+                "op": "or",
+                "children": [
+                    _tier([compare("revenue", "gte", "50000000.00", period=TIER_PERIOD),
+                           compare("rdExpenseRevenueRatio", "gte", "0.05", period=TIER_PERIOD)]),
+                    _tier([compare("revenue", "gte", "50000000.00", period=TIER_PERIOD),
+                           compare("equityFinancing", "gte", "20000000.00", period=TIER_PERIOD)]),
+                ],
+            },
+            *TIER_EXPRESSION["children"][2:],
+        ],
+    }
+    verdict = evaluate_expression(
+        expression,
+        table(
+            fact("revenue", Decimal("50000000")),
+            fact("rdExpenseRevenueRatio", Decimal("0.045")),
+            fact("equityFinancing", Decimal("25000000")),
+        ),
+        period=YEAR,
+    )
+
+    assert verdict.result == SATISFIED

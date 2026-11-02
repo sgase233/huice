@@ -587,20 +587,21 @@ def _boundary_overlap(
     可能落在 ``satisfied`` 上（较严的一档不成立），也可能两支同时成立（结论本来就
     对，不必降级），所以只在「较严的一档确实不成立」时降级，交给人工确认档位。
 
-    只有确认两支是同一分档键上的相邻两档（一支上界、一支下界）才降级：
-    「比例 ≥5% 或 比例 ≥4%」这类普通并列里，较严的一支不成立是常态，结论本来就是
-    成立，不能拖进人工。纯并列的另一形态（「营收 1,000 万元以上，或营收 1,000 万元
-    以下但股权融资 ≥2,000 万元」）也不会被误伤——``revenue`` 是分档键，它在候选支
-    上不成立只说明企业在另一段区间。
+    只有确认两支是同一分档键上**上下界相接**的相邻两档（方向相反、边界值相同、期间
+    相同）才降级：「比例 ≥5% 或 比例 ≥4%」这类普通并列里，较严的一支不成立是常态，
+    结论本来就是成立，不能拖进人工；「收入 ≤1 亿 5% 或 收入 ≥5,000 万 4%」是两个区间
+    重叠的并列选项，企业落在重叠区内部也不该降级。
 
-    展开不了的分支（含嵌套 ``or``/``not``）单独跳过，不让它连累其他分支的检查。
+    成立支本身是嵌套 ``or`` 时，只取其中成立的子支做对照——不成立的子支解释不了这条
+    为什么成立，并进来反而会把「靠另一支达标」误判成档位重叠。候选支展开不了则跳过
+    那一支，不让它连累其他分支的检查。
     """
 
     branches: list[list[dict] | None] = [_branch_leaves(child) for child in children]
     if len(branches) != len(results):
         return None
-    reference = branches[satisfied_index]
-    if reference is None:
+    references = _satisfied_groups(children[satisfied_index], facts, period=period)
+    if not references:
         return None
 
     split_keys = _split_keys([leaves for leaves in branches if leaves is not None])
@@ -609,11 +610,35 @@ def _boundary_overlap(
         if index == satisfied_index or item.result != NOT_SATISFIED:
             continue
         candidate = branches[index]
-        if candidate is None or not _is_adjacent_tier(candidate, reference):
+        if candidate is None:
             continue
-        if _unmet_stricter(candidate, reference, facts, period=period, split_keys=split_keys):
-            return satisfied_index, index
+        for reference in references:
+            if not _is_adjacent_tier(candidate, reference, period=period):
+                continue
+            if _unmet_stricter(candidate, reference, facts, period=period, split_keys=split_keys):
+                return satisfied_index, index
     return None
+
+
+def _satisfied_groups(
+    node: Any, facts: FactTable, *, period: tuple[date, date]
+) -> list[list[dict]]:
+    """一条成立的分支，展开成「能解释它成立」的若干组叶子；展开不出来返回空列表。
+
+    普通 ``and``/原子只有一组；嵌套 ``or`` 只取其中成立的子支，并递归展开。
+    """
+
+    leaves = _branch_leaves(node)
+    if leaves is not None:
+        return [leaves]
+    if isinstance(node, dict) and node.get("op") == "or":
+        groups: list[list[dict]] = []
+        for child in node.get("children") or []:
+            if _evaluate(child, facts, period=period).result != SATISFIED:
+                continue
+            groups.extend(_satisfied_groups(child, facts, period=period))
+        return groups
+    return []
 
 
 def _branch_leaves(node: Any) -> list[dict] | None:
@@ -642,18 +667,22 @@ def _direction_of(comparator: str) -> str | None:
     return None
 
 
-def _is_adjacent_tier(candidate: list[dict], reference: list[dict]) -> bool:
-    """两支是否同一指标上的相邻两档：一支写的是上界，另一支写的是下界。
+def _is_adjacent_tier(
+    candidate: list[dict], reference: list[dict], *, period: tuple[date, date]
+) -> bool:
+    """两支是否同一指标上「上下界相接」的相邻两档：方向相反、边界值相同、期间相同。
 
-    没有这个前提，普通并列的「或」也会被当成档位交界——「比例 ≥5% 或 ≥4%」在
-    4.5% 时较松的一支成立、较严的一支不成立，但那本来就该判成立。
+    只要求方向相反不够：「收入 ≤1 亿且比例 ≥5%」与「收入 ≥5,000 万且比例 ≥4%」是
+    两个区间重叠的并列选项，不是分档表——5,000 万到 1 亿之间本来就该按并列的「或」
+    判成立。真正的分档表在交界处只有一个点，所以边界值必须相等。
     """
 
     for leaf in candidate:
         if leaf.get("op") != "compare":
             continue
         direction = _direction_of(str(leaf.get("comparator")))
-        if direction is None:
+        value = _to_decimal(leaf.get("value"))
+        if direction is None or value is None:
             continue
         for other in reference:
             if other.get("op") != "compare":
@@ -661,7 +690,12 @@ def _is_adjacent_tier(candidate: list[dict], reference: list[dict]) -> bool:
             if str(other.get("factKey")) != str(leaf.get("factKey")):
                 continue
             other_direction = _direction_of(str(other.get("comparator")))
-            if other_direction is not None and other_direction != direction:
+            if other_direction is None or other_direction == direction:
+                continue
+            if _node_period(other, period) != _node_period(leaf, period):
+                continue
+            other_value = _to_decimal(other.get("value"))
+            if other_value is not None and other_value == value:
                 return True
     return False
 
