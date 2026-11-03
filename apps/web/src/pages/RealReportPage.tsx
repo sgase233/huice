@@ -11,6 +11,7 @@ export default function RealReportPage({ run, policies, onDownload, busy }: Prop
     <button className="button" disabled={busy} onClick={onDownload}>下载 Markdown 报告</button>
     <p>下载文件不会自动更新；办理前请返回系统重新核验。</p>
     <div className="prep-grid">{(['tax', 'grant'] as const).map(type => <section className="panel" key={type}><h2>{type === 'tax' ? '税收优惠 · 自行判断' : '资金项目 · 申请材料'}</h2>
+      {!run.assessments.some(item => item.preparation.type === type) && <p>本次分析没有此类政策。</p>}
       {run.assessments.filter(item => item.preparation.type === type).map(item => {
         const policy = policies.find(p => p.id === item.policyId);
         return <article key={item.policyId}><h3>{policy?.title ?? item.policyId}</h3><p>政策版本：{run.policyVersionMap[item.policyId]}</p><StatusBadge result={item.result} validity={item.validity} policyStatus={policy?.status} />

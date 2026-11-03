@@ -1,0 +1,37 @@
+import { useRef } from 'react';
+import type { Comparator, Expression, ExpressionPeriod, FactKey } from '../api/types';
+import { factLabels, factUnits } from '../demo';
+
+const labels: Record<Expression['op'], string> = { and: '且', or: '或', not: '非', compare: '事实比较', date: '日期比较', industry_exclusion: '行业排除', quarterly_average: '季度平均', manual_review: '人工核查' };
+const choices: Comparator[] = ['lt', 'lte', 'eq', 'gte', 'gt', 'ne'];
+function create(op: Expression['op']): Expression {
+  switch (op) {
+    case 'and': case 'or': return { op, children: [create('manual_review'), create('manual_review')] };
+    case 'not': return { op, child: create('manual_review') };
+    case 'compare': return { op, factKey: 'taxableIncome', period: 'assessment', comparator: 'eq', value: '', unit: 'CNY' };
+    case 'date': return { op, factKey: 'establishedDate', period: 'assessment', comparator: 'eq', value: '' };
+    case 'industry_exclusion': return { op, factKey: 'industry', period: 'assessment', excluded: [] };
+    case 'quarterly_average': return { op, metric: 'employeeCount', period: 'assessment', comparator: 'eq', value: '', unit: 'person' };
+    case 'manual_review': return { op, reason: '' };
+  }
+}
+function Period({ value, onChange, path, invalidField, errorId }: { value: ExpressionPeriod; onChange: (value: ExpressionPeriod) => void; path: string; invalidField: string | null; errorId: string }) {
+  const errorAttrs = (field: string) => invalidField === field ? { 'aria-invalid': true, 'aria-describedby': errorId } : {};
+  return <fieldset><legend>事实期间</legend><label className="inline-check"><input type="checkbox" checked={value === 'assessment'} onChange={e => onChange(e.target.checked ? 'assessment' : { startDate: '', endDate: '' })} />使用评估期间</label>{value !== 'assessment' && <><label>开始日期<input {...errorAttrs(`expression-${path}-period-start`)} data-error-field={`expression-${path}-period-start`} type="date" value={value.startDate} onChange={e => onChange({ ...value, startDate: e.target.value })} /></label><label>结束日期<input {...errorAttrs(`expression-${path}-period-end`)} data-error-field={`expression-${path}-period-end`} type="date" value={value.endDate} onChange={e => onChange({ ...value, endDate: e.target.value })} /></label></>}</fieldset>;
+}
+export default function ExpressionEditor({ value, onChange, path = 'root', invalidField, errorId }: { value: Expression; onChange: (value: Expression) => void; path?: string; invalidField: string | null; errorId: string }) {
+  const errorAttrs = (field: string) => invalidField === field ? { 'aria-invalid': true, 'aria-describedby': errorId } : {};
+  const addChild = useRef<HTMLButtonElement>(null);
+  const lastChild = useRef<HTMLDivElement>(null);
+  return <fieldset><legend>规则：{labels[value.op]}</legend><label>类型<select {...errorAttrs(`expression-${path}-type`)} data-error-field={`expression-${path}-type`} value={value.op} onChange={e => { const op = e.target.value as Expression['op']; if (op !== value.op) { if (window.confirm('切换类型将丢弃当前节点内容，继续吗？')) onChange(create(op)); else e.currentTarget.value = value.op; } }}>{Object.entries(labels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+    {(value.op === 'and' || value.op === 'or') && <>{value.children.map((child, i) => <div key={i} ref={i === value.children.length - 1 ? lastChild : undefined}><ExpressionEditor invalidField={invalidField} errorId={errorId} value={child} path={`${path}.${i}`} onChange={next => onChange({ ...value, children: value.children.map((item, index) => index === i ? next : item) })} /><button type="button" disabled={value.children.length <= 2} onClick={() => { if (window.confirm('删除此条件？')) { onChange({ ...value, children: value.children.filter((_, index) => index !== i) }); requestAnimationFrame(() => addChild.current?.focus()); } }}>删除子条件 {i + 1}</button></div>)}<button ref={addChild} type="button" onClick={() => { onChange({ ...value, children: [...value.children, create('manual_review')] }); requestAnimationFrame(() => lastChild.current?.querySelector('select')?.focus()); }}>添加子条件</button></>}
+    {value.op === 'not' && <ExpressionEditor invalidField={invalidField} errorId={errorId} value={value.child} path={`${path}.0`} onChange={child => onChange({ ...value, child })} />}
+    {value.op === 'manual_review' && <label>人工核查原因<input {...errorAttrs(`expression-${path}-reason`)} data-error-field={`expression-${path}-reason`} value={value.reason} onChange={e => onChange({ ...value, reason: e.target.value })} /></label>}
+    {value.op === 'industry_exclusion' && <label>排除行业代码（每行一个）<textarea {...errorAttrs(`expression-${path}-excluded`)} data-error-field={`expression-${path}-excluded`} value={value.excluded.join('\n')} onChange={e => onChange({ ...value, excluded: e.target.value.split('\n') })} /></label>}
+    {value.op === 'compare' && <><label>事实<select {...errorAttrs(`expression-${path}-fact`)} data-error-field={`expression-${path}-fact`} value={value.factKey} onChange={e => { const factKey = e.target.value as FactKey; const unit = factUnits[factKey]; onChange({ ...value, factKey, unit, value: unit === 'boolean' ? false : '', comparator: 'eq' }); }}>{Object.entries(factLabels).filter(([key]) => factUnits[key as FactKey] !== 'date' || key === value.factKey).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><p>单位：{value.unit}</p><label>值{value.unit === 'boolean' ? <select {...errorAttrs(`expression-${path}-value`)} data-error-field={`expression-${path}-value`} value={String(value.value)} onChange={e => onChange({ ...value, value: e.target.value === 'true' })}><option value="false">否</option><option value="true">是</option></select> : <input {...errorAttrs(`expression-${path}-value`)} data-error-field={`expression-${path}-value`} value={String(value.value)} onChange={e => onChange({ ...value, value: e.target.value })} />}</label></>}
+    {value.op === 'date' && <><label>日期事实<select value={value.factKey} onChange={e => onChange({ ...value, factKey: e.target.value as typeof value.factKey })}><option value="establishedDate">成立日期</option><option value="specificMarketSince">细分市场起始日期</option></select></label><label>日期<input {...errorAttrs(`expression-${path}-value`)} data-error-field={`expression-${path}-value`} type="date" value={value.value} onChange={e => onChange({ ...value, value: e.target.value })} /></label></>}
+    {value.op === 'quarterly_average' && <><label>指标<select value={value.metric} onChange={e => { const metric = e.target.value as typeof value.metric; onChange({ ...value, metric, unit: metric === 'assets' ? 'CNY' : 'person' }); }}><option value="employeeCount">从业人数</option><option value="assets">资产</option></select></label><label>阈值<input {...errorAttrs(`expression-${path}-value`)} data-error-field={`expression-${path}-value`} value={value.value} onChange={e => onChange({ ...value, value: e.target.value })} /></label><p>单位：{value.unit}</p></>}
+    {(value.op === 'compare' || value.op === 'date' || value.op === 'quarterly_average') && <label>比较符<select value={value.comparator} onChange={e => onChange({ ...value, comparator: e.target.value as Comparator })}>{choices.filter(c => value.op !== 'compare' || !['boolean', 'code'].includes(value.unit) || ['eq', 'ne'].includes(c)).map(c => <option key={c} value={c}>{c}</option>)}</select></label>}
+    {'period' in value && <Period invalidField={invalidField} errorId={errorId} path={path} value={value.period} onChange={period => onChange({ ...value, period })} />}
+  </fieldset>;
+}

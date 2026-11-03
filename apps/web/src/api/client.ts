@@ -40,11 +40,52 @@ const segment = (value: string) => encodeURIComponent(value);
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const safeEvidence = (value: unknown) => isObject(value) && typeof value.quote === 'string' && typeof value.sourceUrl === 'string' && /^https:\/\//i.test(value.sourceUrl) && typeof value.sourceVersion === 'string' && typeof value.textHash === 'string';
 
+const safeDraftSpan = (value: unknown) => safeEvidence(value) && isObject(value) && typeof value.sourceId === 'string' && (value.page === null || (typeof value.page === 'number' && Number.isInteger(value.page) && value.page > 0)) && (value.section === null || typeof value.section === 'string');
+
+function validExpression(value: unknown, depth = 0): boolean {
+  if (!isObject(value) || depth > 20 || typeof value.op !== 'string') return false;
+  if (value.op === 'and' || value.op === 'or') return Array.isArray(value.children) && value.children.length >= 2 && value.children.every(child => validExpression(child, depth + 1));
+  if (value.op === 'not') return validExpression(value.child, depth + 1);
+  if (value.op === 'manual_review') return typeof value.reason === 'string';
+  const period = value.period;
+  if (!(period === 'assessment' || (isObject(period) && typeof period.startDate === 'string' && typeof period.endDate === 'string'))) return false;
+  if (value.op === 'industry_exclusion') return value.factKey === 'industry' && Array.isArray(value.excluded) && value.excluded.every(item => typeof item === 'string');
+  if (!['lt', 'lte', 'eq', 'gte', 'gt', 'ne'].includes(String(value.comparator))) return false;
+  if (value.op === 'date') return ['establishedDate', 'specificMarketSince'].includes(String(value.factKey)) && typeof value.value === 'string';
+  if (value.op === 'quarterly_average') return ['assets', 'employeeCount'].includes(String(value.metric)) && typeof value.value === 'string' && ['CNY', 'person'].includes(String(value.unit));
+  if (value.op === 'compare') return typeof value.factKey === 'string' && Object.hasOwn(factUnits, value.factKey) && value.unit === factUnits[value.factKey as keyof typeof factUnits] && (typeof value.value === 'string' || typeof value.value === 'boolean');
+  return false;
+}
+
+const safeCriterion = (criterion: unknown) => isObject(criterion) && typeof criterion.id === 'string' && typeof criterion.title === 'string' && validExpression(criterion.expression) && Array.isArray(criterion.sourceSpans) && criterion.sourceSpans.every(safeDraftSpan) && ['none', 'conflict'].includes(String(criterion.reviewFinding)) && ['pending', 'passed', 'failed'].includes(String(criterion.validationStatus));
+const safeFinding = (finding: unknown) => isObject(finding) && typeof finding.code === 'string' && typeof finding.message === 'string' && (finding.criterionId === null || typeof finding.criterionId === 'string') && Array.isArray(finding.sourceSpans) && finding.sourceSpans.every(safeDraftSpan);
+
 function assertShape(value: unknown, kind: string): void {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`接口契约错误：${kind} 不是对象`);
   const record = value as Record<string, unknown>;
   if (kind === 'PolicyList' || kind === 'PolicyDraftList' || kind === 'TraceResponse') {
     if (!Array.isArray(kind === 'TraceResponse' ? record.steps : record.items)) throw new Error(`接口契约错误：${kind} 缺少列表`);
+  }
+  if (kind === 'TraceResponse') {
+    for (const step of record.steps as unknown[]) {
+      if (!isObject(step) || typeof step.sequence !== 'number' || !['ingestion', 'extraction', 'citation_validation', 'human_review', 'profile', 'retrieval', 'evaluation', 'questioning', 'explanation'].includes(String(step.stage)) || !['ok', 'needs_review', 'retryable_error', 'fatal_error'].includes(String(step.status)) || typeof step.inputSummary !== 'string' || typeof step.outputSummary !== 'string' || typeof step.modelOrRuleVersion !== 'string' || typeof step.elapsedMs !== 'number' || !Array.isArray(step.objectRefs) || !step.objectRefs.every(ref => isObject(ref) && Object.keys(ref).length === 2 && ['enterprise', 'policy', 'policyVersion'].includes(String(ref.type)) && typeof ref.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.id)) || !(step.policyId === null || typeof step.policyId === 'string') || !(step.policyVersion === null || typeof step.policyVersion === 'string') || !(step.errorCode === null || typeof step.errorCode === 'string') || !(step.humanAction === null || typeof step.humanAction === 'string')) throw new Error('接口契约错误：轨迹步骤无效');
+    }
+  }
+  if (kind === 'PolicyDraft') {
+    if (typeof record.id !== 'string' || typeof record.version !== 'string' || typeof record.title !== 'string' || typeof record.revision !== 'string' || !['pending_parse', 'pending_review', 'published', 'closed'].includes(String(record.status)) || !Array.isArray(record.sources) || !Array.isArray(record.criteria) || !Array.isArray(record.validationFindings)) throw new Error('接口契约错误：草稿字段缺失');
+    for (const source of record.sources) if (!isObject(source) || typeof source.id !== 'string' || typeof source.title !== 'string' || typeof source.text !== 'string' || typeof source.sourceUrl !== 'string') throw new Error('接口契约错误：草稿来源无效');
+    for (const criterion of record.criteria) if (!safeCriterion(criterion)) throw new Error('接口契约错误：草稿条件无效');
+    for (const finding of record.validationFindings) if (!safeFinding(finding)) throw new Error('接口契约错误：草稿校验结果无效');
+  }
+  if (kind === 'PolicyDraftList') {
+    if (!(record.nextCursor === null || typeof record.nextCursor === 'string')) throw new Error('接口契约错误：草稿游标无效');
+    for (const draft of record.items as unknown[]) assertShape(draft, 'PolicyDraft');
+  }
+  if (kind === 'ExtractionResult' || kind === 'SaveCriteriaResult') {
+    assertShape(record.draft, 'PolicyDraft');
+    if (!Array.isArray(record.validationFindings) || !Array.isArray(kind === 'ExtractionResult' ? record.criteriaDrafts : record.criteria)) throw new Error(`接口契约错误：${kind} 字段缺失`);
+    if (!(record.validationFindings as unknown[]).every(safeFinding) || !((kind === 'ExtractionResult' ? record.criteriaDrafts : record.criteria) as unknown[]).every(safeCriterion)) throw new Error(`接口契约错误：${kind} 条件或校验结果无效`);
+    if (kind === 'ExtractionResult' && (!isObject(record.usage) || !['deepseek', 'fixture', 'saved'].includes(String(record.usage.mode)) || !(record.usage.modelVersion === null || typeof record.usage.modelVersion === 'string') || typeof record.usage.inputTokens !== 'number' || typeof record.usage.outputTokens !== 'number' || typeof record.usage.elapsedMs !== 'number')) throw new Error('接口契约错误：模型使用记录无效');
   }
   if (kind === 'PolicyList') {
     for (const item of record.items as unknown[]) {
@@ -56,7 +97,7 @@ function assertShape(value: unknown, kind: string): void {
   if (kind === 'PolicyDetail') {
     if (typeof record.id !== 'string' || typeof record.version !== 'string' || typeof record.title !== 'string' || !['published', 'closed'].includes(String(record.status)) || !Array.isArray(record.criteria)) throw new Error('接口契约错误：政策详情字段缺失');
     for (const criterion of record.criteria) {
-      if (!isObject(criterion) || typeof criterion.id !== 'string' || typeof criterion.title !== 'string' || !Array.isArray(criterion.sourceSpans) || !criterion.sourceSpans.every(safeEvidence)) throw new Error('接口契约错误：政策条件或引用无效');
+      if (!isObject(criterion) || typeof criterion.id !== 'string' || typeof criterion.title !== 'string' || !Array.isArray(criterion.sourceSpans) || !criterion.sourceSpans.every(safeDraftSpan)) throw new Error('接口契约错误：政策条件或引用无效');
     }
   }
   if (kind === 'AssessmentRun') {

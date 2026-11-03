@@ -34,6 +34,13 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
   await page.getByRole('checkbox', { name: '选择分析' }).check();
   await page.getByRole('button', { name: '分析所选政策' }).click();
   await expect(page.getByText('不满足条件')).toBeVisible();
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 850 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const box = await page.getByRole('checkbox', { name: '选择分析' }).boundingBox();
+    expect(box?.width).toBeLessThanOrEqual(24);
+    await page.screenshot({ path: `test-results/real-opportunities-${width}.png`, fullPage: true });
+  }
   await page.getByRole('button', { name: '查看详情' }).click();
   await expect(page.getByText('测试原文')).toBeVisible();
   await expect(page.getByText('事实已变化')).toBeVisible();
@@ -78,8 +85,11 @@ test('真实模式移动端可读且错误摘要可定位', async ({ page }) => 
   await expect(page.getByRole('alert')).toBeFocused();
   await page.getByRole('link', { name: '请填写合成企业名称。' }).click();
   await expect(page.getByLabel('合成企业名称')).toBeFocused();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: 'test-results/real-enterprise-375.png', fullPage: true });
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 812 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/real-enterprise-${width}.png`, fullPage: true });
+  }
 });
 
 for (const [state, label] of [['satisfied', '条件初步满足'], ['insufficient_evidence', '还缺资料'], ['conflict', '条款待人工核对']] as const) {
@@ -338,10 +348,12 @@ test('补问写入事实并重算，跳过不修改事实，报告按版本下�
   await expect(page.getByRole('heading', { name: '优先补充问题' })).toHaveCount(0);
   await page.getByLabel('本次会话的分析历史').selectOption(thirdId);
   await page.getByRole('button', { name: '清单与报告' }).click(); await expect(page.getByText('留存凭证')).toBeVisible();
+  await expect(page.getByText('本次分析没有此类政策。')).toBeVisible();
   for (const width of [375, 768, 1440]) {
     await page.setViewportSize({ width, height: 850 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await expect(page.getByRole('heading', { name: '准备清单与报告' })).toBeVisible();
+    await page.screenshot({ path: `test-results/real-report-${width}.png`, fullPage: true });
   }
   const downloadButton = page.getByRole('button', { name: '下载 Markdown 报告' });
   await downloadButton.focus(); await expect(downloadButton).toBeFocused();
