@@ -43,6 +43,7 @@ export function criteriaIssue(criteria: CriterionDraft[]): (Issue & { index: num
     if (!criterion.title.trim()) return { index, field: 'title', message: '请填写条件标题。' };
     if (tooManyNodes(criterion.expression)) return { index, field: 'expression-root-type', message: `${criterion.title}：整棵规则不能超过 200 个节点。` };
     const error = expressionIssue(criterion.expression); if (error) return { ...error, index, message: `${criterion.title}：${error.message}` };
+    if (!criterion.sourceSpans.length) return { index, field: 'add-span', message: `${criterion.title}：至少添加一条原文引用。` };
     for (const [spanIndex, span] of criterion.sourceSpans.entries()) {
       const field = !span.quote.trim() ? 'quote' : span.page !== null && (!Number.isInteger(span.page) || span.page < 1) ? 'page' : span.page === null && !span.section?.trim() ? 'section' : null;
       if (field) return { index, field: `span-${spanIndex}-${field}`, message: `${criterion.title}：引用须填写原文及页码或章节。` };

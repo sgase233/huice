@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { criteriaError, criteriaIssue } from '../components/criteriaValidation';
 import type { CriterionDraft } from '../api/types';
-const condition: CriterionDraft = { id: 'id', title: '条件', expression: { op: 'compare', factKey: 'taxableIncome', period: 'assessment', comparator: 'eq', unit: 'CNY', value: '0' }, sourceSpans: [], reviewFinding: 'none' };
+const condition: CriterionDraft = { id: 'id', title: '条件', expression: { op: 'compare', factKey: 'taxableIncome', period: 'assessment', comparator: 'eq', unit: 'CNY', value: '0' }, sourceSpans: [{ sourceId: 's', sourceUrl: 'https://www.gov.cn/', sourceVersion: 'v1', page: 1, section: null, quote: '引用', textHash: '' }], reviewFinding: 'none' };
 describe('审核规则输入', () => {
+  it('缺少引用时定位添加引用按钮', () => {
+    expect(criteriaIssue([{ ...condition, sourceSpans: [] }])).toMatchObject({ index: 0, field: 'add-span', message: '条件：至少添加一条原文引用。' });
+  });
   it('保留零值并阻止非法十进制值', () => {
     expect(criteriaError([condition])).toBeNull();
     expect(criteriaError([{ ...condition, expression: { op: 'compare', factKey: 'taxableIncome', period: 'assessment', comparator: 'eq', unit: 'CNY', value: '1e3' } }])).toContain('十进制');

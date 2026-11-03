@@ -65,12 +65,35 @@ Remove-Item Env:HUICE_LIVE
 
 真实模式通过导航进入“政策审核”或“处理轨迹”，管理令牌仅保存在当前页面内存；刷新或退出后需重新输入。服务端还可能要求有效的受限演示会话。草稿支持导入、抽取、可视化条件／引用编辑、保存校验和人工确认发布；轨迹可使用当前运行或手动输入运行 UUID。页面错误显示追踪 ID，网络中断或版本冲突时先读取最新状态并人工核对，不自动重放写入。
 
-抽取显示 fixture、saved 或 DeepSeek 的实际模式，固定样例不代表真实模型调用。同键重试前须确认上次请求已结束：现有后端在抽取完成后才写入幂等记录，不能据此保证并发请求合并。隔离数据库中的真实浏览器已完成合成政策导入、发布、分析、轨迹和新版本导致旧分析失效的专项；完整验收状态见 `PHASE5_ACCEPTANCE.md`。不能对共享或正式环境运行写入测试。
+抽取显示 fixture、saved 或 DeepSeek 的实际模式，固定样例不代表真实模型调用。同键重试前须确认上次请求已结束：后端在抽取完成后才写入幂等记录；同键并发可能重复调用模型，但按同一草稿版本写入时由版本检查阻止后到请求覆盖。隔离数据库中的真实浏览器已完成合成政策导入、发布、分析、轨迹和新版本导致旧分析失效的专项；完整验收状态见 `PHASE5_ACCEPTANCE.md`。不能对共享或正式环境运行写入测试。
+
+### 第五阶段真实审核专项复现
+
+仅使用专用隔离库 `huice_m2_phase5_test`，不能连接共享库或正式环境。先启动绑定本机的 PostgreSQL 16 + pgvector（`127.0.0.1:55432`）和 Redis（`127.0.0.1:56379`），创建此专用数据库并按 `infra/sql/001` 至 `006` 顺序执行迁移。使用 Python 3.12 和 `services/api/requirements.lock` 创建测试虚拟环境；确保端口 8000 未被其他服务占用。
+
+```powershell
+# 从仓库根目录执行；凭据仅填临时测试值，不写入仓库。
+$env:DATABASE_URL = 'postgresql://<用户名>:<测试密码>@127.0.0.1:55432/huice_m2_phase5_test'
+$env:REDIS_URL = 'redis://127.0.0.1:56379/0'
+$env:APP_ENV = 'local'
+$env:MODEL_MODE = 'fixture'
+$env:OBJECT_STORE_MODE = 'local'
+$env:LOCAL_OBJECT_DIR = '<仓库外的测试对象目录>'
+$env:ADMIN_TOKEN = '<不少于16位的临时测试令牌>'
+Push-Location services/api
+<测试环境Python> -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# 另开终端，在 apps/web 目录：
+$env:HUICE_LIVE_ADMIN = '1'
+$env:HUICE_LIVE_ADMIN_TOKEN = '<与后端相同的临时测试令牌>'
+npm run test:e2e -- src/tests/live-admin.spec.ts
+```
+
+执行前须核实端口 8000 的进程确实使用上述专用库。该测试会导入并发布合成政策、创建企业和分析，fixture 不是真实模型调用；旧企业路径须单独切换至上文的 `huice_m2_phase3_test`。前端 CI 仅运行构建和单元测试，Playwright 结果以单独运行记录为准。
 
 ## 云端接入交接（待联合验证）
 
 1. M1 提供 HTTPS 前端入口、API 地址及受限演示入口。以 Node 22.x 执行 `npm ci`，将 `VITE_API_BASE_URL` 设为实际公开的 API 前缀（例如同源 `/api/v1`）后执行 `npm run build`，交付 `dist/`。该变量在构建时写入浏览器代码，只能包含公开地址，不能放令牌或密钥；地址变化后需重新构建。
-2. 同源部署时由网关将 `/api/v1` 转发到 API；跨源时由 M1 配置真实前端源的 `CORS_ORIGINS`，允许携带凭据、`Authorization`、`Content-Type`、`If-Match`、`Idempotency-Key`，并暴露 `ETag`、`X-Trace-Id`、`Content-Disposition`。确认网关和错误响应不剥离这些头。前端请求使用 `credentials: 'include'`，不能用通配源替代具体允许源。
+2. 当前受限会话使用 `SameSite=Lax` cookie：推荐将前端与 `/api/v1` 部署在同一 HTTPS 源，并由网关转发 API。跨源但同站（同一协议和注册域名，如 `app.example.com` 与 `api.example.com`）时，须实际验证 cookie 作用域与浏览器行为；跨站页面无法仅靠 CORS 让该 cookie 随跨站 API 请求发送，请改用同源部署。跨源同站时由 M1 配置真实前端源的 `CORS_ORIGINS`，允许携带凭据、`Authorization`、`Content-Type`、`If-Match`、`Idempotency-Key`，并暴露 `ETag`、`X-Trace-Id`、`Content-Disposition`。确认网关和错误响应不剥离这些头。前端请求使用 `credentials: 'include'`，不能用通配源替代具体允许源。
 3. M1 配置受限演示会话及后台 Bearer 授权，验证 HTTPS 下 cookie 的作用域、有效期和浏览器携带情况；前端令牌由授权人员在页面内输入，仅存于运行时内存，刷新或退出后需重新授权。会话签发和服务端设置见 `infra/deploy/README.md`；不要将令牌、cookie 或密钥写入前端配置、日志或验收截图。
 4. 在 M1 确认的专用合成环境，以授权会话验证 401／403、强 ETag 和写冲突，再走画像、机会、分析、报告下载、审核和轨迹。核对实际模型模式及版本；fixture 只证明固定样例链路。记录实际地址、版本、结果及失败请求的脱敏追踪 ID。
 

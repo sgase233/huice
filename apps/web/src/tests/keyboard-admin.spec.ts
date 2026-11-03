@@ -1,4 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+const testSource = { id: 'test-source', title: '合成来源', text: '合成引文', sourceUrl: 'https://www.gov.cn/' };
+const testSpan = { sourceId: 'test-source', sourceUrl: 'https://www.gov.cn/', sourceVersion: 'v1', page: 1, section: null, quote: '合成引文', textHash: 'hash' };
 test.use({ locale: 'zh-CN' });
 
 async function tabTo(page: Page, target: Locator) {
@@ -21,8 +23,8 @@ async function expectLabels(page: Page) {
 
 test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const criterion = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' };
-  const draft = { id, version: 'v1', title: '键盘草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [], criteria: [criterion], validationFindings: [] };
+  const criterion = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' };
+  const draft = { id, version: 'v1', title: '键盘草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [criterion], validationFindings: [] };
   let published = false;
   await page.route('**/api/v1/admin/policies**', async route => {
     const request = route.request();
@@ -63,6 +65,9 @@ test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取',
   const remove = added.getByRole('button', { name: '删除子条件 3' });
   await tabTo(page, remove); page.once('dialog', dialog => dialog.accept()); await page.keyboard.press('Enter');
   await expect(added.getByRole('button', { name: '添加子条件' })).toBeFocused();
+  await tabTo(page, added.getByRole('button', { name: '添加引用' })); await page.keyboard.press('Enter');
+  await tabTo(page, added.getByLabel('页码')); await page.keyboard.insertText('1');
+  await tabTo(page, added.getByLabel('引文（最多 2000 字）')); await page.keyboard.insertText('合成引文');
   const save = page.getByRole('button', { name: '保存并校验' });
   await tabTo(page, save); await page.keyboard.press('Enter');
   await expect(page.getByRole('status')).toHaveText('条件已保存，服务端校验结果已更新。');
@@ -70,7 +75,7 @@ test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取',
   await tabTo(page, confirmation); await page.keyboard.press('Space');
   const publish = page.getByRole('button', { name: '确认发布' });
   await expect(publish).toBeEnabled(); await tabTo(page, publish); await page.keyboard.press('Enter');
-  await expect(page.getByText(/发布请求已成功/)).toBeVisible(); expect(published).toBe(true);
+  await expect(page.getByRole('status')).toContainText('发布请求已成功'); await expect(page.getByRole('alert')).toHaveCount(0); expect(published).toBe(true);
   const traceNav = page.getByRole('button', { name: '处理轨迹' });
   await tabTo(page, traceNav); await page.keyboard.press('Enter');
   const run = page.getByLabel('分析运行 UUID');
@@ -82,7 +87,7 @@ test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取',
 
 test('键盘可以填写导入表单、选择正文并抽取', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const draft = { id, version: 'v1', title: '键盘导入', issuer: '演示机关', type: 'tax', region: '440300', revision: id, status: 'pending_parse', sources: [], criteria: [], validationFindings: [] };
+  const draft = { id, version: 'v1', title: '键盘导入', issuer: '演示机关', type: 'tax', region: '440300', revision: id, status: 'pending_parse', sources: [testSource], criteria: [], validationFindings: [] };
   let imports = 0;
   await page.route('**/api/v1/admin/policies**', route => {
     if (route.request().url().endsWith('/extract')) return route.fulfill({ headers: { ETag: '"new"', 'Access-Control-Expose-Headers': 'ETag' }, json: { draft: { ...draft, status: 'pending_review' }, criteriaDrafts: [], validationFindings: [], usage: { mode: 'fixture', modelVersion: null, inputTokens: 0, outputTokens: 0, elapsedMs: 1 } } });

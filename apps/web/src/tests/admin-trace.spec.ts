@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+const testSource = { id: 'test-source', title: '合成来源', text: '合成引文', sourceUrl: 'https://www.gov.cn/' };
+const testSpan = { sourceId: 'test-source', sourceUrl: 'https://www.gov.cn/', sourceVersion: 'v1', page: 1, section: null, quote: '合成引文', textHash: 'hash' };
 
 test('轨迹页展示未选择、加载、空结果和不存在状态', async ({ page }) => {
   let release!: () => void;
@@ -94,8 +96,8 @@ for (const status of [200, 401]) {
 
 test('审核草稿编辑保存使用当前 ETag，发布需人工确认', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const criterion = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' };
-  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [], criteria: [criterion], validationFindings: [] };
+  const criterion = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' };
+  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [criterion], validationFindings: [] };
   let match = '';
   let published: { match: string; body: unknown } | null = null;
   let releaseSave!: () => void;
@@ -159,8 +161,8 @@ test('审核草稿编辑保存使用当前 ETag，发布需人工确认', async 
 
 test('版本冲突保留本地修改，读取最新版本后逐条恢复', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const original = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' };
-  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [], criteria: [original], validationFindings: [] };
+  const original = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' };
+  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [original], validationFindings: [] };
   let reads = 0;
   await page.route('**/api/v1/admin/policies**', async route => {
     const req = route.request();
@@ -188,8 +190,8 @@ test('版本冲突保留本地修改，读取最新版本后逐条恢复', async
 
 test('离开并重新进入后可从草稿列表恢复已保存条件', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  let criterion = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' };
-  const draft = () => ({ id, version: 'v1', title: '重入草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [], criteria: [criterion], validationFindings: [] });
+  let criterion = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' };
+  const draft = () => ({ id, version: 'v1', title: '重入草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [criterion], validationFindings: [] });
   let details = 0;
   await page.route('**/api/v1/admin/policies**', route => {
     const request = route.request();
@@ -258,7 +260,7 @@ test('导入结果不确定时先核对列表才能再次导入', async ({ page 
 
 test('抽取结果不确定时显式重试复用请求键和版本', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_parse', sources: [], criteria: [], validationFindings: [] };
+  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_parse', sources: [testSource], criteria: [], validationFindings: [] };
   const keys: string[] = []; const matches: string[] = [];
   await page.route('**/api/v1/admin/policies**', async route => {
     const req = route.request();
@@ -331,7 +333,7 @@ test('后台错误显示服务端字段详情和追踪 ID', async ({ page }) => 
 
 test('草稿弱 ETag 不允许写入', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const draft = { id, version: 'v1', title: '弱版本草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_parse', sources: [], criteria: [], validationFindings: [] };
+  const draft = { id, version: 'v1', title: '弱版本草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_parse', sources: [testSource], criteria: [], validationFindings: [] };
   await page.route('**/api/v1/admin/policies**', route => new URL(route.request().url()).pathname.endsWith('/policies') ? route.fulfill({ json: { items: [draft], nextCursor: null } }) : route.fulfill({ headers: { ETag: 'W/"old"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft }));
   await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /弱版本草稿/ }).click();
@@ -390,8 +392,8 @@ test('切换运行时迟到的轨迹响应不能覆盖新结果', async ({ page 
 
 test('发布结果不确定时禁止重复发布并保留核对入口', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const criterion = { id: 'c', title: '条件', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' };
-  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [], criteria: [criterion], validationFindings: [] };
+  const criterion = { id: 'c', title: '条件', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' };
+  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [criterion], validationFindings: [] };
   let publishes = 0;
   await page.route('**/api/v1/admin/policies**', route => {
     const request = route.request();
@@ -411,7 +413,7 @@ test('发布结果不确定时禁止重复发布并保留核对入口', async ({
 for (const status of ['published', 'closed']) {
   test(`审核页的 ${status} 版本仅供查看`, async ({ page }) => {
     const id = '11111111-1111-4111-8111-111111111111';
-    const draft = { id, version: 'v1', title: '只读草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status, sources: [], criteria: [{ id: 'c', title: '条件', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' }], validationFindings: [] };
+    const draft = { id, version: 'v1', title: '只读草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status, sources: [testSource], criteria: [{ id: 'c', title: '条件', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' }], validationFindings: [] };
     await page.route('**/api/v1/admin/policies**', route => new URL(route.request().url()).pathname.endsWith('/policies') ? route.fulfill({ json: { items: [draft], nextCursor: null } }) : route.fulfill({ headers: { ETag: '"r"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft }));
     await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
     await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /只读草稿/ }).click();
@@ -422,7 +424,7 @@ for (const status of ['published', 'closed']) {
 
 test('嵌套条件删除后焦点返回添加按钮', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const draft = { id, version: 'v1', title: '嵌套草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [], criteria: [{ id: 'c', title: '条件', expression: { op: 'and', children: [{ op: 'manual_review', reason: '甲' }, { op: 'manual_review', reason: '乙' }] }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' }], validationFindings: [] };
+  const draft = { id, version: 'v1', title: '嵌套草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [{ id: 'c', title: '条件', expression: { op: 'and', children: [{ op: 'manual_review', reason: '甲' }, { op: 'manual_review', reason: '乙' }] }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' }], validationFindings: [] };
   await page.route('**/api/v1/admin/policies**', route => new URL(route.request().url()).pathname.endsWith('/policies') ? route.fulfill({ json: { items: [draft], nextCursor: null } }) : route.fulfill({ headers: { ETag: '"r"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft }));
   await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /嵌套草稿/ }).click();
@@ -467,7 +469,7 @@ test('缺失来源的引用明确提示且不能保存', async ({ page }) => {
 
 test('可视化规则可切换布尔比较与日期并保留输入类型', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const draft = { id, version: 'v1', title: '规则草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [], criteria: [{ id: 'c', title: '条件', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' }], validationFindings: [] };
+  const draft = { id, version: 'v1', title: '规则草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [{ id: 'c', title: '条件', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' }], validationFindings: [] };
   await page.route('**/api/v1/admin/policies**', route => new URL(route.request().url()).pathname.endsWith('/policies') ? route.fulfill({ json: { items: [draft], nextCursor: null } }) : route.fulfill({ headers: { ETag: '"r"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft }));
   await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /规则草稿/ }).click();
@@ -490,8 +492,8 @@ test('八类规则在可视化编辑与保存后保持原有结构', async ({ pa
     { op: 'industry_exclusion', factKey: 'industry', period: 'assessment', excluded: ['F51', 'F52'] },
     { op: 'quarterly_average', metric: 'assets', period: 'assessment', comparator: 'lte', value: '50000000.00', unit: 'CNY' }, leaf,
   ];
-  const criteria = expressions.map((expression, index) => ({ id: `c${index}`, title: `条件${index}`, expression, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' }));
-  const draft = { id, version: 'v1', title: '八类规则', revision: id, status: 'pending_review', sources: [], criteria, validationFindings: [] };
+  const criteria = expressions.map((expression, index) => ({ id: `c${index}`, title: `条件${index}`, expression, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' }));
+  const draft = { id, version: 'v1', title: '八类规则', revision: id, status: 'pending_review', sources: [testSource], criteria, validationFindings: [] };
   let saved: { criteria: Array<{ expression: unknown }> } | undefined;
   await page.route('**/api/v1/admin/policies**', route => {
     if (route.request().method() === 'PUT') { saved = route.request().postDataJSON(); return route.fulfill({ headers: { ETag: '"new"', 'Access-Control-Expose-Headers': 'ETag' }, json: { draft, criteria, validationFindings: [] } }); }
@@ -514,7 +516,7 @@ test('八类规则在可视化编辑与保存后保持原有结构', async ({ pa
 });
 
 test('打开另一草稿失败后不保留旧草稿的写入入口', async ({ page }) => {
-  const draft = { id: 'a', version: 'v1', title: '旧草稿', issuer: '演示', type: 'tax', region: '440300', revision: 'r', status: 'pending_parse', sources: [], criteria: [], validationFindings: [] };
+  const draft = { id: 'a', version: 'v1', title: '旧草稿', issuer: '演示', type: 'tax', region: '440300', revision: 'r', status: 'pending_parse', sources: [testSource], criteria: [], validationFindings: [] };
   const other = { ...draft, id: 'b', title: '另一草稿' };
   await page.route('**/api/v1/admin/policies**', route => { const path = new URL(route.request().url()).pathname; if (path.endsWith('/policies')) return route.fulfill({ json: { items: [draft, other], nextCursor: null } }); if (path.endsWith('/b')) return route.fulfill({ status: 404, json: { error: { code: 'NOT_FOUND', message: '草稿不存在', details: {} }, traceId: 't' } }); return route.fulfill({ headers: { ETag: '"r"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft }); });
   await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
@@ -527,7 +529,7 @@ test('打开另一草稿失败后不保留旧草稿的写入入口', async ({ pa
 });
 
 test('筛选读取失败不显示旧列表或旧草稿', async ({ page }) => {
-  const draft = { id: 'a', version: 'v1', title: '旧草稿', issuer: '演示', type: 'tax', region: '440300', revision: 'r', status: 'pending_parse', sources: [], criteria: [], validationFindings: [] };
+  const draft = { id: 'a', version: 'v1', title: '旧草稿', issuer: '演示', type: 'tax', region: '440300', revision: 'r', status: 'pending_parse', sources: [testSource], criteria: [], validationFindings: [] };
   let lists = 0;
   await page.route('**/api/v1/admin/policies**', route => { const path = new URL(route.request().url()).pathname; if (path.endsWith('/policies')) { lists++; return lists === 1 ? route.fulfill({ json: { items: [draft], nextCursor: null } }) : route.fulfill({ status: 503, json: { error: { code: 'UNAVAILABLE', message: '读取失败', details: {} }, traceId: 't' } }); } return route.fulfill({ headers: { ETag: '"r"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft }); });
   await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
@@ -549,7 +551,7 @@ test('更改筛选条件后不能使用旧游标加载更多', async ({ page }) 
 });
 
 test('草稿筛选与游标分页保留已加载的结果', async ({ page }) => {
-  const first = { id: 'a', version: 'v1', title: '第一页', revision: 'a', status: 'pending_review', sources: [], criteria: [], validationFindings: [] };
+  const first = { id: 'a', version: 'v1', title: '第一页', revision: 'a', status: 'pending_review', sources: [testSource], criteria: [], validationFindings: [] };
   const second = { ...first, id: 'b', revision: 'b', title: '第二页' };
   const queries: string[] = [];
   await page.route('**/api/v1/admin/policies**', route => {
@@ -581,7 +583,7 @@ test('空列表更改筛选后不声称新条件无结果', async ({ page }) => 
 });
 
 test('草稿详情返回错误版本时不允许写入', async ({ page }) => {
-  const draft = { id: 'a', version: 'v1', title: '指定草稿', issuer: '演示', type: 'tax', region: '440300', revision: 'r', status: 'pending_parse', sources: [], criteria: [], validationFindings: [] };
+  const draft = { id: 'a', version: 'v1', title: '指定草稿', issuer: '演示', type: 'tax', region: '440300', revision: 'r', status: 'pending_parse', sources: [testSource], criteria: [], validationFindings: [] };
   await page.route('**/api/v1/admin/policies**', route => new URL(route.request().url()).pathname.endsWith('/policies') ? route.fulfill({ json: { items: [draft], nextCursor: null } }) : route.fulfill({ headers: { ETag: '"r"', 'Access-Control-Expose-Headers': 'ETag' }, json: { ...draft, version: 'v2' } }));
   await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /指定草稿/ }).click();
@@ -591,8 +593,8 @@ test('草稿详情返回错误版本时不允许写入', async ({ page }) => {
 
 test('发布响应身份错误时禁止重复发布并保留核对入口', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
-  const criterion = { id: 'c', title: '条件', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [], reviewFinding: 'none', validationStatus: 'passed' };
-  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [], criteria: [criterion], validationFindings: [] };
+  const criterion = { id: 'c', title: '条件', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' };
+  const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [criterion], validationFindings: [] };
   let publishes = 0;
   await page.route('**/api/v1/admin/policies**', route => {
     const request = route.request();
@@ -613,7 +615,7 @@ test('发布响应身份错误时禁止重复发布并保留核对入口', async
 test('导入响应版本错误时禁止重复导入', async ({ page }) => {
   let imports = 0;
   await page.route('**/api/v1/admin/policies**', async route => {
-    if (route.request().method() === 'POST') { imports++; return route.fulfill({ json: { id: 'd', version: 'v2', title: '合成政策', revision: 'r', status: 'pending_parse', sources: [], criteria: [], validationFindings: [] } }); }
+    if (route.request().method() === 'POST') { imports++; return route.fulfill({ json: { id: 'd', version: 'v2', title: '合成政策', revision: 'r', status: 'pending_parse', sources: [testSource], criteria: [], validationFindings: [] } }); }
     return route.fulfill({ json: { items: [], nextCursor: null } });
   });
   await page.goto('/#admin');
@@ -646,4 +648,31 @@ test('导入响应版本错误时禁止重复导入', async ({ page }) => {
   await page.getByRole('button', { name: '读取草稿' }).click();
   await expect(page.getByRole('button', { name: '导入草稿' })).toBeEnabled();
   await expect(page.getByLabel('版本', { exact: true })).toBeEnabled();
+});
+
+
+test('新增条件缺少引用时提示并聚焦添加引用', async ({ page }) => {
+  const draft = { id: 'd', version: 'v1', title: '引用校验草稿', revision: 'r', status: 'pending_review', sources: [testSource], criteria: [], validationFindings: [] };
+  let writes = 0;
+  await page.route('**/api/v1/admin/policies**', route => {
+    if (route.request().method() === 'PUT') { writes++; return route.abort(); }
+    return new URL(route.request().url()).pathname.endsWith('/policies') ? route.fulfill({ json: { items: [draft], nextCursor: null } }) : route.fulfill({ headers: { ETag: '"r"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft });
+  });
+  await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
+  await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /引用校验草稿/ }).click();
+  await page.getByRole('button', { name: '添加条件', exact: true }).click();
+  await page.getByRole('group', { name: '审核条件' }).getByLabel('标题', { exact: true }).fill('条件');
+  await page.getByLabel('人工核查原因').fill('人工核查'); await page.getByRole('button', { name: '保存并校验' }).click();
+  const add = page.getByRole('button', { name: '添加引用' });
+  await expect(add).toBeFocused(); await expect(add).toHaveAccessibleDescription('条件：至少添加一条原文引用。'); expect(writes).toBe(0);
+});
+
+test('缺少浏览器加密 API 时提示并禁用依赖加密的操作', async ({ page }) => {
+  await page.addInitScript(() => { Object.defineProperty(window.crypto, 'randomUUID', { value: undefined }); });
+  const draft = { id: 'd', version: 'v1', title: '安全上下文草稿', revision: 'r', status: 'pending_review', sources: [testSource], criteria: [], validationFindings: [] };
+  await page.route('**/api/v1/admin/policies**', route => new URL(route.request().url()).pathname.endsWith('/policies') ? route.fulfill({ json: { items: [draft], nextCursor: null } }) : route.fulfill({ headers: { ETag: '"r"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft }));
+  await page.goto('/#admin'); await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
+  await expect(page.getByRole('alert')).toContainText('HTTPS');
+  await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /安全上下文草稿/ }).click();
+  await expect(page.getByRole('button', { name: '抽取条款' })).toBeDisabled(); await expect(page.getByRole('button', { name: '添加条件', exact: true })).toBeDisabled();
 });
