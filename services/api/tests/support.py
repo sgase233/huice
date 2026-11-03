@@ -417,7 +417,7 @@ class FakeRepository:
                 status=step.status,
                 input_summary=step.input_summary,
                 output_summary=step.output_summary,
-                evidence_refs=list(step.evidence_refs),
+                object_refs=list(step.object_refs),
                 policy_id=None,
                 policy_version=None,
                 model_or_rule_version=step.model_or_rule_version,

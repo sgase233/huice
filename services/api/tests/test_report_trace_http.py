@@ -160,7 +160,11 @@ def test_trace_steps_carry_no_secrets_or_enterprise_raw_text(client, auth, missi
     assert "postgresql://" not in body
     # 脱敏：只允许结构化引用，不放原文片段。
     steps = __import__("json").loads(body)["steps"]
-    assert all(isinstance(ref, dict) for step in steps for ref in step["evidenceRefs"])
+    refs = [ref for step in steps for ref in step["objectRefs"]]
+    assert refs
+    assert all(set(ref) == {"type", "id"} for ref in refs)
+    assert all(ref["type"] in {"enterprise", "policy", "policyVersion"} for ref in refs)
+    assert "quote" not in body and "textHash" not in body
 
 
 def test_trace_unknown_run_is_404(client, auth):

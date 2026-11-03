@@ -423,6 +423,13 @@ class PolicyList(WireModel):
 # ------------------------------------------------------------------ API-13/14
 
 
+class TraceObjectRef(WireModel):
+    """轨迹步骤指向的内部对象；不是引文，可回溯原文见 ``CriterionResult.evidence_refs``。"""
+
+    type: Literal["enterprise", "policy", "policyVersion"]
+    id: UUID
+
+
 class TraceStep(WireModel):
     """一条脱敏轨迹；只有 ``sequence/stage/status/summary`` 类字段，不含提示词或原始资料。"""
 
@@ -431,7 +438,7 @@ class TraceStep(WireModel):
     status: AgentStatus
     input_summary: str
     output_summary: str
-    evidence_refs: list[dict[str, Any]]
+    object_refs: list[TraceObjectRef]
     policy_id: UUID | None
     policy_version: str | None
     model_or_rule_version: str

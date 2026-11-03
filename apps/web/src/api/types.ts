@@ -426,13 +426,18 @@ export type TraceStep = {
   status: AgentStatus;
   inputSummary: string;
   outputSummary: string;
-  evidenceRefs: Array<EvidenceRef>;
+  objectRefs: Array<TraceObjectRef>;
   policyId: (UUID) | (null);
   policyVersion: (string) | (null);
   modelOrRuleVersion: string;
   elapsedMs: number;
   errorCode: (string) | (null);
   humanAction: (string) | (null);
+};
+
+export type TraceObjectRef = {
+  type: "enterprise" | "policy" | "policyVersion";
+  id: UUID;
 };
 
 export type TraceResponse = {

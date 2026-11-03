@@ -195,3 +195,77 @@ def test_every_contract_expression_operator_is_accepted_by_the_validator(contrac
     # date 算子的键集合两边必须一致（rc.4 就是这里没对上）。
     date_keys = declared["date"]["properties"]["factKey"]["enum"]
     assert set(date_keys) == set(DATE_KEYS)
+
+
+# ------------------------------------------------- 轨迹引用与引文的分工（rc.6 起）
+
+
+def test_trace_step_refs_match_the_contract(contract, schema):
+    """轨迹步骤带的是内部对象引用，不是引文（issue #27）。
+
+    ``TraceStep.evidenceRefs`` 曾经和 ``CriterionResult.evidenceRefs`` 共用
+    ``EvidenceRef``：服务端写的是 ``{type,id}``，契约要求引文字段，按契约校验的前端
+    会把每条步骤判成契约错误、整页不展示。这里锁死字段名、引用类型与枚举三处。
+    """
+
+    from typing import get_args
+
+    from app.schemas import TraceObjectRef
+
+    contract_trace = contract["components"]["schemas"]["TraceStep"]
+    served_trace = schema["components"]["schemas"]["TraceStep"]
+    assert "objectRefs" in contract_trace["required"]
+    assert "evidenceRefs" not in contract_trace["properties"]
+    assert "objectRefs" in served_trace["required"]
+    assert "evidenceRefs" not in served_trace["properties"]
+
+    assert contract_trace["properties"]["objectRefs"]["items"]["$ref"].endswith(
+        "/TraceObjectRef"
+    )
+    contract_ref = contract["components"]["schemas"]["TraceObjectRef"]
+    assert contract_ref["additionalProperties"] is False
+    assert set(contract_ref["required"]) == {"type", "id"}
+    assert set(contract_ref["properties"]["type"]["enum"]) == set(
+        get_args(TraceObjectRef.model_fields["type"].annotation)
+    )
+
+    # 条件结果那侧的 evidenceRefs 必须仍然是引文：两类信息不能又混回同一个 schema。
+    criterion_items = contract["components"]["schemas"]["CriterionResult"]["properties"][
+        "evidenceRefs"
+    ]["items"]
+    assert criterion_items["$ref"].endswith("/EvidenceRef")
+
+
+def test_trace_step_rejects_untyped_references():
+    """引用结构收紧到 ``TraceObjectRef``：多给字段或未知 ``type`` 直接 422，不再透传。"""
+
+    from uuid import uuid4
+
+    from pydantic import ValidationError
+
+    from app.schemas import TraceStep
+
+    base = {
+        "sequence": 1,
+        "stage": "retrieval",
+        "status": "ok",
+        "inputSummary": "检索",
+        "outputSummary": "命中 1 项",
+        "policyId": None,
+        "policyVersion": None,
+        "modelOrRuleVersion": "rules-demo-v1",
+        "elapsedMs": 1,
+        "errorCode": None,
+        "humanAction": None,
+    }
+
+    TraceStep(objectRefs=[{"type": "policy", "id": str(uuid4())}], **base)
+
+    for ref in (
+        {"type": "quote", "id": str(uuid4())},
+        {"type": "policy"},
+        {"id": str(uuid4())},
+        {"type": "policy", "id": str(uuid4()), "quote": "原文"},
+    ):
+        with pytest.raises(ValidationError):
+            TraceStep(objectRefs=[ref], **base)

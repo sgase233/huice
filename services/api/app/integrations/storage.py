@@ -1096,7 +1096,8 @@ class PolicyRepository:
                         "stage": step.stage,
                         "status": step.status,
                         "summary": f"{step.input_summary} → {step.output_summary}",
-                        "evidence_refs": Jsonb(list(step.evidence_refs)),
+                        # 列名沿用 evidence_refs（迁移不改列），内容是 TraceStep.objectRefs。
+                        "evidence_refs": Jsonb(list(step.object_refs)),
                         "model_or_rule_version": step.model_or_rule_version,
                         "elapsed_ms": step.elapsed_ms,
                         "input_summary": step.input_summary,
@@ -1250,7 +1251,7 @@ class PolicyRepository:
                     status=row["status"],
                     input_summary=row["input_summary"] or row["summary"],
                     output_summary=row["output_summary"] or "",
-                    evidence_refs=_list_of(row["evidence_refs"]),
+                    object_refs=_list_of(row["evidence_refs"]),
                     policy_id=policy_id,
                     policy_version=policy_version,
                     model_or_rule_version=row["model_or_rule_version"],

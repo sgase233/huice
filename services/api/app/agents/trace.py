@@ -1,7 +1,9 @@
 """在线轨迹（FR-09）。
 
 ``TraceStep`` 记录 stage 序列，供验收逐段核对。摘要只写「做了什么、影响了哪些对象」，
-绝不写提示词、密钥、连接串或企业原始资料；``evidenceRefs`` 只放结构化引用。
+绝不写提示词、密钥、连接串或企业原始资料。``objectRefs`` 只放内部对象
+（企业、政策、政策版本）的 ``{type, id}`` 引用，不放原文引文——引文在
+``CriterionResult.evidenceRefs``，两者不要混在同一个字段里。
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ class TraceStep:
     status: str
     input_summary: str
     output_summary: str
-    evidence_refs: list[dict[str, Any]] = field(default_factory=list)
+    object_refs: list[dict[str, Any]] = field(default_factory=list)
     policy_id: UUID | None = None
     policy_version: str | None = None
     model_or_rule_version: str = ""
@@ -50,7 +52,7 @@ class TraceStep:
             "status": self.status,
             "inputSummary": self.input_summary,
             "outputSummary": self.output_summary,
-            "evidenceRefs": self.evidence_refs,
+            "objectRefs": self.object_refs,
             "policyId": str(self.policy_id) if self.policy_id else None,
             "policyVersion": self.policy_version,
             "modelOrRuleVersion": self.model_or_rule_version,
@@ -76,7 +78,7 @@ class TraceRecorder:
         status: str = "ok",
         input_summary: str,
         output_summary: str,
-        evidence_refs: Sequence[dict[str, Any]] = (),
+        object_refs: Sequence[dict[str, Any]] = (),
         policy_id: UUID | None = None,
         policy_version: str | None = None,
         error_code: str | None = None,
@@ -92,7 +94,7 @@ class TraceRecorder:
             status=status,
             input_summary=_clip(input_summary),
             output_summary=_clip(output_summary),
-            evidence_refs=list(evidence_refs),
+            object_refs=list(object_refs),
             policy_id=policy_id,
             policy_version=policy_version,
             model_or_rule_version=self._rule_version,
