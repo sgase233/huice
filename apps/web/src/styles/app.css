@@ -121,3 +121,15 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .real-nav button:disabled { opacity: .55; cursor: wait; }
 @media (max-width: 760px) { .real-nav button { width: auto; flex: none; margin-bottom: 0; } }
 .real-nav ~ .main-content blockquote, .real-nav ~ .main-content details { overflow-wrap: anywhere; }
+
+.admin-review fieldset { min-width: 0; }
+.admin-review input[type="checkbox"] { width: 1.2rem; min-height: 1.2rem; margin-right: .5rem; }
+.admin-review textarea { width: 100%; min-height: 6rem; font: inherit; padding: .54rem .7rem; border: 1px solid #9eb3bb; border-radius: .48rem; }
+.admin-review pre { max-width: 100%; }
+.admin-review button { min-height: 44px; padding: .55rem .85rem; border: 1px solid var(--brand); border-radius: .55rem; background: var(--surface); color: var(--brand-dark); font-weight: 700; }
+.admin-review button:hover:not(:disabled) { background: #e8f0f1; }
+.admin-review label { margin-block: .45rem; }
+.admin-review .panel + .panel { margin-top: 1rem; }
+
+.trace-steps { list-style: none; padding: 0; }
+.trace-steps > li + li { margin-top: 1rem; }
