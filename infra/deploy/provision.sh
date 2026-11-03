@@ -96,7 +96,10 @@ chmod 640 "${ENV_FILE}"
 log "6/6 启用服务"
 nginx -t
 systemctl daemon-reload
-systemctl enable --now nginx >/dev/null
+systemctl enable nginx >/dev/null
+# nginx 常已被 apt 装好后自动拉起：此时只 enable 不会重载配置，新装的 conf.d
+# 站点不生效——对外表现为 404，且 Server 头仍带版本号。必须显式重载一次。
+systemctl reload-or-restart nginx
 systemctl enable huice-api >/dev/null
 # 配置未填写时首启会失败，这里不把它当作安装失败，只提示查看日志。
 systemctl restart huice-api || true
