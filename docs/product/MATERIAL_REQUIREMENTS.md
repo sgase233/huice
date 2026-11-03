@@ -76,4 +76,5 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
 
 1. 资金政策条件标注已覆盖 SRDI、RD-SUBSIDY、HIGHTECH 三项（2026-11-01），材料映射已按 18 键补齐；`applies_to_policy_ids` 与 `condition_desc` 待双人复核。
 2. 「必交/条件交」是否需要契约字段（见 §4），待 M1 回告。
-3. 全部 15 行材料要求均为「待双人复核」，未经两人独立核对 + 仲裁不得交 M1 当作可发布真值。
+3. 全部 15 行材料要求均为「待双人复核」，未经两人独立核对 + 仲裁不得交 M1 当作可发布真值。复核表见 [`data/evaluation/material_review_sheet.csv`](../../data/evaluation/material_review_sheet.csv)（A/B 两列独立填写）。
+4. **`verified` 当前全为 `false`（2026-11-02 定案，方案 B）。** 没有任何已双人复核的合成材料，因此不触发 `verified=true`；补合成材料并逐份复核的工作另行排期。`verified=false` 是如实状态，不是遗漏（见 ACCEPTANCE 覆盖状态）。
