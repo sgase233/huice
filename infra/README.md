@@ -102,7 +102,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/006_fact_dictionary_extension
 
 迁移约定：新变更写 `006_*.sql` 之后的下一个序号，不改历史脚本；每条迁移同样登记 `schema_migration`。
 
-## 4. 云端资源状态（截至 2026-10-23）
+## 4. 云端资源状态（截至 2026-11-03）
 
 ### 4.1 已开通
 
@@ -110,11 +110,11 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/006_fact_dictionary_extension
 | --- | --- | --- |
 | VPC / 子网 | `huice-vpc`（`192.168.0.0/16`）、`huice-subnet`（`192.168.0.0/24`，251 个可用 IP） | 华南-广州；子网网段创建后不可修改 |
 | ECS | `huice-api-01`，2 vCPU / 4 GiB，Ubuntu 24.04.4 LTS（自带 Python 3.12.3），按需计费 | 华南-广州 / **可用区7**；内网 `192.168.0.86`；公网 EIP `139.9.33.46`；2026-10-23 实测 `lsb_release`、`python3 --version`、`ip -4 addr` |
-| 安全组（入方向） | TCP 22 / 80 / 443，源 `0.0.0.0/0` | 22 已实测可连（2026-10-23）；80/443 暂无服务监听，属正常 |
+| 安全组（入方向） | TCP 22 / 80 / 443，源 `0.0.0.0/0` | 22 已实测可连（2026-10-23）；80 已由 nginx 监听（2026-11-02 部署）；443 待跑 `enable-tls.sh`（§3.2） |
 | 登录方式 | 密码（用户 `root`） | 密码不入文档；建议后续换成密钥对 |
 | CodeArts / Skills | 本人 2026-10-23 告知已开通（未在控制台复核） | **本项目不接入**：队长 2026-10-23 决定，开发过程记录以实际使用的编码工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
 | Redis（DCS） | **已购买并实测连通（2026-10-23）**：`huice-redis`，Redis 7.0（`INFO server` 报 `redis_version:7.x`），**主备**，1 GB，内网 `192.168.0.38:6379` | 在 ECS `huice-api-01` 上 `AUTH` 返回 `OK`、`PING` 返回 `PONG`；密码只进服务器 `.env`，不入库不入文档。**2026-10-26 复测**：`/dev/tcp/192.168.0.38/6379` 可连、`redis-cli --askpass PING` → `PONG`，控制台显示小版本 `7.2.11.5`，白名单已含 ECS 内网 `192.168.0.86`（2026-10-24 的「连接被拒」不复现）。2026-10-26 起判断链路有版本化求值缓存（键前缀 `huice:eval:v1:`，TTL 300 秒），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；Redis 不可达时自动按「未命中重算」执行 |
-| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 尚未执行**，11/08 部署时补齐 |
+| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 按序执行**（`schema_migration` 六行、`fact_period_start/fact_period_end` 两列与 18 键约束均已核对），11/08 只需重新部署代码 |
 | OBS（对象存储） | **已购买并建桶（2026-10-23）**：桶 `huice-policies`，**私有**，区域 `cn-south-1`（华南-广州），endpoint `obs.cn-south-1.myhuaweicloud.com` | 区域级服务，不进 VPC；`ObsObjectStore` 已用 `esdk-obs-python` 3.26.6 实现（`obs/<uuid>` 命名空间、失败映射 503），**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项：写入→独立客户端读回字节、删除后 404、两次写入键不冲突、导入正文真正落桶、不可写桶 503 且不泄露凭证，见 §4.3）；AK/SK 只存于 ECS 的 `/etc/huice/api.env`（本地联调用过的一对因失败输出误打印已作废重建） |
 | Docker Desktop + WSL2（本地） | WSL 3.0.3.0 + Docker Desktop 4.96.3 | 已解除，本地 compose 可用 |
 
@@ -161,7 +161,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 ⚠️ **凭证不会被 pytest 打印**：用例失败时 pytest 会显示夹具取值，所以凭证装在 `Credentials` 数据类里（`__repr__` 固定输出 `<redacted>`），带密钥的 `Settings` 只在辅助函数内部临时构造、不绑定到用例局部变量。2026-10-27 首次实测时旧版本把 `Settings(... obs_ak=..., obs_sk=...)` 直接当夹具返回，一次断言失败就把 AK/SK 打进了终端——该密钥已作废重建，新版已改为上述写法。**不要把 `pytest -l`（`--showlocals`）与这两个 `-m` 用例一起用。**
 
-验证缺口（本地已闭合）：`001_init.sql` 已在真实 PostgreSQL 16.15 上执行两次（第二次仅 `NOTICE ... already exists`），`002_evaluation_and_idempotency.sql`、`003_trace_step_details.sql`、`004_invalidation_event_period.sql` 与 `005_fact_dictionary_extension.sql` 均连续执行两遍通过（2026-10-26 / 2026-10-27 / 2026-10-28），`@pytest.mark.db` 用例 **34 项全部通过**（2026-10-28，见 [local/README.md](local/README.md)）；端到端导入/读回与判断链路冒烟见 [local/README.md](local/README.md)。**缓存已闭合（本地）**：`redis==8.1.0` 入锁后，`tests/test_cache_redis_live.py` 在本地 Redis 7.4 上实测键写入、`TTL≤300`、二次命中与换键（3 passed）；未闭合部分是云端部署后的命中（云端 API 尚未部署）。**云端** RDS 已于 2026-10-23 在 ECS 上实测连通并完成建表（PostgreSQL 16.13、`vector` 0.8.0、13 张表），**2026-10-26 23:47 补齐 002/003**（`schema_migration` 三行齐全，结构与本地一致；`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 待 11/08 部署补齐）、Redis 实测 `PONG`；OBS 已购买并建桶，`obs` 路径**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项，见 §4.3）；模型调用改由 DeepSeek 承担（MaaS 按队长 2026-10-23 决定不再使用），**2026-10-27 已用真实 Key 联调通过**（`-m deepseek` 3 项）——`MODEL_MODE` 仍保持 `fixture` 作为默认值，切到 `deepseek` 由 `.env` 决定，云端切换随 11/08 部署验证。
+验证缺口（本地已闭合）：`001_init.sql` 已在真实 PostgreSQL 16.15 上执行两次（第二次仅 `NOTICE ... already exists`），`002_evaluation_and_idempotency.sql`、`003_trace_step_details.sql`、`004_invalidation_event_period.sql` 与 `005_fact_dictionary_extension.sql` 均连续执行两遍通过（2026-10-26 / 2026-10-27 / 2026-10-28），`@pytest.mark.db` 用例 **34 项全部通过**（2026-10-28，见 [local/README.md](local/README.md)）；端到端导入/读回与判断链路冒烟见 [local/README.md](local/README.md)。**缓存已闭合（本地）**：`redis==8.1.0` 入锁后，`tests/test_cache_redis_live.py` 在本地 Redis 7.4 上实测键写入、`TTL≤300`、二次命中与换键（3 passed）；未闭合部分是云端部署后的命中（云端 API 已于 2026-11-02 部署，云端命中尚未复测）。**云端** RDS 已于 2026-10-23 在 ECS 上实测连通并完成建表（PostgreSQL 16.13、`vector` 0.8.0、13 张表），**2026-10-26 23:47 补齐 002/003**（`schema_migration` 三行齐全，结构与本地一致；`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 在云端按序补齐）、Redis 实测 `PONG`；OBS 已购买并建桶，`obs` 路径**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项，见 §4.3）；模型调用改由 DeepSeek 承担（MaaS 按队长 2026-10-23 决定不再使用），**2026-10-27 已用真实 Key 联调通过**（`-m deepseek` 3 项）——`MODEL_MODE` 仍保持 `fixture` 作为默认值，切到 `deepseek` 由 `.env` 决定，云端切换随 11/08 部署验证。
 
 ## 5. 本地开发 → 云端部署检查清单
 
@@ -210,9 +210,9 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 - [x] 记录 `vector` 版本：云上实际安装 **0.8.0**，本地 **0.8.7**，同为 0.8 系列，未发现语法差异
 - [x] `001_init.sql` 在 RDS 上执行成功并登记 `schema_migration`（2026-10-23，13 张表，无超级用户专属语句报错）
 - [x] `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql` 已在云 RDS 执行（**2026-10-26 23:47**，`schema_migration` 记 `002` 23:47:03、`003` 23:47:13）；已核对：`trace_step` 的 `input_summary/output_summary/policy_id/policy_version/error_code/human_action` 六列存在、`trace_step_status_check`（`ok/needs_review/retryable_error/fatal_error`）与 `trace_step_stage_check`（九个契约阶段）定义与本地一致、`trace_step_no_update_delete` 触发器仍在
-- [ ] `004_invalidation_event_period.sql` 尚未在云 RDS 执行（11/08 部署时补齐，`schema_migration` 应增至五行）；执行后核对 `invalidation_event` 的 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束与 `invalidation_event_run_idx` 索引存在
-- [ ] `006_fact_dictionary_extension_rc4.sql` 尚未在云 RDS 执行（11/08 部署时补齐，紧接 005 之后）；执行后核对 `enterprise_fact_key_check` 含 18 键、`enterprise_fact_key_unit` 里 `specificMarketSince` 配 `date`、`independentLegalEntity` 配 `boolean`
-- [ ] `005_fact_dictionary_extension.sql` 尚未在云 RDS 执行（11/08 部署时补齐，紧接 004 之后）；执行后核对 `enterprise_fact` 的三个约束定义：`enterprise_fact_key_check` 含 16 键、`enterprise_fact_unit_check` 含 `ratio`、`enterprise_fact_key_unit` 每组配对正确
+- [x] `004_invalidation_event_period.sql` 已于 2026-11-02 在云 RDS 执行；已核对 `invalidation_event` 的 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束与 `invalidation_event_run_idx` 索引存在
+- [x] `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 在云 RDS 执行（紧接 005 之后）；已核对 `enterprise_fact_key_check` 含 18 键、`enterprise_fact_key_unit` 里 `specificMarketSince` 配 `date`、`independentLegalEntity` 配 `boolean`
+- [x] `005_fact_dictionary_extension.sql` 已于 2026-11-02 在云 RDS 执行（紧接 004 之后）；已核对 `enterprise_fact` 的三个约束定义：`enterprise_fact_key_check` 含 16 键、`enterprise_fact_unit_check` 含 `ratio`、`enterprise_fact_key_unit` 每组配对正确（006 之后 `enterprise_fact_key_check` 为 18 键）
 - [ ] 时区复验：库内 UTC，派生 `closed` 使用 `AT TIME ZONE 'Asia/Shanghai'`，用一条已过期政策验证。**注意**：RDS 实例默认 `timezone` 为 `Asia/Shanghai`（`schema_migration.applied_at` 显示 `+08`），与本地容器（UTC）不同；应用侧 `db.py` 每连接 `SET TIME ZONE 'UTC'`，需在首次云端联调时用实际数据确认派生结果一致
 - [ ] `storage_key` 命名空间：本地写 `local/<uuid>`，云端写 `obs/...`；**旧 key 不迁移**，演示数据重新导入
 - [ ] 演示数据只用合成的企业画像，不复用本地数据卷
@@ -228,6 +228,8 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 **E. 部署与回滚**
 
+- [x] 首版部署到 ECS（2026-11-02）：`provision.sh` 六步通过、`/health` 本机与外网 200（`1.0.0-rc.5`）、鉴权分层与写路径冒烟通过；详见 `docs/devlog/M1.md` 同日条目
+- [ ] 重新部署到 rc.6（仅 `TraceStep.objectRefs` 一处运行时改动，无新依赖、无新迁移）
 - [ ] 从空环境按本文件 + 部署脚本复现（11/15 要求）
 - [ ] 记录镜像/依赖版本、目标规格、地域、VPC 与初始化命令
 - [ ] 回滚：镜像回退 + 数据库只增不改（新增 `002_*.sql`），不 `DROP` 生产表
@@ -286,7 +288,7 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 `infra/deploy/deploy.ps1` 未删除，仍是占位文件；本阶段以 `deploy/README.md` 的手工步骤为准。
 
-**执行前提**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **003**（`schema_migration` 三行齐全，2026-10-26 补齐），部署时需再补 `004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql`。MaaS 已不在范围内，模型侧首轮部署用 `MODEL_MODE=fixture`（DeepSeek 已于 2026-10-27 用真实 Key 联调通过，见 §4.3；云端切 `deepseek` 随本次部署验证）；OBS 的真实桶联调同样已于 2026-10-27 通过（§4.3），部署时填好 `OBS_*` 即可切 `OBJECT_STORE_MODE=obs`。
+**执行前提**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **006**（`schema_migration` 六行齐全，004—006 于 2026-11-02 补齐），重新部署只需更新代码。MaaS 已不在范围内，模型侧首轮部署用 `MODEL_MODE=fixture`（DeepSeek 已于 2026-10-27 用真实 Key 联调通过，见 §4.3；云端切 `deepseek` 随本次部署验证）；OBS 的真实桶联调同样已于 2026-10-27 通过（§4.3），部署时填好 `OBS_*` 即可切 `OBJECT_STORE_MODE=obs`。
 
 上云前的准备项、环境变量对照与目标时间表见第 5 节；本地先行开发不等于可以推迟到 11/14 再部署——计划的云端节点是 11/08。
 
