@@ -139,6 +139,8 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 > **2026-10-31（契约 `1.0.0-rc.5`）**：新增 `manual_review` 算子，把「这条按政策口径本就不由程序判」写进数据模型——此前标注方只能在「硬写一个大概率错的表达式」和「退回待核实、整版政策发不出去（`CRITERIA_NOT_VALIDATED`）」之间二选一。求值固定 `insufficient_evidence`、reason 原样回显；落在 AND 里让整体降级，落在 OR 里不影响另一支；引文仍逐字校验；发布闸门照常放行。抽取智能体不得生成，只有标注方能写。同时修正 rc.4 的 `DateExpression.factKey`：schema 当时仍写死 `establishedDate`，与描述和服务端的 `rules.DATE_KEYS` 不一致，照 schema 写 `specificMarketSince` 的日期条件会被拒——rc.5 改成 `enum` 两个日期键，`test_openapi_alignment.py` 增加算子集合与日期键集合的对齐断言，两边只改一处会直接转红。**`apps/web/src/api/types.ts` 仍由 M2 生成**，需按 rc.5 重新生成一次（含新增 schema 与版本号）；`FactKey` / `FactUnit` 本次未变，不需要新迁移。
 
+> **2026-11-03（契约 `1.0.0-rc.6`，应答 M2 的 issue #27）**：轨迹步骤的 `evidenceRefs` 改名为 `objectRefs`，元素类型由 `EvidenceRef`（政策原文引文）换成新的 `TraceObjectRef={type,id}`（`enterprise`/`policy`/`policyVersion`）。根因是同一个 `EvidenceRef` 被两类结构共用：轨迹只记「这一步动了哪个内部对象」，服务端从未在轨迹里写过引文；可回溯的原文引文一直在 `CriterionResult.evidenceRefs`（报告页也用它）。按旧契约校验的前端会把每条带 `{type,id}` 的步骤判成「契约错误」，整页轨迹不展示。服务端 `TraceStep` 的字段同时由 `list[dict]` 收紧为 `list[TraceObjectRef]`，未知 `type` 或非 UUID 的 `id` 直接报错，不再把任意结构透传给前端。**`trace_step.evidence_refs` 列名保留不改**（不需要新迁移）：语义上它一直存的是对象引用，`get_trace` 正是靠其中的 `policyVersion` 把入库/审核轨迹挂到 run 上。`test_report_trace_http.py` 增加断言：引用只含 `{type,id}` 且 `type` 在枚举内、响应体不含 `quote`/`textHash`。`apps/web/src/api/types.ts` 仍需 M2 按 rc.6 重新生成一次。
+
 > **比例条件的引文核对（2026-10-29，应答 M2 PR #10 的 P1）**：`rdExpenseRevenueRatio` 不再「跳过数值核对」，改为单独走 `citations.ratio_bounds`——把原文的百分比换算成小数（「不低于 3%」→ `0.03`、`gte`，「5%以下」→ `0.05`、`lte`，`‰` 与「千分之」按 1000 除），再与 AST 的 `compare` 比数值和方向。与金额阈值分开是因为换算基准不同：混在一起会把「3%」按「万元」换算成 300，让写成 `0.30` 的条件反而通过。识别只认三种写法（前置方向词 + `百分之/千分之`、前置方向词 + `%`、数字 + `%` + 后端词），且**仅在百分比前 24 字内出现「比重/占比/比例/百分比/占」时才认定为比例条件**——原文没有这类线索时报 `CITATION_THRESHOLD_NOT_FOUND`，挡住发布并要求人工复核，而不是拿别处的百分比（如「研发费用增长不低于 10%」）凑数。已知边界：中文数字（「百分之三」）不解析，会落到「找不到阈值」，同样是挡住而非放行。
 
 所有事实 `value=null` 均表示未知；省略事实等价于尚未提供。空字符串、字符串 `"null"`、NaN 均拒绝。数值的通用词法允许最多 6 位小数，按上述字段进一步校验；`"0"` 是有效已知值。`period={startDate,endDate}` 使用日期，包含两端；开始不能晚于结束。同一 key 不同年度是不同事实，不互相覆盖。
@@ -194,7 +196,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 `AgentContext` 只有上下文（trace/request ID、asOf、period、版本图、预算）；业务参数由独立 `AssessmentInput` 传入，不能把 enterpriseId/policyIds 塞进未定义的 context 字段。内部 snake_case 转外部 camelCase 只在 schema 边界做。
 
-`TraceStep` 包含 `sequence,stage,status,inputSummary,outputSummary,evidenceRefs,policyId,policyVersion,modelOrRuleVersion,elapsedMs,errorCode,humanAction`；多政策公共步骤的 policyId/version 可 null。状态仅 `ok/needs_review/retryable_error/fatal_error`。线上 run 应链接所用政策版本的入库、审核轨迹，再列在线轨迹；不能只保留模型最后一句话。summary 不得含密钥、完整提示词或企业资料。
+`TraceStep` 包含 `sequence,stage,status,inputSummary,outputSummary,objectRefs,policyId,policyVersion,modelOrRuleVersion,elapsedMs,errorCode,humanAction`；`objectRefs` 是 `{type,id}` 形式的内部对象引用（`enterprise`/`policy`/`policyVersion`），**不是引文**——可回溯的政策原文引用在 `CriterionResult.evidenceRefs`，两者不共用字段。多政策公共步骤的 policyId/version 可 null。状态仅 `ok/needs_review/retryable_error/fatal_error`。线上 run 应链接所用政策版本的入库、审核轨迹，再列在线轨迹；不能只保留模型最后一句话。summary 不得含密钥、完整提示词或企业资料。
 
 ## 3. HTTP 共同约束
 

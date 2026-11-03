@@ -71,7 +71,7 @@ def test_wire_shape_uses_camel_case_and_stringifies_ids():
         "human_review",
         input_summary="审核",
         output_summary="通过",
-        evidence_refs=[{"type": "policyVersion", "id": str(policy_id)}],
+        object_refs=[{"type": "policyVersion", "id": str(policy_id)}],
         policy_id=policy_id,
         policy_version="v1.0",
         human_action="approve",
@@ -82,7 +82,7 @@ def test_wire_shape_uses_camel_case_and_stringifies_ids():
     assert wire["policyId"] == str(policy_id)
     assert wire["policyVersion"] == "v1.0"
     assert wire["humanAction"] == "approve"
-    assert wire["evidenceRefs"] == [{"type": "policyVersion", "id": str(policy_id)}]
+    assert wire["objectRefs"] == [{"type": "policyVersion", "id": str(policy_id)}]
     assert wire["errorCode"] is None
     assert set(wire) == {
         "sequence",
@@ -90,7 +90,7 @@ def test_wire_shape_uses_camel_case_and_stringifies_ids():
         "status",
         "inputSummary",
         "outputSummary",
-        "evidenceRefs",
+        "objectRefs",
         "policyId",
         "policyVersion",
         "modelOrRuleVersion",

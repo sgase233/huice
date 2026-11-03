@@ -66,7 +66,7 @@ def assess(
         "profile",
         input_summary=f"读取企业画像 {request.enterprise_id}",
         output_summary=f"画像含 {len(enterprise.facts)} 条事实，版本 {enterprise.fact_version[:12]}",
-        evidence_refs=[{"type": "enterprise", "id": str(enterprise.id)}],
+        object_refs=[{"type": "enterprise", "id": str(enterprise.id)}],
     )
 
     snapshots = repository.published_policy_snapshots(list(request.policy_ids))
@@ -74,7 +74,7 @@ def assess(
         "retrieval",
         input_summary=f"检索 {len(request.policy_ids)} 项政策的已发布版本",
         output_summary="、".join(f"{item.id}@{item.version}" for item in snapshots),
-        evidence_refs=[{"type": "policy", "id": str(item.id)} for item in snapshots],
+        object_refs=[{"type": "policy", "id": str(item.id)} for item in snapshots],
     )
 
     facts = rules.FactTable(fact_snapshots(_enterprise_facts(enterprise)))

@@ -264,7 +264,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 services\api\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir services/api --host 127.0.0.1 --port 8000
 
 # 正常（2026-10-23 实测：连本地 compose 的 PostgreSQL 16.15）
-curl.exe -i http://127.0.0.1:8000/api/v1/health          # 200 {"status":"ok","version":"1.0.0-rc.5"} + X-Trace-Id
+curl.exe -i http://127.0.0.1:8000/api/v1/health          # 200 {"status":"ok","version":"1.0.0-rc.6"} + X-Trace-Id
 
 # 停掉数据库后（实测：docker compose stop db 后返回 503，X-Trace-Id 与 body.traceId 一致）
 curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":"DEPENDENCY_UNAVAILABLE",...}}
