@@ -7,6 +7,8 @@
 | `huice-api.service` | `/etc/systemd/system/` | 守护 uvicorn，`Restart=always`、开机自启 |
 | `nginx-huice.conf` | `/etc/nginx/conf.d/` | 监听 80，转发 `/`，`client_max_body_size 60m` |
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
+| `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2） |
+| `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
 | `/etc/huice/api.env` | 由 `provision.sh` 生成模板 | 全部环境变量与密钥，权限 `640 root:huice` |
 
 ## 1. 上传代码
@@ -119,11 +121,15 @@ sudo bash /opt/huice/app/infra/deploy/enable-tls.sh 139.9.33.46
 ```
 
 - 脚本用 IP SAN（`subjectAltName=IP:...`）签一年期自签证书到 `/etc/huice/tls/huice.{crt,key}`，装 `nginx-huice-tls.conf`，`nginx -t` 通过后重载。私钥权限 600，只落服务器，**不进仓库、不贴聊天**。
+- **装配置前先备份同目录下的既有 443 配置**（`huice-api-tls.conf.bak`）；`nginx -t` 不通过时自动把备份恢复回去，原本没有 443 配置就删掉新装的那份，然后退出。重跑脚本最坏情况是「还是原来那份」，不会变成「原配置没了、新配置又不通」。脚本只动 443 这一份站点配置，80 的 `huice-api.conf` 不碰。
 - **华为云安全组需含 TCP 443 入方向**（`infra/README.md` 的规则清单里已列；实例上如果没有，补一条），否则外网访问超时——表现为「连不上」，不是证书问题。
 - 已有证书默认保留，避免重跑脚本把在演示的证书换掉；换 EIP 或要重签时加 `--force`，有效期用 `TLS_DAYS` 调整。
 - 浏览器第一次访问 `https://<EIP>` 会拦「您的连接不是私密连接」：高级 → 继续前往。过完这次，同一浏览器配置后续不再拦；换电脑、换无痕窗口会再来一次。
-- 写会话 cookie：F12 → Application → Cookies → `https://<EIP>` → 新建 `huice_demo_session`，值取 §3.1 输出的 `value:`，勾 `Secure`、`HttpOnly`、`SameSite=Lax`，Path `/`。在 https 页面的 Console 里写 `document.cookie = "huice_demo_session=<value>; path=/; secure; samesite=lax"` 也可以（这条不带 `HttpOnly`，演示够用）。
-- 前端若也挂在这台 nginx 下，`CORS_ORIGINS` 填 `https://<EIP>`；前端在别处就填那个确切源。前端页面在 https 下不能调 http 接口，否则被浏览器当混合内容拦掉。
+- **自签证书不提供可信身份**：它只解决 `Secure` cookie 无处可落的问题，浏览器的地址栏仍标「不安全」，也没有任何第三方能验证这台服务器是谁。评审演示可以，别用它承载真实企业数据。
+- **443 这份配置只代理 API**（`/` → `127.0.0.1:8000`），不含前端静态文件。要让 `https://<EIP>` 直接打开前端页面，得另加一份静态站点配置（本阶段未做）。
+- **只支持前端与 API 同源的拓扑**。会话 cookie 是 `SameSite=Lax`，只在同一个站点（同一注册域名、同一协议）的请求上发送：前端和 API 都在 `https://<EIP>` 下时正常；前端挂在别的域名（本地开发服务器 `http://localhost:5173` 调云端 API 也算）就是跨站，浏览器**不会**带这个 cookie——即使 `CORS_ORIGINS` 里填了那个源、预检也通过，接口照样 403 `DEMO_SESSION_REQUIRED`。`CORS_ORIGINS` 只决定浏览器允不允许读响应，决定不了 cookie 发不发。站点判定不看端口：同域名换端口仍是同站，但那是跨源，那个源照样要列进 `CORS_ORIGINS`。评审演示请把前端与 API 放在同一个源下。
+- 写会话 cookie 只走受控入口：把 §3.1 输出的 `Set-Cookie` 配到演示网关，由服务端下发（带 `HttpOnly; Secure; SameSite=Lax`）；没有网关时，用 F12 → Application → Cookies → `https://<EIP>` 新建 `huice_demo_session`，值取 §3.1 的 `value:`，勾 `Secure`、`HttpOnly`、`SameSite=Lax`，Path `/`。**不要**在页面 Console 里用 `document.cookie` 写：那样写进去的 cookie 不带 `HttpOnly`，页面里任何脚本都能把它读走。
+- 前端页面在 https 下不能调 http 接口，否则被浏览器当混合内容拦掉。
 - 80 端口保留不动，§4 的健康检查与 curl 冒烟不受影响。
 
 验证：
@@ -152,7 +158,7 @@ curl -i http://139.9.33.46/api/v1/health
 
 ## 5. 已知限制（M1）
 
-- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；云端真实链路已于 2026-11-02 验证（健康检查 200、401/403 分层、写路径冒烟通过）。仍待自动化的是**网关侧的 cookie 下发**——目前要按 §3.2 在浏览器里手工写入；`Secure` 所需的 TLS 由 §3.2 的自签 443 提供。在注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
+- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；云端真实链路已于 2026-11-02 验证（健康检查 200、401/403 分层、写路径冒烟通过）。仍待自动化的是**网关侧的 cookie 下发**——目前要按 §3.2 由受控入口下发（临时可在 DevTools 里手工添加，见 §3.2 最后几条）；`Secure` 所需的 TLS 由 §3.2 的自签 443 提供。前端与 API 必须同源（§3.2 的 `SameSite=Lax` 限制）。在注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
 - `OBJECT_STORE_MODE=obs` 已于 2026-10-27 在真实桶上联调通过（`-m obs` 5 项，见 `infra/README.md` §4.3）；首轮部署仍先留在 `local`，填好 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK` 后再切 `obs`，切换后按 §4 复测一次导入。
 - 未配置域名与正式证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示，评审期临时走 §3.2 的自签 443；备案后换正式证书并去掉浏览器的自签警告。
 - `infra/deploy/deploy.ps1` 仍是占位文件，本阶段以本文档的手工步骤为准。
