@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from ..integrations.llm import MODEL_UNAVAILABLE_MESSAGE, LlmClient
+from ..integrations.llm import MODEL_UNAVAILABLE_MESSAGE, LlmClient, LlmResult
 
 RESULT_LABELS = {
     "satisfied": "满足",
@@ -45,6 +45,9 @@ class Explanation:
     text: str
     mode: str
     warnings: list[str] = field(default_factory=list)
+    #: 只有真实调用模型成功时才有值；``fixture`` 与降级路径为 ``None``。
+    #: 用量只用于日志与轨迹摘要，不进契约响应（``TraceStep`` 没有 token 字段）。
+    usage: LlmResult | None = None
 
 
 def explain(
@@ -75,7 +78,7 @@ def explain(
     text = completion.text.strip()
     if not text:
         return Explanation(baseline, "saved", [MODEL_UNAVAILABLE_MESSAGE])
-    return Explanation(text, "deepseek", ["解释由模型改写，结论以规则结果为准。"])
+    return Explanation(text, "deepseek", ["解释由模型改写，结论以规则结果为准。"], usage=completion)
 
 
 def _deterministic(

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Sequence
@@ -21,7 +22,7 @@ from uuid import UUID, uuid4
 from ..domain import questioning, rules, versioning
 from ..errors import ApiProblem
 from ..integrations.cache import EvaluationCache, NullCache, evaluation_key
-from ..integrations.llm import LlmClient
+from ..integrations.llm import LlmClient, LlmResult
 from ..schemas import (
     AssessmentInput,
     AssessmentRun,
@@ -40,6 +41,8 @@ from .contracts import AgentContext, PolicySnapshot
 from .explanation import CriterionLine, explain
 from .profile import NormalizedFact, fact_snapshots
 from .trace import TraceRecorder
+
+logger = logging.getLogger(__name__)
 
 MATERIAL_LIST_WARNING = "申报材料清单待 M3 审核材料导入后补齐，当前只展示办理方式与入口。"
 
@@ -122,8 +125,10 @@ def assess(
         ),
     )
 
-    assessments = [
-        _policy_assessment(
+    assessments: list[PolicyAssessment] = []
+    model_usages: list[LlmResult] = []
+    for snapshot, evaluation in zip(snapshots, evaluations):
+        assessment, usage = _policy_assessment(
             snapshot=snapshot,
             evaluation=evaluation,
             missing=missing_by_policy[snapshot.id],
@@ -135,12 +140,20 @@ def assess(
             ),
             now=created_at,
         )
-        for snapshot, evaluation in zip(snapshots, evaluations)
-    ]
+        assessments.append(assessment)
+        if usage is not None:
+            model_usages.append(usage)
+            _log_model_call(
+                purpose="explanation",
+                usage=usage,
+                policy_id=snapshot.id,
+                version=snapshot.version,
+            )
+
     trace.add(
         "explanation",
         input_summary="按四态生成解释",
-        output_summary="、".join(f"{item.policy_id}={item.explanation_mode}" for item in assessments),
+        output_summary=_explanation_summary(assessments, model_usages),
     )
 
     run = AssessmentRun(
@@ -283,7 +296,8 @@ def _policy_assessment(
     llm: LlmClient | None,
     boundary: versioning.PolicyBoundary,
     now: datetime,
-) -> PolicyAssessment:
+) -> tuple[PolicyAssessment, LlmResult | None]:
+    """返回契约里的单政策判断，以及解释阶段的模型用量（未调模型时为 ``None``）。"""
     criteria_results = [
         _criterion_result(snapshot, criterion) for criterion in evaluation.criteria
     ]
@@ -313,7 +327,7 @@ def _policy_assessment(
         llm=llm,
     )
 
-    return PolicyAssessment(
+    assessment = PolicyAssessment(
         policy_id=snapshot.id,
         result=evaluation.result,
         validity=versioning.CURRENT,
@@ -332,6 +346,42 @@ def _policy_assessment(
         explanation=explanation.text,
         explanation_mode=explanation.mode,
         warnings=[*explanation.warnings, MATERIAL_LIST_WARNING],
+    )
+    return assessment, explanation.usage
+
+
+def _explanation_summary(
+    assessments: Sequence[PolicyAssessment], usages: Sequence[LlmResult]
+) -> str:
+    """轨迹摘要：先写模型用量（有真实调用时），再写每项政策的解释来源。
+
+    用量只进摘要与日志，不进契约响应；``TraceRecorder`` 会按 200 字截断，
+    所以多政策时把用量放前面，避免被截掉。
+    """
+
+    parts = []
+    if usages:
+        prompt = sum(item.prompt_tokens for item in usages)
+        completion = sum(item.completion_tokens for item in usages)
+        parts.append(f"模型 tokens 入 {prompt} 出 {completion}")
+    parts.append("、".join(f"{item.policy_id}={item.explanation_mode}" for item in assessments))
+    return "；".join(parts)
+
+
+def _log_model_call(
+    *, purpose: str, usage: LlmResult, policy_id: UUID | None = None, version: str | None = None
+) -> None:
+    """一次真实模型调用一行；只记用量与对象标识，不记提示词与正文。"""
+
+    logger.info(
+        "model_call purpose=%s model=%s prompt=%d completion=%d elapsed_ms=%d policy_id=%s version=%s",
+        purpose,
+        usage.model,
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        usage.elapsed_ms,
+        policy_id,
+        version,
     )
 
 

@@ -348,3 +348,96 @@ def test_rc4_facts_only_accept_their_own_unit(database_url_schema):
                 (enterprise_id,),
             )
         conn.rollback()
+
+
+def test_extraction_step_is_written_before_citation_validation(repo, database_url_schema):
+    draft = create(repo)
+
+    repo.save_criteria(
+        policy_id=draft.id,
+        version=draft.version,
+        expected_revision=draft.revision,
+        criteria=[],
+        findings=[],
+        status="pending_review",
+        trace_id="trace-extract",
+        extraction_model="deepseek-chat",
+        extraction_elapsed_ms=7,
+        extraction_input_chars=42,
+    )
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT stage, status, input_summary, model_or_rule_version, evidence_refs::text "
+        "FROM trace_step WHERE trace_id = %s ORDER BY sequence",
+        ("trace-extract",),
+    )
+    # 抽取是真实发生过的一步，必须排在它引发的引用校验之前。
+    assert [row[0] for row in rows] == ["extraction", "citation_validation"]
+    assert rows[0][1] == "ok"
+    assert rows[0][2] == "抽取正文 42 字"
+    assert rows[0][3] == "deepseek-chat"
+    assert "policyVersion" in rows[0][4]
+
+
+def test_save_without_extraction_writes_no_extraction_step(repo, database_url_schema):
+    draft = create(repo)
+
+    repo.save_criteria(
+        policy_id=draft.id,
+        version=draft.version,
+        expected_revision=draft.revision,
+        criteria=[],
+        findings=[],
+        status="pending_review",
+        trace_id="trace-manual-save",
+    )
+
+    stages = [
+        row[0]
+        for row in query_all(
+            database_url_schema,
+            "SELECT stage FROM trace_step WHERE trace_id = %s ORDER BY sequence",
+            ("trace-manual-save",),
+        )
+    ]
+    # 手工保存条款没有调用模型，不能凭空写一条抽取轨迹。
+    assert stages == ["citation_validation"]
+
+
+def test_a_stale_revision_fails_before_any_trace_row_is_written(repo, database_url_schema):
+    draft = create(repo)
+    repo.save_criteria(
+        policy_id=draft.id,
+        version=draft.version,
+        expected_revision=draft.revision,
+        criteria=[],
+        findings=[],
+        status="pending_review",
+        trace_id="trace-first-save",
+        extraction_model="deepseek-chat",
+    )
+
+    with pytest.raises(ApiProblem) as conflict:
+        # 第二次仍拿旧 revision：命中 compare-and-swap 冲突。
+        repo.save_criteria(
+            policy_id=draft.id,
+            version=draft.version,
+            expected_revision=draft.revision,
+            criteria=[],
+            findings=[],
+            status="pending_review",
+            trace_id="trace-conflict",
+            extraction_model="deepseek-chat",
+        )
+
+    assert conflict.value.status_code == 409
+    # 冲突在第一次写库之前就返回，抽取步骤与引用校验步骤都不能留下半条。
+    assert (
+        query_all(
+            database_url_schema,
+            "SELECT 1 FROM trace_step WHERE trace_id = %s",
+            ("trace-conflict",),
+        )
+        == []
+    )

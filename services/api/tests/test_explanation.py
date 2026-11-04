@@ -96,6 +96,22 @@ def test_a_successful_model_answer_is_used_verbatim():
     assert outcome.warnings == ["解释由模型改写，结论以规则结果为准。"]
 
 
+def test_a_successful_model_call_keeps_its_usage_for_recording():
+    outcome = run(llm=FakeLlm())
+
+    assert outcome.usage is not None
+    assert (outcome.usage.prompt_tokens, outcome.usage.completion_tokens) == (12, 34)
+    assert outcome.usage.model == "deepseek-chat"
+
+
+def test_paths_that_do_not_call_the_model_carry_no_usage():
+    # 未调模型的路径不能凭空有用量，否则费用统计会把规则路径算成模型调用。
+    assert run().usage is None
+    assert run(llm=FakeLlm(mode="fixture")).usage is None
+    assert run(llm=FakeLlm(None)).usage is None
+    assert run(llm=FakeLlm("   ")).usage is None
+
+
 def test_missing_facts_are_named_in_the_baseline_once():
     outcome = explain(
         policy_title=TITLE,

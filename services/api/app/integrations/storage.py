@@ -568,11 +568,18 @@ class PolicyRepository:
         status: str,
         trace_id: str,
         started_at: datetime | None = None,
+        extraction_model: str | None = None,
+        extraction_elapsed_ms: int = 0,
+        extraction_input_chars: int = 0,
     ) -> PolicyDraft:
         """整体替换某版本的条款与校验发现（compare-and-swap）。
 
         ``expected_revision`` 来自请求的 If-Match；与库中当前 revision 不一致说明有人
         先改过，返回 409 并带 ``currentVersion``，绝不覆盖并发的人工修改。
+
+        ``extraction_model`` 只有「本次真的做了抽取」的调用方才会传：传了就在同一事务
+        里、引用校验步骤之前补一条 ``extraction`` 轨迹。手工保存条款（API-06）不传，
+        因此不会凭空多出一条抽取记录。幂等重放不会走到这里，也就不会重复留痕。
         """
 
         started = started_at or datetime.now(timezone.utc)
@@ -610,6 +617,20 @@ class PolicyRepository:
                 """,
                 {"status": status, "revision": new_revision, "id": row["id"]},
             )
+            if extraction_model is not None:
+                self._insert_trace(
+                    conn,
+                    trace_id=trace_id,
+                    stage="extraction",
+                    input_summary=f"抽取正文 {max(0, int(extraction_input_chars))} 字",
+                    output_summary=f"得到条件 {len(criteria)} 条、校验发现 {len(findings)} 条",
+                    policy_version_id=row["id"],
+                    policy_id=row["policy_id"],
+                    policy_version=row["version"],
+                    model_or_rule_version=extraction_model,
+                    elapsed_ms=max(0, int(extraction_elapsed_ms)),
+                    status="needs_review" if findings else "ok",
+                )
             self._insert_trace(
                 conn,
                 trace_id=trace_id,

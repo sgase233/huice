@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.integrations.llm import LlmResult
 from support import published_draft
 
 YEAR = {"startDate": "2026-01-01", "endDate": "2026-12-31"}
@@ -182,6 +183,56 @@ def test_run_snapshots_trace_steps_and_two_runs_never_share_an_id(client, reposi
     ]
     # 运行里保存的是所用政策版本的内部 ID，供读取时重算有效性。
     assert saved["policy_version_ids"][policy.id] is not None
+
+
+class _CountingLlm:
+    """真实模型分支的最小替身：只回一句改写，用量固定，便于断言轨迹与日志口径。"""
+
+    mode = "deepseek"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        self.calls += 1
+        return LlmResult(
+            text="模型改写后的说明。",
+            model="deepseek-chat",
+            prompt_tokens=11,
+            completion_tokens=22,
+            elapsed_ms=8,
+        )
+
+
+def test_explanation_trace_records_model_tokens_once_per_call(app, client, repository):
+    policy = published_draft(expressions=[INDUSTRY_GATE])
+    repository.drafts.append(policy)
+    llm = _CountingLlm()
+    app.state.llm = llm
+    enterprise = create_enterprise(client)
+
+    create_run(client, enterprise["id"], [str(policy.id)])
+
+    steps = repository.saved_runs[0]["trace_steps"]
+    explanation = [step for step in steps if step.stage == "explanation"][0]
+    assert llm.calls == 1
+    # 用量只进轨迹摘要，不进契约响应：TraceStep 没有 token 字段。
+    assert "模型 tokens 入 11 出 22" in explanation.output_summary
+    assert explanation.output_summary.endswith(f"{policy.id}=deepseek")
+
+
+def test_explanation_trace_has_no_token_note_when_the_model_is_not_used(client, repository):
+    policy = published_draft(expressions=[INDUSTRY_GATE])
+    repository.drafts.append(policy)
+    enterprise = create_enterprise(client)
+
+    create_run(client, enterprise["id"], [str(policy.id)])
+
+    explanation = [
+        step for step in repository.saved_runs[0]["trace_steps"] if step.stage == "explanation"
+    ][0]
+    assert "tokens" not in explanation.output_summary
+    assert explanation.output_summary.endswith(f"{policy.id}=fixture")
 
 
 def test_supersedes_must_match_enterprise_policies_and_period(client, repository):

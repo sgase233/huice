@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 from uuid import uuid4
 
 import pytest
 
 from app.agents.ingestion import PreparedSource
+from app.integrations.llm import LlmResult
 from app.schemas import PolicyImportMetadata
 from support import build_draft, metadata_payload
 
@@ -158,6 +161,93 @@ def test_extract_is_idempotent_for_the_same_key_and_body(client, auth, repositor
     assert second.status_code == 200
     assert second.json() == first.json()
     assert len(repository.saved_criteria) == 1  # 没有重复落库、没有重复计费
+    # 重放没有发生新的模型调用，因此也不该再写一条抽取轨迹。
+    assert len(repository.saved_extractions) == 1
+
+
+def test_extract_records_the_extraction_step_for_the_trace(client, auth, repository):
+    draft = seed_draft(repository)
+    body = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    ).json()
+
+    recorded = repository.saved_extractions[-1]
+    assert recorded["model"] == body["usage"]["modelVersion"]
+    assert recorded["input_chars"] == len(BODY_TEXT)
+    assert recorded["elapsed_ms"] >= 0
+
+
+class _ModelExtractionLlm:
+    """真实模型抽取分支的替身：回一条带原文引文的条款，用量固定。"""
+
+    mode = "deepseek"
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        item = {
+            "title": "合成演示阈值",
+            "expression": THRESHOLD_EXPRESSION,
+            "quote": QUOTE,
+            "section": "第一条",
+        }
+        return LlmResult(
+            text=json.dumps([item], ensure_ascii=False),
+            model="deepseek-chat",
+            prompt_tokens=120,
+            completion_tokens=45,
+            elapsed_ms=300,
+        )
+
+
+def test_a_real_model_extraction_logs_its_usage_once(app, client, auth, repository, caplog):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _ModelExtractionLlm()
+
+    client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("model_call purpose=extraction")
+    ]
+    assert len(lines) == 1
+    assert "model=deepseek-chat" in lines[0]
+    assert "prompt=120" in lines[0] and "completion=45" in lines[0]
+    assert str(draft.id) in lines[0]
+    # 只记用量与对象标识：不写提示词、正文与密钥。
+    assert QUOTE not in lines[0]
+    # 轨迹里记的是模型名，与日志里的 model= 对得上。
+    assert repository.saved_extractions[-1]["model"] == "deepseek-chat"
+
+
+def test_a_rule_based_extraction_is_not_logged_as_a_model_call(app, client, auth, repository, caplog):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+
+    client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    assert "model_call purpose=extraction" not in caplog.text
+    # 规则抽取仍然是一次真实的抽取：轨迹与用量照记，只是不算模型开销。
+    assert repository.saved_extractions[-1]["model"]
+
+
+def test_manual_save_does_not_claim_an_extraction(client, auth, repository):
+    draft = seed_draft(repository)
+    response = save_criteria(client, auth, draft, [criterion_payload(draft)])
+
+    assert response.status_code == 200
+    # 手工保存条款没有调用模型，不能凭空写一条抽取轨迹。
+    assert repository.saved_extractions[-1]["model"] is None
 
 
 def test_extract_rejects_same_key_with_different_body(client, auth, repository):

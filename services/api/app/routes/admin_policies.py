@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -52,6 +53,8 @@ from ..schemas import (
     SaveCriteriaResult,
 )
 from ..security import require_admin
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/admin",
@@ -226,13 +229,31 @@ async def extract_policy(
         response.headers["ETag"] = f'"{draft.revision}"'
         return ExtractionResult.model_validate(replayed["response"])
 
+    sources = _extraction_sources(draft)
     outcome = await run_in_threadpool(
         extract_criteria,
         version=draft.version,
-        sources=_extraction_sources(draft),
+        sources=sources,
         llm=request.app.state.llm,
         model_version=body.model_version,
     )
+    usage = outcome.usage
+    extraction_model: str | None = None
+    if usage is not None:
+        # 轨迹里记「这次抽取用了什么」：模型名，或规则抽取的版本号。
+        extraction_model = usage.model_version or usage.mode
+        if usage.mode == "deepseek":
+            # 只有真的调了模型才记一行用量；rule/fixture 路径的 tokens 恒为 0，
+            # 记成 model_call 会让人误以为每次抽取都有模型开销。
+            logger.info(
+                "model_call purpose=extraction model=%s prompt=%d completion=%d elapsed_ms=%d policy_id=%s version=%s",
+                usage.model_version,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.elapsed_ms,
+                policyId,
+                draft.version,
+            )
     drafts = [
         _domain_criterion(item.id, item.title, item.expression, item.spans, item.review_finding)
         for item in outcome.criteria
@@ -249,6 +270,9 @@ async def extract_policy(
         status="pending_review",
         trace_id=trace_id_of(request),
         started_at=started_at,
+        extraction_model=extraction_model,
+        extraction_elapsed_ms=usage.elapsed_ms if usage is not None else 0,
+        extraction_input_chars=sum(len(source.text) for source in sources),
     )
     result = ExtractionResult(
         draft=saved,

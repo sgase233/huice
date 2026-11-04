@@ -77,6 +77,7 @@ class FakeRepository:
         self.list_calls: list[dict] = []
         self.get_calls: list[tuple] = []
         self.saved_criteria: list[dict] = []
+        self.saved_extractions: list[dict] = []
         self.published: list[PolicyDraft] = []
         self.idempotency: dict[tuple[str, object], dict] = {}
         self.error: Exception | None = None
@@ -151,10 +152,21 @@ class FakeRepository:
         status,
         trace_id,
         started_at=None,
+        extraction_model=None,
+        extraction_elapsed_ms=0,
+        extraction_input_chars=0,
     ) -> PolicyDraft:
         draft = self.get_version_for_edit(policy_id, version)
         self._assert_editable(draft, expected_revision)
         self.saved_criteria.append({"criteria": list(criteria), "findings": list(findings), "status": status})
+        # 只有真的抽取过才传 extraction_model；手工保存不传，测试据此断言「不凭空多一条抽取轨迹」。
+        self.saved_extractions.append(
+            {
+                "model": extraction_model,
+                "elapsed_ms": extraction_elapsed_ms,
+                "input_chars": extraction_input_chars,
+            }
+        )
         updated = draft.model_copy(
             update={
                 "criteria": [

@@ -163,6 +163,24 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 验证缺口（本地已闭合）：`001_init.sql` 已在真实 PostgreSQL 16.15 上执行两次（第二次仅 `NOTICE ... already exists`），`002_evaluation_and_idempotency.sql`、`003_trace_step_details.sql`、`004_invalidation_event_period.sql` 与 `005_fact_dictionary_extension.sql` 均连续执行两遍通过（2026-10-26 / 2026-10-27 / 2026-10-28），`@pytest.mark.db` 用例 **34 项全部通过**（2026-10-28，见 [local/README.md](local/README.md)）；端到端导入/读回与判断链路冒烟见 [local/README.md](local/README.md)。**缓存已闭合（本地）**：`redis==8.1.0` 入锁后，`tests/test_cache_redis_live.py` 在本地 Redis 7.4 上实测键写入、`TTL≤300`、二次命中与换键（3 passed）；云端命中已于 2026-11-04 复测通过（同一企业、政策、期间与 `asOf` 连发两次，第二次轨迹为「（其中 1/1 项复用缓存求值）」，证据见 §4.4 缓存行）。**云端** RDS 已于 2026-10-23 在 ECS 上实测连通并完成建表（PostgreSQL 16.13、`vector` 0.8.0、13 张表），**2026-10-26 23:47 补齐 002/003**（`schema_migration` 三行齐全，结构与本地一致；`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 在云端按序补齐）、Redis 实测 `PONG`；OBS 已购买并建桶，`obs` 路径**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项，见 §4.3）；模型调用改由 DeepSeek 承担（MaaS 按队长 2026-10-23 决定不再使用），**2026-10-27 已用真实 Key 联调通过**（`-m deepseek` 3 项）——`MODEL_MODE` 本地仍以 `fixture` 为默认值，切到 `deepseek` 由 `.env` 决定；**云端已于 2026-11-04 切到 `deepseek` 并验证成功路径**（`explanationMode=deepseek`、无降级告警，证据见 §4.3 DeepSeek 行），演示沿用该取值。
 
+#### 模型调用与 token 记录（2026-11-04）
+
+每次**真实**模型调用在服务日志里占一行，轨迹与响应里各有对应落点，三处可以对账：
+
+| 落点 | 抽取（API-05） | 解释（API-11） |
+| --- | --- | --- |
+| 日志 | `model_call purpose=extraction model=<模型名> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<id> version=<版本>` | `model_call purpose=explanation model=<模型名> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<政策 ID> version=<版本>` |
+| 轨迹 | `extraction` 步骤：`modelOrRuleVersion` 为模型名（规则抽取为 `rule:extraction@1`），`elapsedMs` 为调用耗时，摘要「抽取正文 N 字」→「得到条件 K 条、校验发现 M 条」 | `explanation` 步骤摘要前缀「模型 tokens 入 N 出 M」（`MAX_SUMMARY=200` 会截断，多政策只记总数） |
+| 响应 | `ExtractionResult.usage`（接口本来就返回） | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
+
+只记**真实调用**：`fixture`/规则抽取、解释降级到 `saved`、幂等重放都不写 `model_call` 行；tokens 恒为 0 的路径不会被算成模型开销。ECS 上查询：
+
+```bash
+journalctl -u huice-api --since today | grep 'model_call'
+```
+
+**费用暂不折算金额（2026-11-04）**：本机抓取官方价目页 `https://api-docs.deepseek.com/quick_start/pricing` 被网络策略拦下（域名无法校验），公开检索到的摘录对同一模型给出多套单价（2 元 / 5 元、3 元 / 6 元，以及按 `deepseek-flash` / `deepseek-v4-pro` 峰谷计的美元价），无法确认当前 `DEEPSEEK_MODEL` 的计费口径；按「不猜单价」只记 tokens。有网环境补录时：取价目页的输入（缓存命中 / 未命中）与输出单价，按 `prompt×P_in + completion×P_out` 折算，并在本节注明**抓取日期**、模型名与是否含缓存命中价。
+
 ### 4.4 云端降级演练（2026-11-03，ECS 上执行）
 
 同一天落地四件云端事项：rc.6 重部署、443 TLS、降级演练、前端同源站点。演练的统一做法是改 `/etc/huice/api.env` 后 `systemctl restart`，再用同一份请求体（已发布政策 `94b866bf-d88a-46e7-ac24-71c48131f05a` v1.0 + 企业 `dfc38b31-31bc-4cb3-b410-a0ed2d4f5c70`）重放 `POST /api/v1/assessment-runs`；脚本用 `trap` 保证退出前还原配置，避免把机器留在故障态。
