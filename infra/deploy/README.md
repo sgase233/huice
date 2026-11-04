@@ -12,6 +12,48 @@
 | `nginx-huice-site.conf` | 同上，`enable-tls.sh --web-root` 时改装这一份 | 443 同源站点：前端静态文件 + `/api/v1/` 反代（与上一行**互斥**，同一个文件名） |
 | `/etc/huice/api.env` | 由 `provision.sh` 生成模板 | 全部环境变量与密钥，权限 `640 root:huice` |
 
+## 0. 前置条件、版本矩阵与执行顺序
+
+**这份文件的读者**：拿到一台空 ECS 与已开通的云资源、要从零装到「健康检查 200」的人。除标注「Windows 侧」的步骤外，命令都在 ECS 的 bash 里执行。
+
+### 0.1 云资源与安全组
+
+| 资源 | 当前取值（2026-11-04） | 动手前要确认 |
+| --- | --- | --- |
+| ECS | `huice-api-01`，2 vCPU / 4 GiB，Ubuntu 24.04.4 LTS（自带 Python 3.12.3），公网 EIP `139.9.33.46`，内网 `192.168.0.86` | 安全组入方向：TCP 22（只对你的来源 IP）、80、443；**不开放 8000** |
+| RDS | PostgreSQL 16.13 + `pgvector` 0.8.0，内网 `192.168.0.80:5432`，库 `huice` | 与 ECS 同 VPC；从 ECS 能连到 5432 |
+| Redis | DCS 7.2.11.5 主备，内网 `192.168.0.38:6379` | 同上；密码只写进 `/etc/huice/api.env` |
+| OBS | 桶 `huice-policies`（私有），`cn-south-1` | 只在 `OBJECT_STORE_MODE=obs` 时需要桶名/endpoint/AK/SK |
+| DeepSeek | 公开 API `https://api.deepseek.com`，模型 `deepseek-chat` | 只在 `MODEL_MODE=deepseek` 时需要 Key |
+| 域名／证书 | 暂无，直接用 EIP | 大陆地域用域名走 80/443 需 ICP 备案；未备案按 §3.2 走自签 443 |
+
+### 0.2 软件版本矩阵
+
+| 组件 | 版本 | 依据 |
+| --- | --- | --- |
+| 操作系统 | Ubuntu 24.04.4 LTS | 华为云镜像，2026-10-23 在 ECS 上 `lsb_release -a` 实测 |
+| Python | 3.12.3（系统自带）；虚拟环境在 `/opt/huice/venv` | 同上，`python3 --version` |
+| 后端依赖 | `services/api/requirements.lock`，**48 项**（`pip freeze`；含 FastAPI 0.161.1、Pydantic 2.14.1、psycopg 3.3.6、redis 8.1.0、esdk-obs-python 3.26.6） | 锁文件本身 |
+| PostgreSQL | 16.13（含 `vector` 0.8.0） | 2026-10-24 在 ECS 上连库实测 |
+| Redis | 7.2.11.5（DCS 主备） | 2026-10-23 实测 `PING` → `PONG` |
+| nginx | 系统包，由 `provision.sh` 安装 | 版本不固定，以 `nginx -v` 为准 |
+| systemd | 系统自带 | unit 见 `huice-api.service` |
+
+### 0.3 从零到「健康检查 200」的顺序
+
+顺序反了不会「降级运行」，而是出现「启动成功但写入 500」「外网 404 且响应头泄露版本」这类故障。按下面八步走：
+
+| 步 | 做什么 | 在哪 | 顺序反了的表现 |
+| --- | --- | --- | --- |
+| 1 | 传代码到 `/opt/huice/app`（§1） | Windows 侧 + ECS | 后面所有脚本都找不到 |
+| 2 | `provision.sh`（§2）：装包、建 `huice` 用户与 venv、装依赖、装 unit 与 80 配置 | ECS | — |
+| 3 | 填 `/etc/huice/api.env`（§3） | ECS | 第 2 步结束时模板里的必填项还是空值，服务会以「缺少变量名」启动失败，属预期（脚本那一步就算失败也继续执行下一步） |
+| 4 | 执行迁移 001—006（§2.1），确认 `schema_migration` 六行 | ECS | 先对外服务再迁移：写事实 500、历史判断读不出来（§2.1 末段） |
+| 5 | `systemctl restart huice-api`，再 `nginx -t && systemctl reload nginx` | ECS | 只 `enable` 不 `reload`：外网 404 且 `Server` 头暴露 nginx 版本（见 §8「外网 404」一行） |
+| 6 | 健康检查 200（§4）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
+| 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403 |
+| 8 | 签发会话 cookie（§3.1） | ECS | 没有 cookie 时 `/admin/*` 一律 403 `DEMO_SESSION_REQUIRED`，`/health` 仍是 200 |
+
 ## 1. 上传代码
 
 在 **Windows 侧 Git Bash** 打包（排除虚拟环境、依赖、本地对象与 `.env`，避免把密钥传上云）：
@@ -58,7 +100,7 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 
 ### 2.1 数据库结构必须先于服务启动（硬前提）
 
-代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），且企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），**服务启动前云 RDS 必须已执行 001—006 全部迁移**：
+代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），且企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），**服务启动前云 RDS 必须已执行 001—006 全部迁移**。下面的命令要用到 `DATABASE_URL` 与 `psql`：先 `set -a; . /etc/huice/api.env; set +a`（当前 shell 会持有密钥，跑完 `exit` 关掉）；ECS 镜像自带 `psql`（2026-10-24 实测），换成没有客户端的镜像就先 `apt-get install -y postgresql-client`。
 
 ```bash
 for f in 001_init 002_evaluation_and_idempotency 003_trace_step_details 004_invalidation_event_period 005_fact_dictionary_extension 006_fact_dictionary_extension_rc4; do
@@ -86,7 +128,7 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `8000`（与 unit 一致） |
 | `DATABASE_URL` | `postgresql://root:<密码>@192.168.0.80:5432/huice` |
 | `REDIS_URL` | `redis://:<密码>@192.168.0.38:6379/0`（也可用控制台「连接地址」的域名形式 `redis://:<密码>@redis-4be07660-....dcs.myhuaweicloud.com:6379/0`；2026-10-26 在 ECS 上实测 `--askpass PING` → `PONG`） |
-| `CORS_ORIGINS` | 前端真实源；前端未部署前用 `http://139.9.33.46` |
+| `CORS_ORIGINS` | 前端真实源；前端未部署前用 `http://139.9.33.46`，做了 §3.3 的同源站点后改用 `https://139.9.33.46`（同源请求不再走 CORS，填了也无害） |
 | `DEMO_ACCESS_MODE` | `restricted`（`APP_ENV=demo` 时强制） |
 | `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用；只用于后台 Bearer |
 | `DEMO_SESSION_SECRET` | ≥32 位随机串，仅服务端使用；**必须与 `ADMIN_TOKEN` 不同**（取值相同同样启动失败），用于签发与校验演示会话 cookie。restricted 模式必填，缺失、过短或与 `ADMIN_TOKEN` 相同时启动失败并只报变量名 |
@@ -129,7 +171,7 @@ sudo bash /opt/huice/app/infra/deploy/enable-tls.sh 139.9.33.46
 - **自签证书不提供可信身份**：它只解决 `Secure` cookie 无处可落的问题，浏览器的地址栏仍标「不安全」，也没有任何第三方能验证这台服务器是谁。评审演示可以，别用它承载真实企业数据。
 - **443 的这份配置只代理 API**（`/` → `127.0.0.1:8000`），不含前端静态文件。要让 `https://<EIP>` 直接打开前端页面，加 `--web-root` 重跑脚本，见 §3.3。
 - **只支持前端与 API 同源的拓扑**。会话 cookie 是 `SameSite=Lax`，只在同一个站点（同一注册域名、同一协议）的请求上发送：前端和 API 都在 `https://<EIP>` 下时正常；前端挂在别的域名（本地开发服务器 `http://localhost:5173` 调云端 API 也算）就是跨站，浏览器**不会**带这个 cookie——即使 `CORS_ORIGINS` 里填了那个源、预检也通过，接口照样 403 `DEMO_SESSION_REQUIRED`。`CORS_ORIGINS` 只决定浏览器允不允许读响应，决定不了 cookie 发不发。站点判定不看端口：同域名换端口仍是同站，但那是跨源，那个源照样要列进 `CORS_ORIGINS`。评审演示请把前端与 API 放在同一个源下。
-- 写会话 cookie 只走受控入口：把 §3.1 输出的 `Set-Cookie` 配到演示网关，由服务端下发（带 `HttpOnly; Secure; SameSite=Lax`）；没有网关时，用 F12 → Application → Cookies → `https://<EIP>` 新建 `huice_demo_session`，值取 §3.1 的 `value:`，勾 `Secure`、`HttpOnly`、`SameSite=Lax`，Path `/`。**不要**在页面 Console 里用 `document.cookie` 写：那样写进去的 cookie 不带 `HttpOnly`，页面里任何脚本都能把它读走。
+- 写会话 cookie 只走受控入口：把 §3.1 输出的 `Set-Cookie` 配到演示网关，由服务端下发（带 `HttpOnly; Secure; SameSite=Lax`）。没有网关时，F12 → Application → Cookies → `https://<EIP>` 新建 `huice_demo_session`，值取 §3.1 的 `value:`，Path `/`；`Secure` 能勾，但演示环境用的新版 Chromium 里 `HttpOnly` / `SameSite` 两栏是灰的、改不了，这条手工路线拿不到完整的 `HttpOnly; SameSite=Lax`。临时演示可用 Console `document.cookie` 写入，代价是页面脚本能读到它——只用于演示、验完清掉；正式演示仍应由网关下发 `Set-Cookie`。
 - 前端页面在 https 下不能调 http 接口，否则被浏览器当混合内容拦掉。
 - 80 端口保留不动，§4 的健康检查与 curl 冒烟不受影响。
 
@@ -200,24 +242,55 @@ ls /opt/huice/web/dist                                                  # 仍不
 
 ## 4. 验证
 
-ECS 本机：
+逐项过一遍，任一项不过就先修，不要继续往下走。命令编号与下表一致：
 
 ```bash
-curl -i http://127.0.0.1:8000/api/v1/health      # 期望 200 + X-Trace-Id
-curl -i http://127.0.0.1/                        # 经 nginx，期望同上
-```
+# 1) 应用只绑回环
+ss -lntp | grep 8000
 
-公网（在你自己电脑上）：
-
-```bash
+# 2)—4) 健康检查：本机、经 nginx、公网（4 在自己电脑上跑）
+curl -i http://127.0.0.1:8000/api/v1/health
+curl -i http://127.0.0.1/api/v1/health
 curl -i http://139.9.33.46/api/v1/health
+
+# 5)—7) 鉴权分层。取到 ADMIN_TOKEN 的同时，当前 shell 也会持有这份密钥，验完 exit 关掉
+set -a; . /etc/huice/api.env; set +a
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/api/v1/admin/policies
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $ADMIN_TOKEN" \
+     http://127.0.0.1:8000/api/v1/admin/policies
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -b "huice_demo_session=<§3.1 的 value>" http://127.0.0.1:8000/api/v1/admin/policies
+
+# 8)—9) 443 与同源站点（做过 §3.2 / §3.3 才有意义）
+curl -k -i https://127.0.0.1/api/v1/health
+curl -k -s -o /dev/null -w '%{http_code}\n' https://127.0.0.1/
+
+# 10) 日志不泄露（输出应为 0）
+journalctl -u huice-api -n 200 --no-pager | grep -Eci -e 'sk-' -e 'password' -e 'postgresql://'
+
+# 11) 模型调用记录（MODEL_MODE=deepseek 时每次真实调用一行）
+journalctl -u huice-api --since today | grep model_call
 ```
 
-健康检查内部会对 RDS 执行 `SELECT 1`，**返回 200 即证明应用→RDS 的内网链路通**；返回 503 `DEPENDENCY_UNAVAILABLE` 说明数据库连不上，先看 `journalctl -u huice-api`（日志不含连接串）。
+| # | 检查 | 通过标准 |
+| --- | --- | --- |
+| 1 | 应用只绑回环 | 只有 `127.0.0.1:8000`，没有 `0.0.0.0:8000` 或 `*:8000` |
+| 2 | 本机健康检查 | 200，带 `X-Trace-Id`，`version` 与 `app/config.py` 的 `APP_VERSION` 一致 |
+| 3 | 经 nginx（80） | 同第 2 项 |
+| 4 | 公网 | 200；超时先查安全组 80 与 nginx 是否 reload（见 §8「外网 404」一行） |
+| 5 | 鉴权：无凭证 | **401** `UNAUTHENTICATED` |
+| 6 | 鉴权：只带 Bearer | **403** `DEMO_SESSION_REQUIRED`（`restricted` 模式下缺会话） |
+| 7 | 鉴权：Bearer + 会话 | 200 |
+| 8 | 443 | 200 |
+| 9 | 同源站点 | 200，返回 `index.html` |
+| 10 | 日志不泄露 | 0（命中按缺陷处理） |
+| 11 | 模型调用有记录 | 字段口径见 `infra/README.md` §4.3 |
+
+健康检查内部会对 RDS 执行 `SELECT 1`，**返回 200 即证明应用→RDS 的内网链路通**；返回 503 `DEPENDENCY_UNAVAILABLE` 说明数据库连不上，先看 `journalctl -u huice-api`（日志不含连接串）。第 4 项 200 而第 8 项不通，问题在 443 那份配置或安全组，不在应用。
 
 ## 5. 已知限制（M1）
 
-- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；云端真实链路已于 2026-11-02 验证（健康检查 200、401/403 分层、写路径冒烟通过）。仍待自动化的是**网关侧的 cookie 下发**——目前要按 §3.2 由受控入口下发（临时可在 DevTools 里手工添加，见 §3.2 最后几条）；`Secure` 所需的 TLS 由 §3.2 的自签 443 提供。前端与 API 必须同源（§3.2 的 `SameSite=Lax` 限制；同源站点的装法见 §3.3）。在注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
+- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；云端真实链路已于 2026-11-02 验证（健康检查 200、401/403 分层、写路径冒烟通过）。仍待自动化的是**网关侧的 cookie 下发**——目前要按 §3.2 由受控入口下发（临时可在浏览器里写入，见 §3.2 最后几条（这条路线拿不到 `HttpOnly`，只用于演示））；`Secure` 所需的 TLS 由 §3.2 的自签 443 提供。前端与 API 必须同源（§3.2 的 `SameSite=Lax` 限制；同源站点的装法见 §3.3）。在注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
 - `OBJECT_STORE_MODE=obs` 已于 2026-10-27 在真实桶上联调通过（`-m obs` 5 项，见 `infra/README.md` §4.3）；首轮部署仍先留在 `local`，填好 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK` 后再切 `obs`，切换后按 §4 复测一次导入。
 - 未配置域名与正式证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示，评审期临时走 §3.2 的自签 443；备案后换正式证书并去掉浏览器的自签警告。
 - `infra/deploy/deploy.ps1` 仍是占位文件，本阶段以本文档的手工步骤为准。
@@ -238,3 +311,15 @@ systemctl restart huice-api
 - `ADMIN_TOKEN` 只做服务端校验，不作为任何前端构建变量。
 - 启动失败时日志只输出变量名；若看到具体值，按缺陷处理。
 - nginx 只暴露 80 与评审期自签的 443（§3.2），ECS 安全组不额外开放 8000。
+
+## 8. 常见故障
+
+这一节全是实际踩过的，现象按看到的样子写，不按根因分类。
+
+| 现象 | 原因 | 处置 |
+| --- | --- | --- |
+| ECS 上 `git clone` / `git pull` 卡住后报 `GnuTLS recv error (-110): The TLS connection was non-properly terminated` 或长时间超时 | ECS 直连 GitHub 被网络拦下，不是凭证问题 | 在 Windows 侧 `git bundle create huice.bundle --all`，`scp` 上去，ECS 上 `git clone /tmp/huice.bundle /opt/huice/app`；后续更新同理用 bundle 做 `fetch`，不要反复重试直连 |
+| `DATABASE_URL` 填好、`psql` 能连，但 `/health` 一直 **503 `DEPENDENCY_UNAVAILABLE`** | 口令里有 `@`、`:`、`/` 等字符，连接串被截断成「主机名 + 剩余口令」 | 用 Python 生成转义后的口令：`python3 -c "from urllib.parse import quote; print(quote('原始口令', safe=''))"`，把结果填进连接串；**别手工改**，改完 `systemctl restart huice-api` |
+| 服务本机 `curl 127.0.0.1:8000` 是 200，外网访问 `http://<EIP>` 是 **404**，响应头 `Server: nginx/x.y.z` 带版本号 | `provision.sh` 装完 `conf.d` 后只 `enable nginx`；nginx 常已被 apt 拉起，`enable` 不会让已运行的进程读新配置，默认站点还在服务 | `nginx -t && systemctl reload nginx`；再确认 `/etc/nginx/sites-enabled/default` 已删（脚本会删，手改过的机器要自己核） |
+| 登录后接口仍 403 `DEMO_SESSION_REQUIRED`，或 cookie 写进去就没了 | 会话 cookie 带 `Secure`，而页面在 `http://<EIP>`（非 localhost）下打开，浏览器不保存；或前端与 API 不同源，`SameSite=Lax` 不发送（§3.2 末段） | 走 §3.2 的 443 同源；临时演示按 §3.2 手工设置，注意 DevTools 新建 cookie 的 `HttpOnly` / `SameSite` 在新版 Chromium 里勾不动，退而用 `document.cookie` 写入就没有 `HttpOnly`——只用于演示，验完清掉 |
+| `nginx -t` 通过，但 443 上的行为时好时坏（有时是旧配置、有时两份都对不上） | `/etc/nginx/conf.d/` 里同时存在两份 `listen 443` + `server_name _` 的配置：nginx 只打一条 `conflicting server name "_"` 警告，不报错，实际只生效一份 | `grep -rl "listen 443" /etc/nginx/conf.d/` 只应有一份（`huice-api-tls.conf`）；`enable-tls.sh` 靠「同一个文件名」避免并存，手工加过配置的机器要自己删掉多出来的那份 |
