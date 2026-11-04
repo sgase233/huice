@@ -7,8 +7,9 @@
 | `huice-api.service` | `/etc/systemd/system/` | 守护 uvicorn，`Restart=always`、开机自启 |
 | `nginx-huice.conf` | `/etc/nginx/conf.d/` | 监听 80，转发 `/`，`client_max_body_size 60m` |
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
-| `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2） |
+| `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
+| `nginx-huice-site.conf` | 同上，`enable-tls.sh --web-root` 时改装这一份 | 443 同源站点：前端静态文件 + `/api/v1/` 反代（与上一行**互斥**，同一个文件名） |
 | `/etc/huice/api.env` | 由 `provision.sh` 生成模板 | 全部环境变量与密钥，权限 `640 root:huice` |
 
 ## 1. 上传代码
@@ -126,7 +127,7 @@ sudo bash /opt/huice/app/infra/deploy/enable-tls.sh 139.9.33.46
 - 已有证书默认保留，避免重跑脚本把在演示的证书换掉；换 EIP 或要重签时加 `--force`，有效期用 `TLS_DAYS` 调整。
 - 浏览器第一次访问 `https://<EIP>` 会拦「您的连接不是私密连接」：高级 → 继续前往。过完这次，同一浏览器配置后续不再拦；换电脑、换无痕窗口会再来一次。
 - **自签证书不提供可信身份**：它只解决 `Secure` cookie 无处可落的问题，浏览器的地址栏仍标「不安全」，也没有任何第三方能验证这台服务器是谁。评审演示可以，别用它承载真实企业数据。
-- **443 这份配置只代理 API**（`/` → `127.0.0.1:8000`），不含前端静态文件。要让 `https://<EIP>` 直接打开前端页面，得另加一份静态站点配置（本阶段未做）。
+- **443 的这份配置只代理 API**（`/` → `127.0.0.1:8000`），不含前端静态文件。要让 `https://<EIP>` 直接打开前端页面，加 `--web-root` 重跑脚本，见 §3.3。
 - **只支持前端与 API 同源的拓扑**。会话 cookie 是 `SameSite=Lax`，只在同一个站点（同一注册域名、同一协议）的请求上发送：前端和 API 都在 `https://<EIP>` 下时正常；前端挂在别的域名（本地开发服务器 `http://localhost:5173` 调云端 API 也算）就是跨站，浏览器**不会**带这个 cookie——即使 `CORS_ORIGINS` 里填了那个源、预检也通过，接口照样 403 `DEMO_SESSION_REQUIRED`。`CORS_ORIGINS` 只决定浏览器允不允许读响应，决定不了 cookie 发不发。站点判定不看端口：同域名换端口仍是同站，但那是跨源，那个源照样要列进 `CORS_ORIGINS`。评审演示请把前端与 API 放在同一个源下。
 - 写会话 cookie 只走受控入口：把 §3.1 输出的 `Set-Cookie` 配到演示网关，由服务端下发（带 `HttpOnly; Secure; SameSite=Lax`）；没有网关时，用 F12 → Application → Cookies → `https://<EIP>` 新建 `huice_demo_session`，值取 §3.1 的 `value:`，勾 `Secure`、`HttpOnly`、`SameSite=Lax`，Path `/`。**不要**在页面 Console 里用 `document.cookie` 写：那样写进去的 cookie 不带 `HttpOnly`，页面里任何脚本都能把它读走。
 - 前端页面在 https 下不能调 http 接口，否则被浏览器当混合内容拦掉。
@@ -138,6 +139,64 @@ sudo bash /opt/huice/app/infra/deploy/enable-tls.sh 139.9.33.46
 curl -k -i https://127.0.0.1/api/v1/health     # ECS 上
 curl -k -i https://139.9.33.46/api/v1/health   # 自己电脑上，期望 200 + X-Trace-Id
 ```
+
+### 3.3 同源静态站点（前端与 API 共用一个 443）
+
+`restricted` 模式要求前端与 API 同源（§3.2 末段），演示时把前端构建产物也挂到 443 上，`/api/v1/` 反代到本机 API：
+
+下面 1)～3) 在**仓库根目录**执行（`git rev-parse --show-toplevel` 所在的目录；Windows 侧用 Git Bash，与 §2 一致），4) 在 ECS 上执行：
+
+```bash
+# 1) 前端构建在 M2 侧做：构建时必须把 API 指到相对路径，
+#    否则页面打包进去的仍是 http://127.0.0.1:8000/api/v1，打开后一片请求失败。
+#    cd 放在子 shell 里，执行完仍停在仓库根目录，后面的相对路径不受影响。
+(cd apps/web && npm ci && VITE_API_BASE_URL=/api/v1 npm run build)
+
+# 2) 只打包 dist 的内容：-C ... . 不带 dist/ 这一层，解包后才正好是站点根目录里的
+#    index.html 与 assets/；包写在系统临时目录，构建产物不进仓库。
+PACK="$(mktemp -d)/web-dist.tar.gz"
+tar -czf "$PACK" -C apps/web/dist .
+tar -tzf "$PACK" | head   # 自查：应为 ./index.html、./assets/...，没有 dist/ 前缀
+
+# 3) 上传后在 ECS 上解包到站点根目录；首次部署与更新用的是同一条命令。
+scp "$PACK" root@139.9.33.46:/tmp/web-dist.tar.gz
+ssh root@139.9.33.46 'mkdir -p /opt/huice/web && tar -xzf /tmp/web-dist.tar.gz -C /opt/huice/web && chmod -R o+rX /opt/huice/web'
+```
+
+在 ECS 上：
+
+```bash
+# 4) 装上同源站点（证书已存在会保留，不会重签）
+sudo bash /opt/huice/app/infra/deploy/enable-tls.sh 139.9.33.46 --web-root /opt/huice/web
+```
+
+- **别用 `scp -r apps/web/dist root@<host>:/opt/huice/web` 拷产物**：目标已存在时它会在 `/opt/huice/web` 下再建一层 `dist/`，而 nginx 的 `root` 是 `/opt/huice/web`，于是更新后仍在服务旧版本；目标不存在时又变成「把 dist 另存为 `/opt/huice/web`」，首次与更新两种情形结果还不一样。上面的 tar 写法把内容直接铺到根目录，两种情形同一条命令、结果一致。
+- 装的是 `nginx-huice-site.conf`：`root /opt/huice/web`、SPA 回退 `try_files $uri $uri/ /index.html`、`/api/v1/` 反代 `127.0.0.1:8000`、`client_max_body_size 60m` 与 80/443 现有配置一致。
+- **它与「只反代 API」的那份写到同一个文件名**（`/etc/nginx/conf.d/huice-api-tls.conf`）：给 `--web-root` 就是同源站点，不给就退回仅 API。两份都是 `listen 443` + `server_name _`，同时安装会触发 `conflicting server name "_"`，脚本靠「只写一个文件名」避免这种并存。
+- **已装成同源站点后，不带 `--web-root` 重跑会被拦下**：那等于把 443 切回「仅反代 API」，前端页面随即 404，而 `/api/v1/` 照旧正常，现场很容易误判成前端故障。只重装或续证书请带上原来的 `--web-root`（提示里会给出当前配置里的目录）；确实要切回仅 API 才加 `--force`，此时脚本会打印一条警告。
+- `/assets/` 下是带内容哈希的构建产物，缓存 30 天；`index.html` 明确 `no-cache`，发布后刷新即可拿到新的资源清单。资源缺失时直接 404，不会退回 `index.html`。
+- 前端目录必须是绝对路径，且只用字母、数字与 `/ _ . -`（空格、分号会破坏 nginx 语法，竖线和 `&` 会被 sed 当成分隔符/替换标记），脚本先校验再安装；`nginx -t` 不通过时仍按 §3.2 的备份回滚。
+- 同源部署下请求不再跨源，`CORS_ORIGINS` 不再是必经环节；填 `https://<EIP>` 也无害。
+- 静态文件只在 443 上；80 端口仍只反代 API，用 `http://<EIP>` 打不开前端页面。
+- 换前端版本时重复 1→3（解包覆盖 `index.html` 与新的哈希资源即可，配置不用改）；4) 只在首次安装或换目录时才要重跑。旧哈希的 `/assets/` 文件留在原地不影响访问，要清理就先 `rm -rf /opt/huice/web/assets` 再解包。
+
+验证分两种情形，都在 ECS 上做：
+
+```bash
+# 首次部署（/opt/huice/web 原本不存在）
+ls /opt/huice/web/index.html /opt/huice/web/assets     # 两个都在
+ls /opt/huice/web/dist                                 # 应报 No such file or directory：没有多套一层
+curl -k -s -o /dev/null -w '%{http_code}\n' https://127.0.0.1/          # 200
+
+# 更新（web 根已存在，换过一版前端：先记下资源名，重跑 1)～3) 后再看）
+grep -o 'assets/index-[^"]*\.js' /opt/huice/web/index.html              # 资源名变了
+curl -k -s https://127.0.0.1/ | grep -o 'assets/index-[^"]*\.js'        # 页面引用的是新资源
+ls /opt/huice/web/dist                                                  # 仍不存在
+```
+
+两者最后都再确认一次：`curl -k -i https://127.0.0.1/` 返回 `index.html`，`curl -k -i https://127.0.0.1/api/v1/health` 仍是 200。
+
+2026-11-04 在 ECS 上按这两种情形各跑过一次：首次部署后 `/opt/huice/web` 下直接是 `index.html` + `assets/`、`/opt/huice/web/dist` 不存在；模拟换一版（改资源名）解包到已存在的站点根目录后，`index.html` 引用的是新资源名、`/` 与 `/assets/<新文件>` 均 200、仍未生成 `dist/`，验完已还原原产物。
 
 ## 4. 验证
 
@@ -158,7 +217,7 @@ curl -i http://139.9.33.46/api/v1/health
 
 ## 5. 已知限制（M1）
 
-- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；云端真实链路已于 2026-11-02 验证（健康检查 200、401/403 分层、写路径冒烟通过）。仍待自动化的是**网关侧的 cookie 下发**——目前要按 §3.2 由受控入口下发（临时可在 DevTools 里手工添加，见 §3.2 最后几条）；`Secure` 所需的 TLS 由 §3.2 的自签 443 提供。前端与 API 必须同源（§3.2 的 `SameSite=Lax` 限制）。在注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
+- `DEMO_ACCESS_MODE=restricted` 要求请求带 `huice_demo_session` cookie。**签发脚本已实现**（`infra/deploy/issue-session.py`，用法见 §3.1）；云端真实链路已于 2026-11-02 验证（健康检查 200、401/403 分层、写路径冒烟通过）。仍待自动化的是**网关侧的 cookie 下发**——目前要按 §3.2 由受控入口下发（临时可在 DevTools 里手工添加，见 §3.2 最后几条）；`Secure` 所需的 TLS 由 §3.2 的自签 443 提供。前端与 API 必须同源（§3.2 的 `SameSite=Lax` 限制；同源站点的装法见 §3.3）。在注入 cookie 之前，云端 `/api/v1/admin/*` 会返回 403 `DEMO_SESSION_REQUIRED`，只有 `/api/v1/health` 可用——这不是部署故障。
 - `OBJECT_STORE_MODE=obs` 已于 2026-10-27 在真实桶上联调通过（`-m obs` 5 项，见 `infra/README.md` §4.3）；首轮部署仍先留在 `local`，填好 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK` 后再切 `obs`，切换后按 §4 复测一次导入。
 - 未配置域名与正式证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示，评审期临时走 §3.2 的自签 443；备案后换正式证书并去掉浏览器的自签警告。
 - `infra/deploy/deploy.ps1` 仍是占位文件，本阶段以本文档的手工步骤为准。
