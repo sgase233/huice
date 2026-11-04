@@ -272,7 +272,7 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 健康检查不鉴权、不返回连接串或主机名。502/503 只表示依赖不可用，不代表进程异常。
 
-## 7. 部署（文件已就绪，尚未在云上执行）
+## 7. 部署（venv + systemd + nginx；2026-11-02 首版上线，2026-11-03 起为 443 同源站点）
 
 方式：**venv + systemd + nginx**，文件在 [deploy/](deploy/)，步骤见 [deploy/README.md](deploy/README.md)。
 
@@ -286,9 +286,9 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 `infra/deploy/deploy.ps1` 未删除，仍是占位文件；本阶段以 `deploy/README.md` 的手工步骤为准。
 
-**执行前提**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **003**（`schema_migration` 三行齐全，2026-10-26 补齐），部署时需再补 `004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql`。MaaS 已不在范围内，模型侧首轮部署用 `MODEL_MODE=fixture`（DeepSeek 已于 2026-10-27 用真实 Key 联调通过，见 §4.3；云端切 `deepseek` 随本次部署验证）；OBS 的真实桶联调同样已于 2026-10-27 通过（§4.3），部署时填好 `OBS_*` 即可切 `OBJECT_STORE_MODE=obs`。
+**执行前提（均已完成，留作复现口径）**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **006**（`schema_migration` 六行齐全，004—006 于 2026-11-02 补齐）。代码侧 2026-11-02 首版部署、2026-11-03 重新部署到 `1.0.0-rc.6` 并启用 443 同源站点（勾选项见 §5.2，过程见 `docs/devlog/M1.md`），此后只需按提交更新代码。MaaS 已不在范围内；云端 `MODEL_MODE` 现为 `deepseek`（2026-11-04 验证成功路径，见 §4.3 与 §4.2），`OBJECT_STORE_MODE` 现为 `obs`（2026-11-04 实测通过，见 §4.1）。仍未闭合的是**从空环境按本文件与部署脚本从零复现**（11/15 要求，§5.2 尚未勾选）。
 
-上云前的准备项、环境变量对照与目标时间表见第 5 节；本地先行开发不等于可以推迟到 11/14 再部署——计划的云端节点是 11/08。
+上云前的准备项、环境变量对照与目标时间表见第 5 节；计划的云端节点是 11/08，实际已于 2026-11-02 提前完成部署，剩下的是 11/15 的空环境复现。
 
 ## 8. 回退
 
