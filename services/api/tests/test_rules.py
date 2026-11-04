@@ -331,6 +331,55 @@ def test_conflict_node_propagates_through_or():
     assert outcome.result == CONFLICT
 
 
+
+# ------------------------------------------------------------ ne 与代码类比较
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "other"),
+    [
+        ("taxableIncome", Decimal("3000000.00"), Decimal("5000000.00")),
+        ("region", "440300", "440100"),
+        ("rdActivity", True, False),
+    ],
+)
+def test_ne_is_the_complement_of_eq_for_each_unit(key, value, other):
+    """``ne`` 在数值、代码、布尔三种单位下都要真的取反，而不只是结构上被允许。
+
+    早先 ``ne`` 只出现在矛盾检测的配对用例里——那里比较的是两个条件的区间关系，
+    从不进入 ``_evaluate_compare``；求值分支写反也不会有任何用例变红。
+    """
+
+    expression = compare(key, "ne", other)
+    assert evaluate_expression(expression, table(fact(key, value)), period=YEAR).result == SATISFIED
+    assert evaluate_expression(expression, table(fact(key, other)), period=YEAR).result == NOT_SATISFIED
+
+
+def test_code_compare_compares_the_whole_code():
+    """``code`` 单位的比较要有直接断言：行业排除用的是前缀命中，覆盖不到这里。"""
+
+    expression = compare("region", "eq", "440300")
+    ok = evaluate_expression(expression, table(fact("region", "440300")), period=YEAR)
+    assert ok.result == SATISFIED
+    assert "440300" in ok.reason
+
+    other = evaluate_expression(expression, table(fact("region", "440100")), period=YEAR)
+    assert other.result == NOT_SATISFIED
+    assert "440100" in other.reason
+
+
+def test_an_empty_industry_value_is_undecided_not_satisfied():
+    """行业值是空串时既不是「不在排除清单」也不是「被排除」：照旧落在证据不足。
+
+    这一支只在 ``_evaluate_industry_exclusion`` 的 ``value.strip()`` 判断里，缺事实
+    的分支（``fact is None``）覆盖不到它。
+    """
+
+    outcome = evaluate_expression(INDUSTRY_GATE, table(fact("industry", "")), period=YEAR)
+    assert outcome.result == INSUFFICIENT
+    assert "行业值为空" in outcome.reason
+
+
 # ----------------------------------------------------------------- 季度平均
 
 

@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(BASH is None, reason="需要 bash 才能测部�
 def deploy(tmp_path: Path) -> dict[str, Path]:
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    for name in ("enable-tls.sh", "nginx-huice-tls.conf"):
+    for name in ("enable-tls.sh", "nginx-huice-tls.conf", "nginx-huice-site.conf"):
         shutil.copyfile(DEPLOY_DIR / name, scripts / name)
     return {
         "script": scripts / "enable-tls.sh",
@@ -132,3 +132,168 @@ def test_san_uses_ip_for_addresses_and_dns_for_names(deploy):
 
     assert result.returncode == 0, result.stderr
     assert "san-ok" in result.stdout
+
+
+# ------------------------------------------------------------ 同源静态站点
+
+
+def _web(deploy: dict[str, Path]) -> Path:
+    """建一份最小前端产物目录（只要 index.html 就够判「装的是哪个模板」）。"""
+
+    root = deploy["conf"].parent.parent / "web-dist"
+    root.mkdir()
+    (root / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    return root
+
+
+def test_web_root_installs_the_same_origin_site(deploy):
+    """``--web-root`` 装的是「静态文件 + /api/v1 反代」，占位符必须被替换干净。"""
+
+    web = _web(deploy)
+    result = _bash(
+        _harness(
+            deploy,
+            [
+                f'WEB_ROOT="{web.as_posix()}"',
+                "install_conf",
+                '! grep -q "__WEB_ROOT__" "$NGINX_CONF"',
+                f'grep -qF "root  {web.as_posix()};" "$NGINX_CONF"',
+                'grep -q "location /api/v1/" "$NGINX_CONF"',
+                "grep -qF 'try_files $uri $uri/ /index.html' \"$NGINX_CONF\"",
+                "echo site-ok",
+            ],
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "site-ok" in result.stdout
+
+
+def test_without_web_root_the_api_only_site_is_installed(deploy):
+    """不给 ``--web-root`` 时仍装原来的「全部反代」，不引入静态文件行为。"""
+
+    result = _bash(
+        _harness(
+            deploy,
+            [
+                "install_conf",
+                '! grep -q "location /api/v1/" "$NGINX_CONF"',
+                '! grep -q "try_files" "$NGINX_CONF"',
+                'grep -qF "proxy_pass http://127.0.0.1:8000;" "$NGINX_CONF"',
+                "echo api-ok",
+            ],
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "api-ok" in result.stdout
+
+
+def test_downgrade_from_site_to_api_only_is_blocked_without_force(deploy):
+    """已装同源站点后不给 ``--web-root`` 重跑，会把 443 切回仅反代 API，先拦下。"""
+
+    web = _web(deploy)
+    result = _bash(
+        _harness(
+            deploy,
+            [
+                f'WEB_ROOT="{web.as_posix()}"',
+                "install_conf",
+                'WEB_ROOT=""',
+                "FORCE=0",
+                "guard_web_root_downgrade",
+            ],
+        )
+    )
+
+    assert result.returncode != 0
+    assert "同源站点" in result.stderr
+    assert web.as_posix() in result.stderr  # 提示里给出可以直接复制的 --web-root
+    assert "--force" in result.stderr
+    # 被拦下时配置原样未动，仍是同源站点
+    assert "try_files" in deploy["conf"].read_text(encoding="utf-8")
+
+
+def test_downgrade_allowed_with_force_and_warns(deploy):
+    """显式 ``--force`` 才切回仅反代 API，并且要留下警告。"""
+
+    web = _web(deploy)
+    result = _bash(
+        _harness(
+            deploy,
+            [
+                f'WEB_ROOT="{web.as_posix()}"',
+                "install_conf",
+                'WEB_ROOT=""',
+                "FORCE=1",
+                "guard_web_root_downgrade",
+                "install_conf",
+                '! grep -q "try_files" "$NGINX_CONF"',
+                "echo switched-to-api",
+            ],
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "警告" in result.stdout
+    assert "switched-to-api" in result.stdout
+
+
+def test_guard_is_noop_when_the_installed_site_is_api_only(deploy):
+    """原本就是仅反代 API：没有可回退的站点形态，不该拦。"""
+
+    result = _bash(
+        _harness(
+            deploy,
+            [
+                "install_conf",
+                'WEB_ROOT=""',
+                "FORCE=0",
+                "guard_web_root_downgrade",
+                "echo api-noop",
+            ],
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "api-noop" in result.stdout
+
+
+def test_guard_is_noop_when_reinstalling_the_site_with_web_root(deploy):
+    """带着 ``--web-root`` 重装同源站点（换产物、续证书）是正常路径，不该拦。"""
+
+    web = _web(deploy)
+    result = _bash(
+        _harness(
+            deploy,
+            [
+                "install_conf",  # 先装成仅 API，确保被拦的原因只可能是「没给 --web-root」
+                f'WEB_ROOT="{web.as_posix()}"',
+                "FORCE=0",
+                "guard_web_root_downgrade",
+                "install_conf",
+                "grep -qF 'try_files $uri $uri/ /index.html' \"$NGINX_CONF\"",
+                "echo site-noop",
+            ],
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "site-noop" in result.stdout
+
+
+def test_validate_web_root_rejects_paths_nginx_cannot_take(deploy):
+    """目录会被原样写进 nginx 的 ``root`` 并经过 sed 替换，非保守字符集一律先拒。"""
+
+    relative = _bash(_harness(deploy, ['validate_web_root "web/dist"']))
+    assert relative.returncode != 0
+    assert "绝对路径" in relative.stderr
+
+    for bad in ("/srv/huice|web", "/srv/huice&web", "/srv/huice web", "/srv/huice;web"):
+        rejected = _bash(_harness(deploy, [f'validate_web_root "{bad}"']))
+        assert rejected.returncode != 0, bad
+        assert "只能用字母" in rejected.stderr, bad
+
+    ok = _bash(_harness(deploy, ['validate_web_root "/srv/huice/web"', "echo ok"]))
+    assert ok.returncode == 0, ok.stderr
+

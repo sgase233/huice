@@ -1228,3 +1228,52 @@ def test_the_same_tier_spans_with_a_decidable_atom_still_report_the_conflict():
     )
 
     assert "CITATION_THRESHOLD_CONFLICT" in codes(verdict)
+
+
+# ---------------------------------------------------- 季度平均（引文校验层）
+
+SME_TEXT = (
+    "第五条 小型微利企业，是指从事国家非限制和禁止行业，且同时符合年度应纳税所得额不超过300万元、"
+    "从业人数不超过300人、资产总额不超过5000万元等三个条件的企业。\n"
+    "从业人数和资产总额指标，应按企业全年的季度平均值确定。"
+)
+SME_SOURCE = SourceText(id=SOURCE.id, source_url=SOURCE_URL, text=SME_TEXT)
+SME_SOURCES = {SOURCE.id: SME_SOURCE}
+QUARTERLY_ASSETS = {
+    "op": "quarterly_average",
+    "metric": "assets",
+    "period": "assessment",
+    "comparator": "lte",
+    "value": "50000000.00",
+    "unit": "CNY",
+}
+
+
+def test_quarterly_average_needs_the_threshold_in_the_quote():
+    """季度平均在引文层同样要核对数值与方向，而不是只看 AST 写得对不对。"""
+
+    verdict = validate_criteria(
+        [criterion(span("资产总额不超过5000万元"), expression=QUARTERLY_ASSETS)],
+        SME_SOURCES,
+        VERSION,
+    )[0]
+    assert verdict.status == "passed", codes(verdict)
+
+
+def test_quarterly_average_with_the_wrong_direction_is_reported():
+    flipped = {**QUARTERLY_ASSETS, "comparator": "gte"}
+    verdict = validate_criteria(
+        [criterion(span("资产总额不超过5000万元"), expression=flipped)],
+        SME_SOURCES,
+        VERSION,
+    )[0]
+    assert "CITATION_THRESHOLD_MISMATCH" in codes(verdict)
+
+
+def test_quarterly_average_without_a_numeric_threshold_is_reported():
+    verdict = validate_criteria(
+        [criterion(span("按企业全年的季度平均值确定"), expression=QUARTERLY_ASSETS)],
+        SME_SOURCES,
+        VERSION,
+    )[0]
+    assert "CITATION_THRESHOLD_NOT_FOUND" in codes(verdict)
