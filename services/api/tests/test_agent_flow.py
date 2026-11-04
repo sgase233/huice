@@ -7,8 +7,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
+from app.errors import ApiProblem
 from app.integrations.llm import LlmResult
 from support import published_draft
 
@@ -219,6 +222,43 @@ def test_explanation_trace_records_model_tokens_once_per_call(app, client, repos
     # 用量只进轨迹摘要，不进契约响应：TraceStep 没有 token 字段。
     assert "模型 tokens 入 11 出 22" in explanation.output_summary
     assert explanation.output_summary.endswith(f"{policy.id}=deepseek")
+
+
+class _FailingLlm:
+    """解释用模型直接失败：判断照常返回，但这次调用要留一行、用量记未知。"""
+
+    mode = "deepseek"
+    model_name = "deepseek-chat"
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        raise ApiProblem(
+            503, "DEPENDENCY_UNAVAILABLE", "模型服务暂不可用。",
+            retryable=True, usage_unknown=True,
+        )
+
+
+def test_a_failed_explanation_call_is_logged_with_unknown_usage(
+    app, client, repository, caplog
+):
+    caplog.set_level(logging.INFO)
+    policy = published_draft(expressions=[INDUSTRY_GATE])
+    repository.drafts.append(policy)
+    app.state.llm = _FailingLlm()
+    enterprise = create_enterprise(client)
+
+    body = create_run(client, enterprise["id"], [str(policy.id)])
+
+    # 模型失败不影响判断：结论与降级警告照常返回。
+    assert body["assessments"][0]["explanationMode"] == "saved"
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
+    # 失败也要有一行：模型可能已被调用并计费，不能因为降级就从记录里消失。
+    assert "outcome=error" in line and "usage=unknown" in line
+    explanation = [
+        step for step in repository.saved_runs[0]["trace_steps"] if step.stage == "explanation"
+    ][0]
+    # 未知用量单列，不能与已知 tokens 相加。
+    assert "1 次调用失败、用量未知" in explanation.output_summary
+    assert "tokens" not in explanation.output_summary
 
 
 def test_explanation_trace_has_no_token_note_when_the_model_is_not_used(client, repository):

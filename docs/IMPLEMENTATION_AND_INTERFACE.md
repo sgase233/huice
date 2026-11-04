@@ -143,7 +143,14 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 > **2026-11-04（`extraction` 轨迹步骤与模型用量记录）**：契约九阶段里的 `extraction` 此前没有写入点，现由抽取路径补齐（决策见 PR #33，方案 A）。写入点在 `PolicyRepository.save_criteria`：抽取成功后与条款、校验发现在**同一事务**内、`citation_validation` 步骤**之前**写一条 `stage="extraction"` 的轨迹，`objectRefs` 只含 `{type:"policyVersion", id}`，摘要为「抽取正文 N 字」/「得到条件 K 条、校验发现 M 条」，有 finding 即 `status=needs_review`，`elapsedMs` 为调用耗时。`modelOrRuleVersion` 记真实模型名（`MODEL_MODE=deepseek` 时取响应里的 `model`），规则抽取时记 `rule:extraction@1`（或请求体的 `modelVersion`）。三条边界：**幂等重放不写第二遍**（重放在任何落库之前就返回原响应，`test_extract_is_idempotent_for_the_same_key_and_body` 断言只落一次）、**手工保存 API-06 不写抽取步骤**（不传 `extraction_model`）、**保存冲突先于写库**（`_assert_editable` 在第一次写入前返回 409，事务里不留半条步骤）。契约结构不变，`TraceStep` 仍是 `additionalProperties: false`。
 >
-> 用量不进契约：`TraceStep` 没有 token 字段，本轮**不**给契约加字段。抽取的 tokens 走 `ExtractionResult.usage`（接口原本就返回）与一行日志；解释调用的 tokens 汇总进 `explanation` 步骤的 `outputSummary`（前缀「模型 tokens 入 N 出 M」；`MAX_SUMMARY=200` 会截断，多政策只记总数，不逐条列）。日志格式固定为 `model_call purpose=<extraction|explanation> model=<名称> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<id> version=<版本>`，只记对象标识与用量，不记提示词、正文与密钥；`fixture`、规则抽取与解释降级到 `saved` 的路径不记 `model_call` 行，以免把零开销的路径算成模型调用。费用折算口径见 `infra/README.md` §4.3。
+> 用量不进契约：`TraceStep` 没有 token 字段，本轮**不**给契约加字段。抽取的 tokens 走 `ExtractionResult.usage`（接口原本就返回）与一行日志；解释调用的 tokens 汇总进 `explanation` 步骤的 `outputSummary`（前缀「模型 tokens 入 N 出 M」；`MAX_SUMMARY=200` 会截断，多政策只记总数，不逐条列）。日志格式固定为 `model_call purpose=<extraction|explanation> outcome=<ok|error> usage=<known|unknown|none> model=<名称> prompt=<n|unknown|0> completion=<n|unknown|0> elapsed_ms=<ms|unknown> policy_id=<id> version=<版本>`（失败行再带 `code=<错误码>`），只记对象标识与用量，不记提示词、正文与密钥；`fixture`、规则抽取与幂等重放不记行，以免把零开销的路径算成模型调用。费用折算口径见 `infra/README.md` §4.3。
+>
+> **失败留痕与用量三态（2026-11-04 补，按 M2 复审）：**
+>
+> 1. **失败也记一行**。调用失败时 `outcome=error`；`usage=unknown` 表示上游可能已处理并计费但客户端拿不到用量（超时、连接中断、5xx、2xx 但解析失败），`usage=none` 表示上游明确未接受（429 与上游 4xx）。未知**单列**，不并入 0 参与费用合计。成功但回答为空（解释路径）仍算调用成功，tokens 照记，只把措辞退回已存说明。
+> 2. **失败步骤写独立事务**。`PolicyRepository.record_extraction_failure` 只挂既有 `policyVersion`（`objectRefs` 与成功步骤同构），不改草稿、不动 revision，摘要是「模型抽取失败」→「错误码 …；上游可能已计费，用量未知 / 上游未接受，未产生用量」，`status` 按可重试性取 `retryable_error`（429、超时/连接、5xx、坏响应）或 `fatal_error`（上游 4xx，重试不会自愈）。写失败步骤自身出错只记告警，**不替换**原来的 429/503，响应形状不变。两个判断标记挂在 `ApiProblem` 上，不进响应体。
+> 3. **调用记录独立于草稿保存事务**。模型成功但 `save_criteria` 撞 409 或进程中断时，草稿与成功步骤一起回滚，调用日志已写出、仍可核对；不补记失败步骤（调用本身没失败）。
+> 4. **API-14 可见性边界**。API-14 从分析 run 按政策版本关联入库轨迹：草稿未发布、没有关联 run 时失败步骤不保证立即可见；发布后读到的历史失败也不代表当前在线分析失败。
 
 > **比例条件的引文核对（2026-10-29，应答 M2 PR #10 的 P1）**：`rdExpenseRevenueRatio` 不再「跳过数值核对」，改为单独走 `citations.ratio_bounds`——把原文的百分比换算成小数（「不低于 3%」→ `0.03`、`gte`，「5%以下」→ `0.05`、`lte`，`‰` 与「千分之」按 1000 除），再与 AST 的 `compare` 比数值和方向。与金额阈值分开是因为换算基准不同：混在一起会把「3%」按「万元」换算成 300，让写成 `0.30` 的条件反而通过。识别只认三种写法（前置方向词 + `百分之/千分之`、前置方向词 + `%`、数字 + `%` + 后端词），且**仅在百分比前 24 字内出现「比重/占比/比例/百分比/占」时才认定为比例条件**——原文没有这类线索时报 `CITATION_THRESHOLD_NOT_FOUND`，挡住发布并要求人工复核，而不是拿别处的百分比（如「研发费用增长不低于 10%」）凑数。已知边界：中文数字（「百分之三」）不解析，会落到「找不到阈值」，同样是挡住而非放行。
 

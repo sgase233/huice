@@ -407,6 +407,68 @@ def test_save_without_extraction_writes_no_extraction_step(repo, database_url_sc
     assert stages == ["citation_validation"]
 
 
+def test_a_failed_extraction_is_recorded_without_touching_the_draft(repo, database_url_schema):
+    draft = create(repo)
+    trace_id = str(uuid4())
+
+    repo.record_extraction_failure(
+        policy_id=draft.id,
+        version=draft.version,
+        trace_id=trace_id,
+        status="retryable_error",
+        error_code="DEPENDENCY_UNAVAILABLE",
+        model_or_rule_version="deepseek-chat",
+        elapsed_ms=30001,
+        usage_unknown=True,
+    )
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT stage, status, output_summary, error_code, model_or_rule_version, elapsed_ms, "
+        "policy_version, evidence_refs::text FROM trace_step WHERE trace_id = %s ORDER BY sequence",
+        (trace_id,),
+    )
+    assert len(rows) == 1
+    stage, status, summary, error_code, model, elapsed_ms, version, refs = rows[0]
+    assert stage == "extraction" and status == "retryable_error"
+    assert error_code == "DEPENDENCY_UNAVAILABLE"
+    assert model == "deepseek-chat" and elapsed_ms == 30001
+    assert version == draft.version and "policyVersion" in refs
+    # 用量未知要写清楚，不能写成 0 混进费用统计。
+    assert "用量未知" in summary
+
+    # 独立事务：草稿状态与 revision 都不动，也没有条款被写进去。
+    repo_draft = repo.get_admin_policy(draft.id, draft.version)
+    assert repo_draft.revision == draft.revision
+    assert repo_draft.status == "pending_parse"
+    assert query_one(database_url_schema, "SELECT count(*) FROM policy_criterion")[0] == 0
+
+
+def test_a_non_retryable_failure_is_recorded_as_fatal(repo, database_url_schema):
+    draft = create(repo)
+    trace_id = str(uuid4())
+
+    repo.record_extraction_failure(
+        policy_id=draft.id,
+        version=draft.version,
+        trace_id=trace_id,
+        status="fatal_error",
+        error_code="DEPENDENCY_UNAVAILABLE",
+        model_or_rule_version="deepseek-chat",
+        elapsed_ms=12,
+        usage_unknown=False,
+    )
+
+    status, summary = query_one(
+        database_url_schema,
+        "SELECT status, output_summary FROM trace_step WHERE trace_id = %s",
+        (trace_id,),
+    )
+    assert status == "fatal_error"
+    # 上游明确没接受请求时写「未产生用量」，与未知区分开。
+    assert "未产生用量" in summary
+
+
 def test_a_stale_revision_fails_before_any_trace_row_is_written(repo, database_url_schema):
     draft = create(repo)
     first_trace = str(uuid4())

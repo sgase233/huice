@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -230,13 +231,26 @@ async def extract_policy(
         return ExtractionResult.model_validate(replayed["response"])
 
     sources = _extraction_sources(draft)
-    outcome = await run_in_threadpool(
-        extract_criteria,
-        version=draft.version,
-        sources=sources,
-        llm=request.app.state.llm,
-        model_version=body.model_version,
-    )
+    attempt_started = time.monotonic()
+    try:
+        outcome = await run_in_threadpool(
+            extract_criteria,
+            version=draft.version,
+            sources=sources,
+            llm=request.app.state.llm,
+            model_version=body.model_version,
+        )
+    except ApiProblem as problem:
+        # 调用已经发生：结果与用量/失败留痕都要独立于后面的草稿保存事务。
+        await _record_failed_extraction(
+            request,
+            policy_id=policyId,
+            draft=draft,
+            problem=problem,
+            elapsed_ms=int((time.monotonic() - attempt_started) * 1000),
+        )
+        raise
+
     usage = outcome.usage
     extraction_model: str | None = None
     if usage is not None:
@@ -246,7 +260,8 @@ async def extract_policy(
             # 只有真的调了模型才记一行用量；rule/fixture 路径的 tokens 恒为 0，
             # 记成 model_call 会让人误以为每次抽取都有模型开销。
             logger.info(
-                "model_call purpose=extraction model=%s prompt=%d completion=%d elapsed_ms=%d policy_id=%s version=%s",
+                "model_call purpose=extraction outcome=ok usage=known model=%s prompt=%d "
+                "completion=%d elapsed_ms=%d policy_id=%s version=%s",
                 usage.model_version,
                 usage.input_tokens,
                 usage.output_tokens,
@@ -472,6 +487,60 @@ def _fingerprint(policy_id: UUID, body: ExtractPolicyInput) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+async def _record_failed_extraction(
+    request: Request,
+    *,
+    policy_id: UUID,
+    draft: PolicyDraft,
+    problem: ApiProblem,
+    elapsed_ms: int,
+) -> None:
+    """抽取失败时留两处痕：一行调用日志 + 一条独立事务的失败轨迹。
+
+    两者都不许替换原来的错误——接口仍按原状态码（429/503）返回，轨迹写不进去
+    只记一条告警。这里记的是「调用发生过」这一事实，与后面草稿保存是否成功无关。
+    """
+
+    retryable = bool(getattr(problem, "retryable", False))
+    usage_unknown = bool(getattr(problem, "usage_unknown", True))
+    llm = request.app.state.llm
+    model = getattr(llm, "model_name", None) or getattr(llm, "mode", "unknown")
+
+    logger.info(
+        "model_call purpose=extraction outcome=error usage=%s model=%s prompt=%s completion=%s "
+        "elapsed_ms=%d policy_id=%s version=%s code=%s",
+        "unknown" if usage_unknown else "none",
+        model,
+        "unknown" if usage_unknown else 0,
+        "unknown" if usage_unknown else 0,
+        elapsed_ms,
+        policy_id,
+        draft.version,
+        problem.code,
+    )
+
+    repository = request.app.state.repository
+    try:
+        await run_in_threadpool(
+            repository.record_extraction_failure,
+            policy_id=policy_id,
+            version=draft.version,
+            trace_id=trace_id_of(request),
+            status="retryable_error" if retryable else "fatal_error",
+            error_code=problem.code,
+            model_or_rule_version=model,
+            elapsed_ms=elapsed_ms,
+            usage_unknown=usage_unknown,
+        )
+    except Exception:  # noqa: BLE001 - 留痕失败不能盖掉原来的 429/503
+        logger.warning(
+            "抽取失败步骤未能写入，仅保留调用日志 policy_id=%s version=%s code=%s",
+            policy_id,
+            draft.version,
+            problem.code,
+        )
 
 
 def _extraction_sources(draft: PolicyDraft) -> list[ExtractionSource]:

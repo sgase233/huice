@@ -45,9 +45,13 @@ class Explanation:
     text: str
     mode: str
     warnings: list[str] = field(default_factory=list)
-    #: 只有真实调用模型成功时才有值；``fixture`` 与降级路径为 ``None``。
+    #: 模型真的回了内容时才有值；``fixture`` 与调用失败为 ``None``。
     #: 用量只用于日志与轨迹摘要，不进契约响应（``TraceStep`` 没有 token 字段）。
     usage: LlmResult | None = None
+    #: 调用了模型但没拿到可用的回答（异常、超时等），调用方据此记一行失败调用。
+    call_failed: bool = False
+    #: 失败时上游是否可能已经计费而客户端拿不到用量；未调用模型时为 ``False``。
+    usage_unknown: bool = False
 
 
 def explain(
@@ -72,12 +76,18 @@ def explain(
             user=f"政策：{policy_title}\n结论：{RESULT_LABELS.get(result, result)}\n依据：{baseline}",
             max_tokens=300,
         )
-    except Exception:  # noqa: BLE001 - 模型失败一律降级，不影响规则结果
-        return Explanation(baseline, "saved", [MODEL_UNAVAILABLE_MESSAGE])
+    except Exception as exc:  # noqa: BLE001 - 模型失败一律降级，不影响规则结果
+        # 多数失败（超时、连接中断、坏响应）上游可能已计费；只有限流与上游 4xx
+        # 能确认没有产生 token。未知异常按「可能已计费」记，宁可多核对一次。
+        unknown = bool(getattr(exc, "usage_unknown", True))
+        return Explanation(
+            baseline, "saved", [MODEL_UNAVAILABLE_MESSAGE], call_failed=True, usage_unknown=unknown
+        )
 
     text = completion.text.strip()
     if not text:
-        return Explanation(baseline, "saved", [MODEL_UNAVAILABLE_MESSAGE])
+        # 调用成功但回答为空：token 已经产生，用量照记，只是措辞退回已存说明。
+        return Explanation(baseline, "saved", [MODEL_UNAVAILABLE_MESSAGE], usage=completion)
     return Explanation(text, "deepseek", ["解释由模型改写，结论以规则结果为准。"], usage=completion)
 
 

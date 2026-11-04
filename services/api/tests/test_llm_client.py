@@ -127,6 +127,9 @@ def test_rate_limit_maps_to_429():
         client(transport).complete(system="s", user="u")
     assert info.value.status_code == 429
     assert info.value.code == "UPSTREAM_RATE_LIMITED"
+    # 限流是上游明确拒绝：过一会儿可以重试，且没有产生 token。
+    assert info.value.retryable
+    assert not info.value.usage_unknown
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 500, 503])
@@ -142,6 +145,10 @@ def test_other_failures_map_to_503_without_leaking_secrets(status):
     assert API_KEY not in text
     assert BASE_URL not in text
     assert MODEL not in text
+    # 上游 4xx（密钥/模型名/参数写错）重试也不会成功，应记 fatal_error；
+    # 5xx 属于可重试，且上游可能已经处理并计费。
+    assert problem.retryable is (status >= 500)
+    assert problem.usage_unknown is (status >= 500)
 
 
 def test_malformed_json_maps_to_503():
@@ -149,6 +156,8 @@ def test_malformed_json_maps_to_503():
     with pytest.raises(ApiProblem) as info:
         client(transport).complete(system="s", user="u")
     assert info.value.status_code == 503
+    # 2xx 却解析不出结果：上游很可能已经把这次调用算了钱，用量记未知。
+    assert info.value.retryable and info.value.usage_unknown
 
 
 def test_missing_choices_maps_to_503():
@@ -168,6 +177,8 @@ def test_network_error_maps_to_503():
         ).complete(system="s", user="u")
     assert info.value.status_code == 503
     assert "connection refused" not in str(info.value)
+    # 连接中断时请求可能已经到了上游：可重试，但用量未知。
+    assert info.value.retryable and info.value.usage_unknown
 
 
 def test_missing_usage_defaults_to_zero():

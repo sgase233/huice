@@ -6,6 +6,9 @@
   求值，模型调用失败不影响已审核规则的结论。
 * 任何失败都转成契约里的错误码：限流 ``429 UPSTREAM_RATE_LIMITED``，其余
   ``503 DEPENDENCY_UNAVAILABLE``；消息里不含 base URL、模型名或密钥。
+* 失败另带两个不进响应体的内部标记：``retryable``（429、超时/连接、5xx、
+  坏响应可重试；上游 4xx 不可重试，多半是密钥或模型名写错）与
+  ``usage_unknown``（上游可能已处理并计费，但我们拿不到用量）。
 * ``fixture`` 模式不联网、不读密钥，测试与演示默认走这条路径。
 
 只使用标准库 ``urllib``，不为一次 HTTP 调用再引入运行期依赖。
@@ -43,14 +46,32 @@ class LlmResult:
 
 class LlmClient(Protocol):
     mode: str
+    #: 实际请求的模型名；``fixture`` 下为 ``"fixture"``。
+    model_name: str
 
     def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult: ...
+
+
+def _problem(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    retryable: bool,
+    usage_unknown: bool = False,
+) -> ApiProblem:
+    """带内部标记的模型故障：标记只用于记轨迹与日志，不改响应形状。"""
+
+    return ApiProblem(
+        status_code, code, message, retryable=retryable, usage_unknown=usage_unknown
+    )
 
 
 class FixtureLlmClient:
     """离线替身：返回固定文本，token 记 0，供测试与无网演示使用。"""
 
     mode = "fixture"
+    model_name = "fixture"
 
     def __init__(self, text: str = "（示例输出：当前为 fixture 模式，未调用外部模型。）") -> None:
         self._text = text
@@ -98,6 +119,10 @@ class DeepSeekClient:
         self._timeout = timeout
         self._transport = transport
 
+    @property
+    def model_name(self) -> str:
+        return self._model
+
     def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
         payload = {
             "model": self._model,
@@ -119,19 +144,28 @@ class DeepSeekClient:
         try:
             status, raw = self._transport(self._url, body, headers, self._timeout)
         except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as exc:
-            raise ApiProblem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE) from exc
+            # 请求可能已经到达上游：用量未知，重试有意义。
+            raise _problem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
+                           retryable=True, usage_unknown=True) from exc
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
         if status == 429:
-            raise ApiProblem(429, "UPSTREAM_RATE_LIMITED", MODEL_RATE_LIMITED_MESSAGE)
+            # 上游明确拒绝，没有产生 token；过一会儿再来是合理的。
+            raise _problem(429, "UPSTREAM_RATE_LIMITED", MODEL_RATE_LIMITED_MESSAGE,
+                           retryable=True)
         if not 200 <= status < 300:
-            raise ApiProblem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE)
+            # 4xx（鉴权、参数、模型名写错）重试也不会成功；5xx 与分析失败同属可重试。
+            client_error = 400 <= status < 500
+            raise _problem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
+                           retryable=not client_error, usage_unknown=not client_error)
 
         data = self._parse(raw)
         try:
             text = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise ApiProblem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE) from exc
+            # 拿到了 2xx 却没拿到答案：上游很可能已经计费。
+            raise _problem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
+                           retryable=True, usage_unknown=True) from exc
 
         usage = data.get("usage") or {}
         return LlmResult(
@@ -147,9 +181,11 @@ class DeepSeekClient:
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ApiProblem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE) from exc
+            raise _problem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
+                           retryable=True, usage_unknown=True) from exc
         if not isinstance(data, dict):
-            raise ApiProblem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE)
+            raise _problem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
+                           retryable=True, usage_unknown=True)
         return data
 
 

@@ -12,6 +12,7 @@ from app.agents.explanation import (
     Explanation,
     explain,
 )
+from app.errors import ApiProblem
 from app.integrations.llm import MODEL_UNAVAILABLE_MESSAGE, LlmResult
 
 TITLE = "深圳市中小企业所得税优惠"
@@ -108,8 +109,51 @@ def test_paths_that_do_not_call_the_model_carry_no_usage():
     # 未调模型的路径不能凭空有用量，否则费用统计会把规则路径算成模型调用。
     assert run().usage is None
     assert run(llm=FakeLlm(mode="fixture")).usage is None
-    assert run(llm=FakeLlm(None)).usage is None
-    assert run(llm=FakeLlm("   ")).usage is None
+    failed = run(llm=FakeLlm(None))
+    assert failed.usage is None
+    # 调用失败要留痕：调用方据此记一行 outcome=error，而不是当成「没调用」。
+    assert failed.call_failed
+
+
+def test_an_empty_answer_still_records_the_tokens_it_cost():
+    # 模型回了空串也是调用成功：token 已经产生，用量必须留下，只是措辞退回去。
+    outcome = run(llm=FakeLlm("   "))
+
+    assert outcome.mode == "saved"
+    assert not outcome.call_failed
+    assert outcome.usage is not None
+    assert (outcome.usage.prompt_tokens, outcome.usage.completion_tokens) == (12, 34)
+
+
+def test_a_failure_that_may_have_billed_is_reported_as_unknown():
+    class TimedOut:
+        mode = "deepseek"
+
+        def complete(self, **kwargs):
+            raise ApiProblem(
+                503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
+                retryable=True, usage_unknown=True,
+            )
+
+    outcome = run(llm=TimedOut())
+
+    assert outcome.call_failed
+    # 超时/连接中断时上游可能已计费，不能记成 0。
+    assert outcome.usage_unknown
+
+
+def test_a_rate_limited_call_is_not_reported_as_billed():
+    class RateLimited:
+        mode = "deepseek"
+
+        def complete(self, **kwargs):
+            raise ApiProblem(429, "UPSTREAM_RATE_LIMITED", "限流", retryable=True)
+
+    outcome = run(llm=RateLimited())
+
+    assert outcome.call_failed
+    # 429 是上游明确拒绝，没有产生 token，不能算进「可能已计费」。
+    assert not outcome.usage_unknown
 
 
 def test_missing_facts_are_named_in_the_baseline_once():

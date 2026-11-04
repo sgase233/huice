@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 
 from app.agents.ingestion import PreparedSource
+from app.errors import ApiProblem
 from app.integrations.llm import LlmResult
 from app.schemas import PolicyImportMetadata
 from support import build_draft, metadata_payload
@@ -239,6 +240,135 @@ def test_a_rule_based_extraction_is_not_logged_as_a_model_call(app, client, auth
     assert "model_call purpose=extraction" not in caplog.text
     # 规则抽取仍然是一次真实的抽取：轨迹与用量照记，只是不算模型开销。
     assert repository.saved_extractions[-1]["model"]
+
+
+class _FailingExtractionLlm:
+    """抽取时直接失败：``problem`` 决定是限流、超时还是上游 4xx。"""
+
+    mode = "deepseek"
+    model_name = "deepseek-chat"
+
+    def __init__(self, problem) -> None:
+        self._problem = problem
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        raise self._problem
+
+
+def _failing_llm(*, retryable: bool, usage_unknown: bool, status_code: int, code: str):
+    return _FailingExtractionLlm(
+        ApiProblem(
+            status_code,
+            code,
+            "模型服务暂不可用，已改用规则结果与已存说明。",
+            retryable=retryable,
+            usage_unknown=usage_unknown,
+        )
+    )
+
+
+def _extract(client, auth, draft):
+    return client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+
+def test_a_rate_limited_extraction_is_recorded_as_retryable(app, client, auth, repository, caplog):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _failing_llm(
+        retryable=True, usage_unknown=False, status_code=429, code="UPSTREAM_RATE_LIMITED"
+    )
+
+    response = _extract(client, auth, draft)
+
+    # 响应形状不变：限流仍是 429，不因为要留痕就改成 503。
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "UPSTREAM_RATE_LIMITED"
+    failed = repository.failed_extractions[-1]
+    assert failed["status"] == "retryable_error"
+    assert failed["error_code"] == "UPSTREAM_RATE_LIMITED"
+    assert failed["usage_unknown"] is False
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
+    # 上游明确拒绝就没有 token，记 none/0，不能与「可能已计费」混在一起。
+    assert "outcome=error" in line and "usage=none" in line
+    assert "prompt=0" in line and "completion=0" in line
+
+
+def test_a_timeout_during_extraction_is_retryable_with_unknown_usage(app, client, auth, repository, caplog):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _failing_llm(
+        retryable=True, usage_unknown=True, status_code=503, code="DEPENDENCY_UNAVAILABLE"
+    )
+
+    response = _extract(client, auth, draft)
+
+    assert response.status_code == 503
+    failed = repository.failed_extractions[-1]
+    assert failed["status"] == "retryable_error"
+    # 超时时上游可能已处理并计费：用量登记为未知，不能当 0。
+    assert failed["usage_unknown"] is True
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
+    assert "usage=unknown" in line and "prompt=unknown" in line
+
+
+def test_an_upstream_client_error_is_fatal_and_not_retried(app, client, auth, repository):
+    draft = seed_draft(repository)
+    app.state.llm = _failing_llm(
+        retryable=False, usage_unknown=False, status_code=503, code="DEPENDENCY_UNAVAILABLE"
+    )
+
+    response = _extract(client, auth, draft)
+
+    assert response.status_code == 503
+    failed = repository.failed_extractions[-1]
+    # 密钥/模型名写错这类失败重试也不会好，记 fatal_error 让人直接去查配置。
+    assert failed["status"] == "fatal_error"
+    assert failed["usage_unknown"] is False
+
+
+def test_a_failed_extraction_leaves_the_draft_untouched(app, client, auth, repository):
+    draft = seed_draft(repository)
+    app.state.llm = _failing_llm(
+        retryable=True, usage_unknown=True, status_code=503, code="DEPENDENCY_UNAVAILABLE"
+    )
+
+    _extract(client, auth, draft)
+
+    # 失败留痕是独立事务：草稿内容、状态与 revision 都不变，也没有半条条款落库。
+    assert repository.saved_criteria == []
+    assert repository.get_version_for_edit(draft.id, draft.version).revision == draft.revision
+
+
+def test_a_call_that_then_loses_the_save_stays_on_the_call_record(
+    app, client, auth, repository, caplog
+):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _ModelExtractionLlm()
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, uuid4(), key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    assert response.status_code == 409
+    assert repository.saved_criteria == []
+    # 草稿保存被 409 挡下、抽取轨迹随事务回滚，但这次调用已经发生并计费：
+    # 调用记录独立于草稿保存事务，必须留在日志里可核对。
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("model_call")
+    ]
+    assert len(lines) == 1
+    assert "outcome=ok" in lines[0] and "prompt=120" in lines[0]
+    # 调用本身没失败，只是没保存成功，不该记一条失败步骤。
+    assert repository.failed_extractions == []
 
 
 def test_manual_save_does_not_claim_an_extraction(client, auth, repository):

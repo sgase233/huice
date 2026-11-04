@@ -165,19 +165,34 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 #### 模型调用与 token 记录（2026-11-04）
 
-每次**真实**模型调用在服务日志里占一行，轨迹与响应里各有对应落点，三处可以对账：
+每次**真实**模型调用在服务日志里占一行——**成功和失败都记**，轨迹与响应里各有对应落点：
 
 | 落点 | 抽取（API-05） | 解释（API-11） |
 | --- | --- | --- |
-| 日志 | `model_call purpose=extraction model=<模型名> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<id> version=<版本>` | `model_call purpose=explanation model=<模型名> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<政策 ID> version=<版本>` |
-| 轨迹 | `extraction` 步骤：`modelOrRuleVersion` 为模型名（规则抽取为 `rule:extraction@1`），`elapsedMs` 为调用耗时，摘要「抽取正文 N 字」→「得到条件 K 条、校验发现 M 条」 | `explanation` 步骤摘要前缀「模型 tokens 入 N 出 M」（`MAX_SUMMARY=200` 会截断，多政策只记总数） |
+| 日志（成功） | `model_call purpose=extraction outcome=ok usage=known model=<模型名> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<id> version=<版本>` | `model_call purpose=explanation outcome=ok usage=known model=<模型名> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<政策 ID> version=<版本>` |
+| 日志（失败） | `model_call purpose=extraction outcome=error usage=<unknown\|none> model=<模型名> prompt=<unknown\|0> completion=<unknown\|0> elapsed_ms=<ms> policy_id=<id> version=<版本> code=<错误码>` | `model_call purpose=explanation outcome=error usage=<unknown\|none> prompt=… completion=… elapsed_ms=unknown policy_id=… version=…` |
+| 轨迹 | 成功：`extraction` 步骤，`modelOrRuleVersion` 为模型名，摘要「抽取正文 N 字」→「得到条件 K 条、校验发现 M 条」。失败：独立事务写一条只有错误码的步骤，`status` 为 `retryable_error`/`fatal_error`，摘要「模型抽取失败」→「错误码 …；上游可能已计费，用量未知 / 上游未接受，未产生用量」 | `explanation` 步骤摘要前缀「模型 tokens 入 N 出 M」，失败时追加「另有 K 次调用失败、用量未知」（`MAX_SUMMARY=200` 会截断，多政策只记总数） |
 | 响应 | `ExtractionResult.usage`（接口本来就返回） | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
 
-只记**真实调用**：`fixture`/规则抽取、解释降级到 `saved`、幂等重放都不写 `model_call` 行；tokens 恒为 0 的路径不会被算成模型开销。ECS 上查询：
+**用量的三态**（2026-11-04 按复审意见区分，未知不并进 0）：
+
+- `usage=known`：拿到响应与 `usage` 字段，记真实 tokens。
+- `usage=unknown`：超时、连接中断、5xx、2xx 但响应解析不出结果——上游**可能已经处理并计费**，但客户端拿不到用量。单列，不得当作 0 参与费用统计。
+- `usage=none` / 不记行：上游明确拒绝（429、4xx，确认没有产生 token），或根本没调模型（`fixture`、规则抽取、幂等重放）。
+
+**失败按可重试性分档**：429 与超时/连接/5xx/坏响应记 `retryable_error`；上游 4xx（密钥、模型名、参数写错）记 `fatal_error`，重试不会自愈。两个标记只在服务端内部使用，错误响应的状态码与错误码形状不变。
+
+**调用记录独立于草稿保存事务**：抽取是先调模型、后存草稿。模型成功但保存撞 409 或进程中断时，草稿与抽取轨迹一起回滚，但**调用日志已经写出**，仍可核对；模型失败时失败步骤走独立事务、只挂既有政策版本，不改草稿、不动 revision。写失败步骤自身出错只记一条告警，绝不替换原来的 429/503。
+
+ECS 上查询：
 
 ```bash
 journalctl -u huice-api --since today | grep 'model_call'
+# 只看需要人工核对费用的失败调用
+journalctl -u huice-api --since today | grep 'model_call' | grep 'usage=unknown'
 ```
+
+**API-14 可见性边界**：API-14 从分析 run 按政策版本关联入库轨迹。草稿未发布、尚无关联 run 时，失败步骤**不保证立即在该页面可见**；政策发布后读到的历史失败步骤，也不代表当前在线分析失败。
 
 **费用暂不折算金额（2026-11-04）**：本机抓取官方价目页 `https://api-docs.deepseek.com/quick_start/pricing` 被网络策略拦下（域名无法校验），公开检索到的摘录对同一模型给出多套单价（2 元 / 5 元、3 元 / 6 元，以及按 `deepseek-flash` / `deepseek-v4-pro` 峰谷计的美元价），无法确认当前 `DEEPSEEK_MODEL` 的计费口径；按「不猜单价」只记 tokens。有网环境补录时：取价目页的输入（缓存命中 / 未命中）与输出单价，按 `prompt×P_in + completion×P_out` 折算，并在本节注明**抓取日期**、模型名与是否含缓存命中价。
 

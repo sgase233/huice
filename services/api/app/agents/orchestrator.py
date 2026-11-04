@@ -38,7 +38,7 @@ from ..schemas import (
     Preparation,
 )
 from .contracts import AgentContext, PolicySnapshot
-from .explanation import CriterionLine, explain
+from .explanation import CriterionLine, Explanation, explain
 from .profile import NormalizedFact, fact_snapshots
 from .trace import TraceRecorder
 
@@ -127,8 +127,9 @@ def assess(
 
     assessments: list[PolicyAssessment] = []
     model_usages: list[LlmResult] = []
+    unknown_usages = 0
     for snapshot, evaluation in zip(snapshots, evaluations):
-        assessment, usage = _policy_assessment(
+        assessment, usage, failure = _policy_assessment(
             snapshot=snapshot,
             evaluation=evaluation,
             missing=missing_by_policy[snapshot.id],
@@ -143,9 +144,14 @@ def assess(
         assessments.append(assessment)
         if usage is not None:
             model_usages.append(usage)
+        if failure is not None and failure.usage_unknown:
+            unknown_usages += 1
+        if usage is not None or failure is not None:
+            # 失败也记一行：模型可能已被调用并计费，不能因为解析失败就从账上消失。
             _log_model_call(
                 purpose="explanation",
                 usage=usage,
+                usage_unknown=failure.usage_unknown if failure is not None else False,
                 policy_id=snapshot.id,
                 version=snapshot.version,
             )
@@ -153,7 +159,7 @@ def assess(
     trace.add(
         "explanation",
         input_summary="按四态生成解释",
-        output_summary=_explanation_summary(assessments, model_usages),
+        output_summary=_explanation_summary(assessments, model_usages, unknown_usages),
     )
 
     run = AssessmentRun(
@@ -296,8 +302,9 @@ def _policy_assessment(
     llm: LlmClient | None,
     boundary: versioning.PolicyBoundary,
     now: datetime,
-) -> tuple[PolicyAssessment, LlmResult | None]:
-    """返回契约里的单政策判断，以及解释阶段的模型用量（未调模型时为 ``None``）。"""
+) -> tuple[PolicyAssessment, LlmResult | None, Explanation | None]:
+    """返回契约里的单政策判断、解释阶段的模型用量（未调模型为 ``None``），
+    以及调用失败时的解释结果（成功或未调模型为 ``None``）。"""
     criteria_results = [
         _criterion_result(snapshot, criterion) for criterion in evaluation.criteria
     ]
@@ -347,16 +354,18 @@ def _policy_assessment(
         explanation_mode=explanation.mode,
         warnings=[*explanation.warnings, MATERIAL_LIST_WARNING],
     )
-    return assessment, explanation.usage
+    return assessment, explanation.usage, (explanation if explanation.call_failed else None)
 
 
 def _explanation_summary(
-    assessments: Sequence[PolicyAssessment], usages: Sequence[LlmResult]
+    assessments: Sequence[PolicyAssessment],
+    usages: Sequence[LlmResult],
+    unknown_usages: int = 0,
 ) -> str:
     """轨迹摘要：先写模型用量（有真实调用时），再写每项政策的解释来源。
 
     用量只进摘要与日志，不进契约响应；``TraceRecorder`` 会按 200 字截断，
-    所以多政策时把用量放前面，避免被截掉。
+    所以多政策时把用量放前面，避免被截掉。失败次数单列，不与已知用量相加。
     """
 
     parts = []
@@ -364,22 +373,46 @@ def _explanation_summary(
         prompt = sum(item.prompt_tokens for item in usages)
         completion = sum(item.completion_tokens for item in usages)
         parts.append(f"模型 tokens 入 {prompt} 出 {completion}")
+    if unknown_usages:
+        parts.append(f"另有 {unknown_usages} 次调用失败、用量未知")
     parts.append("、".join(f"{item.policy_id}={item.explanation_mode}" for item in assessments))
     return "；".join(parts)
 
 
 def _log_model_call(
-    *, purpose: str, usage: LlmResult, policy_id: UUID | None = None, version: str | None = None
+    *,
+    purpose: str,
+    usage: LlmResult | None,
+    usage_unknown: bool = False,
+    policy_id: UUID | None = None,
+    version: str | None = None,
 ) -> None:
-    """一次真实模型调用一行；只记用量与对象标识，不记提示词与正文。"""
+    """一次模型调用一行；只记用量与对象标识，不记提示词与正文。
 
+    ``usage`` 为 ``None`` 表示调用失败：``usage_unknown`` 为真时用量写 ``unknown``
+    （上游可能已计费），否则写 ``0`` / ``none``（上游明确没有接受这次请求）。
+    """
+
+    if usage is not None:
+        logger.info(
+            "model_call purpose=%s outcome=ok usage=known model=%s prompt=%d completion=%d "
+            "elapsed_ms=%d policy_id=%s version=%s",
+            purpose,
+            usage.model,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.elapsed_ms,
+            policy_id,
+            version,
+        )
+        return
     logger.info(
-        "model_call purpose=%s model=%s prompt=%d completion=%d elapsed_ms=%d policy_id=%s version=%s",
+        "model_call purpose=%s outcome=error usage=%s prompt=%s completion=%s "
+        "elapsed_ms=unknown policy_id=%s version=%s",
         purpose,
-        usage.model,
-        usage.prompt_tokens,
-        usage.completion_tokens,
-        usage.elapsed_ms,
+        "unknown" if usage_unknown else "none",
+        "unknown" if usage_unknown else 0,
+        "unknown" if usage_unknown else 0,
         policy_id,
         version,
     )

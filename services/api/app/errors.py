@@ -32,6 +32,9 @@ class ApiProblem(Exception):
         message: str,
         details: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        *,
+        retryable: bool = False,
+        usage_unknown: bool = False,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -39,6 +42,11 @@ class ApiProblem(Exception):
         self.message = message
         self.details = dict(details or {})
         self.headers = dict(headers or {})
+        # 下面两个只给服务端自己看（记轨迹、写日志），不进错误响应体：
+        # ``retryable`` 决定失败步骤记 ``retryable_error`` 还是 ``fatal_error``；
+        # ``usage_unknown`` 表示上游可能已经处理并计费，但客户端拿不到用量。
+        self.retryable = retryable
+        self.usage_unknown = usage_unknown
 
 
 class StorageUnavailable(Exception):

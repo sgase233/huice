@@ -645,6 +645,53 @@ class PolicyRepository:
             )
             return self._load_draft(conn, row["id"])
 
+    def record_extraction_failure(
+        self,
+        *,
+        policy_id: UUID,
+        version: str,
+        trace_id: str,
+        status: str,
+        error_code: str,
+        model_or_rule_version: str,
+        elapsed_ms: int,
+        usage_unknown: bool,
+    ) -> None:
+        """把一次失败的抽取记成一条 ``extraction`` 轨迹步骤。
+
+        **独立事务**，只挂既有的政策版本，不改草稿、不动 revision：调用已经在
+        草稿保存之前发生，模型可能已经计费，不能因为后面的保存失败或进程中断就
+        让这次调用从库里消失。摘要只有错误码与用量口径，不写正文、提示词与凭据。
+
+        ``status`` 由调用方按可重试性决定（``retryable_error`` / ``fatal_error``）。
+        版本不存在等自身失败按异常抛给调用方，由调用方兜底记日志、不替换原错误。
+        """
+
+        with self._db.connection() as conn, conn.transaction():
+            row = self._fetchone(
+                conn,
+                "SELECT id, policy_id, version FROM policy_version "
+                "WHERE policy_id = %s AND version = %s",
+                (policy_id, version),
+            )
+            if row is None:
+                raise ApiProblem(404, "POLICY_NOT_FOUND", "没有找到对应的政策版本。")
+            usage = "上游可能已计费，用量未知" if usage_unknown else "上游未接受，未产生用量"
+            self._insert_trace(
+                conn,
+                trace_id=trace_id,
+                stage="extraction",
+                input_summary="模型抽取失败",
+                output_summary=f"错误码 {error_code}；{usage}",
+                policy_version_id=row["id"],
+                policy_id=row["policy_id"],
+                policy_version=row["version"],
+                model_or_rule_version=model_or_rule_version,
+                elapsed_ms=max(0, int(elapsed_ms)),
+                status=status,
+                error_code=error_code,
+            )
+
     def publish(
         self,
         *,

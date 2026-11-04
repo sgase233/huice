@@ -78,6 +78,7 @@ class FakeRepository:
         self.get_calls: list[tuple] = []
         self.saved_criteria: list[dict] = []
         self.saved_extractions: list[dict] = []
+        self.failed_extractions: list[dict] = []
         self.published: list[PolicyDraft] = []
         self.idempotency: dict[tuple[str, object], dict] = {}
         self.error: Exception | None = None
@@ -195,6 +196,32 @@ class FakeRepository:
         )
         self._replace(draft, updated)
         return updated
+
+    def record_extraction_failure(
+        self,
+        *,
+        policy_id,
+        version,
+        trace_id,
+        status,
+        error_code,
+        model_or_rule_version,
+        elapsed_ms,
+        usage_unknown,
+    ) -> None:
+        """失败留痕是独立事务：只记下来，不改草稿、不动 revision。"""
+        self.get_version_for_edit(policy_id, version)
+        self.failed_extractions.append(
+            {
+                "version": version,
+                "trace_id": trace_id,
+                "status": status,
+                "error_code": error_code,
+                "model": model_or_rule_version,
+                "elapsed_ms": elapsed_ms,
+                "usage_unknown": usage_unknown,
+            }
+        )
 
     def publish(self, *, policy_id, version, expected_revision, trace_id, started_at=None) -> PolicyDraft:
         draft = self.get_version_for_edit(policy_id, version)
