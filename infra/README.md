@@ -251,7 +251,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 **F. 验收证据（写进 devlog / 本文件）**
 
 - [ ] 补齐 10/21 逾期项：数据库连接、`vector` 查询、Redis 连通、OBS 测试对象上传/删除、健康检查（MaaS 合成请求按队长 2026-10-23 决定取消；DeepSeek 首次真实调用另记）
-- [x] 11/08 云端受限 Demo 可访问（2026-11-03）：新签发会话访问 `/policies` 200、伪造会话 403；同源站点 `https://139.9.33.46/` 本机与外网 200，`index.html` 引用的静态资源可取。脱敏截图待补
+- [x] 11/08 云端受限 Demo 可访问（2026-11-03）：新签发会话访问 `/policies` 200、伪造会话 403；同源站点 `https://139.9.33.46/` 本机与外网 200，`index.html` 引用的静态资源可取。脱敏截图（2026-11-04，外网浏览器）：[`/api/v1/health`，含地址栏与 `1.0.0-rc.6`](screenshots/2026-11-04-https-health.png)、[企业画像·真实接口](screenshots/2026-11-04-https-app-enterprise-profile.png)、[带会话 `/api/v1/policies`](screenshots/2026-11-04-https-api-policies.png)；三张均不含 cookie、内网地址与密钥，后两张为内容区裁切；地址栏显示「不安全」是自签证书所致（§4.1），不影响证明
 - [ ] 11/15 空环境复现记录
 - [ ] 全部记录不含密钥、连接串或真实企业材料
 
