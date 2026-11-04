@@ -73,8 +73,14 @@ def enterprise_input(industry: str = "C39", income=None) -> EnterpriseInput:
     )
 
 
-def publish_policy(repo, *, expressions, version: str = "v1.0", policy_id=None, **overrides):
-    """导入 → 保存已通过校验的条款 → 发布，返回 (policy_id, 已发布草稿)。"""
+def publish_policy(
+    repo, *, expressions, version: str = "v1.0", policy_id=None, extraction_model=None, **overrides
+):
+    """导入 → 保存已通过校验的条款 → 发布，返回 (policy_id, 已发布草稿)。
+
+    ``extraction_model`` 传了才算「这次保存前真的做过抽取」，与 API-05 调用
+    ``save_criteria`` 时传的同一参数；不传则不应出现 ``extraction`` 步骤。
+    """
 
     draft = create(repo, version=version, policy_id=policy_id, **overrides)
     body = draft.sources[0]
@@ -108,6 +114,9 @@ def publish_policy(repo, *, expressions, version: str = "v1.0", policy_id=None, 
         findings=[],
         status="pending_review",
         trace_id=str(uuid4()),
+        extraction_model=extraction_model,
+        extraction_elapsed_ms=7 if extraction_model else 0,
+        extraction_input_chars=42 if extraction_model else 0,
     )
     published = repo.publish(
         policy_id=draft.id,
@@ -594,6 +603,42 @@ def test_trace_links_ingestion_and_review_steps_before_online_steps(repo):
     review = next(step for step in trace.steps if step.stage == "human_review")
     assert review.human_action == "approve"
 
+    online = trace.steps[-5:]
+    assert all(step.policy_id is None for step in online)
+
+
+def test_the_extraction_step_is_tied_to_the_version_the_run_used(repo):
+    """API-05 的抽取步骤要出现在 API-14 里，且只挂本次 run 用到的那一版。"""
+
+    enterprise = make_enterprise(repo)
+    policy_id, _ = publish_policy(
+        repo, expressions=[INDUSTRY_GATE], version="v1.0", extraction_model="deepseek-chat"
+    )
+    publish_policy(
+        repo,
+        expressions=[INDUSTRY_GATE],
+        version="v1.1",
+        policy_id=policy_id,
+        extraction_model="deepseek-chat",
+    )
+
+    run = run_assessment(repo, enterprise.id, [policy_id])
+    trace = repo.get_trace(run.id)
+
+    extraction = [step for step in trace.steps if step.stage == "extraction"]
+    # 两个版本都做过带模型的抽取，但 run 只用了最新已发布版：只关联那一版的步骤。
+    assert len(extraction) == 1
+    assert extraction[0].policy_id == policy_id
+    assert extraction[0].policy_version == "v1.1"
+    assert extraction[0].model_or_rule_version == "deepseek-chat"
+    assert extraction[0].error_code is None
+    # 关联靠 objectRefs 里的 policyVersion 引用，不是靠时间或 traceId。
+    assert [ref.type for ref in extraction[0].object_refs] == ["policyVersion"]
+
+    stages = [step.stage for step in trace.steps]
+    # 抽取是入库/审核轨迹的一环，必须排在它引发的引用校验之前。
+    assert stages.index("extraction") < stages.index("citation_validation")
+    # 在线步骤不属于任何政策版本。
     online = trace.steps[-5:]
     assert all(step.policy_id is None for step in online)
 

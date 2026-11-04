@@ -184,12 +184,16 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 **调用记录独立于草稿保存事务**：抽取是先调模型、后存草稿。模型成功但保存撞 409 或进程中断时，草稿与抽取轨迹一起回滚，但**调用日志已经写出**，仍可核对；模型失败时失败步骤走独立事务、只挂既有政策版本，不改草稿、不动 revision。写失败步骤自身出错只记一条告警，绝不替换原来的 429/503。
 
+**日志管线（2026-11-04 修，M2 P1）**：uvicorn 自带的 `LOGGING_CONFIG` 只配置 `uvicorn*` 三个 logger，root 停默认的 WARNING 且没有 handler，应用模块的 `logger.info` 在部署环境里**会被丢弃**——测试里 `caplog.set_level(logging.INFO)` 恰好把这一点掩盖了。现在 `app/logging_setup.py` 在建 app 时给 `app` 与 `huice` 两个命名空间挂 stderr handler 并设为 INFO（systemd 的 `StandardOutput/StandardError=journal` 把它转进 journald），不需要额外的环境变量或 unit 参数；重复建 app 不会叠加 handler。`tests/test_logging_setup.py` 按「uvicorn 先初始化日志、应用再启动」的顺序验证，不依赖测试强制调级，其中一条走真实 fd 断言 `model_call` 那行确实到了 stderr。
+
 ECS 上查询：
 
 ```bash
 journalctl -u huice-api --since today | grep 'model_call'
 # 只看需要人工核对费用的失败调用
 journalctl -u huice-api --since today | grep 'model_call' | grep 'usage=unknown'
+# 若一行都没有：先确认这次真的调了模型（fixture/规则/重放本就不记行），再确认服务是带本节的版本
+systemctl show huice-api -p ExecStart --no-pager
 ```
 
 **API-14 可见性边界**：API-14 从分析 run 按政策版本关联入库轨迹。草稿未发布、尚无关联 run 时，失败步骤**不保证立即在该页面可见**；政策发布后读到的历史失败步骤，也不代表当前在线分析失败。
