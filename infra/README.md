@@ -165,14 +165,16 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 ### 4.4 云端降级演练（2026-11-03，ECS 上执行）
 
-同一天落地四件云端事项：rc.6 重部署、443 TLS、四条降级演练、前端同源站点。演练的统一做法是改 `/etc/huice/api.env` 后 `systemctl restart`，再用同一份请求体（已发布政策 `94b866bf-d88a-46e7-ac24-71c48131f05a` v1.0 + 企业 `dfc38b31-31bc-4cb3-b410-a0ed2d4f5c70`）重放 `POST /api/v1/assessment-runs`；脚本用 `trap` 保证退出前还原配置，避免把机器留在故障态。
+同一天落地四件云端事项：rc.6 重部署、443 TLS、降级演练、前端同源站点。演练的统一做法是改 `/etc/huice/api.env` 后 `systemctl restart`，再用同一份请求体（已发布政策 `94b866bf-d88a-46e7-ac24-71c48131f05a` v1.0 + 企业 `dfc38b31-31bc-4cb3-b410-a0ed2d4f5c70`）重放 `POST /api/v1/assessment-runs`；脚本用 `trap` 保证退出前还原配置，避免把机器留在故障态。
+
+四行都是**故障注入**演练：改配置制造故障，看接口如何降级、数据是否留下半成品、还原后是否恢复。对象存储那一行另含一次正常链路验证（2026-11-04 补做故障注入）。
 
 | 演练 | 做法 | 结果 | 恢复 |
 | --- | --- | --- | --- |
 | 缓存不可用 | `REDIS_URL` 指向无监听的 `127.0.0.1:6399` 后重启 | 评估仍 **200**，结论与基线一致；日志出现一次「判断缓存不可用（读取失败），本次及后续请求绕过缓存重算。」 | 从备份还原并重启 |
 | 数据库不可用 | `DATABASE_URL` 端口改为 `5499`（主机不变）后重启 | `/health`、`/policies`、`/assessment-runs/{id}` 均为 **503 `DEPENDENCY_UNAVAILABLE`**；响应体不含连接串或堆栈。驱动日志会带主机与端口（不含账号密码），属已知边界 | 同上 |
 | 模型失败 | `MODEL_MODE=deepseek` + 故意无效的 key，`DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL` 取已有值 | 评估仍 **200**、`explanationMode=saved`、告警「模型服务暂不可用，已改用规则结果与已存说明。」；**抽取不降级**，返回 **503 `DEPENDENCY_UNAVAILABLE`**；响应不含 key、模型地址与堆栈 | 恢复为 `fixture` |
-| 对象存储 | 2026-11-04 补测：填入 `OBS_*` 四项后切 `OBJECT_STORE_MODE=obs`，导入一份合成政策 | 导入 **201**；库内 `storage_key` 为 `obs/f6e0b78….txt`；同凭据 SDK `getObjectMetadata` 查桶内对象 **200**。此前 `local` 模式导入的对象仍留在 ECS 磁盘（`local/<uuid>`）且不迁移，演示数据按清单重新导入 | 保持 `obs`（云端演示取值，见 §5.1） |
+| 对象存储 | 2026-11-04 两段。**① 正常链路**：填入 `OBS_*` 四项后切 `OBJECT_STORE_MODE=obs`，导入一份合成政策。**② 故障注入**：把 `OBS_ENDPOINT` 改成解析不到的 `obs.invalid` 后重启（`trap` 保证退出前还原） | ① 导入 **201**；库内 `storage_key` 为 `obs/f6e0b78….txt`；同凭据 SDK `getObjectMetadata` 查桶内对象 **200**。② `/health` 仍 **200**（健康检查不探对象存储）；导入返回 **503 `DEPENDENCY_UNAVAILABLE`**、消息「文件存储暂不可用，请稍后重试。」，响应不含 endpoint、AK/SK 或桶名；`policy_version` 行数 **3 → 3**，即「先传对象、后写库」的顺序让失败不留半条数据。还原配置并重启后 `/health` 200，同一请求转 **201**，行数 **3 → 4** | 保持 `obs`（云端演示取值，见 §5.1）；恢复时留下的草稿政策 `eb860451-865d-474c-bff2-1f33da6886fb` 未发布，不进 `/policies` 公开列表。此前 `local` 模式导入的对象仍在 ECS 磁盘（`local/<uuid>`）且不迁移，演示数据按清单重新导入 |
 
 演练的前提是库里有一条 `published` 政策：首次尝试时 `policy_version` 为 0 行，评估按「未发布版本整体 422」被拒，故先走 import → extract → save criteria → publish 建了一条合成政策（条款为虚构文本，不含任何企业材料）。演练结束后轮换了 `DEMO_SESSION_SECRET`，演练期间签发过的会话全部失效。
 
