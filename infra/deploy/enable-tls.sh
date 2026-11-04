@@ -9,6 +9,9 @@
 #         443 只装**一份**站点配置：给了 --web-root 就装「静态文件 + /api/v1 同源反代」，
 #         不给就装「全部反代 API」。两种形态都写到同一个文件名，重跑脚本即切换，
 #         不会出现两个 `server_name _` 抢 443 的 conflicting server name。
+#         但切换是有方向的：已装同源站点后不带 --web-root 重跑，等于把 443 切回仅反代
+#         API、前端页面随即 404（接口照旧正常，很容易误判成前端故障）。这种重跑先拦下，
+#         要真切回仅 API 得显式加 --force。
 
 set -euo pipefail
 
@@ -51,6 +54,22 @@ validate_web_root() {
     [[ "${path}" == /* ]] || die "前端目录要写成绝对路径：${path}"
     # 只放行保守字符集：空格/分号会破坏 nginx 语法，竖线与 & 会被 sed 当成分隔符或替换标记。
     [[ "${path}" != *[!A-Za-z0-9/_.-]* ]] || die "前端目录只能用字母、数字和 / _ . -：${path}"
+}
+
+# 已装的是同源站点（配置里有渲染后的 `root` 指令）却要装「仅反代 API」时挡一下：
+# 这类重跑现场只表现为「证书续过了、页面没了」，很难联想到站点形态被切走。
+guard_web_root_downgrade() {
+    [[ -z "${WEB_ROOT}" ]] || return 0
+    [[ -f "${NGINX_CONF}" ]] || return 0
+    local current_root
+    current_root="$(sed -n 's/^[[:space:]]*root[[:space:]]\{1,\}\([^;]*\);.*/\1/p' "${NGINX_CONF}" | head -n 1)"
+    current_root="${current_root%"${current_root##*[![:space:]]}"}"
+    [[ -n "${current_root}" ]] || return 0
+    if [[ "${FORCE:-0}" -eq 1 ]]; then
+        log "警告：--force 会把 443 从同源站点（root ${current_root}）切回仅反代 API"
+        return 0
+    fi
+    die "当前 ${NGINX_CONF} 是同源站点配置（root ${current_root}），本次没给 --web-root：重跑会把 443 切回「仅反代 API」，前端页面随即 404（接口仍正常，容易误判成前端故障）。只重装或续证书请带 --web-root ${current_root}；确实要切回仅 API 请加 --force"
 }
 
 # 覆盖前先备份：重跑时若 nginx -t 失败，回滚要能回到机器上原来那份配置。
@@ -124,6 +143,8 @@ main() {
         # 同源的前提是前端构建时就把 API 指到相对路径，否则页面仍会去连本机 8000。
         log "前端同源：构建时须设 VITE_API_BASE_URL=/api/v1（apps/web 由 M2 构建）"
     fi
+    # 放在签证书之前：形态切换被拦下时，机器上不该留下任何半成品改动。
+    guard_web_root_downgrade
 
     SAN="$(san_for_host "${HOST_ARG}")"
 
