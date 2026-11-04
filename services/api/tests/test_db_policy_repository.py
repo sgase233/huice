@@ -352,6 +352,7 @@ def test_rc4_facts_only_accept_their_own_unit(database_url_schema):
 
 def test_extraction_step_is_written_before_citation_validation(repo, database_url_schema):
     draft = create(repo)
+    trace_id = str(uuid4())
 
     repo.save_criteria(
         policy_id=draft.id,
@@ -360,7 +361,7 @@ def test_extraction_step_is_written_before_citation_validation(repo, database_ur
         criteria=[],
         findings=[],
         status="pending_review",
-        trace_id="trace-extract",
+        trace_id=trace_id,
         extraction_model="deepseek-chat",
         extraction_elapsed_ms=7,
         extraction_input_chars=42,
@@ -370,7 +371,7 @@ def test_extraction_step_is_written_before_citation_validation(repo, database_ur
         database_url_schema,
         "SELECT stage, status, input_summary, model_or_rule_version, evidence_refs::text "
         "FROM trace_step WHERE trace_id = %s ORDER BY sequence",
-        ("trace-extract",),
+        (trace_id,),
     )
     # 抽取是真实发生过的一步，必须排在它引发的引用校验之前。
     assert [row[0] for row in rows] == ["extraction", "citation_validation"]
@@ -382,6 +383,7 @@ def test_extraction_step_is_written_before_citation_validation(repo, database_ur
 
 def test_save_without_extraction_writes_no_extraction_step(repo, database_url_schema):
     draft = create(repo)
+    trace_id = str(uuid4())
 
     repo.save_criteria(
         policy_id=draft.id,
@@ -390,7 +392,7 @@ def test_save_without_extraction_writes_no_extraction_step(repo, database_url_sc
         criteria=[],
         findings=[],
         status="pending_review",
-        trace_id="trace-manual-save",
+        trace_id=trace_id,
     )
 
     stages = [
@@ -398,7 +400,7 @@ def test_save_without_extraction_writes_no_extraction_step(repo, database_url_sc
         for row in query_all(
             database_url_schema,
             "SELECT stage FROM trace_step WHERE trace_id = %s ORDER BY sequence",
-            ("trace-manual-save",),
+            (trace_id,),
         )
     ]
     # 手工保存条款没有调用模型，不能凭空写一条抽取轨迹。
@@ -407,6 +409,8 @@ def test_save_without_extraction_writes_no_extraction_step(repo, database_url_sc
 
 def test_a_stale_revision_fails_before_any_trace_row_is_written(repo, database_url_schema):
     draft = create(repo)
+    first_trace = str(uuid4())
+    conflict_trace = str(uuid4())
     repo.save_criteria(
         policy_id=draft.id,
         version=draft.version,
@@ -414,7 +418,7 @@ def test_a_stale_revision_fails_before_any_trace_row_is_written(repo, database_u
         criteria=[],
         findings=[],
         status="pending_review",
-        trace_id="trace-first-save",
+        trace_id=first_trace,
         extraction_model="deepseek-chat",
     )
 
@@ -427,7 +431,7 @@ def test_a_stale_revision_fails_before_any_trace_row_is_written(repo, database_u
             criteria=[],
             findings=[],
             status="pending_review",
-            trace_id="trace-conflict",
+            trace_id=conflict_trace,
             extraction_model="deepseek-chat",
         )
 
@@ -437,7 +441,7 @@ def test_a_stale_revision_fails_before_any_trace_row_is_written(repo, database_u
         query_all(
             database_url_schema,
             "SELECT 1 FROM trace_step WHERE trace_id = %s",
-            ("trace-conflict",),
+            (conflict_trace,),
         )
         == []
     )
