@@ -144,28 +144,58 @@ curl -k -i https://139.9.33.46/api/v1/health   # 自己电脑上，期望 200 + 
 
 `restricted` 模式要求前端与 API 同源（§3.2 末段），演示时把前端构建产物也挂到 443 上，`/api/v1/` 反代到本机 API：
 
+下面 1)～3) 在**仓库根目录**执行（`git rev-parse --show-toplevel` 所在的目录；Windows 侧用 Git Bash，与 §2 一致），4) 在 ECS 上执行：
+
 ```bash
 # 1) 前端构建在 M2 侧做：构建时必须把 API 指到相对路径，
 #    否则页面打包进去的仍是 http://127.0.0.1:8000/api/v1，打开后一片请求失败。
-cd apps/web && npm ci
-VITE_API_BASE_URL=/api/v1 npm run build
+#    cd 放在子 shell 里，执行完仍停在仓库根目录，后面的相对路径不受影响。
+(cd apps/web && npm ci && VITE_API_BASE_URL=/api/v1 npm run build)
 
-# 2) 产物拷到服务器（dist 是构建产物，不进仓库）
-scp -r apps/web/dist root@139.9.33.46:/opt/huice/web
+# 2) 只打包 dist 的内容：-C ... . 不带 dist/ 这一层，解包后才正好是站点根目录里的
+#    index.html 与 assets/；包写在系统临时目录，构建产物不进仓库。
+PACK="$(mktemp -d)/web-dist.tar.gz"
+tar -czf "$PACK" -C apps/web/dist .
+tar -tzf "$PACK" | head   # 自查：应为 ./index.html、./assets/...，没有 dist/ 前缀
 
-# 3) ECS 上重跑脚本，装上同源站点（证书已存在会保留，不会重签）
+# 3) 上传后在 ECS 上解包到站点根目录；首次部署与更新用的是同一条命令。
+scp "$PACK" root@139.9.33.46:/tmp/web-dist.tar.gz
+ssh root@139.9.33.46 'mkdir -p /opt/huice/web && tar -xzf /tmp/web-dist.tar.gz -C /opt/huice/web && chmod -R o+rX /opt/huice/web'
+```
+
+在 ECS 上：
+
+```bash
+# 4) 装上同源站点（证书已存在会保留，不会重签）
 sudo bash /opt/huice/app/infra/deploy/enable-tls.sh 139.9.33.46 --web-root /opt/huice/web
 ```
 
+- **别用 `scp -r apps/web/dist root@<host>:/opt/huice/web` 拷产物**：目标已存在时它会在 `/opt/huice/web` 下再建一层 `dist/`，而 nginx 的 `root` 是 `/opt/huice/web`，于是更新后仍在服务旧版本；目标不存在时又变成「把 dist 另存为 `/opt/huice/web`」，首次与更新两种情形结果还不一样。上面的 tar 写法把内容直接铺到根目录，两种情形同一条命令、结果一致。
 - 装的是 `nginx-huice-site.conf`：`root /opt/huice/web`、SPA 回退 `try_files $uri $uri/ /index.html`、`/api/v1/` 反代 `127.0.0.1:8000`、`client_max_body_size 60m` 与 80/443 现有配置一致。
 - **它与「只反代 API」的那份写到同一个文件名**（`/etc/nginx/conf.d/huice-api-tls.conf`）：给 `--web-root` 就是同源站点，不给就退回仅 API。两份都是 `listen 443` + `server_name _`，同时安装会触发 `conflicting server name "_"`，脚本靠「只写一个文件名」避免这种并存。
 - `/assets/` 下是带内容哈希的构建产物，缓存 30 天；`index.html` 明确 `no-cache`，发布后刷新即可拿到新的资源清单。资源缺失时直接 404，不会退回 `index.html`。
 - 前端目录必须是绝对路径，且只用字母、数字与 `/ _ . -`（空格、分号会破坏 nginx 语法，竖线和 `&` 会被 sed 当成分隔符/替换标记），脚本先校验再安装；`nginx -t` 不通过时仍按 §3.2 的备份回滚。
 - 同源部署下请求不再跨源，`CORS_ORIGINS` 不再是必经环节；填 `https://<EIP>` 也无害。
 - 静态文件只在 443 上；80 端口仍只反代 API，用 `http://<EIP>` 打不开前端页面。
-- 换前端版本时重复 1→2→3（`dist` 覆盖即可，配置不用改）；只更新静态文件时不必重跑脚本。
+- 换前端版本时重复 1→3（解包覆盖 `index.html` 与新的哈希资源即可，配置不用改）；4) 只在首次安装或换目录时才要重跑。旧哈希的 `/assets/` 文件留在原地不影响访问，要清理就先 `rm -rf /opt/huice/web/assets` 再解包。
 
-验证（ECS 上）：`curl -k -i https://127.0.0.1/` 应返回 `index.html`，`curl -k -i https://127.0.0.1/api/v1/health` 仍是 200。
+验证分两种情形，都在 ECS 上做：
+
+```bash
+# 首次部署（/opt/huice/web 原本不存在）
+ls /opt/huice/web/index.html /opt/huice/web/assets     # 两个都在
+ls /opt/huice/web/dist                                 # 应报 No such file or directory：没有多套一层
+curl -k -s -o /dev/null -w '%{http_code}\n' https://127.0.0.1/          # 200
+
+# 更新（web 根已存在，换过一版前端：先记下资源名，重跑 1)～3) 后再看）
+grep -o 'assets/index-[^"]*\.js' /opt/huice/web/index.html              # 资源名变了
+curl -k -s https://127.0.0.1/ | grep -o 'assets/index-[^"]*\.js'        # 页面引用的是新资源
+ls /opt/huice/web/dist                                                  # 仍不存在
+```
+
+两者最后都再确认一次：`curl -k -i https://127.0.0.1/` 返回 `index.html`，`curl -k -i https://127.0.0.1/api/v1/health` 仍是 200。
+
+2026-11-04 在 ECS 上按这两种情形各跑过一次：首次部署后 `/opt/huice/web` 下直接是 `index.html` + `assets/`、`/opt/huice/web/dist` 不存在；模拟换一版（改资源名）解包到已存在的站点根目录后，`index.html` 引用的是新资源名、`/` 与 `/assets/<新文件>` 均 200、仍未生成 `dist/`，验完已还原原产物。
 
 ## 4. 验证
 
