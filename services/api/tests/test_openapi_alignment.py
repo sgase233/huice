@@ -197,6 +197,48 @@ def test_every_contract_expression_operator_is_accepted_by_the_validator(contrac
     assert set(date_keys) == set(DATE_KEYS)
 
 
+# --------------------------------------------- 用量未知的表达（rc.7 起）
+
+
+def test_model_usage_can_say_the_tokens_are_unknown(contract, schema):
+    """rc.7：`ModelUsage` 多了可选 `tokensUnknown`，用来区分「上游没给用量」与真实 0。
+
+    没有它时，2xx 但缺 `usage` 只能返回 0，消费者分不清「这次真的没花 token」和
+    「不知道花了多少」——日志里的 unknown 传不到接口调用方。这里锁住三件事：
+    契约里它是**可选**布尔（加法式，旧消费者不受影响）、服务端字段名一致、
+    缺省时按「已知」解释。
+    """
+
+    contract_usage = contract["components"]["schemas"]["ModelUsage"]
+    served_usage = schema["components"]["schemas"]["ModelUsage"]
+
+    assert "tokensUnknown" in contract_usage["properties"]
+    assert contract_usage["properties"]["tokensUnknown"]["type"] == "boolean"
+    # 可选：放进 required 就等于对所有既有调用方强制新字段，失去加法式的意义。
+    assert "tokensUnknown" not in contract_usage["required"]
+    assert "tokensUnknown" in served_usage["properties"]
+    assert "tokensUnknown" not in served_usage["required"]
+
+    from app.schemas import ModelUsage
+
+    # 契约要求还是那五个字段；省略 tokensUnknown 时默认「已知」。
+    assert set(contract_usage["required"]) == {
+        "mode",
+        "modelVersion",
+        "inputTokens",
+        "outputTokens",
+        "elapsedMs",
+    }
+    usage = ModelUsage(
+        mode="deepseek",
+        model_version="deepseek-chat",
+        input_tokens=1,
+        output_tokens=2,
+        elapsed_ms=3,
+    )
+    assert usage.tokens_unknown is False
+
+
 # ------------------------------------------------- 轨迹引用与引文的分工（rc.6 起）
 
 

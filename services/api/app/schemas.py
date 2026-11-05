@@ -153,6 +153,9 @@ class ModelUsage(WireModel):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     elapsed_ms: int = Field(ge=0)
+    # rc.7：上游没回可用用量时为真，两个数值只是占位 0。旧消费者忽略该字段即可，
+    # 但任何按 tokens 统计费用的地方都必须先看它。
+    tokens_unknown: bool = False
 
 
 class ExtractPolicyInput(WireModel):

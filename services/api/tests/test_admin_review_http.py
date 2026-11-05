@@ -135,6 +135,8 @@ def test_extract_moves_draft_to_pending_review_with_cited_criteria(client, auth,
     body = response.json()
     assert body["draft"]["status"] == "pending_review"
     assert body["usage"]["mode"] == "fixture"
+    # 规则抽取没有发起调用，0 是真实的 0，不挂「未知」标记（契约 rc.7）。
+    assert body["usage"]["tokensUnknown"] is False
     assert len(body["criteriaDrafts"]) == 1
     criterion = body["criteriaDrafts"][0]
     assert criterion["validationStatus"] == "passed"
@@ -225,6 +227,71 @@ def test_a_real_model_extraction_logs_its_usage_once(app, client, auth, reposito
     assert QUOTE not in lines[0]
     # 轨迹里记的是模型名，与日志里的 model= 对得上。
     assert repository.saved_extractions[-1]["model"] == "deepseek-chat"
+
+
+class _NoUsageExtractionLlm:
+    """上游 2xx、正文可解析，但响应里没有可用 usage：用量按未知记（契约 rc.7）。"""
+
+    mode = "deepseek"
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        item = {
+            "title": "合成演示阈值",
+            "expression": THRESHOLD_EXPRESSION,
+            "quote": QUOTE,
+            "section": "第一条",
+        }
+        return LlmResult(
+            text=json.dumps([item], ensure_ascii=False),
+            model="deepseek-chat",
+            prompt_tokens=0,
+            completion_tokens=0,
+            elapsed_ms=120,
+            usage_known=False,
+        )
+
+
+def test_a_successful_extraction_without_usage_says_so_in_the_response(
+    app, client, auth, repository, caplog
+):
+    """拿不到用量时响应必须标出来，不能让消费者把占位 0 当成真实用量。"""
+
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _NoUsageExtractionLlm()
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    usage = body["usage"]
+    assert usage["tokensUnknown"] is True
+    assert usage["inputTokens"] == 0 and usage["outputTokens"] == 0
+    # 抽取本身成功：条款照常产出，只有用量不可用。
+    assert len(body["criteriaDrafts"]) == 1
+    assert "usage=unknown" in caplog.text
+    assert "prompt=unknown" in caplog.text
+
+
+def test_a_real_model_extraction_reports_known_tokens(app, client, auth, repository):
+    """有完整用量时不置未知标记，两个数值就是真实用量。"""
+
+    draft = seed_draft(repository)
+    app.state.llm = _ModelExtractionLlm()
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    usage = response.json()["usage"]
+    assert usage["tokensUnknown"] is False
+    assert usage["inputTokens"] == 120 and usage["outputTokens"] == 45
 
 
 def test_a_rule_based_extraction_is_not_logged_as_a_model_call(app, client, auth, repository, caplog):

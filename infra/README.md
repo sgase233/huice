@@ -172,7 +172,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 | 日志（成功） | `model_call purpose=extraction outcome=ok usage=<known\|unknown> model=<模型名> prompt=<n\|unknown> completion=<n\|unknown> elapsed_ms=<ms> policy_id=<id> version=<版本>` | `model_call purpose=explanation outcome=ok usage=<known\|unknown> model=<模型名> prompt=<n\|unknown> completion=<n\|unknown> elapsed_ms=<ms> policy_id=<政策 ID> version=<版本>` |
 | 日志（失败） | `model_call purpose=extraction outcome=error usage=<unknown\|none> model=<模型名> prompt=<unknown\|0> completion=<unknown\|0> elapsed_ms=<ms> policy_id=<id> version=<版本> code=<错误码>` | `model_call purpose=explanation outcome=error usage=<unknown\|none> prompt=… completion=… elapsed_ms=unknown policy_id=… version=…` |
 | 轨迹 | 成功：`extraction` 步骤，`modelOrRuleVersion` 为模型名，摘要「抽取正文 N 字」→「得到条件 K 条、校验发现 M 条」。失败：独立事务写一条只有错误码的步骤，`status` 为 `retryable_error`/`fatal_error`，摘要「模型抽取失败」→「错误码 …；上游是否计费无法确认，用量按未知记录 / 未发起模型调用，没有用量」 | `explanation` 步骤摘要前缀「模型 tokens 入 N 出 M」（只汇总已知用量），出现未知时追加「另有 K 次调用用量未知（失败或响应缺用量，可能已计费）」（`MAX_SUMMARY=200` 会截断，多政策只记总数） |
-| 响应 | `ExtractionResult.usage`（接口本来就返回）。注意：契约 `ModelUsage` 的 tokens 是整数，**没有「未知」表示**，2xx 缺用量时响应里仍是 0，真实状态只在日志与轨迹摘要里 | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
+| 响应 | `ExtractionResult.usage`（接口本来就返回）。契约 rc.7 起多了 `tokensUnknown`：2xx 但拿不到用量时 `tokensUnknown=true`、两个数值是**占位 0**，不得按 tokens 计费；`fixture` 这类没发起调用的是真实的 0，不带标记。旧消费者忽略该字段即可 | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
 
 **用量的三态**（2026-11-05 按复审意见收口，未知不并进 0）：
 
@@ -184,7 +184,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 **失败按可重试性分档**：429 与超时/连接/5xx/坏响应记 `retryable_error`；上游 4xx（密钥、模型名、参数写错）记 `fatal_error`，重试不会自愈。可重试性与「是否可能计费」是两件事：fatal 的调用同样按用量未知记。两个标记只在服务端内部使用，错误响应的状态码与错误码形状不变。
 
-**调用记录独立于草稿保存事务**：抽取是先调模型、后存草稿。模型成功但保存撞 409 或进程中断时，草稿与抽取轨迹一起回滚，但**调用日志已经写出**，仍可核对；模型失败时失败步骤走独立事务、只挂既有政策版本，不改草稿、不动 revision。写失败步骤自身出错只记一条告警，绝不替换原来的 429/503。
+**调用记录独立于草稿保存事务**：抽取是先调模型、后存草稿。模型成功但保存撞 409 时，草稿与抽取轨迹一起回滚，而**调用返回并完成日志写入之后**那行 `model_call` 仍在、可核对；模型失败时失败步骤走独立事务、只挂既有政策版本，不改草稿、不动 revision。写失败步骤自身出错只记一条告警，绝不替换原来的 429/503。这条只说「调用已返回、日志已写出」之后的中断；请求发出后、返回前被杀见下一段。
 
 **记录覆盖的边界（2026-11-05 如实标注）**：日志与失败步骤都在**调用返回或抛错之后**才写。请求已经发出、进程却在那之前被杀（OOM、`systemd` 强杀、机器掉电）时，这次调用**可能一行都没有**。要覆盖这种情形，需要在发起调用前先持久化一条「开始记录」并在事后对账，本里程碑没做，也不宣称已保证。对账时应把「日志缺失」与「确认未调用」分开看。
 

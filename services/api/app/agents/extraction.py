@@ -401,12 +401,16 @@ def _parse_model_json(text: str) -> list[Any] | None:
 
 
 def _usage(result: LlmResult | None, model_version: str | None, prompt: int, completion: int, elapsed: int) -> ModelUsage:
+    # 契约 rc.7：tokensUnknown 为真表示「上游没给出可用用量」，两个数值只是占位 0。
+    # 没有真实调用（fixture / 规则抽取）时 0 是真的 0，不置该标记。
+    unknown = result is not None and not result.usage_known
     return ModelUsage(
         mode=getattr(result, "mode", None) or ("deepseek" if result else "fixture"),
         model_version=model_version,
         input_tokens=max(0, int(prompt)),
         output_tokens=max(0, int(completion)),
         elapsed_ms=max(0, int(elapsed)),
+        tokens_unknown=unknown,
     )
 
 
