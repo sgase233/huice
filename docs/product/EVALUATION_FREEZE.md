@@ -109,7 +109,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 
 1. **政策导入映射**：`policy_id / policy_version / criterion_id` → 数据库中的政策/条件 ID、AST 哈希、导入提交与时间。
 2. **企业事实映射**：`enterprise_id + fact_key + period_start/end` → 事实值哈希、事实版本、来源文件。
-3. **运行参数**：数据集版本/哈希、代码 commit、规则版本、`asOf`、分析期间、`MODEL_MODE`、配置哈希。`codeCommit` 在 ECS 无 `.git` 时为 `null`，不得编造；签认前须由部署记录补 commit，或明确标为「代码身份未证明」，不得以双 `null` 当作代码相同。
+3. **运行参数**：数据集版本/哈希、代码 commit、规则版本、`asOf`、分析期间、`MODEL_MODE`、配置哈希。`codeCommit` 在 ECS 无 `.git` 时为 `null`，不得编造；签认前须由部署记录补 commit，或明确标为「代码身份未证明」，不得以双 `null` 当作代码相同；`verify` 在两侧均 `null` 时应显式提示「代码身份未证明」，不得静默通过。
 4. **结果导出（2026-11-05 定案：先做方案 A）**：
    - `runId`；
    - 完整 `trace` JSON 及其 SHA-256（条件级结论/理由/证据/计算以 trace 为主证据）；
@@ -118,6 +118,8 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
    - **不新增条件级结果表**。若 trace/report 缺少条件级的结论/理由/证据/计算字段，先记录缺口，不临时改库；确需从库直读时，另开迁移/契约 PR（方案 B），不阻塞本声明；
    - 条件级对账以 `labels.csv` 的条件级标签为准，结果从 trace/report 导出。
 5. **一致性核对**：运行前用上述映射核对运行时输入与签认快照；不一致即停止评测并记录，不得用运行结果反推快照。
+
+> **数据集哈希范围（2026-11-05 补）：** 只覆盖 §3 的三份文件（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）；`data/evaluation` 下的复核表/标注表（`material_review_*.csv`、`*_annotation_sheet.csv`）不属于评测输入，不应进入签认清单。`--dataset-dir` 如只能扫目录，应改为显式文件列表或支持多次指定。
 
 **进度（2026-11-05，M1）：** PR #39（`m1/eval-input-snapshot`，基于 `main`）已实现第 1、2、3（部分）、5 项，提供 `python -m app.evaluation inputs` / `verify` 两个命令；第 4 项按上述方案 A 执行。工具只读库，配置哈希不含 `ADMIN_TOKEN` / `DEEPSEEK_API_KEY` / `DATABASE_URL` / `REDIS_URL` / OBS AK/SK，清单文本不含这些值（有用例锁住）。**§5.2 仍未完成**：需 PR #39 合并并部署到 ECS、产出首份清单并 `verify` 通过；在此之前本声明保持草案。
 
