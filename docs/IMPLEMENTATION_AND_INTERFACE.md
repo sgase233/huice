@@ -215,7 +215,14 @@ python -m app.evaluation verify snapshot.json --dataset-dir data/evaluation
 - 表达式哈希是条件 `expression` 的规范化 JSON（排序键、`Decimal` 去尾零、日期 ISO）SHA-256，与引文 `quoteHash` 不是一回事；事实值只记哈希，值本身不进清单。
 - 配置哈希只覆盖 `CONFIG_FINGERPRINT_KEYS` 白名单；`ADMIN_TOKEN`、`DEEPSEEK_API_KEY`、`DATABASE_URL`、`REDIS_URL`、OBS AK/SK 永不进哈希输入（名字命中也直接报错），有用例锁住「改令牌哈希不变」。
 - 连接串只从环境变量 `DATABASE_URL` 读（不进 argv、不进 shell 历史），失败只报变量名。云端用 `systemd-run -p EnvironmentFile=/etc/huice/api.env` 带服务同款环境执行。
-- **未覆盖 §5.2 第 4 项（结果导出）**：条件级结果只存在于生成时的报告与轨迹摘要里，库里只落政策级 `assessment.result`，导出形态需先与 M3 定口径。
+- **§5.2 第 4 项（结果导出）**按 M3 的口径实现为 `freeze-report`（`app/evaluation/report_freeze.py`）：把 API-13 下载到的 `report.md` 裁成不含「截至下载时刻的有效性」的冻结产物，原始报告连同下载时间与两侧哈希另存审计。
+
+  ```bash
+  python -m app.evaluation freeze-report report.md --out report.frozen.md
+  ```
+
+  按下载时刻现算的内容一并删干净：`- 下载时间：…` 行、整个有效性段、判断结论表的「有效性」列，以及每个政策段的「有效性 / 失效原因 / 有效期至」。剔除只按固定标记整行/整段删除，**不做语义猜测**：输入缺标题、缺有效性段（已裁过或手工改过）、表格列数对不上都直接报错，不生成产物。审计信息（`sourceSha256`、`frozenSha256`、`downloadedAt`、`droppedLines`）以一行 JSON 打到 stderr，`--out -` 时 stdout 只有冻结正文。
+- **已知缺口**：冻结正文里的条件级结果仍是 Markdown 项目符号（四态 + 理由 + 逐字引文 + 计算），人能读、机器只能半结构化解析；`trace` 按契约只有阶段级摘要，不作条件级证据。要机器可解析的条件级导出，需评估 JSON 导出或方案 B（均不新增表），本轮不做，记录在此。
 
 ## 3. HTTP 共同约束
 
@@ -517,7 +524,9 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 
 为 `EVALUATION_FREEZE` §5.2 补输入侧工具（`services/api/app/evaluation/`，见 2.9）。新增 `tests/test_eval_snapshot.py` 27 项：纯函数 17 项锁住哈希口径（键序、`Decimal` 尾零、日期 ↔ ISO 串等价、`null` ≠ 空串、配置白名单挡密钥）与差异比较（忽略采集时间与签认后新增的数据集文件，值/配置/数据集/缺失行都能报出）；CLI 6 项（缺 `DATABASE_URL` 只报变量名、坏清单被拒、数据集目录不存在先于连库报错、只给 `--dataset-dir` 被拒、列出的文件不存在时点名）；`db` 标记 5 项在真库上验「清单的事实版本 == 引擎落库的 `fact_version`」「改事实值后 `verify` 非零退出且不改动清单」「清单文本里没有任何口令/令牌/连接串」「只哈希 `--dataset-file` 列出的文件、同目录的复核表不进清单」「两侧 `codeCommit` 皆 null 时提示代码身份未证明」。后两项按 M3 在 PR #39 的复核改的：目录扫 `*.csv` 会把材料复核表冻结进去，材料一改就误报；双 `null` 曾静默通过。
 
-验证（2026-11-05，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **733 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **5 passed**。**未执行**：云端实跑（本工具尚未部署），以及 §5.2 第 4 项「结果导出」——条件级结果不落库，需与 M3 定口径后再做。
+**§5.2 第 4 项「结果导出」（2026-11-05，按 M3 口径）**：`freeze-report` 把下载的 `report.md` 裁成不含有效性段的冻结产物。`tests/test_eval_report_freeze.py` 6 项：剔除干净（下载时间 / 有效性段 / 有效性列 / 失效原因 / 有效期至全部消失，条件级内容与办理清单保留）、同一 run 换下载时刻与失效状态后冻结字节一致、已裁过或手工改过的输入被拒（缺标题、缺有效性段）、摘要表列数异常被拒、用**真实渲染器**输出验证剔除口径（前提断言原始报告确实带有效性段）、CLI 写出文件并回报两侧哈希与下载时间。
+
+验证（2026-11-05，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **733 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **5 passed**。`freeze-report` 落地后无库全量 **697 passed / 53 skipped**。**未执行**：云端实跑（本工具尚未部署）；冻结正文的条件级结果是 Markdown 项目符号，机器只能半结构化解析——已知缺口，见 2.9。
 
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 
@@ -532,7 +541,7 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 | `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效（均已实现；季度平均的期间约束与冲突传播见 2.2） |
 | `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；explanation 的清单 `items[]` 待 M3 材料） |
 | `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage 已覆盖政策草稿、企业画像、公开政策、run、失效视图与轨迹读取；llm/obs 已实现，`esdk-obs-python` 已入锁，**2026-10-27 已在真实桶与真实 DeepSeek Key 上联调通过**（`test_obs_live.py` 5 项、`test_deepseek_live.py` 3 项）；cache 已实现七字段版本化键、值投影与故障绕过，`redis==8.1.0` 已入锁） |
-| `services/api/app/evaluation/`、`services/api/tests/test_eval_snapshot.py` | 评测输入快照的导出与核对（`EVALUATION_FREEZE` §5.2 第 1/2/3/5 项，见 2.9）；不产出评测指标 |
+| `services/api/app/evaluation/`、`services/api/tests/test_eval_snapshot.py`、`tests/test_eval_report_freeze.py` | 评测输入快照的导出与核对，以及 API-13 报告的确定性冻结（`EVALUATION_FREEZE` §5.2 第 1/2/3/4/5 项，见 2.9）；不产出评测指标 |
 | `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow,test_citations}.py` | 静态契约与业务测试，独立报告覆盖范围（refs 解析、四态优先级、AST 求值、引用校验、失效视图与端到端判断链路） |
 | `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_admin_review_http,test_public_read_http,test_enterprise_http,test_report_trace_http,test_profile_units,test_questioning,test_trace,test_cache,test_cache_redis_live,test_extraction_units,test_openapi_alignment,test_obs_object_store,test_obs_live,test_llm_client,test_deepseek_live}.py` | 无数据库 HTTP 测试（假仓储）、各单元口径与契约对齐测试；适配器用假客户端/假传输层/假缓存后端，不联网。三个例外都靠环境变量门控、默认跳过：`test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL`，真实 Redis）、`test_obs_live.py`（`HUICE_TEST_OBS_*` 四项，真实桶）、`test_deepseek_live.py`（`HUICE_TEST_DEEPSEEK_API_KEY`，真实模型） |
 | `services/api/tests/{conftest,support,db_support,test_db_policy_repository,test_db_evaluation,test_db_errors}.py` | `db` 标记的真库用例：独立 schema 建表、用例间清表；覆盖政策导入落库、企业画像 CAS、公开列表与游标、快照闸门、run 落库与失效视图、只追加与不可发布保护 |

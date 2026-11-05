@@ -22,9 +22,10 @@ JSON 对当前库重算一遍，逐项列出差异，非零退出即「与签认
         -p WorkingDirectory=/opt/huice/app/services/api \\
         /opt/huice/venv/bin/python -m app.evaluation inputs --out /tmp/eval-inputs.json
 
-**本工具只覆盖 §5.2 的第 1、2、3（部分）、5 项。** 第 4 项「结果导出」不在这里：
-条件级结果只存在于生成时的报告与轨迹摘要里，库里只落政策级结果，怎么算「结果导出」
-要先和 M3 定口径（见 PR 说明）。
+**第 4 项「结果导出」的输入侧在 ``freeze-report``**：它把下载到的 API-13 报告裁成
+不含「截至下载时刻的有效性」的冻结产物，剔除按固定标记整行/整段删除、可重复得到同一
+份字节；原始报告与下载时间、两侧哈希由调用方另存审计。条件级结果仍只在报告正文里
+（库里只落政策级结果），这是本轮记录在案的缺口。
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from typing import Any
 
 import psycopg
 
+from .report_freeze import ReportError, freeze_report
 from .snapshot import collect_input_snapshot, diff_snapshots
 
 PROGRAM = "python -m app.evaluation"
@@ -174,6 +176,44 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_freeze_report(args: argparse.Namespace) -> int:
+    path = Path(args.report)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise SystemExit(f"{PROGRAM}：读不到报告 {args.report}：{exc.strerror}") from None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise SystemExit(f"{PROGRAM}：{args.report} 不是 UTF-8 文本") from None
+    try:
+        frozen = freeze_report(text)
+    except ReportError as exc:
+        raise SystemExit(f"{PROGRAM}：{exc}") from None
+
+    payload = frozen.text.encode("utf-8")
+    if args.out == "-":
+        sys.stdout.buffer.write(payload)
+    else:
+        Path(args.out).write_bytes(payload)
+    # 审计信息走 stderr：--out - 时 stdout 必须是干净的冻结正文
+    print(
+        json.dumps(
+            {
+                "source": args.report,
+                "sourceSha256": hashlib.sha256(raw).hexdigest(),
+                "frozenSha256": hashlib.sha256(payload).hexdigest(),
+                "downloadedAt": frozen.downloaded_at,
+                "droppedLines": frozen.dropped_lines,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dataset-file",
@@ -219,6 +259,14 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("manifest", help="已签认的清单 JSON")
     _common(verify)
     verify.set_defaults(handler=_cmd_verify)
+
+    freeze = sub.add_parser(
+        "freeze-report",
+        help="把下载的 API-13 报告裁成不含有效性段的冻结产物（§5.2 第 4 项）",
+    )
+    freeze.add_argument("report", help="从 API-13 下载得到的 report.md")
+    freeze.add_argument("--out", default="-", help="冻结产物的输出文件，默认写到标准输出")
+    freeze.set_defaults(handler=_cmd_freeze_report)
     return parser
 
 
