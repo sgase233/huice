@@ -112,8 +112,8 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 3. **运行参数**：数据集版本/哈希、代码 commit、规则版本、`asOf`、分析期间、`MODEL_MODE`、配置哈希。`codeCommit` 在 ECS 无 `.git` 时为 `null`，不得编造；签认前须由部署记录补 commit，或明确标为「代码身份未证明」，不得以双 `null` 当作代码相同。`verify` 在两侧均 `null` 时应打印「代码身份未证明」提示；退出码可为 0（证据缺失≠内容不一致），但**该提示必须进入评测记录**；要证明代码相同，导出与核对都必须带 `--commit`。
 4. **结果导出（2026-11-05 定案：方案 A；条件级证据以 report 稳定正文为准）**：
    - `runId`；
-   - **`report.md` 稳定正文**：剔除开头「截至下载时刻的有效性」段后的正文，作为条件级四态、理由、引文/出处、`calculation.formula` 与结果的冻结产物，记录其 SHA-256；剔除规则由 M1 实现为确定性导出（端点参数或脚本）并有测试，**不在评测时临时手工裁剪**；
-   - 原始 `report.md` 另存，记录 `downloadedAt` 与原始 SHA-256，仅供审计；有效性段差异不据此判定结果变化；
+   - **`report.md` 稳定正文**：用 `python -m app.evaluation freeze-report report.md --out report.frozen.md` 生成；剔除**四处**按下载时刻现算的内容——① 开头「截至下载时刻的有效性」段；② 头部「- 下载时间」行；③ 判断结论表的「有效性」列；④ 每个政策段的「- 有效性 / - 失效原因 / - 有效期至」行。只删这四处，保留条件级四态、理由、逐字引文/出处、`calculation.formula` 与结果、办理清单；剔除规则由 M1 实现并有测试，**不在评测时临时手工裁剪**；
+   - 原始 `report.md` 由调用方另存；`freeze-report` 的 stderr 审计行给出 `sourceSha256`、`frozenSha256`、`downloadedAt`、`droppedLines`，冻结产物以 `frozenSha256` 为准；输入必须是未裁剪的原始报告，缺标题/缺有效性段/摘要表列数异常直接报错、不产出文件；
    - 完整 `trace` JSON 及其 SHA-256，用于轨迹可追溯；**trace 只有阶段摘要与 `{type,id}` 引用，不作为条件级证据**；
    - run 行的 `factVersion`、`modelOrRuleVersion`、`asOf`、`codeCommit`（或部署记录中的 commit）；
    - **不新增条件级结果表**。若 report 稳定正文不足以机器解析条件级结果，先记录缺口，再评估机器可读导出（不新增表）或方案 B；不临时改库；
@@ -122,7 +122,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 
 > **数据集哈希范围（2026-11-05 补）：** 只覆盖 §3 的三份文件（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）；`data/evaluation` 下的复核表/标注表（`material_review_*.csv`、`*_annotation_sheet.csv`）不属于评测输入，不应进入签认清单。`--dataset-dir` 如只能扫目录，应改为显式文件列表或支持多次指定。
 
-**进度（2026-11-05，M1）：** PR #39（`m1/eval-input-snapshot`，基于 `main`，head `5a7c304`）已实现第 1、2、3（部分）、5 项，提供 `python -m app.evaluation inputs` / `verify`；已采纳 `--dataset-file` 显式文件列表（不再默认扫目录）与双 `null` `codeCommit` 提示。第 4 项按上述「report 稳定正文」口径执行，待 M1 落地剔除有效性段的确定性导出。工具只读库，配置哈希不含 `ADMIN_TOKEN` / `DEEPSEEK_API_KEY` / `DATABASE_URL` / `REDIS_URL` / OBS AK/SK，清单文本不含这些值（有用例锁住）。**§5.2 仍未完成**：需 PR #39 合并并部署到 ECS、产出首份清单并 `verify` 通过；在此之前本声明保持草案。
+**进度（2026-11-05，M1）：** PR #39（`m1/eval-input-snapshot`，基于 `main`，head `fb90690`）已实现第 1、2、3（部分）、4、5 项：`inputs` / `verify` / `freeze-report` 三个命令；`--dataset-file` 显式列表（不设默认）；双 `null` `codeCommit` 提示；report 按四处剔除生成稳定正文。条件级结果仍是 Markdown 项目符号，机器只能半结构化解析——**已知缺口**，JSON 导出/方案 B 本轮不做。工具只读库，配置哈希不含 `ADMIN_TOKEN` / `DEEPSEEK_API_KEY` / `DATABASE_URL` / `REDIS_URL` / OBS AK/SK，清单文本不含这些值（有用例锁住）。**§5.2 仍未完成**：需 PR #39 合并并部署到 ECS、产出首份清单并 `verify` 通过；在此之前本声明保持草案。
 
 ## 6. 锁定边界声明（避免误读）
 
