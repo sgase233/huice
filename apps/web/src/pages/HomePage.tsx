@@ -62,7 +62,7 @@ export default function HomePage() {
 import { useEffect, useRef, useState } from 'react';
 
 const slides = [
-  { title: '企业办公协作', detail: '浅青灰色调 · 横向场景' },
-  { title: '企业资料整理', detail: '暖白与浅灰 · 桌面细节' },
-  { title: '团队交流讨论', detail: '自然光与深青点缀 · 人物场景' },
+  { title: '企业办公协作', detail: '白灰底色与暖橙点缀 · 横向场景' },
+  { title: '企业资料整理', detail: '暖白浅灰与少量暖橙 · 桌面细节' },
+  { title: '团队交流讨论', detail: '自然光与暖橙点缀 · 人物场景' },
 ] as const;

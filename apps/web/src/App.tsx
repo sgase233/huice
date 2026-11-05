@@ -9,7 +9,7 @@ import AdminReviewPage from './pages/AdminReviewPage';
 import RealApp from './RealApp';
 import HomePage from './pages/HomePage';
 import WorkflowIcon from './components/WorkflowIcon';
-import WorkflowIndicator from './components/WorkflowIndicator';
+import MagnifyingDock from './components/MagnifyingDock';
 import useWorkflowTransition from './components/useWorkflowTransition';
 import './styles/home.css';
 
@@ -50,7 +50,7 @@ function DemoApp() {
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">跳到主要内容</a>
     <header className="site-header"><div className="header-inner"><a className="brand" href="#enterprise"><span className="brand-mark" aria-hidden="true">策</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a><div className="header-caption">阶段一 · 界面验证版 <a href="?#enterprise">切换真实接口</a></div></div></header>
-    <div className="shell-layout"><nav className="side-nav" aria-label="主导航"><WorkflowIndicator page={page} /><div className="nav-caption">工作流程</div>{pages.map(item => <a key={item.id} href={`#${item.id}`} aria-current={page === item.id ? 'page' : undefined}><WorkflowIcon name={item.id} />{item.label}</a>)}<div className="nav-foot">所有政策与结论均为合成演示内容。</div></nav>
+    <div className="shell-layout"><MagnifyingDock page={page}>{pages.map(item => <a className="dock-item" aria-label={item.label} key={item.id} href={`#${item.id}`} aria-current={page === item.id ? 'page' : undefined}><WorkflowIcon name={item.id} /><span className="dock-label">{item.label}</span></a>)}<div className="nav-foot">所有政策与结论均为合成演示内容。</div></MagnifyingDock>
       <main id="main-content" ref={mainContent} className="main-content"><div className="demo-banner" role="status"><span className="banner-dot" aria-hidden="true" />{demoNotice}<span className="banner-detail">固定示例不会随画像自动计算</span></div>
         {page === 'enterprise' && <EnterprisePage value={enterprise} onSave={value => { setEnterprise(value); setSelectedId(null); }} />}
         {page === 'opportunities' && <OpportunitiesPage policies={demoPolicies} selectedId={selectedId} onSelect={id => { setSelectedId(id); location.hash = 'policy'; }} />}
