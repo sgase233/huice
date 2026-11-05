@@ -203,9 +203,12 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 `app/evaluation/` 只做「把库里的东西说清楚」，不产出任何评测指标。三份 CSV 的哈希只能识别文件，证明不了它们就是导入进库的那一份，所以映射从**数据库本身**导出：
 
 ```bash
-python -m app.evaluation inputs --out snapshot.json --dataset-dir data/evaluation
+python -m app.evaluation inputs --out snapshot.json --dataset-dir data/evaluation \
+    --dataset-file labels.csv --dataset-file criteria_review.csv --dataset-file enterprises.csv
 python -m app.evaluation verify snapshot.json --dataset-dir data/evaluation
 ```
+
+数据集只认真实要冻结的那几份：`--dataset-file` 可重复、相对路径按 `--dataset-dir` 解析，**不按目录扫全部 CSV**（M3 复核）——`material_review_sheet.csv`、`*_annotation_sheet.csv` 与评测输入同目录，但材料复核一改就会让 `verify` 误报。`verify` 核对的文件由签认清单本身决定，签认时列了谁就查谁；两侧 `codeCommit` 都是 `null` 时会打印「代码身份未证明」，退出码仍为 0（内容一致，只是没记身份），要用 `--commit` 记录提交号才能逐字比对。
 
 `inputs` 写出：政策版本 → 条件的 `criterionId`/AST 哈希/审核状态、企业 → 事实值的哈希与**事实版本**（直接调 `agents/profile.fact_version_of`，与 `assessment_run.fact_version` 同一算法）、`appVersion`/`ruleVersion`、数据集整文件 SHA-256、以及非敏感配置的哈希。`verify` 拿已签认的清单对当前库重算并逐项列差异，非零退出即「不一致」，**停止评测，不得用运行结果反推快照**。
 
@@ -512,9 +515,9 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 
 ### M1 后端实现验证记录（2026-11-05，评测输入快照）
 
-为 `EVALUATION_FREEZE` §5.2 补输入侧工具（`services/api/app/evaluation/`，见 2.9）。新增 `tests/test_eval_snapshot.py` 24 项：纯函数 17 项锁住哈希口径（键序、`Decimal` 尾零、日期 ↔ ISO 串等价、`null` ≠ 空串、配置白名单挡密钥）与差异比较（忽略采集时间与签认后新增的数据集文件，值/配置/数据集/缺失行都能报出）；CLI 3 项（缺 `DATABASE_URL` 只报变量名、坏清单被拒、数据集目录不存在先于连库报错）；`db` 标记 4 项在真库上验「清单的事实版本 == 引擎落库的 `fact_version`」「改事实值后 `verify` 非零退出且不改动清单」「清单文本里没有任何口令/令牌/连接串」「`--dataset-dir` 只哈希 CSV 整文件」。
+为 `EVALUATION_FREEZE` §5.2 补输入侧工具（`services/api/app/evaluation/`，见 2.9）。新增 `tests/test_eval_snapshot.py` 27 项：纯函数 17 项锁住哈希口径（键序、`Decimal` 尾零、日期 ↔ ISO 串等价、`null` ≠ 空串、配置白名单挡密钥）与差异比较（忽略采集时间与签认后新增的数据集文件，值/配置/数据集/缺失行都能报出）；CLI 6 项（缺 `DATABASE_URL` 只报变量名、坏清单被拒、数据集目录不存在先于连库报错、只给 `--dataset-dir` 被拒、列出的文件不存在时点名）；`db` 标记 5 项在真库上验「清单的事实版本 == 引擎落库的 `fact_version`」「改事实值后 `verify` 非零退出且不改动清单」「清单文本里没有任何口令/令牌/连接串」「只哈希 `--dataset-file` 列出的文件、同目录的复核表不进清单」「两侧 `codeCommit` 皆 null 时提示代码身份未证明」。后两项按 M3 在 PR #39 的复核改的：目录扫 `*.csv` 会把材料复核表冻结进去，材料一改就误报；双 `null` 曾静默通过。
 
-验证（2026-11-05，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **730 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **4 passed**。**未执行**：云端实跑（本工具尚未部署），以及 §5.2 第 4 项「结果导出」——条件级结果不落库，需与 M3 定口径后再做。
+验证（2026-11-05，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **733 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **5 passed**。**未执行**：云端实跑（本工具尚未部署），以及 §5.2 第 4 项「结果导出」——条件级结果不落库，需与 M3 定口径后再做。
 
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 

@@ -1,10 +1,18 @@
 """评测输入快照的命令行入口（``docs/product/EVALUATION_FREEZE.md`` §5.2）。
 
-    python -m app.evaluation inputs --out snapshot.json
-    python -m app.evaluation verify snapshot.json
+    python -m app.evaluation inputs --out snapshot.json \
+        --dataset-dir data/evaluation \
+        --dataset-file labels.csv --dataset-file criteria_review.csv \
+        --dataset-file enterprises.csv
+    python -m app.evaluation verify snapshot.json --dataset-dir data/evaluation
 
 ``inputs`` 从库里导出政策/条件与企业/事实的映射，写入一份 JSON；``verify`` 拿那份
 JSON 对当前库重算一遍，逐项列出差异，非零退出即「与签认时不一致，停止评测」。
+
+数据集只认 ``--dataset-file`` 显式列出的文件（可重复），不按目录扫全部 CSV：
+材料复核表、标注表也在同一个目录里，但它们不是评测输入，扫进来会让 ``verify``
+在复核改动后误报。``verify`` 核对的文件由签认清单本身决定；两侧 ``codeCommit``
+都是 ``null`` 时它会提示「代码身份未证明」——没记不等于证明相同。
 
 连接串只从环境变量 ``DATABASE_URL`` 读：命令行参数会留在 shell 历史与 ``ps`` 里，
 错误信息也只说变量名，不打印值。部署机上用 ``systemd-run`` 带上服务同款环境变量：
@@ -48,24 +56,48 @@ def _connect() -> psycopg.Connection:
         raise SystemExit(f"{PROGRAM}：无法连接数据库（连接串不打印）") from None
 
 
-def _dataset_hashes(directory: str | None) -> dict[str, str] | None:
-    if directory is None:
-        return None
-    path = Path(directory)
-    if not path.is_dir():
+def _dataset_hashes(
+    directory: str | None, files: list[str] | None
+) -> dict[str, str] | None:
+    """按**显式列出的文件**算整文件 sha256。
+
+    早先按目录扫 ``*.csv``，会把 ``material_review_sheet.csv``、``*_annotation_sheet.csv``
+    这类非评测输入也算进签认清单——材料复核一改，``verify`` 就误报「数据集文件哈希不同」，
+    而它们本来就不是要被冻结的输入（M3 复核提出）。现在只认 ``--dataset-file`` 列出的
+    文件；``--dataset-dir`` 退化为基准目录。
+    """
+
+    base = Path(directory) if directory else Path.cwd()
+    if directory is not None and not base.is_dir():
         raise SystemExit(f"{PROGRAM}：数据集目录不存在：{directory}")
-    files = sorted(item for item in path.glob("*.csv") if item.is_file())
     if not files:
-        raise SystemExit(f"{PROGRAM}：数据集目录里没有 CSV：{directory}")
-    # 整文件哈希：与冻结声明 §3 的 sha256sum 口径一致
-    return {item.name: hashlib.sha256(item.read_bytes()).hexdigest() for item in files}
+        if directory is not None:
+            raise SystemExit(
+                f"{PROGRAM}：--dataset-dir 只作为 --dataset-file 的基准目录，"
+                "请用 --dataset-file 显式列出签认的评测输入 CSV（目录扫描会把"
+                " material_review_sheet.csv 这类非评测输入也算进去）"
+            )
+        return None
+
+    hashes: dict[str, str] = {}
+    for name in files:
+        path = Path(name)
+        if not path.is_absolute():
+            path = base / path
+        if not path.is_file():
+            raise SystemExit(f"{PROGRAM}：数据集文件不存在：{name}")
+        # 整文件哈希：与冻结声明 §3 的 sha256sum 口径一致
+        hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return dict(sorted(hashes.items()))
 
 
 def _config_from_env(use_config: bool) -> dict[str, str] | None:
     return dict(os.environ) if use_config else None
 
 
-def _build_manifest(args: argparse.Namespace) -> dict[str, Any]:
+def _build_manifest(
+    args: argparse.Namespace, *, files: list[str] | None = None
+) -> dict[str, Any]:
     collected_at = None
     if args.collected_at:
         try:
@@ -74,7 +106,7 @@ def _build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             raise SystemExit(f"{PROGRAM}：--collected-at 需要 ISO 8601 时间") from None
 
     # 先把不依赖数据库的参数校验完再连库：参数错了不该先去碰生产库
-    dataset = _dataset_hashes(args.dataset_dir)
+    dataset = _dataset_hashes(args.dataset_dir, args.dataset_file if files is None else files)
     with _connect() as conn:
         return collect_input_snapshot(
             conn,
@@ -118,13 +150,22 @@ def _load_manifest(path: str) -> dict[str, Any]:
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     expected = _load_manifest(args.manifest)
-    actual = _build_manifest(args)
+    # 核对哪些文件由**签认清单**决定：签认时列了谁就查谁，不跟着目录里的新增文件走
+    signed = list((expected.get("dataset") or {}).keys())
+    actual = _build_manifest(args, files=signed or args.dataset_file)
     problems = diff_snapshots(expected, actual)
     if problems:
         print("与签认清单不一致：", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
+    # 两侧都 null 时 diff 无差异，但「没记」不等于「证明相同」，得说出来（M3 复核提出）
+    if expected.get("codeCommit") is None and actual.get("codeCommit") is None:
+        print(
+            "提示：两侧 codeCommit 都是 null，代码身份未证明——"
+            "要证明同一份代码，导出与核对时都要用 --commit 记录提交号",
+            file=sys.stderr,
+        )
     print(
         "一致：{} 个政策版本、{} 个企业".format(
             len(actual.get("policies", [])), len(actual.get("enterprises", []))
@@ -135,8 +176,17 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--dataset-file",
+        action="append",
+        metavar="NAME",
+        help=(
+            "签认的评测输入 CSV，可重复（如 --dataset-file labels.csv）；"
+            "只哈希列出的文件，相对路径按 --dataset-dir 解析"
+        ),
+    )
+    parser.add_argument(
         "--dataset-dir",
-        help="包含评测 CSV 的目录（如 data/evaluation）；给了就记整文件 sha256",
+        help="数据集基准目录（如 data/evaluation）；不再按目录扫全部 CSV",
     )
     parser.add_argument(
         "--commit",

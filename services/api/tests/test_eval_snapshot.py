@@ -399,23 +399,104 @@ def test_verify_passes_then_fails_when_a_fact_changes(
 
 @pytest.mark.db
 @pytest.mark.usefixtures("clean_tables")
-def test_cli_hashes_the_dataset_files_it_is_given(
+def test_verify_says_the_code_identity_is_unproven_when_both_sides_are_null(
+    repo, database_url_schema, monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """两侧 ``codeCommit`` 都是 ``null`` 时不能算「一致」，要说出来（M3 复核提出）。"""
+
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    _make_enterprise(repo)
+    sealed = tmp_path / "sealed.json"
+    assert cli.main(["inputs", "--out", str(sealed), "--no-config"]) == 0
+    capsys.readouterr()
+
+    assert cli.main(["verify", str(sealed), "--no-config"]) == 0
+    captured = capsys.readouterr()
+    # 内容一致（退出码 0、标准输出说「一致」），但代码身份没记，标准错误要点出来
+    assert "一致" in captured.out
+    assert "代码身份未证明" in captured.err
+
+    # 记了提交号就不再是「未证明」，而是逐字比对：签认时是 null，现在有值 → 不一致
+    assert cli.main(["verify", str(sealed), "--no-config", "--commit", "abc1234"]) == 1
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_cli_hashes_only_the_dataset_files_it_is_given(
     database_url_schema, monkeypatch, tmp_path: Path
 ) -> None:
+    """只哈希 ``--dataset-file`` 列出的文件：同目录里的材料复核表**不进**签认清单。
+
+    M3 复核指出：按目录扫 ``*.csv`` 会把 ``material_review_sheet.csv`` 这类非评测输入
+    也算进去，材料复核一改 ``verify`` 就误报。所以这里故意在目录里放一份复核表，
+    断言它没被记录。
+    """
+
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
     data = tmp_path / "evaluation"
     data.mkdir()
     (data / "labels.csv").write_bytes(b"case_id,criterion_id\n1,2\n")
+    (data / "material_review_sheet.csv").write_bytes(b"row,reviewer\n1,m3\n")
     (data / "notes.txt").write_bytes(b"not a csv")
     out = tmp_path / "manifest.json"
 
-    assert cli.main(["inputs", "--out", str(out), "--no-config", "--dataset-dir", str(data)]) == 0
+    assert (
+        cli.main(
+            [
+                "inputs",
+                "--out",
+                str(out),
+                "--no-config",
+                "--dataset-dir",
+                str(data),
+                "--dataset-file",
+                "labels.csv",
+            ]
+        )
+        == 0
+    )
     manifest = json.loads(out.read_text(encoding="utf-8"))
 
     assert manifest["dataset"] == {
         "labels.csv": hashlib.sha256(b"case_id,criterion_id\n1,2\n").hexdigest()
     }
+    assert "material_review_sheet.csv" not in manifest["dataset"]
     assert manifest["collectedAt"].endswith("+00:00")
+
+
+def test_a_bare_directory_scan_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """只给 ``--dataset-dir`` 会扫全部 CSV，正是 M3 指出的误报来源：直接拒绝。"""
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+    data = tmp_path / "evaluation"
+    data.mkdir()
+    (data / "labels.csv").write_bytes(b"a\n")
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["inputs", "--out", "-", "--dataset-dir", str(data)])
+
+    assert "--dataset-file" in str(error.value.code)
+
+
+def test_a_missing_dataset_file_is_named(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+    data = tmp_path / "evaluation"
+    data.mkdir()
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(
+            [
+                "inputs",
+                "--out",
+                "-",
+                "--dataset-dir",
+                str(data),
+                "--dataset-file",
+                "criteria_review.csv",
+            ]
+        )
+
+    assert "criteria_review.csv" in str(error.value.code)
 
 
 def test_a_missing_dataset_directory_is_an_error(tmp_path: Path, monkeypatch) -> None:
