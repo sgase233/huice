@@ -48,7 +48,7 @@
 | 1 | 传代码到 `/opt/huice/app`（§1） | Windows 侧 + ECS | 后面所有脚本都找不到 |
 | 2 | `provision.sh`（§2）：装包、建 `huice` 用户与 venv、装依赖、装 unit 与 80 配置 | ECS | — |
 | 3 | 填 `/etc/huice/api.env`（§3） | ECS | 第 2 步结束时模板里的必填项还是空值，服务会以「缺少变量名」启动失败，属预期（脚本那一步就算失败也继续执行下一步） |
-| 4 | 执行迁移 001—006（§2.1），确认 `schema_migration` 六行 | ECS | 先对外服务再迁移：写事实 500、历史判断读不出来（§2.1 末段） |
+| 4 | 执行迁移 001—006（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 六行 | ECS | 先对外服务再迁移：写事实 500、历史判断读不出来（§2.1 末段） |
 | 5 | `systemctl restart huice-api`，再 `nginx -t && systemctl reload nginx` | ECS | 只 `enable` 不 `reload`：外网 404 且 `Server` 头暴露 nginx 版本（见 §8「外网 404」一行） |
 | 6 | 健康检查 200（§4 第 **1—4** 项）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
 | 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3）。**完成后**按 §4 的三批安排补跑第 **8—11** 项（第 5—7 项在第 6 步之后就能跑，不必等这里） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403；若先跑第 8—9 项，会因为 443 还不存在而误判成部署失败 |
@@ -82,6 +82,14 @@ ls /opt/huice/app/services/api/requirements.lock
 
 > 这一份是**未提交快照**。11/15 的「从空环境复现部署」必须改用已推送的提交重新做一遍，不能拿这份充当证据。
 
+脚本必须是 **LF**：Windows 侧 `core.autocrlf` 会把工作区写成 CRLF，打包上云后 `#!/usr/bin/env bash\r` 直接执行失败（`bad interpreter` 或满屏 `$'\r': command not found`）。本目录的 `.gitattributes` 已把 `*.sh` 固定为 `eol=lf`，解包后确认一次：
+
+```bash
+head -c 20 /opt/huice/app/infra/deploy/provision.sh | od -c | head -1   # 看到 \n，不能是 \r \n
+```
+
+本地工作区若是更早结账的 CRLF 副本，删掉再 `git checkout -- infra/deploy/*.sh` 让它按属性重写（直接 `git checkout` 对未改动的文件会因 stat 相同而跳过）。
+
 ## 2. 安装
 
 ```bash
@@ -102,29 +110,25 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 
 代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），且企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），**服务启动前云 RDS 必须已执行 001—006 全部迁移**。
 
-**取值方式：只取 `DATABASE_URL`，不要 `source` 整个文件。** `systemd` 的 `EnvironmentFile` 不是 shell——不做变量展开、不执行命令，只处理引号与反斜杠。`set -a; . /etc/huice/api.env; set +a` 会让 shell 按 shell 规则解析**整个文件**：口令或密钥里出现 `$`、反引号、`!`、未配对引号时，读到的值可能和 systemd 实际传给服务进程的不一样（迁移就打到错的库），甚至把文件内容当命令执行。同目录的 `read-env.py` 按 systemd 的规则读取单个变量、不执行文件内容；变量缺失或值为空时只报变量名并以退出码 2 结束（空连接串会让 `psql` 退回默认参数、可能连到别的库，所以不返回空串）：
+**取值交给 `migrate.sh`，不要 `source` 整个文件，也不要自己解析。** `systemd` 的 `EnvironmentFile` 不是 shell——不做变量展开、不执行命令，只处理引号、转义与续行。`set -a; . /etc/huice/api.env; set +a` 会让 shell 按 shell 规则解析**整个文件**：口令或密钥里出现 `$`、反引号、`!`、未配对引号时，读到的值可能和 systemd 实际传给服务进程的不一样（迁移就打到错的库），甚至把文件内容当命令执行。
+
+同目录的 `migrate.sh` 不复制 systemd 的解析规则，而是直接用 systemd 自己的结果：
+
+1. **服务在跑**（`systemctl show -p MainPID --value huice-api` 给出非 0 的 PID）：读 `/proc/<PID>/environ`——那是 systemd 真正传进进程的那一份，不存在「两边理解不同」。
+2. **服务没跑**：`systemd-run --pipe --wait -p EnvironmentFile=/etc/huice/api.env` 让 systemd 自己解析一次再把值交回来，语法、引号、续行全由 systemd 决定。
+3. **两条都不行**：只打印变量名与原因，非零退出。不猜，也不退回默认连接参数。
 
 ```bash
-cd /opt/huice/app
-DATABASE_URL=$(python3 infra/deploy/read-env.py /etc/huice/api.env DATABASE_URL)
-
-for f in 001_init 002_evaluation_and_idempotency 003_trace_step_details 004_invalidation_event_period 005_fact_dictionary_extension 006_fact_dictionary_extension_rc4; do
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "infra/sql/$f.sql" || break
-done
-psql "$DATABASE_URL" -tAc "SELECT id FROM schema_migration ORDER BY id"   # 应输出六行
-unset DATABASE_URL                                                         # 当前 shell 里不留连接串
+bash /opt/huice/app/infra/deploy/migrate.sh
 ```
 
-口令含 `$`、反引号、引号或空格时，**先确认两条路读到的是同一个值**再迁移——服务在跑时可以直接读它实际的环境（只比哈希，不打印口令）：
+要 **root** 执行：读 `/proc/<PID>/environ` 与调用 `systemd-run` 都需要（`huice` 用户读不到别人的进程环境）。
 
-```bash
-PID=$(systemctl show -p MainPID --value huice-api)
-sudo -n tr '\0' '\n' < "/proc/$PID/environ" | grep '^DATABASE_URL=' | sha256sum
-{ printf 'DATABASE_URL='; python3 infra/deploy/read-env.py /etc/huice/api.env DATABASE_URL; printf '\n'; } | sha256sum
-# 两个哈希相同 = read-env.py 与 systemd 读到同一个值；不同就先查 /etc/huice/api.env 的引号写法
-```
+脚本按 001—006 顺序执行（每步 `-v ON_ERROR_STOP=1`）。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对六个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
 
-服务还没起来（第 5 步之前）时读不到 `/proc/<PID>/environ`，这一步可以放到重启之后再做；迁移本身仍按上面的 `read-env.py` 取值即可。ECS 镜像自带 `psql`（2026-10-24 实测），换成没有客户端的镜像就先 `apt-get install -y postgresql-client`。
+`DATABASE_URL` 会作为 `psql` 的参数出现在进程列表里（`psql` 只从命令行或 `.pgpass` 取 URI，不认环境变量）。迁移窗口内别与他人共用登录会话，也别同时开着 `watch ps` 之类会刷屏的东西。ECS 镜像自带 `psql`（2026-10-24 实测），换成没有客户端的镜像就先 `apt-get install -y postgresql-client`。
+
+服务起来之后想确认「进程里那份值」与文件一致，可以只比哈希、不打印口令：`tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value huice-api)/environ | grep '^DATABASE_URL=' | sha256sum`。
 
 漏掉 `006` 不会在启动时报错，而是在**写入地方通知企业事实时**才炸：`enterprise_fact_key_check` 与 `enterprise_fact_key_unit` 仍是 16 键版本，`specificMarketSince`/`independentLegalEntity` 会被约束直接拒绝（500），而 SRDI-001、RDSUB-001/002 正好要用这两键。
 
@@ -163,15 +167,15 @@ systemctl restart huice-api
 
 ```bash
 cd /opt/huice/app
-DEMO_SESSION_SECRET=$(python3 infra/deploy/read-env.py /etc/huice/api.env DEMO_SESSION_SECRET) \
+systemd-run --quiet --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
   /opt/huice/venv/bin/python infra/deploy/issue-session.py --hours 12
 ```
 
-密钥只作为**这一条命令**的环境变量传入（不写进命令行参数，也不留在当前 shell 里）；`read-env.py` 按 systemd 规则读取，不执行环境文件，理由同 §2.1。
+密钥由 systemd 自己按 `EnvironmentFile` 的规则装进这个**临时单元**的进程环境，签发脚本从环境里取用：不经过 shell 解析（理由同 §2.1），不出现在任何命令行参数里，也不留在当前 shell。`--pipe` 把脚本输出接回来，`--collect` 让临时单元跑完即回收；`systemd-run` 需要 root。
 
 **必须用虚拟环境的解释器**：脚本会导入 `app.security`，后者在模块级导入 FastAPI，而依赖只装在 `/opt/huice/venv`。用系统 `python3` 运行会直接抛 `ModuleNotFoundError`（脚本会打印提示并以退出码 2 结束，而不是抛堆栈）。
 
-两点注意：**不要 `set -a; . /etc/huice/api.env`**——shell 会按 shell 规则解析整个文件，而 `systemd` 的 `EnvironmentFile` 不是 shell（不做变量展开、不执行命令），密钥里含 `$`、反引号或引号时两边读到的值可能不同，甚至把文件内容当命令执行；换 `read-env.py` 后这条风险不再存在。签发完成后按 §3.2 的例外说明限定有效期、用完清掉并按需轮换 `DEMO_SESSION_SECRET`。
+两点注意：**不要 `set -a; . /etc/huice/api.env`**——shell 会按 shell 规则解析整个文件，而 `systemd` 的 `EnvironmentFile` 不是 shell（不做变量展开、不执行命令），密钥里含 `$`、反引号或引号时两边读到的值可能不同，甚至把文件内容当命令执行；改用上面的 `systemd-run` 后这条风险不再存在。签发完成后按 §3.2 的例外说明限定有效期、用完清掉并按需轮换 `DEMO_SESSION_SECRET`。
 
 输出两行：cookie 值和可直接使用的 `Set-Cookie` 头。把 `Set-Cookie` 配到网关/演示入口（或在浏览器开发者工具里手工设置 cookie，见 §3.2 的例外说明），之后带着它访问后台接口。
 
@@ -286,11 +290,12 @@ curl -i http://127.0.0.1:8000/api/v1/health
 curl -i http://127.0.0.1/api/v1/health
 curl -i http://139.9.33.46/api/v1/health
 
-# 5)—7) 鉴权分层。只取这一个变量：不 source 整个 api.env（shell 会按可能的展开/执行
-#       规则解析整个文件，而 systemd 的 EnvironmentFile 不是 shell；口令里的 $ ` " 等
-#       字符两边理解不同，source 既可能读错值，也可能把内容当命令执行）
-#       用 read-env.py 取，规则与 systemd 一致；带引号的值也能正确还原
-ADMIN_TOKEN=$(python3 /opt/huice/app/infra/deploy/read-env.py /etc/huice/api.env ADMIN_TOKEN)
+# 5)—7) 鉴权分层。令牌只从 systemd 解析出的环境里取：不 source 整个 api.env（shell 会按
+#       展开/执行规则解析整个文件，而 systemd 的 EnvironmentFile 不是 shell；口令里的
+#       $ ` " 等字符两边理解不同，source 既可能读错值，也可能把内容当命令执行）。
+#       临时单元读完即回收，令牌不进 argv、不留在当前 shell
+ADMIN_TOKEN=$(systemd-run --quiet --pipe --wait --collect \
+    -p EnvironmentFile=/etc/huice/api.env /bin/sh -c 'printf %s "$ADMIN_TOKEN"')
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/api/v1/admin/policies
 # 6) 只带 Bearer：令牌与 cookie 都经 stdin 交给 curl（--config -），不出现在进程参数里，
 #    同机其他用户 ps 看不到
