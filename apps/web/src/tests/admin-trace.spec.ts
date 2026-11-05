@@ -2,6 +2,18 @@ import { test, expect } from '@playwright/test';
 const testSource = { id: 'test-source', title: '合成来源', text: '合成引文', sourceUrl: 'https://www.gov.cn/' };
 const testSpan = { sourceId: 'test-source', sourceUrl: 'https://www.gov.cn/', sourceVersion: 'v1', page: 1, section: null, quote: '合成引文', textHash: 'hash' };
 
+test('审核页返回首页时取消离开保留未保存的输入', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => { location.hash = 'admin'; });
+  await page.getByLabel('管理令牌').fill('test-token');
+  await page.getByRole('button', { name: '使用令牌' }).click();
+  await page.getByLabel('标题', { exact: true }).fill('尚未保存');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.goBack();
+  await expect(page).toHaveURL(/#admin$/);
+  await expect(page.getByLabel('标题', { exact: true })).toHaveValue('尚未保存', { timeout: 3000 });
+});
+
 test('轨迹页展示未选择、加载、空结果和不存在状态', async ({ page }) => {
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });

@@ -27,7 +27,8 @@ const pageFromHash = (): PageId => {
 export default function App() {
   const [hash, setHash] = useState(location.hash);
   useEffect(() => {
-    const update = () => setHash(location.hash);
+    // The workbench may restore its hash after the user cancels leaving an unsaved review.
+    const update = () => setTimeout(() => setHash(location.hash), 0);
     window.addEventListener('hashchange', update);
     return () => window.removeEventListener('hashchange', update);
   }, []);
