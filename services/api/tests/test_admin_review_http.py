@@ -8,12 +8,15 @@ import logging
 from uuid import uuid4
 
 import pytest
+import yaml
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import ValidationError
 
 from app.agents.ingestion import PreparedSource
 from app.errors import ApiProblem
 from app.integrations.llm import LlmResult
 from app.schemas import PolicyImportMetadata
-from support import build_draft, metadata_payload
+from support import CONTRACT_PATH, build_draft, metadata_payload
 
 BODY_TEXT = (
     "第一条 在本市登记的中小企业，年应纳税所得额不超过300万元的，减按25%计入应纳税所得额。\n"
@@ -135,8 +138,8 @@ def test_extract_moves_draft_to_pending_review_with_cited_criteria(client, auth,
     body = response.json()
     assert body["draft"]["status"] == "pending_review"
     assert body["usage"]["mode"] == "fixture"
-    # 规则抽取没有发起调用，0 是真实的 0，不挂「未知」标记（契约 rc.7）。
-    assert body["usage"]["tokensUnknown"] is False
+    # 规则抽取没有发起调用，0 是真实的 0，不挂「未知」标记（契约 rc.7 已知时省略该字段）。
+    assert "tokensUnknown" not in body["usage"]
     assert len(body["criteriaDrafts"]) == 1
     criterion = body["criteriaDrafts"][0]
     assert criterion["validationStatus"] == "passed"
@@ -290,8 +293,83 @@ def test_a_real_model_extraction_reports_known_tokens(app, client, auth, reposit
     )
 
     usage = response.json()["usage"]
-    assert usage["tokensUnknown"] is False
+    # 已知用量不出现在响应里：按 rc.6 严格校验的旧消费者不会因为新字段拒绝它。
+    assert "tokensUnknown" not in usage
     assert usage["inputTokens"] == 120 and usage["outputTokens"] == 45
+
+
+# ------------------------------------------------ rc.7 的兼容性（旧消费者 / 重放）
+
+
+def _extraction_validator(*, rc6: bool) -> Draft202012Validator:
+    """按当前契约校验抽取响应；``rc6=True`` 时还原成没有 `tokensUnknown` 的旧契约。
+
+    `ModelUsage` 是 ``additionalProperties: false``，所以「旧消费者」不是忽略新字段，
+    而是**会因为多出字段直接判非法**。这个差异必须用真实响应验，不能靠读 schema 推断。
+    """
+
+    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    if rc6:
+        del contract["components"]["schemas"]["ModelUsage"]["properties"]["tokensUnknown"]
+    return Draft202012Validator(
+        {"$ref": "#/components/schemas/ExtractionResult", "components": contract["components"]},
+        format_checker=FormatChecker(),
+    )
+
+
+def _extract_with_llm(app, client, auth, repository, llm, *, key=None):
+    draft = seed_draft(repository)
+    app.state.llm = llm
+    return draft, client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=key or uuid4()),
+        json={"version": draft.version},
+    )
+
+
+def test_a_known_usage_response_still_passes_an_rc6_strict_consumer(app, client, auth, repository):
+    """部署顺序的依据：用量已知的响应与 rc.6 逐字段一致，旧消费者照常通过。"""
+
+    _, response = _extract_with_llm(app, client, auth, repository, _ModelExtractionLlm())
+
+    assert response.status_code == 200
+    _extraction_validator(rc6=True).validate(response.json())
+
+
+def test_an_unknown_usage_response_is_only_valid_for_rc7_consumers(app, client, auth, repository):
+    """未知用量是**有意的**不兼容：旧消费者在这里报错，而不是把占位 0 当真。"""
+
+    _, response = _extract_with_llm(app, client, auth, repository, _NoUsageExtractionLlm())
+    body = response.json()
+
+    assert body["usage"]["tokensUnknown"] is True
+    _extraction_validator(rc6=False).validate(body)
+    with pytest.raises(ValidationError):
+        _extraction_validator(rc6=True).validate(body)
+
+
+def test_replaying_an_unknown_usage_extraction_keeps_the_marker_without_new_calls(
+    app, client, auth, repository
+):
+    """幂等重放：同一个键返回同样的标记，且没有第二次调用。
+
+    重放不能把「未知」变成「已知零」——那会让对账凭空多出一次「确定没花 token」。
+    """
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app, client, auth, repository, _NoUsageExtractionLlm(), key=key
+    )
+    second = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, first.json()["draft"]["revision"], key=key),
+        json={"version": draft.version},
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert first.json()["usage"]["tokensUnknown"] is True
+    assert len(repository.saved_extractions) == 1
 
 
 def test_a_rule_based_extraction_is_not_logged_as_a_model_call(app, client, auth, repository, caplog):

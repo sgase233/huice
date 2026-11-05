@@ -205,8 +205,9 @@ def test_model_usage_can_say_the_tokens_are_unknown(contract, schema):
 
     没有它时，2xx 但缺 `usage` 只能返回 0，消费者分不清「这次真的没花 token」和
     「不知道花了多少」——日志里的 unknown 传不到接口调用方。这里锁住三件事：
-    契约里它是**可选**布尔（加法式，旧消费者不受影响）、服务端字段名一致、
-    缺省时按「已知」解释。
+    契约里它是**可选**布尔、服务端字段名一致、缺省时按「已知」解释，并且**已知时
+    序列化省略该字段**：`ModelUsage` 是 `additionalProperties: false`，若常路径也回
+    `tokensUnknown: false`，按 rc.6 严格校验的旧消费者会连正常响应一起判非法。
     """
 
     contract_usage = contract["components"]["schemas"]["ModelUsage"]
@@ -237,6 +238,17 @@ def test_model_usage_can_say_the_tokens_are_unknown(contract, schema):
         elapsed_ms=3,
     )
     assert usage.tokens_unknown is False
+    # 已知时不出现在线上响应里；未知时才带 `true`。
+    assert "tokensUnknown" not in usage.model_dump(mode="json", by_alias=True)
+    unknown = ModelUsage(
+        mode="deepseek",
+        model_version="deepseek-chat",
+        input_tokens=0,
+        output_tokens=0,
+        elapsed_ms=3,
+        tokens_unknown=True,
+    )
+    assert unknown.model_dump(mode="json", by_alias=True)["tokensUnknown"] is True
 
 
 # ------------------------------------------------- 轨迹引用与引文的分工（rc.6 起）

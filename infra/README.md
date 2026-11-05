@@ -172,7 +172,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 | 日志（成功） | `model_call purpose=extraction outcome=ok usage=<known\|unknown> model=<模型名> prompt=<n\|unknown> completion=<n\|unknown> elapsed_ms=<ms> policy_id=<id> version=<版本>` | `model_call purpose=explanation outcome=ok usage=<known\|unknown> model=<模型名> prompt=<n\|unknown> completion=<n\|unknown> elapsed_ms=<ms> policy_id=<政策 ID> version=<版本>` |
 | 日志（失败） | `model_call purpose=extraction outcome=error usage=<unknown\|none> model=<模型名> prompt=<unknown\|0> completion=<unknown\|0> elapsed_ms=<ms> policy_id=<id> version=<版本> code=<错误码>` | `model_call purpose=explanation outcome=error usage=<unknown\|none> prompt=… completion=… elapsed_ms=unknown policy_id=… version=…` |
 | 轨迹 | 成功：`extraction` 步骤，`modelOrRuleVersion` 为模型名，摘要「抽取正文 N 字」→「得到条件 K 条、校验发现 M 条」。失败：独立事务写一条只有错误码的步骤，`status` 为 `retryable_error`/`fatal_error`，摘要「模型抽取失败」→「错误码 …；上游是否计费无法确认，用量按未知记录 / 未发起模型调用，没有用量」 | `explanation` 步骤摘要前缀「模型 tokens 入 N 出 M」（只汇总已知用量），出现未知时追加「另有 K 次调用用量未知（失败或响应缺用量，可能已计费）」（`MAX_SUMMARY=200` 会截断，多政策只记总数） |
-| 响应 | `ExtractionResult.usage`（接口本来就返回）。契约 rc.7 起多了 `tokensUnknown`：2xx 但拿不到用量时 `tokensUnknown=true`、两个数值是**占位 0**，不得按 tokens 计费；`fixture` 这类没发起调用的是真实的 0，不带标记。旧消费者忽略该字段即可 | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
+| 响应 | `ExtractionResult.usage`（接口本来就返回）。契约 rc.7 起多了 `tokensUnknown`：2xx 但拿不到用量时 `tokensUnknown=true`、两个数值是**占位 0**，不得按 tokens 计费；`fixture` 这类没发起调用的是真实的 0，不带标记。服务端**已知用量时省略该字段**，常路径响应与 rc.6 逐字段一致；未知时才出现 `tokensUnknown: true`，按 rc.6 严格校验的旧消费者会拒绝该响应（有意 fail-closed，不会把占位 0 当真） | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
 
 **用量的三态**（2026-11-05 按复审意见收口，未知不并进 0）：
 
