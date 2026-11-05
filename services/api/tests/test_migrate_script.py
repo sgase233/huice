@@ -75,6 +75,9 @@ class Sandbox:
         # 假的 psql 不读文件内容，但路径要像真的
         for name in MIGRATION_IDS:
             (root / "sql" / f"{name}.sql").write_bytes(b"-- fixture\n")
+        # 默认「库里六个 id 都在」；要演缺 id 的用例自己覆盖这个文件。
+        # 这里必须给默认值：漏写的用例会让验收查询返回空、六项全报缺失。
+        self.file("schema_rows", "\n".join(MIGRATION_IDS) + "\n")
         subprocess.run(
             [BASH, "-c", "chmod +x bin/systemctl bin/systemd-run bin/psql"],
             cwd=root,
