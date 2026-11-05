@@ -43,11 +43,18 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
     **不是纯加法：这是带行为语义的契约迁移，服务端在已知用量时省略该字段。** `ModelUsage` 是 `additionalProperties: false`，若常路径也回 `tokensUnknown: false`，按 rc.6 严格校验的旧消费者会把**正常响应**判为非法。省略后：已知用量的响应与 rc.6 逐字段一致（旧消费者照常通过）；未知用量时多出 `tokensUnknown: true`，旧消费者会**失败**——这是有意的，比让它把占位 0 当真实用量好。忽略未知属性的旧消费者在未知场景仍只能看到 0，这类调用方本来就无法区分，需按本文件与 `infra/README.md` §4.3 的口径自行标注。
     迁移约定：**不是「后端先上」**。现有前端不是严格消费者——`apps/web/src/api/client.ts` 允许额外字段、审核页直接显示 `usage.inputTokens/outputTokens`，收到 `tokensUnknown: true` + 占位 0 会显示「输入 0 / 输出 0 tokens」。后端先上等于把「未知」**安静地**变成「零」，比解析失败更糟。因此顺序是：
 
-    1. **前端先行**：M2 按 rc.7 重新生成 `types.ts`，在展示与统计处先判 `tokensUnknown`（未知就显示「未知」并排除出合计），并把「响应里没有该字段」按「已知」处理——这样后端还在 rc.6 时前端也正常。
+    1. **前端先行**：M2 按 rc.7 重新生成 `types.ts`，在展示与统计处先判 `tokensUnknown`：`true` 显示「未知」并排除出合计。**「响应里没有该字段」不等于「已知」**——它只说明服务器没给这个状态。后端仍是 rc.6 时，rc.6 在上游没回 `usage` 时同样用 0 兜底（`integrations/llm.py` 的 `usage.get(...) or 0`），这个 0 与真实零用量分不开。所以在「后端还是 rc.6」的窗口里，前端应把该区块标成「旧版未提供用量状态」（或暂停这部分合计），不能当成已确认的 0。
     2. **后端随后**上 rc.7，此时「未知」才第一次出现在线路上，而接收方已经能表达它。
     3. **严格校验旧响应形状的第三方消费者单独安排**：已知路径逐字段一致、不受影响；未知路径会解析失败（fail-closed），要么先升级，要么接受这类调用在这条路径上不可用。
 
-    回滚：后端退回 rc.6 后，前端的新逻辑必须继续把「没有 `tokensUnknown`」当已知（第 1 步已经这么写），否则回滚会重新把未知显示成 0；回滚后未知调用的痕迹只剩日志 `usage=unknown` 与轨迹摘要。该字段不落库，无数据迁移。`apps/web/src/api/types.ts` 需由 M2 重新生成（差异为 `ModelUsage` 多一行 `tokensUnknown?: boolean;`），在那之前 `python contracts/generate_types.py --check` 会报 `Frontend types differ`。
+    回滚分两种，结论不同：
+
+    - **只回退 rc.7 的「未知」表达、保留 #34 的其余部分**：`model_call ... usage=unknown` 日志与轨迹摘要「另有 K 次调用用量未知」仍在——它们来自 #34，不是 rc.6 自带的。
+    - **整体回退到 rc.6（main）**：`model_call` 日志、`extraction` 轨迹步骤、用量三态**一起消失**，回滚后未知调用没有任何记录可查；此前写下的行留在只追加表里，但不会再有新增。别按「回滚后还能查日志」验收。
+
+    已经落库的 rc.7 响应：`idempotency_record.response` 存的是抽取响应**整体**（路由里 `result.model_dump(by_alias=True, mode="json")`），未知用量时里面就有 `usage.tokensUnknown: true`；该表带 `reject_mutation()` 触发器，删不掉也改不了。回退到 rc.6 的 `ModelUsage`（`extra="forbid"`）后，用**同一个 Idempotency-Key、草稿 revision 未变**地重放这些记录，会在 `ExtractionResult.model_validate` 处失败（500）。影响面限于「同键 + 同版本」的幂等重放，换新键不受影响；不能接受就在回滚时保留能读该字段的解析（只回退「未知」的输出路径），或明确接受这些键不可重放。因此**「该字段不落库」不成立**：没有 schema 迁移、没有业务表字段，但它落在 `idempotency_record.response` 与轨迹摘要文本里。
+
+    前端在回滚期间：**不能**把「没有该字段」当已知（理由同上，rc.6 的 0 兜底与真实 0 分不开）；显示「旧版未提供用量状态」并暂停这部分合计，或干脆不展示 tokens。前端这套逻辑保证的是**格式兼容**，不是**语义正确**——rc.6 窗口里的用量状态，前端无法区分。`apps/web/src/api/types.ts` 需由 M2 重新生成（差异为 `ModelUsage` 多一行 `tokensUnknown?: boolean;`），在那之前 `python contracts/generate_types.py --check` 会报 `Frontend types differ`。
 
 ## 当前实现产出的错误码
 

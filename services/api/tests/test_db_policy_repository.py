@@ -10,8 +10,10 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from pydantic import ValidationError, create_model
 
 from app.errors import ApiProblem
+from app.schemas import ModelUsage
 from db_support import create, query_all, query_one, source
 from support import MIGRATIONS
 
@@ -218,6 +220,49 @@ def test_idempotent_record_keeps_the_first_write_and_is_append_only(repo, databa
             with psycopg.connect(database_url_schema) as conn:
                 conn.execute(statement)
                 conn.commit()
+
+
+def _rc6_usage_validator():
+    """rc.6 的 `ModelUsage`：字段与现在一致，但没有 `tokensUnknown`（仍是 `extra="forbid"`）。"""
+
+    fields = {
+        name: (field.annotation, field)
+        for name, field in ModelUsage.model_fields.items()
+        if name != "tokens_unknown"
+    }
+    return create_model("Rc6ModelUsage", __config__=ModelUsage.model_config, **fields)
+
+
+def test_unknown_usage_flag_is_stored_with_the_replayed_response(repo):
+    """rc.7 的 `tokensUnknown` 随抽取响应**整体**落进 `idempotency_record`。
+
+    回滚口径依赖这件事：这张表只追加（删不掉），回退到 rc.6 后重放同键记录会在
+    `ModelUsage`（`extra="forbid"`）处解析失败，而不是「把字段丢掉继续跑」。
+    """
+
+    usage = ModelUsage(
+        mode="deepseek",
+        model_version="test-model",
+        input_tokens=0,
+        output_tokens=0,
+        elapsed_ms=7,
+        tokens_unknown=True,
+    )
+    key = uuid4()
+    revision = uuid4()
+    repo.save_idempotent(
+        "extract",
+        key,
+        "d" * 64,
+        {"usage": usage.model_dump(by_alias=True, mode="json")},
+        revision,
+    )
+
+    stored = repo.read_idempotent("extract", key)
+    assert stored["response"]["usage"]["tokensUnknown"] is True
+    assert ModelUsage.model_validate(stored["response"]["usage"]).tokens_unknown is True
+    with pytest.raises(ValidationError):
+        _rc6_usage_validator().model_validate(stored["response"]["usage"])
 
 
 def test_enterprise_fact_uses_the_contract_source_enum(database_url_schema):
