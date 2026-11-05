@@ -118,6 +118,17 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 2. **服务没跑**：`systemd-run --pipe --wait -p EnvironmentFile=/etc/huice/api.env` 让 systemd 自己解析一次再把值交回来，语法、引号、续行全由 systemd 决定。
 3. **两条都不行**：只打印变量名与原因，非零退出。不猜，也不退回默认连接参数。
 
+两种读法到底差在哪，2026-11-05 在 ECS 上用假值实测了一次（同一份文件，systemd 与 `source` 各解析一次）：
+
+| 文件里的写法 | systemd 读到 | `set -a; . 文件` 读到 |
+| --- | --- | --- |
+| `HUICE_T_EXPAND=$HOME` | `$HOME`（不展开） | `/root` |
+| `` HUICE_T_TICK=`id -u` `` | `` `id -u` ``（字面） | `0`（**真的执行了**） |
+| `HUICE_T_SPACE=a b` | `a b` | 空，且报 `b: command not found` |
+| `HUICE_T_CONT=l1 \`（下一行 `l2`） | `l1 l2` | 空，且报 `l2: command not found` |
+
+也就是说 `source` 既可能读错值（`$`、反引号、空格全按 shell 规则处理），也会把文件内容当命令执行；口令里带这些字符时，两种读法拿到的不是同一个连接串。同一份 `api.env` 上，本脚本的两条取值路径——服务在跑时读 `/proc/<MainPID>/environ`、服务没跑时用 `systemd-run -p EnvironmentFile=`——实测拿到**同一个** `DATABASE_URL`（只比 SHA-256，不打印值）。`EnvironmentFile` 指向不存在的文件时 `systemd-run` 以退出码 1 失败（实测），脚本因此停下，不会退回默认连接参数。
+
 ```bash
 bash /opt/huice/app/infra/deploy/migrate.sh
 ```
@@ -177,13 +188,13 @@ echo "退出码: $?"
 
 **临时单元不继承调用 shell 的工作目录**：`systemd-run` 创建的单元默认从 `/` 启动，前面先 `cd /opt/huice/app` 也不起作用（那是 shell 自己的 cwd）。因此：
 
-- 解释器与脚本一律写**绝对路径** `/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/issue-session.py`。写成相对路径时 Python 会去找 `/infra/deploy/issue-session.py`，报「can't open file」并以非零码退出——签发脚本自己一行都没跑，所以不会有 `value:` 那两行。
+- 解释器与脚本一律写**绝对路径** `/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/issue-session.py`。写成相对路径时 Python 会把相对路径拼到工作目录 `/` 上，去找 `//infra/deploy/issue-session.py`，stderr 报 `can't open file '//infra/deploy/issue-session.py': [Errno 2] No such file or directory` 并以退出码 2 结束——签发脚本一行都没跑，所以不会有 `value:` 那两行（2026-11-05 在 ECS 上实测：绝对路径写法的退出码 0、输出两行；相对路径写法退出码 2、无输出）。
 - 显式加 `-p WorkingDirectory=/opt/huice/app`，与 `huice-api.service` 的工作目录一致。签发脚本本身用 `__file__` 推出仓库根、不依赖 cwd，但服务读的 `LOCAL_OBJECT_DIR` 默认值是相对路径 `.local-objects`；把工作目录钉死，临时单元与应用进程看到的是同一个根。
-- 跑完核对 `echo $?` 为 0 且输出两行（`value:` 与 `Set-Cookie:`）。非 0 时先看是不是解释器/脚本路径写错，再看脚本自己打印的提示（缺依赖退出码 2、缺或过短的 `DEMO_SESSION_SECRET` 也是 2，只报变量名不报值）。
+- 跑完核对 `echo $?` 为 0 且输出两行（`value:` 与 `Set-Cookie:`）。**退出码 2 有三种来源**：Python 找不到脚本、`ModuleNotFoundError`（用了系统 `python3`）、`DEMO_SESSION_SECRET` 缺失或过短——只看退出码分不清，要读 stderr：脚本自己打印的提示只报变量名、不报值，`can't open file` 则是路径写错。
 
 **必须用虚拟环境的解释器**：脚本会导入 `app.security`，后者在模块级导入 FastAPI，而依赖只装在 `/opt/huice/venv`。用系统 `python3` 运行会直接抛 `ModuleNotFoundError`（脚本会打印提示并以退出码 2 结束，而不是抛堆栈）。
 
-两点注意：**不要 `set -a; . /etc/huice/api.env`**——shell 会按 shell 规则解析整个文件，而 `systemd` 的 `EnvironmentFile` 不是 shell（不做变量展开、不执行命令），密钥里含 `$`、反引号或引号时两边读到的值可能不同，甚至把文件内容当命令执行；改用上面的 `systemd-run` 后这条风险不再存在。签发完成后按 §3.2 的例外说明限定有效期、用完清掉并按需轮换 `DEMO_SESSION_SECRET`。
+两点注意：**不要 `set -a; . /etc/huice/api.env`**——shell 会按 shell 规则解析整个文件，而 `systemd` 的 `EnvironmentFile` 不是 shell（不做变量展开、不执行命令），密钥里含 `$`、反引号或引号时两边读到的值可能不同，甚至把文件内容当命令执行；改用上面的 `systemd-run` 后这条风险不再存在（两种读法的实测对照表见 §2.1）。签发完成后按 §3.2 的例外说明限定有效期、用完清掉并按需轮换 `DEMO_SESSION_SECRET`。
 
 输出两行：cookie 值和可直接使用的 `Set-Cookie` 头。把 `Set-Cookie` 配到网关/演示入口（或在浏览器开发者工具里手工设置 cookie，见 §3.2 的例外说明），之后带着它访问后台接口。
 
