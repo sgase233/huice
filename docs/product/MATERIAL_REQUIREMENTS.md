@@ -70,7 +70,7 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
 
 ## 4. 与 `preparation.items[]`、`verified=true` 的对接
 
-- `preparation.items[]` 的每一项来自 CSV 一行：`title` → `title`，`description` → `description`，`proves_fact_keys` → `required_fact_refs`（每个键配 `period=assessment`，即判断所属年度；季度类事实由 M1 按规则口径展开为具体季度期间）。
+- `preparation.items[]` 的每一项来自 CSV 一行：`title` → `title`，`description` → `description`，`proves_fact_keys` → `required_fact_refs`：**期间已写死的键配具体起止日期；期间随评估的键不在模板里出现**，由运行期 `preparation.items[]` 按本次评估期间展开成具体日期；季度类键展开为 4 个季度 × 期初/期末（见本节「季度类键」）。契约 `FactRef.period` 必填 `{startDate,endDate}`，不接受字符串 `"assessment"`。
 - `required`/`condition_desc` 的承载：M1 2026-11-05 定案采用**方案 ②，不动契约**——`title` 前置 `【必交】`/`【条件交】`；`condition_desc` 以「适用条件：…；」并入 `description` 开头；CSV 两列原样保留作为数据源与复核依据。若前端要按必交/条件交过滤或着色，后续以可选字段进 1.0.x。
 - **期间**：`FactRef.period` 必填具体起止日期；API-03 的模板 `required_fact_refs` 只放政策条件中已写死期间的键；`assessment` 相对的键在运行期 `preparation.items[]` 按本次评估期间展开。若要让模板本身也表达「期间随评估」，需契约 rc.7 允许 `"period": "assessment"`（待定）。
 - **无事实键的材料**（GRANT-02/05/06；GRANT-09 不入库）：`required_fact_refs: []`，`missing` 按 `true` 处理（无法自动核对时不能显示为「资料已提供」）。这是保守处理，UI 的「资料缺失」措辞会偏；item `description` 必须写明「需人工核对，无法自动判断是否已提供」。三态（已提供/缺失/无法核对）需契约加字段，暂不做。
