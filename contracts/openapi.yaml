@@ -2058,7 +2058,7 @@ components:
         tokensUnknown:
           type: boolean
           default: false
-          description: 上游没有返回可用用量时为 true（包括 2xx 但缺 usage、只给一半、格式异常）。此时 inputTokens/outputTokens 只是占位 0，不得计入费用统计或与真实零用量混为一谈；真实状态以调用日志的 usage=unknown 与轨迹摘要为准。缺省 false 表示两个数值是本次调用的真实用量（fixture 未发起调用时也是真实的 0）。**服务端在用量已知时省略该字段**：本对象是 additionalProperties:false，常路径带上 tokensUnknown:false 会让按 rc.6 严格校验的旧消费者把正常响应判为非法；省略后已知用量的响应与 rc.6 逐字段一致，只有未知这一异常会多出字段（旧消费者在那里失败，而不是把占位 0 当真）。
+          description: 上游没有返回**完整可用**的用量时为 true（包括 2xx 但缺 usage、只给一半、格式异常）。此时 inputTokens/outputTokens **不得计入费用统计**，也不能与真实零用量混为一谈：rc.7 自己产生的未知一律是 0/0；幂等重放 rc.6 时期写下的记录时，rc.6 对两个计数是**各自**兜底的，无法判断缺的是哪一个，因此数值原样保留（可能是 120/0 这样的一半）并补上该标记。真实状态以调用日志的 usage=unknown 与轨迹摘要为准。缺省 false 表示两个数值是本次调用的真实用量（fixture 未发起调用时也是真实的 0）。**服务端在用量已知时省略该字段**：本对象是 additionalProperties:false，常路径带上 tokensUnknown:false 会让按 rc.6 严格校验的旧消费者把正常响应判为非法；省略后已知用量的响应与 rc.6 逐字段一致，只有未知这一异常会多出字段（旧消费者在那里失败，而不是把占位 0 当真）。
     ExtractPolicyInput:
       type: object
       additionalProperties: false

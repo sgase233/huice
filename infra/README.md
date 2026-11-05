@@ -45,6 +45,8 @@ docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exe
   psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/005_fact_dictionary_extension.sql
 docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exec db `
   psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/006_fact_dictionary_extension_rc4.sql
+docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exec db `
+  psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/007_idempotency_usage_semantics.sql
 
 # 云 RDS 或本机 PG
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/001_init.sql
@@ -53,6 +55,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/003_trace_step_details.sql
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/004_invalidation_event_period.sql
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/005_fact_dictionary_extension.sql
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/006_fact_dictionary_extension_rc4.sql
+psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/007_idempotency_usage_semantics.sql
 ```
 
 `infra/sql/001_init.sql` 建 13 张表（policy、policy_version、policy_source、policy_criterion、policy_validation_finding、enterprise、enterprise_fact、assessment_run、assessment、assessment_dependency、invalidation_event、trace_step、schema_migration）、启用 `vector` 扩展、创建 updated_at / 已发布版本保护 / 只追加表三类触发器，并在末尾写入 `schema_migration('001_init', ...)`。脚本开 `BEGIN/COMMIT`、全部使用 `IF NOT EXISTS`/`CREATE OR REPLACE`，可重复执行。
@@ -98,9 +101,18 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/006_fact_dictionary_extension
 
 执行 006 后基础表仍为 14 张（只换约束）。已执行过 001—005 的库补执行 006 即可；`schema_migration` 应增至六行。
 
+`infra/sql/007_idempotency_usage_semantics.sql` 给幂等记录标记用量语义的来源（契约 `1.0.0-rc.7`）：
+
+- `idempotency_record` 增加 `usage_semantics text NOT NULL DEFAULT 'legacy'`，约束 `idempotency_record_usage_semantics_check` 只收 `'legacy'` / `'explicit'`。
+- `'explicit'` = rc.7 起写入的服务端（未知用量一定带 `tokensUnknown: true`，缺省即已知）；`'legacy'` = 本迁移之前写入的，也可能是回退到 rc.6 期间写入的（旧代码不写这一列，`DEFAULT` 正好落在保守值）。**不回填**，历史行由 `DEFAULT` 直接落 `'legacy'`。
+- 背景：rc.6 对 `prompt_tokens`/`completion_tokens` 是**各自** `or 0` 兜底的，`120/0`、`0/45` 这类部分缺失只看数值判不出来；重放时按这一列决定要不要把历史用量视为未确认（见 `contracts/README.md` 第 11 条）。
+- **`response` 本体不动**：保持与线路形状一致，回退到 rc.6 后用量已知的记录仍能同键重放（旧代码的 `INSERT`/`SELECT` 都不涉及这一列，多出的列不影响它写与读）。
+
+执行 007 后基础表仍为 14 张（只加列）。已执行过 001—006 的库补执行 007 即可；`schema_migration` 应增至七行。
+
 > **2026-10-26 修正**：002 早期版本第 4 节用 `ALTER TABLE trace_step DROP TRIGGER IF EXISTS ...` 删触发器，这不是合法语法（`DROP TRIGGER` 是独立语句；`ALTER TABLE` 下也没有 `DROP TRIGGER IF EXISTS` 形式），执行会在该行报 `syntax error at or near "IF"`。已改为独立语句 `DROP TRIGGER IF EXISTS trace_step_no_update_delete ON trace_step;`，并在修正后连续执行两遍验证（退出码 0，`trace_step_status_check` 为 `ok/needs_review/retryable_error/fatal_error`）。由于脚本整体在一个事务里，旧的报错不会留下半成品结构；若 `schema_migration` 里已有 002 行但结构未变，先按 [local/README.md](local/README.md) 的「002 迁移」一节核对触发器与约束，再重跑 002。
 
-迁移约定：新变更写 `006_*.sql` 之后的下一个序号，不改历史脚本；每条迁移同样登记 `schema_migration`。
+迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `007_idempotency_usage_semantics.sql`，下一份是 `008_*.sql`），不改历史脚本；每条迁移同样登记 `schema_migration`。
 
 ## 4. 云端资源状态（截至 2026-11-03）
 
@@ -114,7 +126,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/006_fact_dictionary_extension
 | 登录方式 | 密码（用户 `root`） | 密码不入文档；建议后续换成密钥对 |
 | CodeArts / Skills | 本人 2026-10-23 告知已开通（未在控制台复核） | **本项目不接入**：队长 2026-10-23 决定，开发过程记录以实际使用的编码工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
 | Redis（DCS） | **已购买并实测连通（2026-10-23）**：`huice-redis`，Redis 7.0（`INFO server` 报 `redis_version:7.x`），**主备**，1 GB，内网 `192.168.0.38:6379` | 在 ECS `huice-api-01` 上 `AUTH` 返回 `OK`、`PING` 返回 `PONG`；密码只进服务器 `.env`，不入库不入文档。**2026-10-26 复测**：`/dev/tcp/192.168.0.38/6379` 可连、`redis-cli --askpass PING` → `PONG`，控制台显示小版本 `7.2.11.5`，白名单已含 ECS 内网 `192.168.0.86`（2026-10-24 的「连接被拒」不复现）。2026-10-26 起判断链路有版本化求值缓存（键前缀 `huice:eval:v1:`，TTL 300 秒），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；Redis 不可达时自动按「未命中重算」执行 |
-| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 按序执行**（`schema_migration` 六行、`fact_period_start/fact_period_end` 两列与 18 键约束均已核对），11/08 只需重新部署代码 |
+| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 按序执行**（`schema_migration` 六行、`fact_period_start/fact_period_end` 两列与 18 键约束均已核对）；**`007_idempotency_usage_semantics.sql`（PR #34）尚未在云端执行**，需在部署 rc.7 代码之前补跑，否则抽取接口写幂等记录会因缺列失败 |
 | OBS（对象存储） | **已购买并建桶（2026-10-23）**：桶 `huice-policies`，**私有**，区域 `cn-south-1`（华南-广州），endpoint `obs.cn-south-1.myhuaweicloud.com` | 区域级服务，不进 VPC；`ObsObjectStore` 已用 `esdk-obs-python` 3.26.6 实现（`obs/<uuid>` 命名空间、失败映射 503），**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项：写入→独立客户端读回字节、删除后 404、两次写入键不冲突、导入正文真正落桶、不可写桶 503 且不泄露凭证，见 §4.3）；**云端已于 2026-11-04 填入四项并实测通过**：`OBJECT_STORE_MODE=obs` 下导入返回 201，库里新来源的 `storage_key` 为 `obs/<uuid>.txt`，用同凭据的 SDK `getObjectMetadata` 查桶内对象返回 200。AK/SK 只存在 ECS 的 `/etc/huice/api.env`（600、仅 root/huice 可读），经 `read -s` 读入，不进命令行与 shell 历史（本地联调用过的一对因失败输出误打印已作废重建） |
 | Docker Desktop + WSL2（本地） | WSL 3.0.3.0 + Docker Desktop 4.96.3 | 已解除，本地 compose 可用 |
 
@@ -172,7 +184,7 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 | 日志（成功） | `model_call purpose=extraction outcome=ok usage=<known\|unknown> model=<模型名> prompt=<n\|unknown> completion=<n\|unknown> elapsed_ms=<ms> policy_id=<id> version=<版本>` | `model_call purpose=explanation outcome=ok usage=<known\|unknown> model=<模型名> prompt=<n\|unknown> completion=<n\|unknown> elapsed_ms=<ms> policy_id=<政策 ID> version=<版本>` |
 | 日志（失败） | `model_call purpose=extraction outcome=error usage=<unknown\|none> model=<模型名> prompt=<unknown\|0> completion=<unknown\|0> elapsed_ms=<ms> policy_id=<id> version=<版本> code=<错误码>` | `model_call purpose=explanation outcome=error usage=<unknown\|none> prompt=… completion=… elapsed_ms=unknown policy_id=… version=…` |
 | 轨迹 | 成功：`extraction` 步骤，`modelOrRuleVersion` 为模型名，摘要「抽取正文 N 字」→「得到条件 K 条、校验发现 M 条」。失败：独立事务写一条只有错误码的步骤，`status` 为 `retryable_error`/`fatal_error`，摘要「模型抽取失败」→「错误码 …；上游是否计费无法确认，用量按未知记录 / 未发起模型调用，没有用量」 | `explanation` 步骤摘要前缀「模型 tokens 入 N 出 M」（只汇总已知用量），出现未知时追加「另有 K 次调用用量未知（失败或响应缺用量，可能已计费）」（`MAX_SUMMARY=200` 会截断，多政策只记总数） |
-| 响应 | `ExtractionResult.usage`（接口本来就返回）。契约 rc.7 起多了 `tokensUnknown`：2xx 但拿不到用量时 `tokensUnknown=true`、两个数值是**占位 0**，不得按 tokens 计费；`fixture` 这类没发起调用的是真实的 0，不带标记。服务端**已知用量时省略该字段**，常路径响应与 rc.6 逐字段一致；未知时才出现 `tokensUnknown: true`，按 rc.6 严格校验的旧消费者会拒绝该响应（有意 fail-closed，不会把占位 0 当真）。**上线顺序是前端先行**：现有审核页直接显示 `inputTokens/outputTokens`、不判这个标记，后端先上会把未知显示成「0 / 0」（见 `contracts/README.md` 第 11 条）。**回滚**：整体退回 rc.6 会一并失去 `model_call` 日志与轨迹摘要（它们来自 #34）；`tokensUnknown` 已随响应存进 `idempotency_record.response`（只追加、删不掉），同键同版本重放在 rc.6 上会 500；「没有该字段」不等于已知，rc.6 本身也用 0 兜底。**历史重放**：rc.6 写下的记录没有标记，重放时服务端把 `mode=deepseek` 且双 0 的用量补成 `tokensUnknown: true`（只改响应视图，不写回），消费者同样按这条判断、不靠 `/health` 的版本 | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
+| 响应 | `ExtractionResult.usage`（接口本来就返回）。契约 rc.7 起多了 `tokensUnknown`：2xx 但拿不到用量时 `tokensUnknown=true`、两个数值是**占位 0**，不得按 tokens 计费；`fixture` 这类没发起调用的是真实的 0，不带标记。服务端**已知用量时省略该字段**，常路径响应与 rc.6 逐字段一致；未知时才出现 `tokensUnknown: true`，按 rc.6 严格校验的旧消费者会拒绝该响应（有意 fail-closed，不会把占位 0 当真）。**上线顺序是前端先行**：现有审核页直接显示 `inputTokens/outputTokens`、不判这个标记，后端先上会把未知显示成「0 / 0」（见 `contracts/README.md` 第 11 条）。**回滚**：整体退回 rc.6 会一并失去 `model_call` 日志与轨迹摘要（它们来自 #34）；`tokensUnknown` 已随响应存进 `idempotency_record.response`（只追加、删不掉），**未知用量**的记录同键同版本重放在 rc.6 上会 500（已知用量的记录形状一致、照常可重放）；「没有该字段」不等于已知，rc.6 本身也用 0 兜底。**历史重放**：rc.6 对两个计数**各自** `or 0` 兜底（`120/0`、`0/45`、`0/0`），数值判不出用量是否完整；迁移 `007_idempotency_usage_semantics.sql` 给 `idempotency_record` 加 `usage_semantics` 列（`explicit` = rc.7 起写入、未知必带标记；`legacy` = 此前写入，含回退期间），重放时 `legacy` 且 `mode=deepseek` 一律补 `tokensUnknown: true`、数值原样保留，`fixture` 的真实 0 不补标（只改响应视图，不写回），消费者同样按标记判断、不靠 `/health` 的版本 | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
 
 **用量的三态**（2026-11-05 按复审意见收口，未知不并进 0）：
 
@@ -344,7 +356,7 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 `infra/deploy/deploy.ps1` 未删除，仍是占位文件；本阶段以 `deploy/README.md` 的手工步骤为准。
 
-**执行前提（均已完成，留作复现口径）**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **006**（`schema_migration` 六行齐全，004—006 于 2026-11-02 补齐）。代码侧 2026-11-02 首版部署、2026-11-03 重新部署到 `1.0.0-rc.6` 并启用 443 同源站点（勾选项见 §5.2，过程见 `docs/devlog/M1.md`），此后只需按提交更新代码。MaaS 已不在范围内；云端 `MODEL_MODE` 现为 `deepseek`（2026-11-04 验证成功路径，见 §4.3 与 §4.2），`OBJECT_STORE_MODE` 现为 `obs`（2026-11-04 实测通过，见 §4.1）。仍未闭合的是**从空环境按本文件与部署脚本从零复现**（11/15 要求，§5.2 尚未勾选）。
+**执行前提（均已完成，留作复现口径）**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **006**（`schema_migration` 六行齐全，004—006 于 2026-11-02 补齐；**`007` 待随 PR #34 部署补跑**）。代码侧 2026-11-02 首版部署、2026-11-03 重新部署到 `1.0.0-rc.6` 并启用 443 同源站点（勾选项见 §5.2，过程见 `docs/devlog/M1.md`），此后只需按提交更新代码。MaaS 已不在范围内；云端 `MODEL_MODE` 现为 `deepseek`（2026-11-04 验证成功路径，见 §4.3 与 §4.2），`OBJECT_STORE_MODE` 现为 `obs`（2026-11-04 实测通过，见 §4.1）。仍未闭合的是**从空环境按本文件与部署脚本从零复现**（11/15 要求，§5.2 尚未勾选）。
 
 上云前的准备项、环境变量对照与目标时间表见第 5 节；计划的云端节点是 11/08，实际已于 2026-11-02 提前完成部署，剩下的是 11/15 的空环境复现。
 

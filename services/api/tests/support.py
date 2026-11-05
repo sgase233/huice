@@ -286,9 +286,17 @@ class FakeRepository:
     def read_idempotent(self, scope: str, key):
         return self.idempotency.get((scope, key))
 
-    def save_idempotent(self, scope: str, key, fingerprint: str, response: dict, revision) -> None:
+    def save_idempotent(
+        self, scope: str, key, fingerprint: str, response: dict, revision, *, usage_semantics
+    ) -> None:
         self.idempotency.setdefault(
-            (scope, key), {"fingerprint": fingerprint, "response": response, "revision": revision}
+            (scope, key),
+            {
+                "fingerprint": fingerprint,
+                "response": response,
+                "revision": revision,
+                "usage_semantics": usage_semantics,
+            },
         )
 
     # ------------------------------------------------------------ 公开政策

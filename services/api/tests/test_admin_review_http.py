@@ -372,6 +372,40 @@ def test_replaying_an_unknown_usage_extraction_keeps_the_marker_without_new_call
     assert len(repository.saved_extractions) == 1
 
 
+class _FixedUsageExtractionLlm(_ModelExtractionLlm):
+    """与 ``_ModelExtractionLlm`` 同一条条款，用量可指定——覆盖 rc.6 的部分兜底形状。"""
+
+    def __init__(self, prompt_tokens: int, completion_tokens: int) -> None:
+        self._usage = (prompt_tokens, completion_tokens)
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        result = super().complete(system=system, user=user, max_tokens=max_tokens)
+        return LlmResult(
+            text=result.text,
+            model=result.model,
+            prompt_tokens=self._usage[0],
+            completion_tokens=self._usage[1],
+            elapsed_ms=result.elapsed_ms,
+        )
+
+
+def _downgrade_to_legacy(record: dict) -> None:
+    """把一条 rc.7 记录还原成 rc.6 写下的样子：来源是 legacy，响应里没有标记。"""
+
+    record["usage_semantics"] = "legacy"
+    response = json.loads(json.dumps(record["response"]))
+    response["usage"].pop("tokensUnknown", None)
+    record["response"] = response
+
+
+def _replay(client, auth, draft, *, key, revision):
+    return client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, revision, key=key),
+        json={"version": draft.version},
+    )
+
+
 def test_replaying_an_rc6_record_marks_the_fallback_zero_as_unknown(
     app, client, auth, repository
 ):
@@ -385,16 +419,10 @@ def test_replaying_an_rc6_record_marks_the_fallback_zero_as_unknown(
     draft, first = _extract_with_llm(
         app, client, auth, repository, _NoUsageExtractionLlm(), key=key
     )
-    # 还原成 rc.6 写下的形状：deepseek、两个计数都是 0、没有标记
-    stored = repository.idempotency[("extract", key)]
-    legacy = json.loads(json.dumps(stored["response"]))
-    del legacy["usage"]["tokensUnknown"]
-    stored["response"] = legacy
+    _downgrade_to_legacy(repository.idempotency[("extract", key)])
 
-    replay = client.post(
-        f"/api/v1/admin/policies/{draft.id}/extract",
-        headers=headers(auth, first.json()["draft"]["revision"], key=key),
-        json={"version": draft.version},
+    replay = _replay(
+        client, auth, draft, key=key, revision=first.json()["draft"]["revision"]
     )
 
     assert replay.status_code == 200
@@ -403,20 +431,80 @@ def test_replaying_an_rc6_record_marks_the_fallback_zero_as_unknown(
     assert "tokensUnknown" not in repository.idempotency[("extract", key)]["response"]["usage"]
 
 
+@pytest.mark.parametrize(
+    ("prompt_tokens", "completion_tokens"),
+    [(120, 0), (0, 45), (120, 45)],
+    ids=["only-prompt", "only-completion", "both-given"],
+)
+def test_replaying_a_legacy_record_never_calls_its_usage_known(
+    app, client, auth, repository, prompt_tokens, completion_tokens
+):
+    """rc.6 的两个计数是**各自**兜底的，凭数值判不出用量是否完整。
+
+    `120/0` 只说明 prompt 给了、completion 没给，`0/45` 反之；连 `120/45` 也不能
+    凭「非零」认定完整——来源不可确认时一律按未确认，数值原样保留给人核对。
+    """
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app,
+        client,
+        auth,
+        repository,
+        _FixedUsageExtractionLlm(prompt_tokens, completion_tokens),
+        key=key,
+    )
+    _downgrade_to_legacy(repository.idempotency[("extract", key)])
+
+    replay = _replay(
+        client, auth, draft, key=key, revision=first.json()["draft"]["revision"]
+    )
+
+    assert replay.status_code == 200
+    usage = replay.json()["usage"]
+    assert usage["tokensUnknown"] is True
+    # 数值原样保留：能确认的那一半仍是真实值，只是不能被当成完整用量
+    assert (usage["inputTokens"], usage["outputTokens"]) == (
+        prompt_tokens,
+        completion_tokens,
+    )
+
+
+def test_replaying_a_legacy_fixture_record_keeps_the_real_zero(
+    app, client, auth, repository
+):
+    """fixture 没有发起调用，0 是真实的零用量：来源旧不等于要补标。"""
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app, client, auth, repository, app.state.llm, key=key
+    )
+    _downgrade_to_legacy(repository.idempotency[("extract", key)])
+
+    replay = _replay(
+        client, auth, draft, key=key, revision=first.json()["draft"]["revision"]
+    )
+
+    assert replay.status_code == 200
+    usage = replay.json()["usage"]
+    assert usage["mode"] == "fixture"
+    assert "tokensUnknown" not in usage
+    assert (usage["inputTokens"], usage["outputTokens"]) == (0, 0)
+
+
 def test_replaying_a_record_with_real_tokens_does_not_invent_unknown(
     app, client, auth, repository
 ):
-    """非 0 的深度求索用量不会被补标：兜底只发生在两个计数全为 0 时。"""
+    """rc.7 写下的记录自带来源标记：没有未知标记就是完整已知，重放不改变结论。"""
 
     key = uuid4()
     draft, first = _extract_with_llm(
         app, client, auth, repository, _ModelExtractionLlm(), key=key
     )
+    assert repository.idempotency[("extract", key)]["usage_semantics"] == "explicit"
 
-    replay = client.post(
-        f"/api/v1/admin/policies/{draft.id}/extract",
-        headers=headers(auth, first.json()["draft"]["revision"], key=key),
-        json={"version": draft.version},
+    replay = _replay(
+        client, auth, draft, key=key, revision=first.json()["draft"]["revision"]
     )
 
     assert replay.status_code == 200

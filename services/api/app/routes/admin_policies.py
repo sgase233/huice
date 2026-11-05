@@ -228,7 +228,7 @@ async def extract_policy(
                 {"currentVersion": str(draft.revision)},
             )
         response.headers["ETag"] = f'"{draft.revision}"'
-        return _normalize_replayed_usage(ExtractionResult.model_validate(replayed["response"]))
+        return _normalize_replayed_usage(replayed)
 
     sources = _extraction_sources(draft)
     attempt_started = time.monotonic()
@@ -305,6 +305,9 @@ async def extract_policy(
         fingerprint,
         result.model_dump(by_alias=True, mode="json"),
         saved.revision,
+        # 记录来源：rc.7 起未知一定带 tokensUnknown。重放时靠它区分「rc.7 写下的
+        # 已知」与「rc.6 写下的兜底 0」，两者在线路上长得一样。
+        usage_semantics="explicit",
     )
     response.headers["ETag"] = f'"{saved.revision}"'
     return result
@@ -483,29 +486,37 @@ def _ensure_editable(draft: PolicyDraft) -> None:
         )
 
 
-def _normalize_replayed_usage(result: ExtractionResult) -> ExtractionResult:
-    """把历史记录里「可能是兜底 0」的用量补标为未知，只改本次响应视图。
+def _normalize_replayed_usage(replayed: dict[str, Any]) -> ExtractionResult:
+    """按**记录自己的来源**判断用量语义，把可信不了的用量补标为未知。
 
-    rc.6 的服务端在上游没回 `usage` 时把两个计数写成 0、且不带任何标记；这些响应已经
-    整条存进 `idempotency_record`，重放时原样取出。所以「当前服务是 rc.7」并不能证明
-    某条重放记录的用量已知——它可能是 rc.6 时期写下的兜底 0。
+    `idempotency_record` 只追加，重放原样返回存储的响应。rc.6 写下的记录里，上游
+    `usage` 缺失的两个计数是**各自** `or 0` 兜底的：`120/0` 只说明 prompt 给了、
+    completion 没给，`0/45` 反之，`0/0` 两个都缺。所以只看数值判不出用量是否完整——
+    「双 0 才可疑」会漏掉部分缺失，「有非零就当已知」同样会漏。
 
-    DeepSeek 的一次真实抽取必然消耗 prompt tokens，`mode=deepseek` 且两个计数都是 0
-    只可能来自兜底。按这条不变式补 `tokensUnknown=true`，让线路语义自洽：消费者只看
-    标记，不必按 `/health` 的版本猜记录来源。记录本身不写回（该表只追加）。
+    判据是迁移 007 的 `usage_semantics`：
+
+    * `explicit`（rc.7 起写入）：未知一定带 `tokensUnknown: true`，没有标记即完整
+      已知，原样返回；
+    * 其余（`legacy`，即 007 之前写入，含回退到 rc.6 期间写入）：`mode=deepseek`
+      的用量可能部分或全部是兜底，且无法从数值反推哪一个是补的，一律按「未确认」
+      补 `tokensUnknown: true`，数值原样保留供人核对；`fixture`/`saved` 没有发起
+      调用，回到的 0 是真实的，不补标。
+
+    只改本次响应视图，不写回记录（该表只追加）。
     """
 
+    result = ExtractionResult.model_validate(replayed["response"])
     usage = result.usage
     if (
-        usage.mode == "deepseek"
-        and usage.input_tokens == 0
-        and usage.output_tokens == 0
-        and not usage.tokens_unknown
+        replayed.get("usage_semantics") == "explicit"
+        or usage.tokens_unknown
+        or usage.mode != "deepseek"
     ):
-        return result.model_copy(
-            update={"usage": usage.model_copy(update={"tokens_unknown": True})}
-        )
-    return result
+        return result
+    return result.model_copy(
+        update={"usage": usage.model_copy(update={"tokens_unknown": True})}
+    )
 
 
 def _fingerprint(policy_id: UUID, body: ExtractPolicyInput) -> str:

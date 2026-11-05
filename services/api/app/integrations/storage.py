@@ -135,9 +135,9 @@ INSERT INTO policy_validation_finding (
 
 _INSERT_IDEMPOTENT = """
 INSERT INTO idempotency_record (
-    scope, idempotency_key, request_fingerprint, response, revision
+    scope, idempotency_key, request_fingerprint, response, revision, usage_semantics
 ) VALUES (
-    %(scope)s, %(key)s, %(fingerprint)s, %(response)s, %(revision)s
+    %(scope)s, %(key)s, %(fingerprint)s, %(response)s, %(revision)s, %(usage_semantics)s
 )
 ON CONFLICT (scope, idempotency_key) DO NOTHING
 """
@@ -789,7 +789,7 @@ class PolicyRepository:
 
         with self._db.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                "SELECT request_fingerprint, response, revision "
+                "SELECT request_fingerprint, response, revision, usage_semantics "
                 "FROM idempotency_record WHERE scope = %s AND idempotency_key = %s",
                 (scope, key),
             )
@@ -800,6 +800,7 @@ class PolicyRepository:
             "fingerprint": row["request_fingerprint"],
             "response": row["response"],
             "revision": row["revision"],
+            "usage_semantics": row["usage_semantics"],
         }
 
     def save_idempotent(
@@ -809,8 +810,16 @@ class PolicyRepository:
         fingerprint: str,
         response: dict[str, Any],
         revision: UUID,
+        *,
+        usage_semantics: str,
     ) -> None:
-        """记录一次抽取结果。表只追加，重复键保留首次写入的那条。"""
+        """记录一次抽取结果。表只追加，重复键保留首次写入的那条。
+
+        ``usage_semantics`` 说明这条记录的用量从哪一代服务端来（迁移 007）：
+        ``'explicit'`` = rc.7 起，未知一定带 ``tokensUnknown: true``；``'legacy'``
+        = 更早的写入，两个计数曾被各自 ``or 0`` 兜底。重放时按它决定要不要把用量
+        视为未确认——只看数值判不出来（见 ``routes/admin_policies.py``）。
+        """
 
         with self._db.connection() as conn, conn.transaction():
             self._execute(
@@ -822,6 +831,7 @@ class PolicyRepository:
                     "fingerprint": fingerprint,
                     "response": Jsonb(response),
                     "revision": revision,
+                    "usage_semantics": usage_semantics,
                 },
             )
 

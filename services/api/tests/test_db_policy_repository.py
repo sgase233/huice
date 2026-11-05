@@ -11,6 +11,7 @@ from uuid import uuid4
 import psycopg
 import pytest
 from pydantic import ValidationError, create_model
+from psycopg.types.json import Jsonb
 
 from app.errors import ApiProblem
 from app.schemas import ModelUsage
@@ -194,22 +195,35 @@ def test_idempotent_record_roundtrip(repo):
 
     assert repo.read_idempotent("extract", key) is None
 
-    repo.save_idempotent("extract", key, "a" * 64, payload, revision)
+    repo.save_idempotent(
+        "extract", key, "a" * 64, payload, revision, usage_semantics="explicit"
+    )
 
     stored = repo.read_idempotent("extract", key)
-    assert stored == {"fingerprint": "a" * 64, "response": payload, "revision": revision}
+    assert stored == {
+        "fingerprint": "a" * 64,
+        "response": payload,
+        "revision": revision,
+        "usage_semantics": "explicit",
+    }
     # 作用域隔离：同一个键在别的接口下不算重放
     assert repo.read_idempotent("publish", key) is None
 
 
 def test_idempotent_record_keeps_the_first_write_and_is_append_only(repo, database_url_schema):
     key = uuid4()
-    repo.save_idempotent("extract", key, "b" * 64, {"n": 1}, uuid4())
-    repo.save_idempotent("extract", key, "c" * 64, {"n": 2}, uuid4())
+    repo.save_idempotent(
+        "extract", key, "b" * 64, {"n": 1}, uuid4(), usage_semantics="legacy"
+    )
+    repo.save_idempotent(
+        "extract", key, "c" * 64, {"n": 2}, uuid4(), usage_semantics="explicit"
+    )
 
     stored = repo.read_idempotent("extract", key)
     assert stored["fingerprint"] == "b" * 64
     assert stored["response"] == {"n": 1}
+    # 来源标记跟着首次写入那条走，不会被后来的写入覆盖
+    assert stored["usage_semantics"] == "legacy"
     assert query_one(database_url_schema, "SELECT count(*) FROM idempotency_record")[0] == 1
 
     for statement in (
@@ -256,13 +270,53 @@ def test_unknown_usage_flag_is_stored_with_the_replayed_response(repo):
         "d" * 64,
         {"usage": usage.model_dump(by_alias=True, mode="json")},
         revision,
+        usage_semantics="explicit",
     )
 
     stored = repo.read_idempotent("extract", key)
     assert stored["response"]["usage"]["tokensUnknown"] is True
+    assert stored["usage_semantics"] == "explicit"
     assert ModelUsage.model_validate(stored["response"]["usage"]).tokens_unknown is True
     with pytest.raises(ValidationError):
         _rc6_usage_validator().model_validate(stored["response"]["usage"])
+
+
+def test_records_written_by_the_old_code_fall_back_to_the_legacy_meaning(database_url_schema):
+    """迁移 007：回退到 rc.6 期间写入的行不带这一列，DEFAULT 落 ``'legacy'``。
+
+    这正是重放口径要的：旧代码写下的用量可能被 ``or 0`` 兜底，遗漏的一侧自动
+    落到「不可信」而不是被当成已知；语义列本身也不收臆造的值。
+    """
+
+    key = uuid4()
+    with psycopg.connect(database_url_schema) as conn:
+        # 旧代码的 INSERT 不写 usage_semantics 这一列
+        conn.execute(
+            "INSERT INTO idempotency_record "
+            "(scope, idempotency_key, request_fingerprint, response, revision) "
+            "VALUES ('extract', %s, %s, %s, %s)",
+            (key, "e" * 64, Jsonb({"usage": {"inputTokens": 120}}), uuid4()),
+        )
+        conn.commit()
+    assert (
+        query_one(
+            database_url_schema,
+            "SELECT usage_semantics FROM idempotency_record WHERE idempotency_key = %s",
+            (key,),
+        )[0]
+        == "legacy"
+    )
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with psycopg.connect(database_url_schema) as conn:
+            conn.execute(
+                "INSERT INTO idempotency_record "
+                "(scope, idempotency_key, request_fingerprint, response, revision, "
+                "usage_semantics) "
+                "VALUES ('extract', %s, %s, %s, %s, 'guessed')",
+                (uuid4(), "f" * 64, Jsonb({}), uuid4()),
+            )
+            conn.commit()
 
 
 def test_enterprise_fact_uses_the_contract_source_enum(database_url_schema):
