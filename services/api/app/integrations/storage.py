@@ -676,7 +676,11 @@ class PolicyRepository:
             )
             if row is None:
                 raise ApiProblem(404, "POLICY_NOT_FOUND", "没有找到对应的政策版本。")
-            usage = "上游可能已计费，用量未知" if usage_unknown else "上游未接受，未产生用量"
+            usage = (
+                "上游是否计费无法确认，用量按未知记录"
+                if usage_unknown
+                else "未发起模型调用，没有用量"
+            )
             self._insert_trace(
                 conn,
                 trace_id=trace_id,

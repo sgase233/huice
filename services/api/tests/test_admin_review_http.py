@@ -279,7 +279,7 @@ def test_a_rate_limited_extraction_is_recorded_as_retryable(app, client, auth, r
     caplog.set_level(logging.INFO)
     draft = seed_draft(repository)
     app.state.llm = _failing_llm(
-        retryable=True, usage_unknown=False, status_code=429, code="UPSTREAM_RATE_LIMITED"
+        retryable=True, usage_unknown=True, status_code=429, code="UPSTREAM_RATE_LIMITED"
     )
 
     response = _extract(client, auth, draft)
@@ -290,11 +290,11 @@ def test_a_rate_limited_extraction_is_recorded_as_retryable(app, client, auth, r
     failed = repository.failed_extractions[-1]
     assert failed["status"] == "retryable_error"
     assert failed["error_code"] == "UPSTREAM_RATE_LIMITED"
-    assert failed["usage_unknown"] is False
+    # 429 也没有「未计费」的证据：用量记未知，不能混进确定的 0。
+    assert failed["usage_unknown"] is True
     line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
-    # 上游明确拒绝就没有 token，记 none/0，不能与「可能已计费」混在一起。
-    assert "outcome=error" in line and "usage=none" in line
-    assert "prompt=0" in line and "completion=0" in line
+    assert "outcome=error" in line and "usage=unknown" in line
+    assert "prompt=unknown" in line and "completion=unknown" in line
 
 
 def test_a_timeout_during_extraction_is_retryable_with_unknown_usage(app, client, auth, repository, caplog):
@@ -318,16 +318,17 @@ def test_a_timeout_during_extraction_is_retryable_with_unknown_usage(app, client
 def test_an_upstream_client_error_is_fatal_and_not_retried(app, client, auth, repository):
     draft = seed_draft(repository)
     app.state.llm = _failing_llm(
-        retryable=False, usage_unknown=False, status_code=503, code="DEPENDENCY_UNAVAILABLE"
+        retryable=False, usage_unknown=True, status_code=503, code="DEPENDENCY_UNAVAILABLE"
     )
 
     response = _extract(client, auth, draft)
 
     assert response.status_code == 503
     failed = repository.failed_extractions[-1]
-    # 密钥/模型名写错这类失败重试也不会好，记 fatal_error 让人直接去查配置。
+    # 密钥/模型名写错这类失败重试也不会好，记 fatal_error 让人直接去查配置；
+    # 但「不该重试」不等于「上游没处理」，用量仍记未知。
     assert failed["status"] == "fatal_error"
-    assert failed["usage_unknown"] is False
+    assert failed["usage_unknown"] is True
 
 
 def test_a_failed_extraction_leaves_the_draft_untouched(app, client, auth, repository):

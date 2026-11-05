@@ -169,20 +169,24 @@ Remove-Item Env:HUICE_TEST_DEEPSEEK_API_KEY
 
 | 落点 | 抽取（API-05） | 解释（API-11） |
 | --- | --- | --- |
-| 日志（成功） | `model_call purpose=extraction outcome=ok usage=known model=<模型名> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<id> version=<版本>` | `model_call purpose=explanation outcome=ok usage=known model=<模型名> prompt=<n> completion=<n> elapsed_ms=<ms> policy_id=<政策 ID> version=<版本>` |
+| 日志（成功） | `model_call purpose=extraction outcome=ok usage=<known\|unknown> model=<模型名> prompt=<n\|unknown> completion=<n\|unknown> elapsed_ms=<ms> policy_id=<id> version=<版本>` | `model_call purpose=explanation outcome=ok usage=<known\|unknown> model=<模型名> prompt=<n\|unknown> completion=<n\|unknown> elapsed_ms=<ms> policy_id=<政策 ID> version=<版本>` |
 | 日志（失败） | `model_call purpose=extraction outcome=error usage=<unknown\|none> model=<模型名> prompt=<unknown\|0> completion=<unknown\|0> elapsed_ms=<ms> policy_id=<id> version=<版本> code=<错误码>` | `model_call purpose=explanation outcome=error usage=<unknown\|none> prompt=… completion=… elapsed_ms=unknown policy_id=… version=…` |
-| 轨迹 | 成功：`extraction` 步骤，`modelOrRuleVersion` 为模型名，摘要「抽取正文 N 字」→「得到条件 K 条、校验发现 M 条」。失败：独立事务写一条只有错误码的步骤，`status` 为 `retryable_error`/`fatal_error`，摘要「模型抽取失败」→「错误码 …；上游可能已计费，用量未知 / 上游未接受，未产生用量」 | `explanation` 步骤摘要前缀「模型 tokens 入 N 出 M」，失败时追加「另有 K 次调用失败、用量未知」（`MAX_SUMMARY=200` 会截断，多政策只记总数） |
-| 响应 | `ExtractionResult.usage`（接口本来就返回） | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
+| 轨迹 | 成功：`extraction` 步骤，`modelOrRuleVersion` 为模型名，摘要「抽取正文 N 字」→「得到条件 K 条、校验发现 M 条」。失败：独立事务写一条只有错误码的步骤，`status` 为 `retryable_error`/`fatal_error`，摘要「模型抽取失败」→「错误码 …；上游是否计费无法确认，用量按未知记录 / 未发起模型调用，没有用量」 | `explanation` 步骤摘要前缀「模型 tokens 入 N 出 M」（只汇总已知用量），出现未知时追加「另有 K 次调用用量未知（失败或响应缺用量，可能已计费）」（`MAX_SUMMARY=200` 会截断，多政策只记总数） |
+| 响应 | `ExtractionResult.usage`（接口本来就返回）。注意：契约 `ModelUsage` 的 tokens 是整数，**没有「未知」表示**，2xx 缺用量时响应里仍是 0，真实状态只在日志与轨迹摘要里 | 无——契约 `TraceStep` 没有 token 字段，11/12 不加字段 |
 
-**用量的三态**（2026-11-04 按复审意见区分，未知不并进 0）：
+**用量的三态**（2026-11-05 按复审意见收口，未知不并进 0）：
 
-- `usage=known`：拿到响应与 `usage` 字段，记真实 tokens。
-- `usage=unknown`：超时、连接中断、5xx、2xx 但响应解析不出结果——上游**可能已经处理并计费**，但客户端拿不到用量。单列，不得当作 0 参与费用统计。
-- `usage=none` / 不记行：上游明确拒绝（429、4xx，确认没有产生 token），或根本没调模型（`fixture`、规则抽取、幂等重放）。
+- `usage=known`：2xx 且响应里的 `usage` 完整可解析，记真实 tokens。
+- `usage=unknown`：**任何非 2xx**（含 429、上游 4xx/5xx）、超时、连接中断、响应解析不出结果，以及 **2xx 但 `usage` 缺失、部分缺失或格式异常**——上游是否计费无法从客户端确认，客户端拿不到用量。单列，不得当作 0 参与费用统计，也不并入已知合计。
+- `usage=none` / 不记行：**根本没发起调用**（`fixture`、规则抽取、幂等重放）。
 
-**失败按可重试性分档**：429 与超时/连接/5xx/坏响应记 `retryable_error`；上游 4xx（密钥、模型名、参数写错）记 `fatal_error`，重试不会自愈。两个标记只在服务端内部使用，错误响应的状态码与错误码形状不变。
+  429 与上游 4xx 早先被当作「确认没有产生 token」，2026-11-05 起改判为未知：状态码本身不能证明上游没有处理这次请求，除非供应商给出可核对的计费依据。这是保守口径，宁可多核对一次。
+
+**失败按可重试性分档**：429 与超时/连接/5xx/坏响应记 `retryable_error`；上游 4xx（密钥、模型名、参数写错）记 `fatal_error`，重试不会自愈。可重试性与「是否可能计费」是两件事：fatal 的调用同样按用量未知记。两个标记只在服务端内部使用，错误响应的状态码与错误码形状不变。
 
 **调用记录独立于草稿保存事务**：抽取是先调模型、后存草稿。模型成功但保存撞 409 或进程中断时，草稿与抽取轨迹一起回滚，但**调用日志已经写出**，仍可核对；模型失败时失败步骤走独立事务、只挂既有政策版本，不改草稿、不动 revision。写失败步骤自身出错只记一条告警，绝不替换原来的 429/503。
+
+**记录覆盖的边界（2026-11-05 如实标注）**：日志与失败步骤都在**调用返回或抛错之后**才写。请求已经发出、进程却在那之前被杀（OOM、`systemd` 强杀、机器掉电）时，这次调用**可能一行都没有**。要覆盖这种情形，需要在发起调用前先持久化一条「开始记录」并在事后对账，本里程碑没做，也不宣称已保证。对账时应把「日志缺失」与「确认未调用」分开看。
 
 **日志管线（2026-11-04 修，M2 P1）**：uvicorn 自带的 `LOGGING_CONFIG` 只配置 `uvicorn*` 三个 logger，root 停默认的 WARNING 且没有 handler，应用模块的 `logger.info` 在部署环境里**会被丢弃**——测试里 `caplog.set_level(logging.INFO)` 恰好把这一点掩盖了。现在 `app/logging_setup.py` 在建 app 时给 `app` 与 `huice` 两个命名空间挂 stderr handler 并设为 INFO（systemd 的 `StandardOutput/StandardError=journal` 把它转进 journald），不需要额外的环境变量或 unit 参数；重复建 app 不会叠加 handler。`tests/test_logging_setup.py` 按「uvicorn 先初始化日志、应用再启动」的顺序验证，不依赖测试强制调级，其中一条走真实 fd 断言 `model_call` 那行确实到了 stderr。
 

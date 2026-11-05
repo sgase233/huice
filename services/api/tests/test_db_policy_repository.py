@@ -435,7 +435,7 @@ def test_a_failed_extraction_is_recorded_without_touching_the_draft(repo, databa
     assert model == "deepseek-chat" and elapsed_ms == 30001
     assert version == draft.version and "policyVersion" in refs
     # 用量未知要写清楚，不能写成 0 混进费用统计。
-    assert "用量未知" in summary
+    assert "用量按未知记录" in summary
 
     # 独立事务：草稿状态与 revision 都不动，也没有条款被写进去。
     repo_draft = repo.get_admin_policy(draft.id, draft.version)
@@ -465,8 +465,9 @@ def test_a_non_retryable_failure_is_recorded_as_fatal(repo, database_url_schema)
         (trace_id,),
     )
     assert status == "fatal_error"
-    # 上游明确没接受请求时写「未产生用量」，与未知区分开。
-    assert "未产生用量" in summary
+    # 只有确认「没发起调用」时才写没有用量；与「发起过但拿不到」区分开。
+    assert "未发起模型调用" in summary
+    assert "用量未知" not in summary
 
 
 def test_a_stale_revision_fails_before_any_trace_row_is_written(repo, database_url_schema):

@@ -8,7 +8,11 @@
   ``503 DEPENDENCY_UNAVAILABLE``；消息里不含 base URL、模型名或密钥。
 * 失败另带两个不进响应体的内部标记：``retryable``（429、超时/连接、5xx、
   坏响应可重试；上游 4xx 不可重试，多半是密钥或模型名写错）与
-  ``usage_unknown``（上游可能已处理并计费，但我们拿不到用量）。
+  ``usage_unknown``（上游是否计费无法从客户端确认，用量按未知记）。
+* 用量只有三态：**未发起调用**（fixture、规则抽取、幂等重放，不写调用行）、
+  **已知**（2xx 且 ``usage`` 完整）、**未知**（任何非 2xx、传输失败、坏响应，
+  以及 2xx 但 ``usage`` 缺失或格式异常）。未知一律不补成 0，也不并入合计——
+  状态码本身证明不了上游没有处理这次请求。
 * ``fixture`` 模式不联网、不读密钥，测试与演示默认走这条路径。
 
 只使用标准库 ``urllib``，不为一次 HTTP 调用再引入运行期依赖。
@@ -35,13 +39,19 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 
 @dataclass(frozen=True, slots=True)
 class LlmResult:
-    """一次模型调用的结果，字段与契约 ``ModelUsage`` 对齐。"""
+    """一次模型调用的结果，字段与契约 ``ModelUsage`` 对齐。
+
+    ``usage_known`` 为假表示拿到了回答但上游没给（或给不出可用的）用量：此时
+    ``prompt_tokens`` / ``completion_tokens`` 只是占位 0，调用方必须按「未知」
+    记日志与汇总，不能当成真实零用量。
+    """
 
     text: str
     model: str
     prompt_tokens: int
     completion_tokens: int
     elapsed_ms: int
+    usage_known: bool = True
 
 
 class LlmClient(Protocol):
@@ -150,14 +160,16 @@ class DeepSeekClient:
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
         if status == 429:
-            # 上游明确拒绝，没有产生 token；过一会儿再来是合理的。
+            # 过一会儿再来是合理的；但客户端没有任何依据证明上游没处理这次请求，
+            # 用量按未知记，不当作 0 并入统计。
             raise _problem(429, "UPSTREAM_RATE_LIMITED", MODEL_RATE_LIMITED_MESSAGE,
-                           retryable=True)
+                           retryable=True, usage_unknown=True)
         if not 200 <= status < 300:
             # 4xx（鉴权、参数、模型名写错）重试也不会成功；5xx 与分析失败同属可重试。
+            # 两类都算用量未知：状态码本身不能证明上游未计费。
             client_error = 400 <= status < 500
             raise _problem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
-                           retryable=not client_error, usage_unknown=not client_error)
+                           retryable=not client_error, usage_unknown=True)
 
         data = self._parse(raw)
         try:
@@ -167,13 +179,14 @@ class DeepSeekClient:
             raise _problem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
                            retryable=True, usage_unknown=True) from exc
 
-        usage = data.get("usage") or {}
+        prompt_tokens, completion_tokens, usage_known = _usage_tokens(data.get("usage"))
         return LlmResult(
             text=str(text or ""),
             model=str(data.get("model") or self._model),
-            prompt_tokens=int(usage.get("prompt_tokens") or 0),
-            completion_tokens=int(usage.get("completion_tokens") or 0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             elapsed_ms=elapsed_ms,
+            usage_known=usage_known,
         )
 
     @staticmethod
@@ -187,6 +200,30 @@ class DeepSeekClient:
             raise _problem(503, "DEPENDENCY_UNAVAILABLE", MODEL_UNAVAILABLE_MESSAGE,
                            retryable=True, usage_unknown=True)
         return data
+
+
+def _usage_tokens(usage: Any) -> tuple[int, int, bool]:
+    """取响应里的 tokens；缺失或格式异常时返回「未知」，绝不补成 0。
+
+    上游 2xx 却没给用量时，客户端分不清「真的零用量」与「拿不到」；两者混为
+    0 会让费用统计把可能已计费的调用算成免费，所以宁可单列未知。
+    """
+
+    if not isinstance(usage, dict):
+        return 0, 0, False
+    values: list[int] = []
+    for name in ("prompt_tokens", "completion_tokens"):
+        value = usage.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            return 0, 0, False
+        try:
+            number = int(value)
+        except ValueError:
+            return 0, 0, False
+        if number < 0:
+            return 0, 0, False
+        values.append(number)
+    return values[0], values[1], True
 
 
 def build_llm_client(settings: Settings) -> LlmClient:

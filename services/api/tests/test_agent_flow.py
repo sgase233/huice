@@ -257,7 +257,47 @@ def test_a_failed_explanation_call_is_logged_with_unknown_usage(
         step for step in repository.saved_runs[0]["trace_steps"] if step.stage == "explanation"
     ][0]
     # 未知用量单列，不能与已知 tokens 相加。
-    assert "1 次调用失败、用量未知" in explanation.output_summary
+    assert "另有 1 次调用用量未知" in explanation.output_summary
+    assert "tokens" not in explanation.output_summary
+
+
+class _NoUsageLlm:
+    """回答拿到了、上游却没给用量：措辞照用，但用量必须按未知记。"""
+
+    mode = "deepseek"
+    model_name = "deepseek-chat"
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        return LlmResult(
+            text="模型改写后的说明。",
+            model="deepseek-chat",
+            prompt_tokens=0,
+            completion_tokens=0,
+            elapsed_ms=9,
+            usage_known=False,
+        )
+
+
+def test_a_successful_call_without_usage_is_counted_as_unknown_not_zero(
+    app, client, repository, caplog
+):
+    caplog.set_level(logging.INFO)
+    policy = published_draft(expressions=[INDUSTRY_GATE])
+    repository.drafts.append(policy)
+    app.state.llm = _NoUsageLlm()
+    enterprise = create_enterprise(client)
+
+    body = create_run(client, enterprise["id"], [str(policy.id)])
+
+    assert body["assessments"][0]["explanationMode"] == "deepseek"
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
+    # 成功但缺用量：不能写 usage=known prompt=0，那是把未知当成真实零用量。
+    assert "outcome=ok" in line and "usage=unknown" in line
+    assert "prompt=unknown" in line and "completion=unknown" in line
+    explanation = [
+        step for step in repository.saved_runs[0]["trace_steps"] if step.stage == "explanation"
+    ][0]
+    assert "另有 1 次调用用量未知" in explanation.output_summary
     assert "tokens" not in explanation.output_summary
 
 

@@ -97,6 +97,9 @@ class ExtractionOutcome:
     criteria: list[ExtractedCriterion] = field(default_factory=list)
     findings: list[ExtractionFinding] = field(default_factory=list)
     usage: ModelUsage | None = None
+    #: 模型答复里的用量是否完整可取；假表示 ``usage`` 里的 0 只是占位，
+    #: 日志与汇总必须按「未知」记（契约 ``ModelUsage`` 没有未知表示）。
+    usage_known: bool = True
     status: str = "ok"
 
     def add(self, code: str, message: str, spans: tuple[SourceSpanCheck, ...] = ()) -> None:
@@ -308,6 +311,7 @@ def _extract_with_model(
         raise
 
     outcome.usage = _usage(result, result.model, result.prompt_tokens, result.completion_tokens, result.elapsed_ms)
+    outcome.usage_known = result.usage_known
     items = _parse_model_json(result.text)
     if items is None:
         outcome.add("EXTRACTION_OUTPUT_INVALID", "模型返回的内容不是约定的 JSON 数组，请人工录入条款。")

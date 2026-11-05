@@ -142,8 +142,11 @@ def assess(
             now=created_at,
         )
         assessments.append(assessment)
-        if usage is not None:
+        if usage is not None and usage.usage_known:
             model_usages.append(usage)
+        elif usage is not None:
+            # 回答拿到了但上游没给用量：不计入合计，按未知单列。
+            unknown_usages += 1
         if failure is not None and failure.usage_unknown:
             unknown_usages += 1
         if usage is not None or failure is not None:
@@ -374,7 +377,8 @@ def _explanation_summary(
         completion = sum(item.completion_tokens for item in usages)
         parts.append(f"模型 tokens 入 {prompt} 出 {completion}")
     if unknown_usages:
-        parts.append(f"另有 {unknown_usages} 次调用失败、用量未知")
+        # 失败与「成功但响应缺用量」同属未知：都可能已计费，都不并入上面的合计。
+        parts.append(f"另有 {unknown_usages} 次调用用量未知（失败或响应缺用量，可能已计费）")
     parts.append("、".join(f"{item.policy_id}={item.explanation_mode}" for item in assessments))
     return "；".join(parts)
 
@@ -390,17 +394,20 @@ def _log_model_call(
     """一次模型调用一行；只记用量与对象标识，不记提示词与正文。
 
     ``usage`` 为 ``None`` 表示调用失败：``usage_unknown`` 为真时用量写 ``unknown``
-    （上游可能已计费），否则写 ``0`` / ``none``（上游明确没有接受这次请求）。
+    （上游是否计费无法确认），否则写 ``0`` / ``none``（未发起调用）。
+    成功但上游没给用量（``usage.usage_known`` 为假）同样写 ``unknown``。
     """
 
     if usage is not None:
+        known = usage.usage_known
         logger.info(
-            "model_call purpose=%s outcome=ok usage=known model=%s prompt=%d completion=%d "
+            "model_call purpose=%s outcome=ok usage=%s model=%s prompt=%s completion=%s "
             "elapsed_ms=%d policy_id=%s version=%s",
             purpose,
+            "known" if known else "unknown",
             usage.model,
-            usage.prompt_tokens,
-            usage.completion_tokens,
+            usage.prompt_tokens if known else "unknown",
+            usage.completion_tokens if known else "unknown",
             usage.elapsed_ms,
             policy_id,
             version,

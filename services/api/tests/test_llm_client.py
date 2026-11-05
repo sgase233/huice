@@ -118,6 +118,7 @@ def test_success_returns_text_and_usage():
     assert result.prompt_tokens == 31
     assert result.completion_tokens == 17
     assert result.elapsed_ms >= 0
+    assert result.usage_known
     assert transport.calls[0]["payload"]["max_tokens"] == 256
 
 
@@ -127,9 +128,9 @@ def test_rate_limit_maps_to_429():
         client(transport).complete(system="s", user="u")
     assert info.value.status_code == 429
     assert info.value.code == "UPSTREAM_RATE_LIMITED"
-    # 限流是上游明确拒绝：过一会儿可以重试，且没有产生 token。
+    # 限流可以过一会儿重试；但状态码证明不了上游没处理这次请求，用量记未知。
     assert info.value.retryable
-    assert not info.value.usage_unknown
+    assert info.value.usage_unknown
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 500, 503])
@@ -146,9 +147,9 @@ def test_other_failures_map_to_503_without_leaking_secrets(status):
     assert BASE_URL not in text
     assert MODEL not in text
     # 上游 4xx（密钥/模型名/参数写错）重试也不会成功，应记 fatal_error；
-    # 5xx 属于可重试，且上游可能已经处理并计费。
+    # 5xx 属于可重试。两类都无法从客户端证明上游没计费，用量一律记未知。
     assert problem.retryable is (status >= 500)
-    assert problem.usage_unknown is (status >= 500)
+    assert problem.usage_unknown
 
 
 def test_malformed_json_maps_to_503():
@@ -181,13 +182,43 @@ def test_network_error_maps_to_503():
     assert info.value.retryable and info.value.usage_unknown
 
 
-def test_missing_usage_defaults_to_zero():
+def test_missing_usage_is_recorded_as_unknown():
     body = json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
     result = client(RecordingTransport(body=body)).complete(system="s", user="u")
     assert result.text == "ok"
+    # 2xx 却没有 usage：可能已计费，0 只是占位，必须标记未知。
+    assert not result.usage_known
     assert result.prompt_tokens == 0
     assert result.completion_tokens == 0
     assert result.model == MODEL
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"prompt_tokens": 12},
+        {"completion_tokens": 7},
+        {"prompt_tokens": "十二", "completion_tokens": 7},
+        {"prompt_tokens": 12, "completion_tokens": -1},
+        {"prompt_tokens": True, "completion_tokens": 7},
+        {"prompt_tokens": 12.5, "completion_tokens": 7},
+    ],
+)
+def test_partial_or_malformed_usage_is_unknown_not_zero(usage):
+    body = json.dumps({"choices": [{"message": {"content": "ok"}}], "usage": usage}).encode("utf-8")
+    result = client(RecordingTransport(body=body)).complete(system="s", user="u")
+    assert result.text == "ok"
+    assert not result.usage_known
+    assert (result.prompt_tokens, result.completion_tokens) == (0, 0)
+
+
+def test_digit_string_usage_is_accepted():
+    body = json.dumps(
+        {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": "31", "completion_tokens": 17}}
+    ).encode("utf-8")
+    result = client(RecordingTransport(body=body)).complete(system="s", user="u")
+    assert result.usage_known
+    assert (result.prompt_tokens, result.completion_tokens) == (31, 17)
 
 
 def test_build_llm_client_dispatches_by_mode():

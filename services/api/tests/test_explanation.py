@@ -27,9 +27,16 @@ class FakeLlm:
 
     mode = "deepseek"
 
-    def __init__(self, text: str | None = "模型改写后的说明。", *, mode: str = "deepseek") -> None:
+    def __init__(
+        self,
+        text: str | None = "模型改写后的说明。",
+        *,
+        mode: str = "deepseek",
+        usage_known: bool = True,
+    ) -> None:
         self._text = text
         self.mode = mode
+        self._usage_known = usage_known
         self.calls = 0
 
     def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
@@ -37,7 +44,12 @@ class FakeLlm:
         if self._text is None:
             raise RuntimeError("模型服务不可达")
         return LlmResult(
-            text=self._text, model="deepseek-chat", prompt_tokens=12, completion_tokens=34, elapsed_ms=5
+            text=self._text,
+            model="deepseek-chat",
+            prompt_tokens=12 if self._usage_known else 0,
+            completion_tokens=34 if self._usage_known else 0,
+            elapsed_ms=5,
+            usage_known=self._usage_known,
         )
 
 
@@ -125,6 +137,14 @@ def test_an_empty_answer_still_records_the_tokens_it_cost():
     assert (outcome.usage.prompt_tokens, outcome.usage.completion_tokens) == (12, 34)
 
 
+def test_a_successful_call_without_usage_keeps_the_unknown_flag():
+    outcome = run(llm=FakeLlm("模型改写后的说明。", usage_known=False))
+
+    # 回答拿到了、措辞照用；但上游没给用量，调用方必须按未知记而不是 0。
+    assert outcome.mode == "deepseek"
+    assert outcome.usage is not None and not outcome.usage.usage_known
+
+
 def test_a_failure_that_may_have_billed_is_reported_as_unknown():
     class TimedOut:
         mode = "deepseek"
@@ -142,18 +162,20 @@ def test_a_failure_that_may_have_billed_is_reported_as_unknown():
     assert outcome.usage_unknown
 
 
-def test_a_rate_limited_call_is_not_reported_as_billed():
+def test_a_rate_limited_call_is_also_reported_as_unknown():
     class RateLimited:
         mode = "deepseek"
 
         def complete(self, **kwargs):
-            raise ApiProblem(429, "UPSTREAM_RATE_LIMITED", "限流", retryable=True)
+            raise ApiProblem(
+                429, "UPSTREAM_RATE_LIMITED", "限流", retryable=True, usage_unknown=True
+            )
 
     outcome = run(llm=RateLimited())
 
     assert outcome.call_failed
-    # 429 是上游明确拒绝，没有产生 token，不能算进「可能已计费」。
-    assert not outcome.usage_unknown
+    # 429 状态码本身证明不了上游没处理这次请求：按未知记，不当作零用量。
+    assert outcome.usage_unknown
 
 
 def test_missing_facts_are_named_in_the_baseline_once():

@@ -259,12 +259,15 @@ async def extract_policy(
         if usage.mode == "deepseek":
             # 只有真的调了模型才记一行用量；rule/fixture 路径的 tokens 恒为 0，
             # 记成 model_call 会让人误以为每次抽取都有模型开销。
+            # 上游 2xx 却没给用量时记「未知」，不把占位的 0 当成真实零用量。
+            known = outcome.usage_known
             logger.info(
-                "model_call purpose=extraction outcome=ok usage=known model=%s prompt=%d "
-                "completion=%d elapsed_ms=%d policy_id=%s version=%s",
+                "model_call purpose=extraction outcome=ok usage=%s model=%s prompt=%s "
+                "completion=%s elapsed_ms=%d policy_id=%s version=%s",
+                "known" if known else "unknown",
                 usage.model_version,
-                usage.input_tokens,
-                usage.output_tokens,
+                usage.input_tokens if known else "unknown",
+                usage.output_tokens if known else "unknown",
                 usage.elapsed_ms,
                 policyId,
                 draft.version,

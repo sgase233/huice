@@ -77,8 +77,8 @@ def explain(
             max_tokens=300,
         )
     except Exception as exc:  # noqa: BLE001 - 模型失败一律降级，不影响规则结果
-        # 多数失败（超时、连接中断、坏响应）上游可能已计费；只有限流与上游 4xx
-        # 能确认没有产生 token。未知异常按「可能已计费」记，宁可多核对一次。
+        # 任何非 2xx、超时、连接中断、坏响应都无法从客户端证明上游没有计费，
+        # 一律按「用量未知」记；未知异常同样如此，宁可多核对一次。
         unknown = bool(getattr(exc, "usage_unknown", True))
         return Explanation(
             baseline, "saved", [MODEL_UNAVAILABLE_MESSAGE], call_failed=True, usage_unknown=unknown
