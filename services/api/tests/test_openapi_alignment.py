@@ -215,7 +215,8 @@ def test_model_usage_can_say_the_tokens_are_unknown(contract, schema):
 
     assert "tokensUnknown" in contract_usage["properties"]
     assert contract_usage["properties"]["tokensUnknown"]["type"] == "boolean"
-    # 可选：放进 required 就等于对所有既有调用方强制新字段，失去加法式的意义。
+    # 可选：放进 required 就等于对所有既有调用方强制新字段——那不是「常路径省略、
+    # 只在未知时出现」的迁移，旧消费者会连已知用量的正常响应一起拒掉。
     assert "tokensUnknown" not in contract_usage["required"]
     assert "tokensUnknown" in served_usage["properties"]
     assert "tokensUnknown" not in served_usage["required"]
