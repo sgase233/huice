@@ -166,12 +166,20 @@ systemctl restart huice-api
 `APP_ENV=demo` 时 `/api/v1/admin/*` 除了 Bearer 还要求签名未过期的 `huice_demo_session`；任意字符串不再通过。签发：
 
 ```bash
-cd /opt/huice/app
-systemd-run --quiet --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
-  /opt/huice/venv/bin/python infra/deploy/issue-session.py --hours 12
+systemd-run --quiet --pipe --wait --collect \
+  -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/issue-session.py --hours 12
+echo "退出码: $?"
 ```
 
 密钥由 systemd 自己按 `EnvironmentFile` 的规则装进这个**临时单元**的进程环境，签发脚本从环境里取用：不经过 shell 解析（理由同 §2.1），不出现在任何命令行参数里，也不留在当前 shell。`--pipe` 把脚本输出接回来，`--collect` 让临时单元跑完即回收；`systemd-run` 需要 root。
+
+**临时单元不继承调用 shell 的工作目录**：`systemd-run` 创建的单元默认从 `/` 启动，前面先 `cd /opt/huice/app` 也不起作用（那是 shell 自己的 cwd）。因此：
+
+- 解释器与脚本一律写**绝对路径** `/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/issue-session.py`。写成相对路径时 Python 会去找 `/infra/deploy/issue-session.py`，报「can't open file」并以非零码退出——签发脚本自己一行都没跑，所以不会有 `value:` 那两行。
+- 显式加 `-p WorkingDirectory=/opt/huice/app`，与 `huice-api.service` 的工作目录一致。签发脚本本身用 `__file__` 推出仓库根、不依赖 cwd，但服务读的 `LOCAL_OBJECT_DIR` 默认值是相对路径 `.local-objects`；把工作目录钉死，临时单元与应用进程看到的是同一个根。
+- 跑完核对 `echo $?` 为 0 且输出两行（`value:` 与 `Set-Cookie:`）。非 0 时先看是不是解释器/脚本路径写错，再看脚本自己打印的提示（缺依赖退出码 2、缺或过短的 `DEMO_SESSION_SECRET` 也是 2，只报变量名不报值）。
 
 **必须用虚拟环境的解释器**：脚本会导入 `app.security`，后者在模块级导入 FastAPI，而依赖只装在 `/opt/huice/venv`。用系统 `python3` 运行会直接抛 `ModuleNotFoundError`（脚本会打印提示并以退出码 2 结束，而不是抛堆栈）。
 
