@@ -143,7 +143,6 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .app-shell input:not([type="checkbox"]):focus, .app-shell select:focus, .app-shell textarea:focus { border-color: #565656; box-shadow: 0 0 0 3px #e9e9e9; }
 .app-shell .button, .app-shell .main-content button:not(.button):not(.text-button) { min-height: 44px; padding: .65rem 1rem; border: 1px solid #171717; border-radius: .5rem; background: #171717; color: #ffffff; font-weight: 700; line-height: 1.3; transition: background-color .18s ease, border-color .18s ease, color .18s ease, transform .18s ease; }
 .app-shell .button:hover:not(:disabled), .app-shell .main-content button:not(.button):not(.text-button):hover:not(:disabled) { background: #333333; border-color: #333333; color: #ffffff; }
-.app-shell .button:active:not(:disabled), .app-shell .main-content button:not(.button):not(.text-button):active:not(:disabled) { transform: translateY(1px); }
 .app-shell .button-secondary { background: #ffffff; color: #171717; border-color: #d4d4d4; }
 .app-shell .button-secondary:hover:not(:disabled) { background: #f0f0f0; border-color: #a0a0a0; color: #3a3a3a; }
 .app-shell .main-content button:disabled { background: #f1f1f1; border-color: #dddddd; color: #757575; }
@@ -199,3 +198,35 @@ dd { margin: 0; overflow-wrap: anywhere; }
 }
 @media (max-width: 760px) { .dock-heading { display: none; } }
 @media (prefers-reduced-motion: reduce) { .shell-layout, .dock-menu span, .dock-collapsed .workflow-icon, .dock-tip, .dock-label, .dock-heading .nav-caption, .nav-foot { transition: none; } }
+
+/* Feedback is limited to workbench content, leaving the sidebar unchanged. */
+.app-shell .main-content button {
+  position: relative;
+  overflow: hidden;
+  scale: 1;
+  transition: background-color .18s ease, border-color .18s ease, color .18s ease, scale .38s cubic-bezier(.2, 1.7, .4, 1);
+}
+.app-shell .main-content button:active:not(:disabled) {
+  scale: .96;
+  transition-duration: .18s, .18s, .18s, .08s;
+}
+.app-shell .is-rippling::after {
+  content: '';
+  position: absolute;
+  left: var(--ripple-x);
+  top: var(--ripple-y);
+  width: var(--ripple-size);
+  height: var(--ripple-size);
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  animation: button-ripple .55s ease-out;
+}
+@keyframes button-ripple {
+  from { transform: translate(-50%, -50%) scale(0); opacity: .22; }
+  to { transform: translate(-50%, -50%) scale(1); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell .main-content button:active:not(:disabled) { scale: 1; filter: brightness(.9); }
+}
