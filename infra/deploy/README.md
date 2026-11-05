@@ -48,7 +48,7 @@
 | 1 | 传代码到 `/opt/huice/app`（§1） | Windows 侧 + ECS | 后面所有脚本都找不到 |
 | 2 | `provision.sh`（§2）：装包、建 `huice` 用户与 venv、装依赖、装 unit 与 80 配置 | ECS | — |
 | 3 | 填 `/etc/huice/api.env`（§3） | ECS | 第 2 步结束时模板里的必填项还是空值，服务会以「缺少变量名」启动失败，属预期（脚本那一步就算失败也继续执行下一步） |
-| 4 | 执行迁移 001—006（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 六行 | ECS | 先对外服务再迁移：写事实 500、历史判断读不出来（§2.1 末段） |
+| 4 | 执行迁移 001—007（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 七行 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500（§2.1 末段） |
 | 5 | `systemctl restart huice-api`，再 `nginx -t && systemctl reload nginx` | ECS | 只 `enable` 不 `reload`：外网 404 且 `Server` 头暴露 nginx 版本（见 §8「外网 404」一行） |
 | 6 | 健康检查 200（§4 第 **1—4** 项）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
 | 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3）。**完成后**按 §4 的三批安排补跑第 **8—11** 项（第 5—7 项在第 6 步之后就能跑，不必等这里） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403；若先跑第 8—9 项，会因为 443 还不存在而误判成部署失败 |
@@ -108,7 +108,7 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 
 ### 2.1 数据库结构必须先于服务启动（硬前提）
 
-代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），且企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），**服务启动前云 RDS 必须已执行 001—006 全部迁移**。
+代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），**服务启动前云 RDS 必须已执行 001—007 全部迁移**。
 
 **取值交给 `migrate.sh`，不要 `source` 整个文件，也不要自己解析。** `systemd` 的 `EnvironmentFile` 不是 shell——不做变量展开、不执行命令，只处理引号、转义与续行。`set -a; . /etc/huice/api.env; set +a` 会让 shell 按 shell 规则解析**整个文件**：口令或密钥里出现 `$`、反引号、`!`、未配对引号时，读到的值可能和 systemd 实际传给服务进程的不一样（迁移就打到错的库），甚至把文件内容当命令执行。
 
@@ -135,13 +135,17 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 要 **root** 执行：读 `/proc/<PID>/environ` 与调用 `systemd-run` 都需要（`huice` 用户读不到别人的进程环境）。
 
-脚本按 001—006 顺序执行（每步 `-v ON_ERROR_STOP=1`）。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对六个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
+脚本按 001—007 顺序执行（每步 `-v ON_ERROR_STOP=1`）。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对七个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
+
+脚本里的清单与 `infra/sql/` 下的文件由 `services/api/tests/test_migrate_script.py` 的一条守卫用例比对：新增迁移只加 SQL 文件、忘了进清单，用例就转红。验收查询也按清单逐项核对，所以清单漏一条时它不会替那条「登记上了」——漏掉的是执行本身。
 
 `DATABASE_URL` 会作为 `psql` 的参数出现在进程列表里（`psql` 只从命令行或 `.pgpass` 取 URI，不认环境变量）。迁移窗口内别与他人共用登录会话，也别同时开着 `watch ps` 之类会刷屏的东西。ECS 镜像自带 `psql`（2026-10-24 实测），换成没有客户端的镜像就先 `apt-get install -y postgresql-client`。
 
 服务起来之后想确认「进程里那份值」与文件一致，可以只比哈希、不打印口令：`tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value huice-api)/environ | grep '^DATABASE_URL=' | sha256sum`。
 
 漏掉 `006` 不会在启动时报错，而是在**写入地方通知企业事实时**才炸：`enterprise_fact_key_check` 与 `enterprise_fact_key_unit` 仍是 16 键版本，`specificMarketSince`/`independentLegalEntity` 会被约束直接拒绝（500），而 SRDI-001、RDSUB-001/002 正好要用这两键。
+
+漏掉 `007` 同样不在启动时报错：`/api/v1/health` 200、其余接口正常，只有**抽取并保存政策草稿**那一条写幂等记录时因缺列 500（`idempotency_record.usage_semantics` 不存在）。所以验收查询必须跑完整个清单，只看「服务起来了」证明不了迁移齐了。
 
 顺序反了不会「降级运行」，而是直接报错：`PATCH /enterprises/{id}/facts/{key}` 的失效事件写入与 `GET /assessment-runs/{runId}` 的事件读取都会因缺列抛 `UndefinedColumn`，分别表现为 500 与历史判断读不出来。反向顺序（先迁移后升级代码）安全，脚本本身可重复执行。
 
@@ -373,7 +377,7 @@ cp /opt/huice/app.bak/* /opt/huice/app/   # 恢复上一份代码（若事先备
 systemctl restart huice-api
 ```
 
-数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `006_fact_dictionary_extension_rc4.sql`，下一份是 `007_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
+数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `007_idempotency_usage_semantics.sql`，下一份是 `008_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
 
 ## 7. 安全约束
 

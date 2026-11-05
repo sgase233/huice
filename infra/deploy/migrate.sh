@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 执行 001—006 迁移与验收查询。取值走 systemd 自己的解析，不复制它的语法：
+# 执行 001—007 迁移与验收查询。取值走 systemd 自己的解析，不复制它的语法：
 #
 #   1) 服务在跑：读 /proc/<MainPID>/environ——那是 systemd 真正传进进程的那份值，
 #      与它加载 EnvironmentFile 的规则无关，天然一致；
@@ -26,6 +26,8 @@ SYSTEMCTL=${HUICE_SYSTEMCTL:-systemctl}
 SYSTEMD_RUN=${HUICE_SYSTEMD_RUN:-systemd-run}
 PSQL=${HUICE_PSQL:-psql}
 
+# 顺序即依赖顺序。增删迁移时必须同时改这里与 infra/sql/ 下的文件；
+# services/api/tests/test_migrate_script.py 有一条守卫用例比对两者，漏改会转红。
 MIGRATIONS=(
     001_init
     002_evaluation_and_idempotency
@@ -33,6 +35,7 @@ MIGRATIONS=(
     004_invalidation_event_period
     005_fact_dictionary_extension
     006_fact_dictionary_extension_rc4
+    007_idempotency_usage_semantics
 )
 
 # 只报变量名与原因：连接串里有口令，绝不能回显。
@@ -98,4 +101,4 @@ done
 [ -z "$missing" ] || die "schema_migration 里缺:$missing。请先查上面的迁移输出。"
 
 printf '%s\n' "$applied" >&2
-printf 'migrate.sh: 六个迁移均已登记（本脚本检查的 %s 个 id 全部命中）。\n' "$rows" >&2
+printf 'migrate.sh: 本脚本检查的 %s 个迁移 id 均已登记在 schema_migration。\n' "$rows" >&2

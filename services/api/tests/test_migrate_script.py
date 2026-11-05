@@ -25,6 +25,7 @@ MIGRATION_IDS = (
     "004_invalidation_event_period",
     "005_fact_dictionary_extension",
     "006_fact_dictionary_extension_rc4",
+    "007_idempotency_usage_semantics",
 )
 
 #: 含空格与 ``$``：若脚本用 ``$(...)`` 直接拼命令行，这个值会被拆成多个参数或被展开。
@@ -75,8 +76,8 @@ class Sandbox:
         # 假的 psql 不读文件内容，但路径要像真的
         for name in MIGRATION_IDS:
             (root / "sql" / f"{name}.sql").write_bytes(b"-- fixture\n")
-        # 默认「库里六个 id 都在」；要演缺 id 的用例自己覆盖这个文件。
-        # 这里必须给默认值：漏写的用例会让验收查询返回空、六项全报缺失。
+        # 默认「库里每个 id 都在」；要演缺 id 的用例自己覆盖这个文件。
+        # 这里必须给默认值：漏写的用例会让验收查询返回空、每一项都报缺失。
         self.file("schema_rows", "\n".join(MIGRATION_IDS) + "\n")
         subprocess.run(
             [BASH, "-c", "chmod +x bin/systemctl bin/systemd-run bin/psql"],
@@ -149,6 +150,27 @@ def _applied_migrations(sandbox: Sandbox) -> list[list[str]]:
     ]
 
 
+def _script_migrations() -> list[str]:
+    """从脚本的 ``MIGRATIONS=(...)`` 里取出顺序清单（它才是实际执行的列表）。"""
+
+    text = SCRIPT.read_text(encoding="utf-8")
+    block = text.split("MIGRATIONS=(", 1)[1].split("\n)", 1)[0]
+    return [line.strip() for line in block.splitlines() if line.strip()]
+
+
+def test_every_shipped_sql_file_is_applied() -> None:
+    applied = _script_migrations()
+
+    # 这个常量是上面所有用例的期望值；它与脚本的清单必须逐项一致，否则测的就不是脚本。
+    assert applied == list(MIGRATION_IDS)
+
+    # 子集方向：脚本的清单可以比当前分支多（`007` 由 PR #34 新增，两支合并有先后），
+    # 但 `infra/sql/` 里有的文件脚本必须都执行——漏一份就是「手册说跑了、实际没跑」，
+    # 而这种漏项不会在服务启动时报错，只在后来写某张表时 500。
+    shipped = {path.stem for path in (REPO_ROOT / "infra" / "sql").glob("*.sql")}
+    assert shipped - set(applied) == set()
+
+
 def test_a_missing_value_stops_before_any_psql(sandbox: Sandbox) -> None:
     sandbox.file("env_exit", "1")
 
@@ -202,15 +224,22 @@ def test_a_failed_migration_stops_the_rest_and_the_verification(sandbox: Sandbox
     assert _applied_migrations(sandbox) == []
 
 
-def test_the_verification_fails_when_a_migration_is_not_recorded(sandbox: Sandbox) -> None:
-    # psql 全部成功，但库里少了 006（比如迁移脚本被跳过）：验收查询必须自己发现问题
+@pytest.mark.parametrize("missing", MIGRATION_IDS)
+def test_the_verification_fails_when_a_migration_is_not_recorded(
+    sandbox: Sandbox, missing: str
+) -> None:
+    # psql 全部成功，但库里少了一条（比如那一份在执行时被跳过）：验收查询必须自己发现。
+    # 对每个 id 都演一遍，避免只盯住最后一条、新增迁移后验收却没人测。
     sandbox.file("env_value", TRICKY_URL)
-    sandbox.file("schema_rows", "\n".join(MIGRATION_IDS[:-1]) + "\n")
+    sandbox.file(
+        "schema_rows", "\n".join(mid for mid in MIGRATION_IDS if mid != missing) + "\n"
+    )
 
     result = sandbox.run()
 
     assert result.returncode != 0
-    assert "006_fact_dictionary_extension_rc4" in result.stderr
+    assert missing in result.stderr
+    assert _applied_migrations(sandbox)  # 迁移都跑完了，拦下的是验收查询
 
 
 def test_a_running_service_is_read_from_its_own_environment(sandbox: Sandbox, tmp_path: Path) -> None:
