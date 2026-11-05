@@ -228,7 +228,7 @@ async def extract_policy(
                 {"currentVersion": str(draft.revision)},
             )
         response.headers["ETag"] = f'"{draft.revision}"'
-        return ExtractionResult.model_validate(replayed["response"])
+        return _normalize_replayed_usage(ExtractionResult.model_validate(replayed["response"]))
 
     sources = _extraction_sources(draft)
     attempt_started = time.monotonic()
@@ -481,6 +481,31 @@ def _ensure_editable(draft: PolicyDraft) -> None:
             "已发布的版本不能再抽取或修改；如需修订请导入新版本。",
             {"currentVersion": str(draft.revision)},
         )
+
+
+def _normalize_replayed_usage(result: ExtractionResult) -> ExtractionResult:
+    """把历史记录里「可能是兜底 0」的用量补标为未知，只改本次响应视图。
+
+    rc.6 的服务端在上游没回 `usage` 时把两个计数写成 0、且不带任何标记；这些响应已经
+    整条存进 `idempotency_record`，重放时原样取出。所以「当前服务是 rc.7」并不能证明
+    某条重放记录的用量已知——它可能是 rc.6 时期写下的兜底 0。
+
+    DeepSeek 的一次真实抽取必然消耗 prompt tokens，`mode=deepseek` 且两个计数都是 0
+    只可能来自兜底。按这条不变式补 `tokensUnknown=true`，让线路语义自洽：消费者只看
+    标记，不必按 `/health` 的版本猜记录来源。记录本身不写回（该表只追加）。
+    """
+
+    usage = result.usage
+    if (
+        usage.mode == "deepseek"
+        and usage.input_tokens == 0
+        and usage.output_tokens == 0
+        and not usage.tokens_unknown
+    ):
+        return result.model_copy(
+            update={"usage": usage.model_copy(update={"tokens_unknown": True})}
+        )
+    return result
 
 
 def _fingerprint(policy_id: UUID, body: ExtractPolicyInput) -> str:

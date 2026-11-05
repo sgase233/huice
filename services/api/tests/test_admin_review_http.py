@@ -372,6 +372,59 @@ def test_replaying_an_unknown_usage_extraction_keeps_the_marker_without_new_call
     assert len(repository.saved_extractions) == 1
 
 
+def test_replaying_an_rc6_record_marks_the_fallback_zero_as_unknown(
+    app, client, auth, repository
+):
+    """历史记录：rc.6 写下的 deepseek 0/0 没有标记，重放时服务端补成未知。
+
+    「当前服务是 rc.7」证明不了某条重放记录的用量已知——存储里的记录可能是 rc.6 时期
+    写下的兜底 0。补标让线路语义自洽，消费者不必按 `/health` 的版本猜来源。
+    """
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app, client, auth, repository, _NoUsageExtractionLlm(), key=key
+    )
+    # 还原成 rc.6 写下的形状：deepseek、两个计数都是 0、没有标记
+    stored = repository.idempotency[("extract", key)]
+    legacy = json.loads(json.dumps(stored["response"]))
+    del legacy["usage"]["tokensUnknown"]
+    stored["response"] = legacy
+
+    replay = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, first.json()["draft"]["revision"], key=key),
+        json={"version": draft.version},
+    )
+
+    assert replay.status_code == 200
+    assert replay.json()["usage"]["tokensUnknown"] is True
+    # 只改本次响应视图：存下的那条仍保持旧形状，不写回（表只追加）
+    assert "tokensUnknown" not in repository.idempotency[("extract", key)]["response"]["usage"]
+
+
+def test_replaying_a_record_with_real_tokens_does_not_invent_unknown(
+    app, client, auth, repository
+):
+    """非 0 的深度求索用量不会被补标：兜底只发生在两个计数全为 0 时。"""
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app, client, auth, repository, _ModelExtractionLlm(), key=key
+    )
+
+    replay = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, first.json()["draft"]["revision"], key=key),
+        json={"version": draft.version},
+    )
+
+    assert replay.status_code == 200
+    usage = replay.json()["usage"]
+    assert "tokensUnknown" not in usage
+    assert (usage["inputTokens"], usage["outputTokens"]) == (120, 45)
+
+
 def test_a_rule_based_extraction_is_not_logged_as_a_model_call(app, client, auth, repository, caplog):
     caplog.set_level(logging.INFO)
     draft = seed_draft(repository)

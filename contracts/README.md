@@ -54,7 +54,16 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 
     已经落库的 rc.7 响应：`idempotency_record.response` 存的是抽取响应**整体**（路由里 `result.model_dump(by_alias=True, mode="json")`），未知用量时里面就有 `usage.tokensUnknown: true`；该表带 `reject_mutation()` 触发器，删不掉也改不了。回退到 rc.6 的 `ModelUsage`（`extra="forbid"`）后，用**同一个 Idempotency-Key、草稿 revision 未变**地重放这些记录，会在 `ExtractionResult.model_validate` 处失败（500）。影响面限于「同键 + 同版本」的幂等重放，换新键不受影响；不能接受就在回滚时保留能读该字段的解析（只回退「未知」的输出路径），或明确接受这些键不可重放。因此**「该字段不落库」不成立**：没有 schema 迁移、没有业务表字段，但它落在 `idempotency_record.response` 与轨迹摘要文本里。
 
-    前端在回滚期间：**不能**把「没有该字段」当已知（理由同上，rc.6 的 0 兜底与真实 0 分不开）；显示「旧版未提供用量状态」并暂停这部分合计，或干脆不展示 tokens。前端这套逻辑保证的是**格式兼容**，不是**语义正确**——rc.6 窗口里的用量状态，前端无法区分。`apps/web/src/api/types.ts` 需由 M2 重新生成（差异为 `ModelUsage` 多一行 `tokensUnknown?: boolean;`），在那之前 `python contracts/generate_types.py --check` 会报 `Frontend types differ`。
+    前端在回滚期间：**不能**把「没有该字段」当已知（理由同上，rc.6 的 0 兜底与真实 0 分不开）；显示「旧版未提供用量状态」并暂停这部分合计，或干脆不展示 tokens。前端这套逻辑保证的是**格式兼容**，不是**语义正确**——rc.6 窗口里的用量状态，前端无法区分。
+
+    **历史记录的两个重放方向**（幂等重放原样返回存储的响应，所以「当前服务版本」证明不了这条响应的用量语义）：
+
+    - **rc.6 写下的记录 + rc.7 服务端重放**：记录里没有标记，两个 0 可能是兜底。服务端在重放时按不变式补标——DeepSeek 的真实抽取必然消耗 prompt tokens，`mode=deepseek` 且 `inputTokens`、`outputTokens` 都是 0 只可能来自兜底，于是补 `tokensUnknown: true`。只改本次响应视图，**不写回记录**（该表只追加）。因此 rc.7 服务端不会把一个兜底 0 当已知回给线路。
+    - **rc.7 写下的记录 + rc.6 服务端重放**：`ModelUsage` 是 `extra="forbid"`，解析失败 → 500（见上）。服务端侧无法补救，只能按上面的回滚约定处理。
+    - **消费者规则（不依赖 `/health`）**：`tokensUnknown: true` → 未知；`mode=deepseek` 且两个计数都是 0 → 未知（覆盖还没有补标的旧响应，多这一条判断不花钱）；`mode=fixture`/`saved` → 没有发起调用，是真实的 0；其余「有值且无标记」→ 已知。`/health` 的版本只说明服务端现在跑什么，不能替代逐条判断。
+    - **不要用「换个 Idempotency-Key 重来」当默认处置**：换键会重新发起抽取与模型调用，可能重复计费，且新结果会覆盖同一草稿的条款。先查 `idempotency_record`（是否已有记录）、轨迹与 `model_call` 日志确认这次调用是否已经发生、结果是否已保存，再决定是重放、修复还是重新调用。
+
+    `apps/web/src/api/types.ts` 需由 M2 重新生成（差异为 `ModelUsage` 多一行 `tokensUnknown?: boolean;`），在那之前 `python contracts/generate_types.py --check` 会报 `Frontend types differ`。
 
 ## 当前实现产出的错误码
 
