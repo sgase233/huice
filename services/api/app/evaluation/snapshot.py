@@ -36,7 +36,8 @@ from ..config import APP_VERSION
 from ..domain.rules import RULE_VERSION
 
 #: 清单结构版本；字段口径变了才动它，改代码不改口径别动。
-MANIFEST_VERSION = "1"
+#: ``2``：政策条目加 ``documentNumber``、新增 ``datasetMapping``（CSV ↔ 库的逐条映射）。
+MANIFEST_VERSION = "2"
 
 #: 进配置哈希的键。只列非敏感项——名字里带令牌/密钥/连接串的一律不在此表内，
 #: :func:`config_fingerprint` 还会再挡一次。
@@ -167,6 +168,7 @@ SELECT pv.id            AS policy_version_id,
        pv.policy_id     AS policy_id,
        pv.version       AS version,
        pv.title         AS title,
+       pv.document_number AS document_number,
        pv.policy_type   AS policy_type,
        pv.review_status AS review_status,
        pv.imported_at   AS imported_at,
@@ -223,6 +225,7 @@ def collect_input_snapshot(
     *,
     config: Mapping[str, str] | None = None,
     dataset: Mapping[str, str] | None = None,
+    dataset_rows: Mapping[str, Sequence[Mapping[str, str]]] | None = None,
     code_commit: str | None = None,
     collected_at: datetime | None = None,
 ) -> dict[str, Any]:
@@ -231,10 +234,37 @@ def collect_input_snapshot(
     ``config`` 传的是**运行进程的环境**（部署时由 systemd 注入）；不传就只记键名、
     配置哈希为 ``null``——与其猜，不如显式标「没提供」。
 
-    ``dataset`` 是 ``{文件名: sha256}``，由调用方按文件字节算好；``code_commit``
-    在云端（没有 ``.git``）拿不到，就留 ``null``，别编一个。
+    ``dataset`` 是 ``{文件名: sha256}``，由调用方按文件字节算好；``dataset_rows`` 是
+    同一批 CSV 的行内容，用来与库里的行逐条对齐（见 :mod:`app.evaluation.dataset_map`）。
+    ``code_commit`` 在云端（没有 ``.git``）拿不到，就留 ``null``，别编一个。
+
+    **四条查询在同一个 REPEATABLE READ、只读事务里执行**：默认 READ COMMITTED 下每条
+    查询各自看一个提交，并发导入时可能拼出一份「从未同时存在过」的清单。只读是给
+    调用方保底——这个工具不该改库。
     """
 
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        return _collect_in_transaction(
+            conn,
+            config=config,
+            dataset=dataset,
+            dataset_rows=dataset_rows,
+            code_commit=code_commit,
+            collected_at=collected_at,
+        )
+
+
+def _collect_in_transaction(
+    conn: Connection,
+    *,
+    config: Mapping[str, str] | None,
+    dataset: Mapping[str, str] | None,
+    dataset_rows: Mapping[str, Sequence[Mapping[str, str]]] | None,
+    code_commit: str | None,
+    collected_at: datetime | None,
+) -> dict[str, Any]:
     criteria_by_version: dict[str, list[dict[str, Any]]] = {}
     for row in _rows(conn, _CRITERION_SQL):
         criteria_by_version.setdefault(str(row["policy_version_id"]), []).append(
@@ -259,6 +289,8 @@ def collect_input_snapshot(
                 "policyVersionId": version_id,
                 "version": row["version"],
                 "title": row["title"],
+                # 文号是数据集与库对齐用的标识之一（另个是标题，见 dataset_map）
+                "documentNumber": row["document_number"],
                 "policyType": row["policy_type"],
                 "reviewStatus": row["review_status"],
                 "importedAt": _canonical_value(row["imported_at"]),
@@ -303,7 +335,7 @@ def collect_input_snapshot(
         )
 
     stamp = collected_at or datetime.now(timezone.utc)
-    return {
+    manifest: dict[str, Any] = {
         "manifestVersion": MANIFEST_VERSION,
         "collectedAt": _canonical_value(stamp),
         # 运行参数里不随库变化的部分（§5.2 第 3 项）
@@ -315,7 +347,15 @@ def collect_input_snapshot(
         "configFingerprint": None if config is None else config_fingerprint(config),
         "policies": policies,
         "enterprises": enterprises,
+        # CSV 与库里的行逐条对上的对照表；没给行内容就留 null（等于「没核对过」）
+        "datasetMapping": None,
     }
+    if dataset_rows is not None:
+        # 局部导入：dataset_map 反过来用本模块的哈希函数，模块级导入会成环
+        from .dataset_map import align_dataset
+
+        manifest["datasetMapping"] = align_dataset(dataset_rows, manifest)
+    return manifest
 
 
 # ---------------------------------------------------------------- 一致性核对
@@ -344,10 +384,13 @@ def diff_snapshots(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> li
         ("ruleVersion", "规则版本"),
         ("configFingerprint", "配置哈希"),
         ("codeCommit", "代码提交"),
+        ("configKeys", "配置键清单"),
     ):
         before, now = expected.get(field), actual.get(field)
         if before != now:
             problems.append(f"{label}不同：签认 {before!r}，当前 {now!r}")
+
+    _diff_dataset_mapping(expected, actual, problems)
 
     # 只核对签认时列出的文件：后来往目录里加了别的 CSV 不影响已签认的输入，
     # 但签认过的文件改了或没了，必须报出来。
@@ -361,7 +404,85 @@ def diff_snapshots(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> li
 
     _diff_policies(expected.get("policies", []), actual.get("policies", []), problems)
     _diff_enterprises(expected.get("enterprises", []), actual.get("enterprises", []), problems)
-    return problems
+    # 两侧可能各自重复报同一条（签认清单与当前库的映射问题相同），去重保序
+    return list(dict.fromkeys(problems))
+
+
+def _diff_dataset_mapping(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    problems: list[str],
+) -> None:
+    """CSV ↔ 库的逐条映射：既比对照表，也不允许带着未解决的问题通过。"""
+
+    before = expected.get("datasetMapping")
+    now = actual.get("datasetMapping")
+    if before != now:
+        problems.append(
+            "数据集与库的逐条映射不同：签认时 CSV 行对应的库行与当前算出来的对不上"
+            "（可能是数据集换了、库被改过，或对齐规则版本变了）"
+        )
+    for side, mapping in (("签认清单", before), ("当前库", now)):
+        if not isinstance(mapping, Mapping):
+            continue
+        if not mapping.get("files"):
+            problems.append(f"数据集映射未解决（{side}）：没有给任何 CSV 行内容，映射等于没做")
+        for problem in mapping.get("problems", []):
+            problems.append(f"数据集映射未解决（{side}）：{problem}")
+
+
+#: 逐字段比较时用的中文名；没列到的字段按原名报。**记进清单的字段一律参与比较**，
+#: 不在这里挑「哪些算评测输入」——漏比一个字段，一条会改结论的变化就能静默通过。
+_POLICY_FIELD_LABELS = {
+    "policyVersionId": "policyVersionId",
+    "version": "版本号",
+    "title": "标题",
+    "documentNumber": "文号",
+    "policyType": "政策类型",
+    "reviewStatus": "复核状态",
+    "importedAt": "导入时间",
+    "revision": "revision",
+    "criteriaSetFingerprint": "条件集合指纹",
+}
+
+_CRITERION_FIELD_LABELS = {
+    "expressionFingerprint": "表达式",
+    "title": "标题",
+    "reviewFinding": "复核结论",
+    "validationStatus": "校验状态",
+}
+
+_ENTERPRISE_FIELD_LABELS = {
+    "nameSynthetic": "合成名称",
+    "period": "期间",
+    "factVersion": "事实版本",
+}
+
+_FACT_FIELD_LABELS = {
+    "unit": "单位",
+    "source": "来源",
+    "verified": "核验状态",
+    "valueHash": "值",
+}
+
+
+def _diff_entry_fields(
+    label: str,
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    problems: list[str],
+    *,
+    skip: Sequence[str] = (),
+    names: Mapping[str, str] | None = None,
+) -> None:
+    """逐字段比较两个条目，``skip`` 里的键（子列表）由调用方另比。"""
+
+    names = names or {}
+    for field in sorted((set(expected) | set(actual)) - set(skip)):
+        before, now = expected.get(field), actual.get(field)
+        if before != now:
+            shown = names.get(field, field)
+            problems.append(f"{label}：{shown}变了（签认 {before!r}，当前 {now!r}）")
 
 
 def _diff_policies(
@@ -382,11 +503,10 @@ def _diff_policies(
 
     for name in sorted(want.keys() & have.keys()):
         before, now = want[name], have[name]
-        if str(before.get("policyVersionId")) != str(now.get("policyVersionId")):
-            problems.append(f"{name}：policyVersionId 不同")
-        if before.get("criteriaSetFingerprint") != now.get("criteriaSetFingerprint"):
-            problems.append(f"{name}：条件集合指纹不同")
-        # 指纹只覆盖「哪条 + 什么表达式」；总是逐条比一次，才不会漏掉标题这类变化
+        _diff_entry_fields(
+            name, before, now, problems, skip=("criteria",), names=_POLICY_FIELD_LABELS
+        )
+        # 条件集合指纹只覆盖「哪条 + 什么表达式」；逐条比一次才不会漏掉复核结论这类变化
         _diff_criteria(name, before.get("criteria", []), now.get("criteria", []), problems)
 
 
@@ -403,13 +523,13 @@ def _diff_criteria(
     for criterion in sorted(have.keys() - want.keys()):
         problems.append(f"{name}：条件多出 {criterion}")
     for criterion in sorted(want.keys() & have.keys()):
-        before, now = want[criterion], have[criterion]
-        if before.get("expressionFingerprint") != now.get("expressionFingerprint"):
-            problems.append(f"{name}：条件 {criterion} 的表达式变了")
-        if before.get("title") != now.get("title"):
-            problems.append(f"{name}：条件 {criterion} 的标题变了")
-        if before.get("validationStatus") != now.get("validationStatus"):
-            problems.append(f"{name}：条件 {criterion} 的校验状态变了")
+        _diff_entry_fields(
+            f"{name}：条件 {criterion}",
+            want[criterion],
+            have[criterion],
+            problems,
+            names=_CRITERION_FIELD_LABELS,
+        )
 
 
 def _diff_enterprises(
@@ -425,8 +545,14 @@ def _diff_enterprises(
         problems.append(f"企业多出：{enterprise}")
     for enterprise in sorted(want.keys() & have.keys()):
         before, now = want[enterprise], have[enterprise]
-        if before.get("factVersion") != now.get("factVersion"):
-            problems.append(f"企业 {enterprise}：事实版本不同")
+        _diff_entry_fields(
+            f"企业 {enterprise}",
+            before,
+            now,
+            problems,
+            skip=("facts",),
+            names=_ENTERPRISE_FIELD_LABELS,
+        )
         # 逐条比一遍：事实版本只是汇总，漏了哪条、值怎么变的要能说清楚
         _diff_facts(enterprise, before.get("facts", []), now.get("facts", []), problems)
 
@@ -447,5 +573,10 @@ def _diff_facts(
     for fact in sorted(have.keys() - want.keys()):
         problems.append(f"企业 {enterprise}：事实多出 {fact}")
     for fact in sorted(want.keys() & have.keys()):
-        if want[fact].get("valueHash") != have[fact].get("valueHash"):
-            problems.append(f"企业 {enterprise}：事实 {fact} 的值变了")
+        _diff_entry_fields(
+            f"企业 {enterprise}：事实 {fact}",
+            want[fact],
+            have[fact],
+            problems,
+            names=_FACT_FIELD_LABELS,
+        )

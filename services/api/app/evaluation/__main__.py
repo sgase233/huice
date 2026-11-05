@@ -9,6 +9,11 @@
 ``inputs`` 从库里导出政策/条件与企业/事实的映射，写入一份 JSON；``verify`` 拿那份
 JSON 对当前库重算一遍，逐项列出差异，非零退出即「与签认时不一致，停止评测」。
 
+清单里还有一份 ``datasetMapping``：把 ``--dataset-file`` 那几份 CSV 的行与库里的行
+**逐条**对上（文号/标题 → 政策版本、表达式 → 条件、合成名称 → 企业、键+期间+来源+
+值 → 事实），存对照表与未解决的问题。整文件哈希只证明文件没变，这份映射才证明
+「文件就是导入进库的那一份」；有未解决项时 ``verify`` 一律非零退出。
+
 数据集只认 ``--dataset-file`` 显式列出的文件（可重复），不按目录扫全部 CSV：
 材料复核表、标注表也在同一个目录里，但它们不是评测输入，扫进来会让 ``verify``
 在复核改动后误报。``verify`` 核对的文件由签认清单本身决定；两侧 ``codeCommit``
@@ -41,8 +46,9 @@ from typing import Any
 
 import psycopg
 
+from .dataset_map import load_dataset_rows
 from .report_freeze import ReportError, freeze_report
-from .snapshot import collect_input_snapshot, diff_snapshots
+from .snapshot import SnapshotError, collect_input_snapshot, diff_snapshots
 
 PROGRAM = "python -m app.evaluation"
 
@@ -108,12 +114,19 @@ def _build_manifest(
             raise SystemExit(f"{PROGRAM}：--collected-at 需要 ISO 8601 时间") from None
 
     # 先把不依赖数据库的参数校验完再连库：参数错了不该先去碰生产库
-    dataset = _dataset_hashes(args.dataset_dir, args.dataset_file if files is None else files)
+    selected = args.dataset_file if files is None else files
+    dataset = _dataset_hashes(args.dataset_dir, selected)
+    # 行内容与整文件哈希来自同一批文件：哈希证明「文件没变」，逐条映射证明「就是库里那份」
+    try:
+        dataset_rows = load_dataset_rows(args.dataset_dir, selected) if selected else None
+    except SnapshotError as exc:
+        raise SystemExit(f"{PROGRAM}：{exc}") from None
     with _connect() as conn:
         return collect_input_snapshot(
             conn,
             config=_config_from_env(not args.no_config),
             dataset=dataset,
+            dataset_rows=dataset_rows,
             code_commit=args.commit,
             collected_at=collected_at,
         )
@@ -125,14 +138,41 @@ def _dump(manifest: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _report_mapping(manifest: dict[str, Any]) -> None:
+    """把 CSV ↔ 库对齐的结果说到 stderr；有问题不改退出码，但 `verify` 会拦住。"""
+
+    mapping = manifest.get("datasetMapping")
+    if not isinstance(mapping, dict):
+        print(
+            "警告：没有给任何 CSV 行内容，数据集与库的逐条映射没有做——"
+            "verify 只能证明库没变，证明不了 CSV 就是库里那份",
+            file=sys.stderr,
+        )
+        return
+    print(
+        "数据集映射：{} 个政策版本、{} 个企业、{} 条用例，未解决 {} 项".format(
+            len(mapping.get("policies", [])),
+            len(mapping.get("enterprises", [])),
+            mapping.get("caseCount", 0),
+            len(mapping.get("problems", [])),
+        ),
+        file=sys.stderr,
+    )
+    for problem in mapping.get("problems", []):
+        print(f"  - {problem}", file=sys.stderr)
+
+
 def _cmd_inputs(args: argparse.Namespace) -> int:
-    payload = _dump(_build_manifest(args))
+    manifest = _build_manifest(args)
+    payload = _dump(manifest)
     if args.out == "-":
         sys.stdout.buffer.write(payload)
+        _report_mapping(manifest)
         return 0
     Path(args.out).write_bytes(payload)
     digest = hashlib.sha256(payload).hexdigest()
     print(f"已写入 {args.out}（sha256 {digest}）", file=sys.stderr)
+    _report_mapping(manifest)
     return 0
 
 

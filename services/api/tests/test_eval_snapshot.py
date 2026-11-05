@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 from datetime import date, datetime, timezone
@@ -23,9 +24,12 @@ import pytest
 
 from app.agents.profile import normalize_profile
 from app.evaluation import __main__ as cli
+from app.evaluation import snapshot as snapshot_module
 from app.evaluation.snapshot import (
     CONFIG_FINGERPRINT_KEYS,
+    MANIFEST_VERSION,
     SnapshotError,
+    collect_input_snapshot,
     config_fingerprint,
     diff_snapshots,
     expression_fingerprint,
@@ -148,13 +152,31 @@ def test_the_whitelist_carries_no_secret_names() -> None:
 
 
 def _manifest(**overrides):
+    """一份字段齐全的清单：每个记进清单的字段都要在差异比较里有位置。"""
+
     manifest = {
-        "manifestVersion": "1",
+        "manifestVersion": MANIFEST_VERSION,
         "collectedAt": "2026-11-05T10:00:00+00:00",
-        "appVersion": "1.0.0-rc.6",
+        "appVersion": "1.0.0-rc.7",
         "ruleVersion": "rule:criteria@1",
         "codeCommit": "abc123",
         "dataset": {"labels.csv": "a" * 64},
+        "datasetMapping": {
+            "rules": "content-alignment@1",
+            "files": ["labels.csv"],
+            "policies": [
+                {
+                    "identifier": "财政部 税务总局公告2023年第12号",
+                    "policyVersionId": "v1",
+                    "criteria": [{"criterionCode": "SME-002", "criterionId": "c1"}],
+                }
+            ],
+            "enterprises": [
+                {"code": "E-ENT-001", "nameSynthetic": "合成企业A", "enterpriseId": "e1"}
+            ],
+            "caseCount": 1,
+            "problems": [],
+        },
         "configKeys": list(CONFIG_FINGERPRINT_KEYS),
         "configFingerprint": "f" * 64,
         "policies": [
@@ -162,19 +184,38 @@ def _manifest(**overrides):
                 "policyId": "p1",
                 "policyVersionId": "v1",
                 "version": "v1.0",
-                "criteria": [{"criterionId": "c1", "expressionFingerprint": "e" * 64}],
+                "title": "小型微利企业所得税优惠",
+                "documentNumber": "财政部 税务总局公告2023年第12号",
+                "policyType": "tax",
+                "reviewStatus": "published",
+                "importedAt": "2026-11-01T00:00:00+00:00",
+                "revision": "r" * 32,
+                "criteria": [
+                    {
+                        "criterionId": "c1",
+                        "title": "年度应纳税所得额不超过 300 万元",
+                        "expressionFingerprint": "e" * 64,
+                        "reviewFinding": "none",
+                        "validationStatus": "passed",
+                    }
+                ],
                 "criteriaSetFingerprint": "s" * 64,
             }
         ],
         "enterprises": [
             {
                 "enterpriseId": "e1",
+                "nameSynthetic": "合成企业A",
+                "period": {"startDate": "2026-01-01", "endDate": "2026-12-31"},
                 "factVersion": "v" * 64,
                 "facts": [
                     {
                         "key": "taxableIncome",
                         "periodStart": "2026-01-01",
                         "periodEnd": "2026-12-31",
+                        "unit": "CNY",
+                        "source": "user_input",
+                        "verified": True,
                         "valueHash": "h" * 64,
                     }
                 ],
@@ -220,11 +261,109 @@ def test_diff_flags_missing_rows() -> None:
     assert any("企业缺失" in item for item in problems)
 
 
+def test_diff_flags_a_manifest_written_in_an_older_format() -> None:
+    # 清单结构升到 2 后，1 的清单不能再当作「内容一致」放行
+    older = _manifest(manifestVersion="1")
+
+    problems = diff_snapshots(_manifest(), older)
+
+    assert any("清单版本不同" in item for item in problems)
+
+
 def test_diff_ignores_dataset_files_added_after_signing() -> None:
     # 签认之后往目录里加了别的 CSV：不影响已签认的输入，不该拦下评测
     added = _manifest(dataset={"labels.csv": "a" * 64, "later_added.csv": "c" * 64})
 
     assert diff_snapshots(_manifest(), added) == []
+
+
+def _leaf_paths(node, prefix=()):
+    if isinstance(node, dict) and node:
+        for key, value in node.items():
+            yield from _leaf_paths(value, prefix + (key,))
+    elif isinstance(node, list) and node:
+        for index, value in enumerate(node):
+            yield from _leaf_paths(value, prefix + (index,))
+    else:
+        yield prefix
+
+
+def _changed_copy(manifest, path):
+    clone = json.loads(json.dumps(manifest))
+    node = clone
+    for step in path[:-1]:
+        node = node[step]
+    value = node[path[-1]]
+    if isinstance(value, bool):
+        node[path[-1]] = not value
+    elif isinstance(value, int):
+        node[path[-1]] = value + 1
+    elif isinstance(value, str):
+        node[path[-1]] = value + "-changed"
+    else:
+        node[path[-1]] = "changed"
+    return clone
+
+
+def test_every_recorded_field_takes_part_in_the_comparison() -> None:
+    """清单里记下的每个字段都必须参与比对。
+
+    M2 复审指出 ``reviewFinding`` 记了却不比：同一条条件从 ``none`` 变成 ``conflict``
+    时规则引擎会直接给出冲突结论，而 ``verify`` 说「一致」。这条对每个叶子字段做单点
+    变异，以后再加字段忘了比较也会在这里转红。
+    """
+
+    base = _manifest()
+    checked = 0
+    for path in _leaf_paths(base):
+        if path[0] == "collectedAt":
+            continue  # 采集时间天然不同，本来就不比
+        changed = _changed_copy(base, path)
+        assert diff_snapshots(base, changed), f"字段 {path} 变了，verify 却没报差异"
+        checked += 1
+    assert checked > 30, "清单结构被改小了？至少要覆盖到目前记下的这些字段"
+
+
+def test_diff_flags_a_changed_review_finding() -> None:
+    changed = json.loads(json.dumps(_manifest()))
+    changed["policies"][0]["criteria"][0]["reviewFinding"] = "conflict"
+
+    problems = diff_snapshots(_manifest(), changed)
+
+    assert any("复核结论" in item for item in problems)
+
+
+def test_diff_flags_a_changed_policy_review_status_and_revision() -> None:
+    changed = json.loads(json.dumps(_manifest()))
+    changed["policies"][0]["reviewStatus"] = "pending_review"
+    changed["policies"][0]["revision"] = "other-revision"
+
+    problems = diff_snapshots(_manifest(), changed)
+
+    assert any("复核状态" in item for item in problems)
+    assert any("revision" in item for item in problems)
+
+
+def test_diff_refuses_a_manifest_with_unresolved_dataset_mapping() -> None:
+    """两边清单完全相同也不算通过：映射有未解决项就不是可签认的输入。"""
+
+    mapping = json.loads(json.dumps(_manifest()["datasetMapping"]))
+    mapping["problems"] = ["企业 E-ENT-001：库里没有同名企业"]
+    manifest = _manifest(datasetMapping=mapping)
+
+    problems = diff_snapshots(manifest, manifest)
+
+    assert any("数据集映射未解决" in item for item in problems)
+
+
+def test_diff_refuses_a_mapping_that_never_looked_at_any_file() -> None:
+    mapping = json.loads(json.dumps(_manifest()["datasetMapping"]))
+    mapping.update({"files": [], "policies": [], "enterprises": [], "caseCount": 0})
+    manifest = _manifest(datasetMapping=mapping)
+
+    problems = diff_snapshots(manifest, manifest)
+
+    assert any("没有给任何 CSV 行内容" in item for item in problems)
 
 
 # ------------------------------------------------------------------ 命令行
@@ -435,7 +574,12 @@ def test_cli_hashes_only_the_dataset_files_it_is_given(
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
     data = tmp_path / "evaluation"
     data.mkdir()
-    (data / "labels.csv").write_bytes(b"case_id,criterion_id\n1,2\n")
+    # labels.csv 是认识的表，列必须齐全：缺列说明拿错了文件，直接停下而不是猜列名
+    labels = (
+        b"case_id,enterprise_id,policy_version,criterion_id\r\n"
+        b"C001,E-ENT-001,\xe6\x9f\x90\xe6\x96\x87\xe5\x8f\xb7,SME-002\r\n"
+    )
+    (data / "labels.csv").write_bytes(labels)
     (data / "material_review_sheet.csv").write_bytes(b"row,reviewer\n1,m3\n")
     (data / "notes.txt").write_bytes(b"not a csv")
     out = tmp_path / "manifest.json"
@@ -457,9 +601,7 @@ def test_cli_hashes_only_the_dataset_files_it_is_given(
     )
     manifest = json.loads(out.read_text(encoding="utf-8"))
 
-    assert manifest["dataset"] == {
-        "labels.csv": hashlib.sha256(b"case_id,criterion_id\n1,2\n").hexdigest()
-    }
+    assert manifest["dataset"] == {"labels.csv": hashlib.sha256(labels).hexdigest()}
     assert "material_review_sheet.csv" not in manifest["dataset"]
     assert manifest["collectedAt"].endswith("+00:00")
 
@@ -506,3 +648,185 @@ def test_a_missing_dataset_directory_is_an_error(tmp_path: Path, monkeypatch) ->
         cli.main(["inputs", "--out", "-", "--dataset-dir", str(tmp_path / "nope")])
 
     assert "数据集目录" in str(error.value.code)
+
+
+# ------------------------------------------------- 一致视图与数据集映射（真库）
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_the_collection_runs_in_one_repeatable_read_read_only_transaction(
+    repo, database_url_schema, monkeypatch
+) -> None:
+    """四条查询必须在同一个只读、可重复读的事务里跑（M2 复审 P2）。"""
+
+    _make_enterprise(repo)
+    seen: list[tuple[str, str]] = []
+    original = snapshot_module._rows
+
+    def spy(conn, sql):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT current_setting('transaction_isolation'),"
+                " current_setting('transaction_read_only')"
+            )
+            seen.append(cur.fetchone())
+        return original(conn, sql)
+
+    monkeypatch.setattr(snapshot_module, "_rows", spy)
+
+    with psycopg.connect(database_url_schema) as conn:
+        collect_input_snapshot(conn)
+
+    assert seen, "一次查询都没跑？"
+    assert set(seen) == {("repeatable read", "on")}
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_write_that_lands_midway_is_not_mixed_into_the_snapshot(
+    repo, database_url_schema, monkeypatch
+) -> None:
+    """另一连接在两次查询之间提交的写入，不能出现在这次清单里。"""
+
+    enterprise = _make_enterprise(repo)
+    original = snapshot_module._rows
+    inserted = {"done": False}
+
+    def rows_with_interleaved_write(conn, sql):
+        rows = original(conn, sql)
+        if not inserted["done"]:
+            inserted["done"] = True
+            with psycopg.connect(database_url_schema, autocommit=True) as other:
+                other.execute(
+                    "INSERT INTO enterprise_fact (enterprise_id, key, period_start,"
+                    " period_end, unit, source, verified, value_amount)"
+                    " VALUES (%s, 'revenue', '2026-01-01', '2026-12-31', 'CNY',"
+                    " 'user_input', false, 1000)",
+                    (enterprise.id,),
+                )
+        return rows
+
+    monkeypatch.setattr(snapshot_module, "_rows", rows_with_interleaved_write)
+
+    with psycopg.connect(database_url_schema) as conn:
+        manifest = collect_input_snapshot(conn)
+
+    entry = next(
+        item for item in manifest["enterprises"] if item["enterpriseId"] == str(enterprise.id)
+    )
+    assert all(fact["key"] != "revenue" for fact in entry["facts"]), "中途提交的写入混进了清单"
+
+    # 换一次采集就能看到它：证明上面不是「永远看不到」，而是同一视图内看不到
+    with psycopg.connect(database_url_schema) as conn:
+        later = collect_input_snapshot(conn)
+    later_entry = next(
+        item for item in later["enterprises"] if item["enterpriseId"] == str(enterprise.id)
+    )
+    assert any(fact["key"] == "revenue" for fact in later_entry["facts"])
+
+
+def _write_dataset(directory: Path, *, income: str = "3500000.00", title: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / "criteria_review.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["policy_id", "criterion_id", "source_version", "adjudicated_expression"],
+        )
+        writer.writeheader()
+        for code, expression in (("G1", INCOME_GATE), ("G2", INDUSTRY_GATE)):
+            writer.writerow(
+                {
+                    "policy_id": "DEMO",
+                    "criterion_id": code,
+                    "source_version": title,
+                    "adjudicated_expression": json.dumps(expression, ensure_ascii=False),
+                }
+            )
+    with (directory / "enterprises.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "enterprise_id",
+                "name_synthetic",
+                "fact_key",
+                "fact_value",
+                "unit",
+                "period",
+                "source",
+                "verified",
+            ],
+        )
+        writer.writeheader()
+        for key, value, unit in (
+            ("region", "440300", "code"),
+            ("industry", "C39", "code"),
+            ("taxableIncome", income, "CNY"),
+        ):
+            writer.writerow(
+                {
+                    "enterprise_id": "E1",
+                    "name_synthetic": "合成企业A",
+                    "fact_key": key,
+                    "fact_value": value,
+                    "unit": unit,
+                    "period": "2026-01-01/2026-12-31",
+                    "source": "user_input",
+                    "verified": "false",
+                }
+            )
+    with (directory / "labels.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["case_id", "enterprise_id", "policy_version", "criterion_id"],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "case_id": "C001",
+                "enterprise_id": "E1",
+                "policy_version": title,
+                "criterion_id": "G1",
+            }
+        )
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_the_cli_maps_dataset_rows_onto_database_rows(
+    repo, database_url_schema, monkeypatch, tmp_path: Path
+) -> None:
+    """CSV 行能逐条对到库里；改掉 CSV 里的值后 verify 必须非零退出。"""
+
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    _make_enterprise(repo)
+    _publish_policy(repo, [INCOME_GATE, INDUSTRY_GATE])
+    title = "深圳市中小企业数字化转型扶持计划"
+    data = tmp_path / "data"
+    _write_dataset(data, title=title)
+    sealed = tmp_path / "sealed.json"
+
+    files = ["labels.csv", "criteria_review.csv", "enterprises.csv"]
+    args = ["--no-config"]
+    for name in files:
+        args += ["--dataset-file", name]
+    args += ["--dataset-dir", str(data)]
+
+    assert cli.main(["inputs", "--out", str(sealed), *args]) == 0
+    manifest = json.loads(sealed.read_text(encoding="utf-8"))
+    mapping = manifest["datasetMapping"]
+    assert mapping["problems"] == [], mapping["problems"]
+    assert [item["criterionCode"] for item in mapping["policies"][0]["criteria"]] == ["G1", "G2"]
+    assert mapping["enterprises"][0]["code"] == "E1"
+    assert mapping["caseCount"] == 1
+
+    assert cli.main(["verify", str(sealed), *args]) == 0
+
+    # 文件换了个字节：哈希变了，逐条映射也对不上了
+    _write_dataset(tmp_path / "changed", income="3600000.00", title=title)
+    changed_args = ["--no-config"]
+    for name in files:
+        changed_args += ["--dataset-file", name]
+    changed_args += ["--dataset-dir", str(tmp_path / "changed")]
+
+    assert cli.main(["verify", str(sealed), *changed_args]) == 1
