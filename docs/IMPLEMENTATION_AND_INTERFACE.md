@@ -198,6 +198,22 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 `TraceStep` 包含 `sequence,stage,status,inputSummary,outputSummary,objectRefs,policyId,policyVersion,modelOrRuleVersion,elapsedMs,errorCode,humanAction`；`objectRefs` 是 `{type,id}` 形式的内部对象引用（`enterprise`/`policy`/`policyVersion`），**不是引文**——可回溯的政策原文引用在 `CriterionResult.evidenceRefs`，两者不共用字段。多政策公共步骤的 policyId/version 可 null。状态仅 `ok/needs_review/retryable_error/fatal_error`。线上 run 应链接所用政策版本的入库、审核轨迹，再列在线轨迹；不能只保留模型最后一句话。summary 不得含密钥、完整提示词或企业资料。
 
+### 2.9 评测输入快照（`EVALUATION_FREEZE` §5.2）
+
+`app/evaluation/` 只做「把库里的东西说清楚」，不产出任何评测指标。三份 CSV 的哈希只能识别文件，证明不了它们就是导入进库的那一份，所以映射从**数据库本身**导出：
+
+```bash
+python -m app.evaluation inputs --out snapshot.json --dataset-dir data/evaluation
+python -m app.evaluation verify snapshot.json --dataset-dir data/evaluation
+```
+
+`inputs` 写出：政策版本 → 条件的 `criterionId`/AST 哈希/审核状态、企业 → 事实值的哈希与**事实版本**（直接调 `agents/profile.fact_version_of`，与 `assessment_run.fact_version` 同一算法）、`appVersion`/`ruleVersion`、数据集整文件 SHA-256、以及非敏感配置的哈希。`verify` 拿已签认的清单对当前库重算并逐项列差异，非零退出即「不一致」，**停止评测，不得用运行结果反推快照**。
+
+- 表达式哈希是条件 `expression` 的规范化 JSON（排序键、`Decimal` 去尾零、日期 ISO）SHA-256，与引文 `quoteHash` 不是一回事；事实值只记哈希，值本身不进清单。
+- 配置哈希只覆盖 `CONFIG_FINGERPRINT_KEYS` 白名单；`ADMIN_TOKEN`、`DEEPSEEK_API_KEY`、`DATABASE_URL`、`REDIS_URL`、OBS AK/SK 永不进哈希输入（名字命中也直接报错），有用例锁住「改令牌哈希不变」。
+- 连接串只从环境变量 `DATABASE_URL` 读（不进 argv、不进 shell 历史），失败只报变量名。云端用 `systemd-run -p EnvironmentFile=/etc/huice/api.env` 带服务同款环境执行。
+- **未覆盖 §5.2 第 4 项（结果导出）**：条件级结果只存在于生成时的报告与轨迹摘要里，库里只落政策级 `assessment.result`，导出形态需先与 M3 定口径。
+
 ## 3. HTTP 共同约束
 
 - 前缀 `/api/v1`；JSON camelCase；实体/请求/追踪 ID 为 UUID。政策 version 为人工版本字符串，事实哈希和规则版本不强制 UUID。日期 `YYYY-MM-DD`，时间带时区 ISO 8601；数据库 UTC。
@@ -494,6 +510,12 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 
 验证（2026-10-27，本机 PostgreSQL 16 + pgvector 0.8.7 / Redis 7.4）：`pytest -q`（无外部依赖）**433 passed / 45 skipped / 75 subtests**；`pytest -m db` **34 passed**（含新增的同键两期间用例）；`HUICE_TEST_DATABASE_URL` 与 `HUICE_TEST_REDIS_URL` 都指向本地服务时全量 **470 passed / 8 skipped**（余下 8 项为 OBS 5 项与 DeepSeek 3 项门控，需真实凭证）。迁移 `004` 在本地库连跑两遍退出码均 0，第二遍仅 `NOTICE ... already exists, skipping`；核对结果：`invalidation_event` 增 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束、`invalidation_event_run_idx (run_id, created_at)` 索引，`schema_migration` 四行齐全。云端 RDS 仍未执行 `004`，随 11/08 部署补齐。**未执行**：OBS/DeepSeek 用例本轮未重跑（改动不涉及这两条链路）。
 
+### M1 后端实现验证记录（2026-11-05，评测输入快照）
+
+为 `EVALUATION_FREEZE` §5.2 补输入侧工具（`services/api/app/evaluation/`，见 2.9）。新增 `tests/test_eval_snapshot.py` 24 项：纯函数 17 项锁住哈希口径（键序、`Decimal` 尾零、日期 ↔ ISO 串等价、`null` ≠ 空串、配置白名单挡密钥）与差异比较（忽略采集时间与签认后新增的数据集文件，值/配置/数据集/缺失行都能报出）；CLI 3 项（缺 `DATABASE_URL` 只报变量名、坏清单被拒、数据集目录不存在先于连库报错）；`db` 标记 4 项在真库上验「清单的事实版本 == 引擎落库的 `fact_version`」「改事实值后 `verify` 非零退出且不改动清单」「清单文本里没有任何口令/令牌/连接串」「`--dataset-dir` 只哈希 CSV 整文件」。
+
+验证（2026-11-05，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **730 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **4 passed**。**未执行**：云端实跑（本工具尚未部署），以及 §5.2 第 4 项「结果导出」——条件级结果不落库，需与 M3 定口径后再做。
+
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 
 ### M1：后端、契约、基础设施
@@ -507,6 +529,7 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 | `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效（均已实现；季度平均的期间约束与冲突传播见 2.2） |
 | `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；explanation 的清单 `items[]` 待 M3 材料） |
 | `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage 已覆盖政策草稿、企业画像、公开政策、run、失效视图与轨迹读取；llm/obs 已实现，`esdk-obs-python` 已入锁，**2026-10-27 已在真实桶与真实 DeepSeek Key 上联调通过**（`test_obs_live.py` 5 项、`test_deepseek_live.py` 3 项）；cache 已实现七字段版本化键、值投影与故障绕过，`redis==8.1.0` 已入锁） |
+| `services/api/app/evaluation/`、`services/api/tests/test_eval_snapshot.py` | 评测输入快照的导出与核对（`EVALUATION_FREEZE` §5.2 第 1/2/3/5 项，见 2.9）；不产出评测指标 |
 | `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow,test_citations}.py` | 静态契约与业务测试，独立报告覆盖范围（refs 解析、四态优先级、AST 求值、引用校验、失效视图与端到端判断链路） |
 | `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_admin_review_http,test_public_read_http,test_enterprise_http,test_report_trace_http,test_profile_units,test_questioning,test_trace,test_cache,test_cache_redis_live,test_extraction_units,test_openapi_alignment,test_obs_object_store,test_obs_live,test_llm_client,test_deepseek_live}.py` | 无数据库 HTTP 测试（假仓储）、各单元口径与契约对齐测试；适配器用假客户端/假传输层/假缓存后端，不联网。三个例外都靠环境变量门控、默认跳过：`test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL`，真实 Redis）、`test_obs_live.py`（`HUICE_TEST_OBS_*` 四项，真实桶）、`test_deepseek_live.py`（`HUICE_TEST_DEEPSEEK_API_KEY`，真实模型） |
 | `services/api/tests/{conftest,support,db_support,test_db_policy_repository,test_db_evaluation,test_db_errors}.py` | `db` 标记的真库用例：独立 schema 建表、用例间清表；覆盖政策导入落库、企业画像 CAS、公开列表与游标、快照闸门、run 落库与失效视图、只追加与不可发布保护 |
