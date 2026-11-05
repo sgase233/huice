@@ -41,7 +41,13 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 10. rc.6（2026-11-03，应答 M2 issue #27）：`TraceStep.evidenceRefs` 改名 `objectRefs`，元素换成新 schema `TraceObjectRef={type,id}`，与 `CriterionResult.evidenceRefs` 的政策原文引文分开。服务端同字段由 `list[dict]` 收紧为 `list[TraceObjectRef]`；`trace_step.evidence_refs` 列名不变，无新迁移。**`apps/web/src/api/types.ts` 需按 rc.6 重新生成**（由 M2 执行）。
 11. rc.7（2026-11-05，应答 M2 对 PR #34 的 P1）：`ModelUsage` 新增**可选** `tokensUnknown`（布尔，缺省 false）。`true` 表示上游没有返回可用用量（2xx 但缺 `usage`、只给一半、格式异常），此时 `inputTokens`/`outputTokens` 是**占位 0**，不得计入费用或与真实零用量混同；`fixture`、规则抽取这类**没有发起调用**的路径仍是真实的 0，不带该标记。
     **不是纯加法：这是带行为语义的契约迁移，服务端在已知用量时省略该字段。** `ModelUsage` 是 `additionalProperties: false`，若常路径也回 `tokensUnknown: false`，按 rc.6 严格校验的旧消费者会把**正常响应**判为非法。省略后：已知用量的响应与 rc.6 逐字段一致（旧消费者照常通过）；未知用量时多出 `tokensUnknown: true`，旧消费者会**失败**——这是有意的，比让它把占位 0 当真实用量好。忽略未知属性的旧消费者在未知场景仍只能看到 0，这类调用方本来就无法区分，需按本文件与 `infra/README.md` §4.3 的口径自行标注。
-    迁移约定：**后端先上**（rc.7 对旧消费者向后兼容），前端随后按 rc.7 生成类型并处理 `tokensUnknown`；回滚后端即回到 rc.6 的响应形状，未知调用退化为「0 无标记」，无需数据迁移（该字段不落库）。`apps/web/src/api/types.ts` 需由 M2 重新生成（差异为 `ModelUsage` 多一行 `tokensUnknown?: boolean;`），在那之前 `python contracts/generate_types.py --check` 会报 `Frontend types differ`。
+    迁移约定：**不是「后端先上」**。现有前端不是严格消费者——`apps/web/src/api/client.ts` 允许额外字段、审核页直接显示 `usage.inputTokens/outputTokens`，收到 `tokensUnknown: true` + 占位 0 会显示「输入 0 / 输出 0 tokens」。后端先上等于把「未知」**安静地**变成「零」，比解析失败更糟。因此顺序是：
+
+    1. **前端先行**：M2 按 rc.7 重新生成 `types.ts`，在展示与统计处先判 `tokensUnknown`（未知就显示「未知」并排除出合计），并把「响应里没有该字段」按「已知」处理——这样后端还在 rc.6 时前端也正常。
+    2. **后端随后**上 rc.7，此时「未知」才第一次出现在线路上，而接收方已经能表达它。
+    3. **严格校验旧响应形状的第三方消费者单独安排**：已知路径逐字段一致、不受影响；未知路径会解析失败（fail-closed），要么先升级，要么接受这类调用在这条路径上不可用。
+
+    回滚：后端退回 rc.6 后，前端的新逻辑必须继续把「没有 `tokensUnknown`」当已知（第 1 步已经这么写），否则回滚会重新把未知显示成 0；回滚后未知调用的痕迹只剩日志 `usage=unknown` 与轨迹摘要。该字段不落库，无数据迁移。`apps/web/src/api/types.ts` 需由 M2 重新生成（差异为 `ModelUsage` 多一行 `tokensUnknown?: boolean;`），在那之前 `python contracts/generate_types.py --check` 会报 `Frontend types differ`。
 
 ## 当前实现产出的错误码
 
