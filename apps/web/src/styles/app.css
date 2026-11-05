@@ -35,7 +35,6 @@ p { margin-bottom: 1rem; }
 .demo-banner { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; padding: .82rem 1rem; background: #fff7e8; border: 1px solid #e5c783; border-radius: .7rem; color: #694914; font-weight: 700; margin-bottom: 2rem; }
 .banner-dot { background: #bd721c; width: .52rem; height: .52rem; border-radius: 50%; }
 .banner-detail { font-size: .85rem; font-weight: 400; margin-left: auto; }
-.page-block { animation: rise .2s ease-out; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 1.25rem; margin-bottom: 1.5rem; }
 .page-heading p { color: var(--muted); max-width: 56rem; margin-bottom: 0; }
 .page-heading .eyebrow { display: block; margin-bottom: .55rem; }
@@ -109,7 +108,6 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .empty-state { text-align: center; padding: clamp(2rem, 6vw, 5rem); }
 .empty-state p { color: var(--muted); }
 .site-footer { text-align: center; padding: 1.15rem; color: var(--muted); border-top: 1px solid var(--line); font-size: .8rem; }
-@keyframes rise { from { opacity: .7; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 1050px) { .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .content-columns { grid-template-columns: 1fr; } .side-panel { position: static; } }
 @media (max-width: 760px) { .shell-layout { display: block; } .side-nav { border-right: 0; border-bottom: 1px solid var(--line); padding: .8rem 0; display: flex; overflow-x: auto; gap: .25rem; } .side-nav a { flex: none; padding: .4rem .62rem; } .nav-caption, .nav-foot { display: none; } .main-content { padding-top: 1.2rem; } .policy-grid { grid-template-columns: 1fr; } .page-heading { flex-direction: column; } .banner-detail { width: 100%; margin-left: 1.2rem; } }
 @media (max-width: 520px) { .header-caption { display: none; } .form-grid, .prep-grid { grid-template-columns: 1fr; } .filter-panel label { width: 100%; } .result-count { margin-left: 0; } .draft-row { align-items: flex-start; flex-direction: column; } }
@@ -133,3 +131,35 @@ dd { margin: 0; overflow-wrap: anywhere; }
 
 .trace-steps { list-style: none; padding: 0; }
 .trace-steps > li + li { margin-top: 1rem; }
+
+/* Workbench controls share one visual language across the demo and API modes. */
+.app-shell .side-nav a, .app-shell .real-nav button { display: flex; align-items: center; gap: .75rem; transition: background-color .18s ease, color .18s ease; }
+.workflow-icon { flex: none; width: 1.2rem; height: 1.2rem; color: #51767b; }
+.side-nav [aria-current="page"] .workflow-icon { color: #0a5961; }
+.app-shell .main-content { color: #19343a; }
+.app-shell .panel { border-color: #dce7e4; box-shadow: none; }
+.app-shell .form-grid > label, .app-shell .form-grid > *, .app-shell fieldset { min-width: 0; }
+.app-shell input:not([type="checkbox"]), .app-shell select, .app-shell textarea { max-width: 100%; min-width: 0; border-color: #b3c8c4; border-radius: .55rem; transition: border-color .18s ease, box-shadow .18s ease; }
+.app-shell input:not([type="checkbox"]):focus, .app-shell select:focus, .app-shell textarea:focus { border-color: #0e6970; box-shadow: 0 0 0 3px #d9eeea; }
+.app-shell .button, .app-shell .main-content button:not(.button):not(.text-button) { min-height: 44px; padding: .65rem 1rem; border: 1px solid #0c5961; border-radius: .55rem; background: #0c5961; color: #fff; font-weight: 700; line-height: 1.3; transition: background-color .18s ease, border-color .18s ease, color .18s ease, transform .18s ease; }
+.app-shell .button:hover:not(:disabled), .app-shell .main-content button:not(.button):not(.text-button):hover:not(:disabled) { background: #08474d; border-color: #08474d; color: #fff; }
+.app-shell .button:active:not(:disabled), .app-shell .main-content button:not(.button):not(.text-button):active:not(:disabled) { transform: translateY(1px); }
+.app-shell .button-secondary { background: #fff; color: #0c5961; border-color: #abc5c0; }
+.app-shell .button-secondary:hover:not(:disabled) { background: #e8f3ef; border-color: #7caaa1; color: #08474d; }
+.app-shell .main-content button:disabled { background: #edf2f0; border-color: #d4e0dc; color: #637a78; }
+.app-shell .filter-panel { align-items: end; }
+.app-shell .filter-panel label { flex: 1 1 12rem; min-width: min(12rem, 100%); }
+.app-shell .question-form, .app-shell .authorization-form { display: grid; gap: .65rem; }
+.app-shell .question-form .form-actions { margin-top: .35rem; }
+.app-shell .authorization-form { max-width: 32rem; justify-items: start; }
+.app-shell .authorization-form label { width: 100%; }
+.app-shell .real-nav button { background: transparent; border: 0; color: #29414b; }
+.app-shell .real-nav button[aria-current="page"] { background: #e0efea; color: #084d54; }
+.app-shell .real-nav button:hover:not(:disabled) { background: #e8f2ee; }
+.app-shell .side-nav { position: relative; }
+.workflow-indicator { position: absolute; left: 0; top: 0; z-index: 0; opacity: 0; pointer-events: none; border-radius: .65rem; background: #e0efea; }
+.workflow-indicator.is-ready { transition: transform .65s cubic-bezier(.22, 1, .36, 1), width .65s ease, height .65s ease; }
+.app-shell .side-nav a, .app-shell .real-nav button { position: relative; z-index: 1; }
+.app-shell .side-nav a[aria-current="page"], .app-shell .real-nav button[aria-current="page"], .app-shell .real-nav button[aria-current="page"]:hover { background: transparent; }
+@media (max-width: 760px) { .app-shell .side-nav a, .app-shell .real-nav button { gap: .5rem; } }
+@media (max-width: 520px) { .app-shell .fact-actions { flex-wrap: wrap; } .app-shell .filter-panel > .button { width: 100%; } }

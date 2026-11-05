@@ -7,6 +7,11 @@ import PolicyDetailPage from './pages/PolicyDetailPage';
 import ReportPage from './pages/ReportPage';
 import AdminReviewPage from './pages/AdminReviewPage';
 import RealApp from './RealApp';
+import HomePage from './pages/HomePage';
+import WorkflowIcon from './components/WorkflowIcon';
+import WorkflowIndicator from './components/WorkflowIndicator';
+import useWorkflowTransition from './components/useWorkflowTransition';
+import './styles/home.css';
 
 const pages = [
   { id: 'enterprise', label: '企业画像' }, { id: 'opportunities', label: '机会列表' },
@@ -20,11 +25,19 @@ const pageFromHash = (): PageId => {
 };
 
 export default function App() {
-  return new URLSearchParams(location.search).get('mode') === 'demo' ? <DemoApp /> : <RealApp />;
+  const [hash, setHash] = useState(location.hash);
+  useEffect(() => {
+    const update = () => setHash(location.hash);
+    window.addEventListener('hashchange', update);
+    return () => window.removeEventListener('hashchange', update);
+  }, []);
+  if (new URLSearchParams(location.search).get('mode') === 'demo') return <DemoApp />;
+  return ['#enterprise', '#opportunities', '#policy', '#report', '#trace', '#admin', '#real-main'].includes(hash) ? <RealApp /> : <HomePage />;
 }
 
 function DemoApp() {
   const [page, setPage] = useState<PageId>(pageFromHash);
+  const mainContent = useWorkflowTransition(page);
   const [enterprise, setEnterprise] = useState<EnterpriseInput>(() => structuredClone(initialEnterprise));
   const [selectedId, setSelectedId] = useState<string | null>(null);
   useEffect(() => {
@@ -35,9 +48,9 @@ function DemoApp() {
   const selected = demoPolicies.find(policy => policy.id === selectedId) || null;
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">跳到主要内容</a>
-    <header className="site-header"><div className="header-inner"><a className="brand" href="#enterprise"><span className="brand-mark" aria-hidden="true">策</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a><div className="header-caption">阶段一 · 界面验证版 <a href="?">切换真实接口</a></div></div></header>
-    <div className="shell-layout"><nav className="side-nav" aria-label="主导航"><div className="nav-caption">工作流程</div>{pages.map((item, index) => <a key={item.id} href={`#${item.id}`} aria-current={page === item.id ? 'page' : undefined}><span className="nav-number">{String(index + 1).padStart(2, '0')}</span>{item.label}</a>)}<div className="nav-foot">所有政策与结论均为合成演示内容。</div></nav>
-      <main id="main-content" className="main-content"><div className="demo-banner" role="status"><span className="banner-dot" aria-hidden="true" />{demoNotice}<span className="banner-detail">固定示例不会随画像自动计算</span></div>
+    <header className="site-header"><div className="header-inner"><a className="brand" href="#enterprise"><span className="brand-mark" aria-hidden="true">策</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a><div className="header-caption">阶段一 · 界面验证版 <a href="?#enterprise">切换真实接口</a></div></div></header>
+    <div className="shell-layout"><nav className="side-nav" aria-label="主导航"><WorkflowIndicator page={page} /><div className="nav-caption">工作流程</div>{pages.map(item => <a key={item.id} href={`#${item.id}`} aria-current={page === item.id ? 'page' : undefined}><WorkflowIcon name={item.id} />{item.label}</a>)}<div className="nav-foot">所有政策与结论均为合成演示内容。</div></nav>
+      <main id="main-content" ref={mainContent} className="main-content"><div className="demo-banner" role="status"><span className="banner-dot" aria-hidden="true" />{demoNotice}<span className="banner-detail">固定示例不会随画像自动计算</span></div>
         {page === 'enterprise' && <EnterprisePage value={enterprise} onSave={value => { setEnterprise(value); setSelectedId(null); }} />}
         {page === 'opportunities' && <OpportunitiesPage policies={demoPolicies} selectedId={selectedId} onSelect={id => { setSelectedId(id); location.hash = 'policy'; }} />}
         {page === 'policy' && <PolicyDetailPage policy={selected} />}
