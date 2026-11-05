@@ -109,19 +109,20 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 
 1. **政策导入映射**：`policy_id / policy_version / criterion_id` → 数据库中的政策/条件 ID、AST 哈希、导入提交与时间。
 2. **企业事实映射**：`enterprise_id + fact_key + period_start/end` → 事实值哈希、事实版本、来源文件。
-3. **运行参数**：数据集版本/哈希、代码 commit、规则版本、`asOf`、分析期间、`MODEL_MODE`、配置哈希。`codeCommit` 在 ECS 无 `.git` 时为 `null`，不得编造；签认前须由部署记录补 commit，或明确标为「代码身份未证明」，不得以双 `null` 当作代码相同；`verify` 在两侧均 `null` 时应显式提示「代码身份未证明」，不得静默通过。
-4. **结果导出（2026-11-05 定案：先做方案 A）**：
+3. **运行参数**：数据集版本/哈希、代码 commit、规则版本、`asOf`、分析期间、`MODEL_MODE`、配置哈希。`codeCommit` 在 ECS 无 `.git` 时为 `null`，不得编造；签认前须由部署记录补 commit，或明确标为「代码身份未证明」，不得以双 `null` 当作代码相同。`verify` 在两侧均 `null` 时应打印「代码身份未证明」提示；退出码可为 0（证据缺失≠内容不一致），但**该提示必须进入评测记录**；要证明代码相同，导出与核对都必须带 `--commit`。
+4. **结果导出（2026-11-05 定案：方案 A；条件级证据以 report 稳定正文为准）**：
    - `runId`；
-   - 完整 `trace` JSON 及其 SHA-256（条件级结论/理由/证据/计算以 trace 为主证据）；
-   - `report.md`：记录 `downloadedAt` 与原始 SHA-256；跨次比较时以 trace 为主，报告开头「截至下载时刻的有效性」段的差异视为预期，不据此判定结果变化。若 M1 能提供剔除该段的稳定正文哈希，则一并记录并写明剔除规则；
+   - **`report.md` 稳定正文**：剔除开头「截至下载时刻的有效性」段后的正文，作为条件级四态、理由、引文/出处、`calculation.formula` 与结果的冻结产物，记录其 SHA-256；剔除规则由 M1 实现为确定性导出（端点参数或脚本）并有测试，**不在评测时临时手工裁剪**；
+   - 原始 `report.md` 另存，记录 `downloadedAt` 与原始 SHA-256，仅供审计；有效性段差异不据此判定结果变化；
+   - 完整 `trace` JSON 及其 SHA-256，用于轨迹可追溯；**trace 只有阶段摘要与 `{type,id}` 引用，不作为条件级证据**；
    - run 行的 `factVersion`、`modelOrRuleVersion`、`asOf`、`codeCommit`（或部署记录中的 commit）；
-   - **不新增条件级结果表**。若 trace/report 缺少条件级的结论/理由/证据/计算字段，先记录缺口，不临时改库；确需从库直读时，另开迁移/契约 PR（方案 B），不阻塞本声明；
-   - 条件级对账以 `labels.csv` 的条件级标签为准，结果从 trace/report 导出。
+   - **不新增条件级结果表**。若 report 稳定正文不足以机器解析条件级结果，先记录缺口，再评估机器可读导出（不新增表）或方案 B；不临时改库；
+   - 条件级对账以 `labels.csv` 的条件级标签为准，结果从 report 稳定正文导出。
 5. **一致性核对**：运行前用上述映射核对运行时输入与签认快照；不一致即停止评测并记录，不得用运行结果反推快照。
 
 > **数据集哈希范围（2026-11-05 补）：** 只覆盖 §3 的三份文件（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）；`data/evaluation` 下的复核表/标注表（`material_review_*.csv`、`*_annotation_sheet.csv`）不属于评测输入，不应进入签认清单。`--dataset-dir` 如只能扫目录，应改为显式文件列表或支持多次指定。
 
-**进度（2026-11-05，M1）：** PR #39（`m1/eval-input-snapshot`，基于 `main`）已实现第 1、2、3（部分）、5 项，提供 `python -m app.evaluation inputs` / `verify` 两个命令；第 4 项按上述方案 A 执行。工具只读库，配置哈希不含 `ADMIN_TOKEN` / `DEEPSEEK_API_KEY` / `DATABASE_URL` / `REDIS_URL` / OBS AK/SK，清单文本不含这些值（有用例锁住）。**§5.2 仍未完成**：需 PR #39 合并并部署到 ECS、产出首份清单并 `verify` 通过；在此之前本声明保持草案。
+**进度（2026-11-05，M1）：** PR #39（`m1/eval-input-snapshot`，基于 `main`，head `5a7c304`）已实现第 1、2、3（部分）、5 项，提供 `python -m app.evaluation inputs` / `verify`；已采纳 `--dataset-file` 显式文件列表（不再默认扫目录）与双 `null` `codeCommit` 提示。第 4 项按上述「report 稳定正文」口径执行，待 M1 落地剔除有效性段的确定性导出。工具只读库，配置哈希不含 `ADMIN_TOKEN` / `DEEPSEEK_API_KEY` / `DATABASE_URL` / `REDIS_URL` / OBS AK/SK，清单文本不含这些值（有用例锁住）。**§5.2 仍未完成**：需 PR #39 合并并部署到 ECS、产出首份清单并 `verify` 通过；在此之前本声明保持草案。
 
 ## 6. 锁定边界声明（避免误读）
 
