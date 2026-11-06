@@ -315,6 +315,7 @@ export type ModelUsage = {
   inputTokens: number;
   outputTokens: number;
   elapsedMs: number;
+  tokensUnknown?: boolean;
 };
 
 export type ExtractPolicyInput = {
