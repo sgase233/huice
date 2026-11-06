@@ -192,6 +192,8 @@ def test_a_missing_value_stops_before_any_psql(sandbox: Sandbox) -> None:
 
     assert result.returncode != 0
     assert "DATABASE_URL" in result.stderr
+    # 只报一次：read_env_var 已经说清原因，外层再 die 一次会让同一句话重复
+    assert result.stderr.count("读不到 DATABASE_URL") == 1
     assert sandbox.psql_calls() == []
 
 
@@ -216,6 +218,8 @@ def test_a_failed_systemd_run_shows_its_exit_code_and_stderr(sandbox: Sandbox) -
     assert result.returncode != 0
     assert "3" in result.stderr
     assert "Failed to start transient service unit" in result.stderr
+    # 诊断说一遍就够：内层已说明原因，外层不得再复述同一句话
+    assert result.stderr.count("读不到 DATABASE_URL") == 1
     assert sandbox.psql_calls() == []
 
 

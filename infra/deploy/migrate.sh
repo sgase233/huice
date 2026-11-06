@@ -125,8 +125,9 @@ explain_empty_env() {
         "$ENV_FILE" >&2
 }
 
-DB_URL=$(read_env_var DATABASE_URL) ||
-    die "读不到 DATABASE_URL（服务未运行，systemd-run 也读不了 $ENV_FILE）。停止：不执行任何迁移。"
+# read_env_var 失败时自己已经打印了原因（含退出码、stderr 与 unit 的 EnvironmentFiles），
+# 这里不再 die 一次：那会把同一句话原样打两遍。它非零退出即「停止」，不执行任何迁移。
+DB_URL=$(read_env_var DATABASE_URL) || exit 1
 [ -n "$DB_URL" ] || die "DATABASE_URL 为空。停止：不执行任何迁移（空串会让 psql 退回默认参数）。"
 
 for migration in "${MIGRATIONS[@]}"; do
