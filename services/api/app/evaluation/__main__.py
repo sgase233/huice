@@ -38,6 +38,17 @@ JSON 对当前库重算一遍，逐项列出差异，非零退出即「与签认
         -p WorkingDirectory=/opt/huice/app/services/api \\
         /opt/huice/venv/bin/python -m app.evaluation inputs --out /tmp/eval-inputs.json
 
+**代码身份不再靠手填**：清单顶层记 ``codeFingerprint``——对部署机上实际存在的
+``services/api/app/**/*.py``、``contracts/openapi.yaml``、``services/api/requirements.lock``
+算出的规范化哈希（实现见 :mod:`app.evaluation.code_fingerprint`）。任何人把某个提交
+checkout 出来用同一条 ``python -m app.evaluation fingerprint`` 复算，就能把「提交 ↔
+指纹」对上；``verify`` 在当前机器上重算并比对。``codeCommit`` 保留，但退化为**注记**。
+
+指纹只回答「磁盘上这些文件是什么」，回答不了「进程里跑的是不是这份代码」——那一条
+靠 ``--process-pid`` 做交叉核对：记下该进程的启动时间，并把「写于进程启动之后」的
+代码文件全部列出来（盘上比进程新，说明可能 ``pull`` 了没重启），有这种文件就直接
+停下。三件事（磁盘代码 / 对应哪个提交 / 进程里跑的是哪份）分开证明，不互相冒充。
+
 **第 4 项「结果导出」的输入侧在 ``freeze-report``**：它把下载到的 API-13 报告裁成
 不含「截至下载时刻的有效性」的冻结产物，剔除按固定标记整行/整段删除、可重复得到同一
 份字节；原始报告与下载时间、两侧哈希由调用方另存审计。条件级结果仍只在报告正文里
@@ -58,6 +69,15 @@ from typing import Any
 
 import psycopg
 
+from .code_fingerprint import (
+    CODE_SCOPE,
+    CodeFingerprintError,
+    CodeInspection,
+    default_code_root,
+    inspect_code,
+    process_started_at,
+    stale_code_files,
+)
 from .dataset_map import REQUIRED_FILES, load_dataset_rows
 from .report_freeze import ReportError, freeze_report
 from .snapshot import SnapshotError, collect_input_snapshot, diff_snapshots
@@ -175,6 +195,47 @@ def _require_required_files(names: Sequence[str]) -> None:
         )
 
 
+def _inspect_code() -> CodeInspection:
+    """算部署文件指纹；范围内缺文件或一个都没扫到就停（不能把空集合算成指纹）。
+
+    根目录取 :func:`default_code_root`（本工具所在的那棵树），**不取** ``PROJECT_ROOT``：
+    后者决定签认路径的基准、测试里会被换成临时目录，跟着它算会让「换个工作目录」变成
+    「代码变了」。
+    """
+
+    try:
+        return inspect_code(default_code_root())
+    except CodeFingerprintError as exc:
+        raise SystemExit(f"{PROGRAM}：{exc}") from None
+
+
+def _process_started(args: argparse.Namespace, inspection: CodeInspection) -> str | None:
+    """记下服务进程启动时间，并核「有没有代码文件比进程还新」。
+
+    有就停下：那说明盘上的代码比正在跑的进程新，进程里很可能是旧代码，此时签认的
+    指纹虽然是对的，却对不上**实际在跑的东西**。这条只在本机（Linux）给 ``--process-pid``
+    时才做——看不到进程，就不假装看过。
+    """
+
+    if args.process_pid is None:
+        return None
+    try:
+        started = process_started_at(args.process_pid)
+    except CodeFingerprintError as exc:
+        raise SystemExit(f"{PROGRAM}：{exc}") from None
+    stale = stale_code_files(inspection.files, started)
+    if stale:
+        listed = "、".join(f"{item.path}（写于 {item.mtime.isoformat()}）" for item in stale[:5])
+        more = "" if len(stale) <= 5 else f"，另有 {len(stale) - 5} 个"
+        raise SystemExit(
+            f"{PROGRAM}：进程 {args.process_pid} 启动于 {started.isoformat()}，"
+            f"但有 {len(stale)} 个代码文件写于其后：{listed}{more}——"
+            "盘上是新的、进程里可能还是旧的，此时记下的指纹对不上正在跑的代码。"
+            "请先重启服务再签认/核对"
+        )
+    return started.isoformat()
+
+
 def _build_manifest(
     args: argparse.Namespace,
     *,
@@ -222,6 +283,9 @@ def _build_manifest(
             dataset_rows = load_dataset_rows([path for _, path in entries])
         except SnapshotError as exc:
             raise SystemExit(f"{PROGRAM}：{exc}") from None
+    # 指纹在连库之前算：既是参数校验的一部分，也避免算了半个清单才发现范围缺文件
+    inspection = _inspect_code()
+    process_started = _process_started(args, inspection)
     with _connect() as conn:
         return collect_input_snapshot(
             conn,
@@ -229,6 +293,8 @@ def _build_manifest(
             dataset=dataset,
             dataset_rows=dataset_rows,
             code_commit=args.commit,
+            code=inspection.manifest_fields(),
+            process_started_at=process_started,
             collected_at=collected_at,
         )
 
@@ -322,6 +388,44 @@ def _signed_dataset(expected: Mapping[str, Any]) -> list[tuple[str, Path]]:
     return sorted(signed)
 
 
+def _report_code_identity(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> None:
+    """内容一致以后，把「代码身份到什么程度」说清楚——不能比实际更有把握。
+
+    三种情形分开讲（M2 在 #39 的方向：``codeCommit=null`` 不因为磁盘指纹一致就笼统
+    说成「运行代码身份已证明」）：
+
+    * 清单里没有指纹（旧清单）：磁盘与进程都没证明；
+    * 有指纹且一致：**磁盘代码**与签认一致；但「这份代码对应哪个提交」与「进程里跑的
+      是不是它」仍然没证明，各自需要 checkout 复算与重启后的启动时间核对；
+    * 有指纹但签认时没记启动时间：上面第二句仍成立，只是少了一条交叉证据。
+    """
+
+    fingerprint = expected.get("codeFingerprint")
+    if fingerprint is None:
+        print(
+            "提示：这份清单没有 codeFingerprint（签认于引入部署文件指纹之前），磁盘代码身份"
+            "未证明——要用当前版本重新签认，才会记下可复算的部署文件指纹",
+            file=sys.stderr,
+        )
+        return
+
+    short = str(fingerprint)[:12]
+    count = expected.get("codeFiles")
+    print(
+        f"提示：磁盘代码与签认一致（指纹 {short}…，{count} 个文件）；"
+        "但「这份代码对应哪个提交」与「进程里跑的是不是它」仍未证明——"
+        "前者要把该提交 checkout 出来用 fingerprint 子命令复算，"
+        "后者要在签认时用 --process-pid 记下进程启动时间做交叉核对",
+        file=sys.stderr,
+    )
+    if expected.get("processStartedAt") is None:
+        print(
+            "提示：签认时没有记录服务进程启动时间（--process-pid），"
+            "因此「盘上的代码」与「进程里的代码」之间没有交叉证据",
+            file=sys.stderr,
+        )
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     expected = _load_manifest(args.manifest)
     # 模式必须一致：只比数据库的清单不能说成「数据集核对通过」，反之也不行
@@ -346,13 +450,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
-    # 两侧都 null 时 diff 无差异，但「没记」不等于「证明相同」，得说出来（M3 复核提出）
-    if expected.get("codeCommit") is None and actual.get("codeCommit") is None:
-        print(
-            "提示：两侧 codeCommit 都是 null，代码身份未证明——"
-            "要证明同一份代码，导出与核对时都要用 --commit 记录提交号",
-            file=sys.stderr,
-        )
+    _report_code_identity(expected, actual)
     if args.no_dataset:
         print(
             "一致（仅数据库）：{} 个政策版本、{} 个企业；未核对评测输入 CSV，"
@@ -412,6 +510,38 @@ def _cmd_freeze_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_fingerprint(args: argparse.Namespace) -> int:
+    """只算指纹、不连库：任何一台机器上都能跑，用来把「提交 ↔ 指纹」对上。"""
+
+    root = Path(args.root).resolve() if args.root else default_code_root()
+    try:
+        inspection = inspect_code(root)
+    except CodeFingerprintError as exc:
+        raise SystemExit(f"{PROGRAM}：{exc}") from None
+
+    if args.json:
+        payload = {
+            "fingerprint": inspection.fingerprint,
+            "fileCount": len(inspection.files),
+            "scope": list(CODE_SCOPE),
+            # 逐文件明细：两棵树差在哪，比对这份就能看出来，不必先相信顶层哈希
+            "files": [
+                {"path": item.path, "sha256": item.sha256, "size": item.size}
+                for item in inspection.files
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    # 默认只在 stdout 打指纹本身：要贴进报告、要写进脚本的都是这一行
+    print(inspection.fingerprint)
+    print(
+        f"（{len(inspection.files)} 个文件，范围 {', '.join(CODE_SCOPE)}；加 --json 看逐文件哈希）",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dataset-file",
@@ -451,6 +581,15 @@ def _common(parser: argparse.ArgumentParser) -> None:
         "--collected-at",
         help="覆盖清单的采集时间（ISO 8601），便于复现同一份清单",
     )
+    parser.add_argument(
+        "--process-pid",
+        type=int,
+        help=(
+            "正在运行的服务进程 PID（如 systemctl show -p MainPID huice-api 取到的值）："
+            "记下它的启动时间，并把「写于进程启动之后」的代码文件一并列出——"
+            "有这种文件就停下（盘上新的、进程里可能还是旧的）。只在 Linux 上可用"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -469,6 +608,19 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("manifest", help="已签认的清单 JSON")
     _common(verify)
     verify.set_defaults(handler=_cmd_verify)
+
+    fingerprint = sub.add_parser(
+        "fingerprint",
+        help="打印部署文件指纹（不连库）：用来把「提交 ↔ 指纹」对上",
+    )
+    fingerprint.add_argument(
+        "--root",
+        help="要算指纹的代码根目录，默认是本工具所在仓库的根（换一棵树复算时用）",
+    )
+    fingerprint.add_argument(
+        "--json", action="store_true", help="输出指纹与逐文件哈希（JSON）"
+    )
+    fingerprint.set_defaults(handler=_cmd_fingerprint)
 
     freeze = sub.add_parser(
         "freeze-report",

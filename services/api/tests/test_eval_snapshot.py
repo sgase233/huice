@@ -160,6 +160,16 @@ def _manifest(**overrides):
         "appVersion": "1.0.0-rc.7",
         "ruleVersion": "rule:criteria@1",
         "codeCommit": "abc123",
+        # 部署文件指纹：与手填的 codeCommit 互相独立，可复算（见 test_eval_code_fingerprint）
+        "codeFingerprint": "1" * 64,
+        "codeFiles": 41,
+        "codeScope": [
+            "services/api/app",
+            "contracts/openapi.yaml",
+            "services/api/requirements.lock",
+        ],
+        # 只记录、不参与比对：服务重启是正常操作，比它会让每次核对都失败
+        "processStartedAt": "2026-11-05T09:00:00+00:00",
         # 三份输入本来就不在一个目录里（仓库里分别是 evaluation/policies/fixtures），
         # 清单记的是签认路径，不是文件名
         "dataset": [
@@ -355,8 +365,10 @@ def test_every_recorded_field_takes_part_in_the_comparison() -> None:
     base = _manifest()
     checked = 0
     for path in _leaf_paths(base):
-        if path[0] == "collectedAt":
-            continue  # 采集时间天然不同，本来就不比
+        if path[0] in ("collectedAt", "processStartedAt"):
+            # 采集时间天然不同；进程启动时间是签认期的交叉证据，重启后就变，
+            # 拿它比会让「签认后重启过」被判成不一致
+            continue
         changed = _changed_copy(base, path)
         assert diff_snapshots(base, changed), f"字段 {path} 变了，verify 却没报差异"
         checked += 1
@@ -578,10 +590,15 @@ def test_verify_passes_then_fails_when_a_fact_changes(
 
 @pytest.mark.db
 @pytest.mark.usefixtures("clean_tables")
-def test_verify_says_the_code_identity_is_unproven_when_both_sides_are_null(
+def test_verify_says_what_the_fingerprint_proves_and_what_it_does_not(
     repo, database_url_schema, monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    """两侧 ``codeCommit`` 都是 ``null`` 时不能算「一致」，要说出来（M3 复核提出）。"""
+    """指纹一致只能说「磁盘代码一致」，不能说「运行代码身份已证明」（M2 在 #39）。
+
+    ``codeCommit`` 为 ``null`` 原先只打一句「代码身份未证明」；现在清单有了可复算的
+    指纹，那句话要拆成三件事说清楚：磁盘代码一致、对应哪个提交未证明、进程里跑的
+    是不是它未证明。
+    """
 
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
     _make_enterprise(repo)
@@ -589,16 +606,51 @@ def test_verify_says_the_code_identity_is_unproven_when_both_sides_are_null(
     assert cli.main(["inputs", "--out", str(sealed), "--no-config", "--no-dataset"]) == 0
     capsys.readouterr()
 
+    manifest = json.loads(sealed.read_text(encoding="utf-8"))
+    assert isinstance(manifest["codeFingerprint"], str) and len(manifest["codeFingerprint"]) == 64
+    assert manifest["codeFiles"] >= 1
+    # 没给 --process-pid：只记录为空，不能编一个时间
+    assert manifest["processStartedAt"] is None
+
     assert cli.main(["verify", str(sealed), "--no-config", "--no-dataset"]) == 0
     captured = capsys.readouterr()
-    # 内容一致（退出码 0、标准输出说「一致」），但代码身份没记，标准错误要点出来
     assert "一致" in captured.out
-    assert "代码身份未证明" in captured.err
+    assert "磁盘代码与签认一致" in captured.err
+    # 反向断言：不能因为指纹一致就笼统说成「已证明」
+    assert "仍未证明" in captured.err
+    assert "已证明" not in captured.err
+    # 签认时没记进程启动时间，这条交叉证据要明说缺了
+    assert "进程启动时间" in captured.err
 
-    # 记了提交号就不再是「未证明」，而是逐字比对：签认时是 null，现在有值 → 不一致
+    # 记了提交号就不再是「没记」，而是逐字比对：签认时是 null，现在有值 → 不一致
     assert cli.main(
         ["verify", str(sealed), "--no-config", "--commit", "abc1234", "--no-dataset"]
     ) == 1
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_manifest_signed_before_the_fingerprint_still_verifies_with_a_note(
+    repo, database_url_schema, monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """旧清单（没有 ``codeFingerprint``）仍能核对库，但必须明说磁盘身份没证明。"""
+
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    _make_enterprise(repo)
+    sealed = tmp_path / "sealed.json"
+    assert cli.main(["inputs", "--out", str(sealed), "--no-config", "--no-dataset"]) == 0
+
+    manifest = json.loads(sealed.read_text(encoding="utf-8"))
+    for field in ("codeFingerprint", "codeFiles", "codeScope", "processStartedAt"):
+        manifest.pop(field)
+    sealed.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    capsys.readouterr()
+
+    assert cli.main(["verify", str(sealed), "--no-config", "--no-dataset"]) == 0
+    captured = capsys.readouterr()
+    assert "一致" in captured.out
+    assert "没有 codeFingerprint" in captured.err
+    assert "磁盘代码身份未证明" in captured.err
 
 
 @pytest.mark.db
