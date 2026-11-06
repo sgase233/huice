@@ -389,13 +389,68 @@ journalctl -u huice-api --since today | grep model_call
 - 未配置域名与正式证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示，评审期临时走 §3.2 的自签 443；备案后换正式证书并去掉浏览器的自签警告。
 - `infra/deploy/deploy.ps1` 仍是占位文件，本阶段以本文档的手工步骤为准。
 
-## 6. 回滚
+## 6. 更新与回滚（按提交）
+
+### 6.1 更新已有部署：从当前状态换到提交 `X`
+
+§1 讲的是「第一次把代码放上去」，这一节讲**机器上已经在跑、要换到另一个提交**。两条硬要求：**整目录替换**（解包不会删掉新版本里已删除的文件），**换完核对装上去的是哪份代码**（否则「跑的是哪版」只能靠记忆）。
+
+**本机打出该提交的包**（`git archive` 只含已提交内容，天然排除 `.env`、`.venv`、`.local-objects`）：
 
 ```bash
-systemctl stop huice-api          # 停服务
-cp /opt/huice/app.bak/* /opt/huice/app/   # 恢复上一份代码（若事先备份）
-systemctl restart huice-api
+cd "/d/Study/比赛/华为ICT大赛/huice"
+X=$(git rev-parse --short HEAD)            # 换成要部署的提交
+git archive --format=tar.gz --prefix=huice/ -o "/tmp/huice-$X.tar.gz" "$X"
+scp "/tmp/huice-$X.tar.gz" root@139.9.33.46:/tmp/
 ```
+
+**ECS 上：备份 → 换整棵目录 → 按需装依赖 → 按需迁移 → 重启**
+
+```bash
+set -e
+X=<刚部署的提交>                            # 与上面一致
+tar -czf "/root/app-before-$X-$(date +%Y%m%d).tar.gz" -C /opt/huice app   # 备份整棵 app
+mv /opt/huice/app "/opt/huice/app.old-$X"
+mkdir -p /opt/huice/app
+tar -xzf "/tmp/huice-$X.tar.gz" -C /opt/huice/app --strip-components=1
+chown -R huice:huice /opt/huice/app
+
+# 依赖只在 requirements.lock 变过时才装：比哈希，别靠印象
+sha256sum /opt/huice/app/services/api/requirements.lock "/opt/huice/app.old-$X/services/api/requirements.lock"
+
+# 迁移只在 infra/sql/ 出现新序号时才跑（顺序与校验见 §2.1）
+ls /opt/huice/app/infra/sql/ | tail -3
+# bash /opt/huice/app/infra/deploy/migrate.sh
+
+systemctl restart huice-api
+systemctl is-active huice-api
+curl -i http://127.0.0.1:8000/api/v1/health
+journalctl -u huice-api -n 30 --no-pager
+```
+
+**核对装上去的是哪份代码**：`app/evaluation` 的 `fingerprint` 子命令（PR #42 合入后可用）在**两边各算一次**，值相同才算对上；在那之前只能逐文件 `sha256sum` 比对，且注意别拿分支上的文件去比云端 main 的文件：
+
+```bash
+cd /opt/huice/app/services/api && /opt/huice/venv/bin/python -m app.evaluation fingerprint
+# 本机同提交复算：另开一个 worktree checkout 到该提交后再算（别在工作区里 stash）
+cd services/api && python -m app.evaluation fingerprint
+```
+
+**已经手工打过临时补丁的机器不能「只换改过的文件」**：`/opt/huice/app` 一旦被单文件覆盖过（2026-11-06 的抽取提示词热补丁就是），它就不再等于任何提交，只有整目录替换才能回到「某提交的原样」。替换完把差异处理记进 `infra/README.md` §7，别只写在聊天里。
+
+### 6.2 回滚到上一个提交
+
+```bash
+systemctl stop huice-api
+mv /opt/huice/app "/opt/huice/app.bad-$(date +%Y%m%d)"
+mv "/opt/huice/app.old-<上一个提交>" /opt/huice/app     # 6.1 留下的整目录备份
+systemctl start huice-api
+curl -i http://127.0.0.1:8000/api/v1/health
+```
+
+没有整目录备份时，从备份包还原：`tar -xzf /root/app-before-<提交>-<日期>.tar.gz -C /opt/huice`（包内是 `app/`，不要加 `--strip-components`）。
+
+**迁移不回退**：库结构只增不改，回滚代码时**不要**删列删表——旧代码在新库结构上照常工作（新列有默认值或可空）。真要回退结构，按 `infra/README.md` §8 的逆序 `DROP` 并同步删 `schema_migration` 对应行。
 
 数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `007_idempotency_usage_semantics.sql`，下一份是 `008_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
 
