@@ -204,3 +204,21 @@ def test_render_has_one_column_per_scheme(dataset):
     lines = render(payload, names=(("baseline", "基线"), ("pipeline", "现方案"))).splitlines()
     assert lines[0].count("|") == 4
     assert "输入哈希不一致" not in "\n".join(lines)
+
+
+def test_render_does_not_print_token_counts_as_percentages(dataset):
+    """token 数是计数不是比例：5250.5 曾被印成「525050.0%」（2026-11-06 实跑发现）。
+
+    渲染表格前按「值是 float 就是比例」判断，基线每 case 中位 token 是小数，
+    一进报告就是明显算错的数字。
+    """
+
+    run = _run(dataset)
+    run.usage = {"C001": {"prompt": 1000, "completion": 500, "known": True, "elapsed_ms": 2000}}
+    payload = compare(dataset, {"baseline": run}, on=date(2026, 11, 6))
+    lines = render(payload, names=(("baseline", "基线"),)).splitlines()
+    token_row = next(line for line in lines if "token 合计" in line)
+    median_row = next(line for line in lines if "中位每 case" in line)
+    assert token_row.split("|")[2].strip() == "1500"
+    assert median_row.split("|")[2].strip() == "1500"
+    assert "%" not in median_row

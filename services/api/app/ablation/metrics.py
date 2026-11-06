@@ -310,27 +310,31 @@ def render(payload: Mapping[str, Any], *, names: Iterable[tuple[str, str]]) -> s
     rows: list[list[str]] = []
     runs = payload["runs"]
 
-    def row(label: str, getter) -> None:
-        cells = [_pct(getter(runs[key])) if isinstance(getter(runs[key]), float) or getter(runs[key]) is None
-                 else str(getter(runs[key])) for key, _ in names]
+    def row(label: str, getter, *, pct: bool = False) -> None:
+        # 按行声明是不是比例：早先按「值是 float」判断，token 中位数 5250.5 被当成
+        # 比例印成「525050.0%」（2026-11-06 实跑发现的）。
+        cells = []
+        for key, _ in names:
+            value = getter(runs[key])
+            cells.append(_pct(value) if pct else ("—" if value is None else str(value)))
         rows.append([label, *cells])
 
     header = ["指标", *(display for _, display in names)]
 
-    row("四态一致率（146 条）", lambda run: run["accuracy"]["accuracy"])
-    row("　dev（120 条）", lambda run: run["accuracy_dev"]["accuracy"])
-    row("　holdout（26 条）", lambda run: run["accuracy_holdout"]["accuracy"])
+    row("四态一致率（146 条）", lambda run: run["accuracy"]["accuracy"], pct=True)
+    row("　dev（120 条）", lambda run: run["accuracy_dev"]["accuracy"], pct=True)
+    row("　holdout（26 条）", lambda run: run["accuracy_holdout"]["accuracy"], pct=True)
     row("　正确条数", lambda run: f"{run['accuracy']['correct']}/{run['accuracy']['total']}")
     row("硬门槛误判（分母 11）", lambda run: run["hard_gate"]["count"])
-    row("　误判率", lambda run: run["hard_gate"]["rate"])
-    row("无依据断言率", lambda run: run["unsupported"]["rate"])
+    row("　误判率", lambda run: run["hard_gate"]["rate"], pct=True)
+    row("无依据断言率", lambda run: run["unsupported"]["rate"], pct=True)
     row("　分母", lambda run: run["unsupported"]["denominator"])
-    row("引用可证实率", lambda run: run["quotes"]["rate"])
+    row("引用可证实率", lambda run: run["quotes"]["rate"], pct=True)
     row("　分母", lambda run: run["quotes"]["denominator"])
-    row("时效识别率", lambda run: run["timeliness"]["rate"])
+    row("时效识别率", lambda run: run["timeliness"]["rate"], pct=True)
     row("　分母", lambda run: run["timeliness"]["denominator"])
     row("token 合计", lambda run: run["tokens"]["total"])
-    row("　中位每 case", lambda run: run["tokens"]["median_per_case"] or "—")
+    row("　中位每 case", lambda run: run["tokens"]["median_per_case"])
     row("　用量未知条数", lambda run: run["tokens"]["usage_unknown_cases"])
     row("失败 case 数", lambda run: len(run["failures"]))
 
