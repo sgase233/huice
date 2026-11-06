@@ -239,19 +239,26 @@ def test_the_run_lists_only_materials_the_policy_actually_uses(repo, codes) -> N
 
     items = run.assessments[0].preparation.items
     assert [item.material_id for item in items] == ["TAX-02"]
-    assert items[0].status == "missing"
+    assert items[0].status == "facts_missing"
     assert items[0].missing is True
 
 
-def test_a_fact_value_already_in_hand_marks_the_material_provided(repo, codes) -> None:
+def test_facts_in_hand_mark_the_item_facts_filled(repo, codes) -> None:
     policy_id, _ = publish(repo, expressions=[INCOME_GATE])
     import_rows(repo, [material()], codes=codes)
 
     run = assess_with(repo, enterprise(repo, income="2800000.00").id, policy_id)
 
     items = run.assessments[0].preparation.items
-    assert items[0].status == "provided"
+    assert items[0].status == "facts_filled"
     assert items[0].missing is False
+
+    # 报告里也不能把这句写成「材料已交」：事实有取值 ≠ 材料交上来了，
+    # 服务端自始至终没看过材料本身（M2 在 #40 的 P1）。
+    markdown = render_markdown(run, downloaded_at=AS_OF)
+    assert "所需事实都有取值，但不代表材料已交" in markdown
+    assert "已提交" not in markdown
+    assert "已提供" not in markdown
 
 
 def test_a_material_without_fact_keys_is_flagged_for_manual_check(repo, codes) -> None:
@@ -276,8 +283,8 @@ def test_a_material_without_fact_keys_is_flagged_for_manual_check(repo, codes) -
 
     item = run.assessments[0].preparation.items[0]
     assert item.material_id == "TAX-01"
-    # 登记类材料的两条事实都有取值 → 资料在手上
-    assert item.status == "provided"
+    # 登记类材料的两条事实都有取值 → 状态是「事实齐了」，但这不等于材料已交
+    assert item.status == "facts_filled"
     assert item.title.startswith("【必交】")
 
 
@@ -334,7 +341,7 @@ def test_quarterly_material_expands_into_eight_refs(repo, codes) -> None:
     assert {
         (ref.key, ref.period.start_date, ref.period.end_date) for ref in item.required_fact_refs
     } == expected
-    assert item.status == "missing"
+    assert item.status == "facts_missing"
 
 
 def test_a_closed_policy_does_not_ask_for_materials(repo, codes) -> None:
@@ -376,8 +383,10 @@ def test_the_report_says_which_kind_of_gap_it_is(repo, codes) -> None:
     markdown = render_markdown(run, downloaded_at=AS_OF)
 
     assert "【条件交】企业所得税年度纳税申报表" in markdown
-    assert "（缺材料）" in markdown
+    assert "（所需事实有缺项）" in markdown
     assert "（需人工核对）" in markdown
+    # 报告也不许说「缺材料」：它只知道事实缺项，不知道材料交没交
+    assert "缺材料" not in markdown
     # 有清单时不该再说「待政策材料导入后补齐」
     assert "待政策材料导入后补齐" not in markdown
 

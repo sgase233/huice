@@ -11,9 +11,14 @@
    :func:`app.domain.rules.referenced_facts` 是同一套口径，不另写一份。
 3. **到底缺不缺**：见下方四个状态。
 
-四态的理由（M2 在 PR #37 的 P1）：页面上「资料缺失」是一句断言，只有真的知道缺了才
-能这么说。没有事实键的材料（申请书、承诺书）本就不由程序判断，只能说「需人工核对」；
-政策已经到期或申报窗口已关闭的，材料再齐也用不上，状态要说「政策已关闭」。
+四态的理由（M2 在 PR #37 的 P1、#40 的 P1）：页面上「资料缺失」是一句断言，只有真的
+知道缺了才能这么说。没有事实键的材料（申请书、承诺书）本就不由程序判断，只能说「需
+人工核对」；政策已经到期或申报窗口已关闭的，材料再齐也用不上，状态要说「政策已关闭」。
+
+状态名一律说**程序实际知道的事实**，不说它对材料的推断（M2 在 #40 的 P1）：本模块只
+读企业事实，从不知道材料是否已经提交，所以没有 `provided` 这种名——`facts_filled` 的
+意思是「这份材料要证明的事实都有取值」，不等于「材料已交、已核验」。想表达「已交」的
+只能是人工复核的结果，不在本模块的判断范围内。
 """
 
 from __future__ import annotations
@@ -28,14 +33,15 @@ from ..agents.contracts import MaterialRequirement
 REQUIRED_PREFIX = "【必交】"
 CONDITIONAL_PREFIX = "【条件交】"
 
-STATUS_PROVIDED = "provided"
-STATUS_MISSING = "missing"
+#: 事实口径：说「程序查到什么」，不说「材料有没有交」。
+STATUS_FACTS_FILLED = "facts_filled"
+STATUS_FACTS_MISSING = "facts_missing"
 STATUS_MANUAL_CHECK = "manual_check"
 STATUS_POLICY_CLOSED = "policy_closed"
 
 STATUSES: tuple[str, ...] = (
-    STATUS_PROVIDED,
-    STATUS_MISSING,
+    STATUS_FACTS_FILLED,
+    STATUS_FACTS_MISSING,
     STATUS_MANUAL_CHECK,
     STATUS_POLICY_CLOSED,
 )
@@ -45,7 +51,11 @@ FactRefKey = tuple[str, date, date]
 
 @dataclass(frozen=True, slots=True)
 class MaterialItem:
-    """一条清单条目。``missing`` 是保守的那一侧：``manual_check`` 也算 ``True``。"""
+    """一条清单条目。``missing`` 是保守的那一侧：``manual_check`` 也算 ``True``。
+
+    它答的是「能不能认为材料齐了」，与 ``status`` 说的是两件事：``status`` 说程序查到
+    什么，``missing`` 说据此该不该提醒企业去准备。
+    """
 
     material_id: str
     title: str
@@ -56,7 +66,7 @@ class MaterialItem:
 
     @property
     def missing(self) -> bool:
-        return self.status in (STATUS_MISSING, STATUS_MANUAL_CHECK)
+        return self.status in (STATUS_FACTS_MISSING, STATUS_MANUAL_CHECK)
 
 
 def _display_title(material: MaterialRequirement) -> str:
@@ -113,9 +123,9 @@ def build_items(
             # 没有事实键：不驱动 `verified`，也无从判断企业手上有没有——要人看
             status = STATUS_MANUAL_CHECK
         elif any(ref not in known_refs for ref in fact_refs):
-            status = STATUS_MISSING
+            status = STATUS_FACTS_MISSING
         else:
-            status = STATUS_PROVIDED
+            status = STATUS_FACTS_FILLED
 
         items.append(
             MaterialItem(

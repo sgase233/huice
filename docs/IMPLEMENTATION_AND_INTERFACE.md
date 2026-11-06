@@ -184,13 +184,13 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 ### 2.6 FR-06/08：准备清单、解释和报告
 
-每项结果带 `preparation={type,handlingMode,officialEntryUrl,deadline,items[]}`；item 含 `materialId,title,description,requiredFactRefs,missing,status`（契约 `1.0.0-rc.8` 起）。税收 handlingMode=`tax_self_assessment`，资金=`grant_application`；真实具体办理说明来自已审核材料要求，模型只改写文字。类型不同必须分栏；关闭窗口不能有立即申报动作。
+每项结果带 `preparation={type,handlingMode,officialEntryUrl,deadline,items[]}`；item 含 `materialId,title,description,requiredFactRefs,missing,status`（契约 `1.0.0-rc.8` 起；`status` 取值自 rc.9 起为 `facts_filled/facts_missing/manual_check/policy_closed`）。税收 handlingMode=`tax_self_assessment`，资金=`grant_application`；真实具体办理说明来自已审核材料要求，模型只改写文字。类型不同必须分栏；关闭窗口不能有立即申报动作。
 
 **清单条目从哪来（2026-11-06 实现）。** 材料要求由 M3 的 `data/policies/material_requirements.csv` 提供，导入器 `python -m app.materials import` 只收 `review_status=已仲裁` 的行（TAX-04、GRANT-09 仍是「待核实（依据未入库）」，不入库），按 `source_register.csv` 的文号把业务代号解析成库里的政策版本，写进 `material_requirement` / `material_requirement_policy`（迁移 `008`）。判断链路只读这份表：
 
 - **适不适用**：必交材料无条件列出；条件交材料只在本次判断真的引用到它证明的事实键时列出。没有事实键的条件交（申请书一类，条件只有文字）判断不了，按「需人工核对」列出而不是省略——静默消失会让人以为不用交。
 - **要哪些事实**：按本次判断期间展开；季度类键（`assetsStart/assetsEnd`、`employeeCountStart/employeeCountEnd`）展开成四个季度的期初期末共八个引用，与 `rules.referenced_facts` 同一套口径，不另写一份。
-- **四态 `status`**：`provided`（要的事实都已有取值）、`missing`（有事实缺值）、`manual_check`（没有事实键，或条件无法由程序判断）、`policy_closed`（政策已到期或窗口已关闭，材料再齐也交不了）。`missing` 是保守口径：`manual_check` 也算 `true`，展示以 `status` 为准。标题前缀 `【必交】`/`【条件交】` 承载必交属性（契约没有独立字段，口径见 `docs/product/MATERIAL_REQUIREMENTS.md` §4），条件文案并入 `description` 的「（何时需要：…）」。
+- **四态 `status`（事实口径，rc.9 起）**：`facts_filled`（要的事实都有取值）、`facts_missing`（有事实键但缺值）、`manual_check`（没有事实键，或条件无法由程序判断）、`policy_closed`（政策已到期或窗口已关闭，材料再齐也交不了）。**名字说的是程序查到什么，不是材料交没交**：服务端只读企业事实，从不读材料本身，所以 `facts_filled` 不等于「材料已提交/已核验」。`missing` 是保守口径：`manual_check` 也算 `true`，展示以 `status` 为准。rc.8 里这两个取值叫 `provided` / `missing`，因名字比能证明的多说了一层，在 rc.9 改名（M2 在 #40 的 P1）。标题前缀 `【必交】`/`【条件交】` 承载必交属性（契约没有独立字段，口径见 `docs/product/MATERIAL_REQUIREMENTS.md` §4），条件文案并入 `description` 的「（何时需要：…）」。
 - 库里没有材料（政策没挂材料、或清单尚未导入）时 `items` 为空并保留告警「申报材料清单待 M3 审核材料导入后补齐」；有清单时告警消失，报告逐条标出四态。
 - `PolicyDetail.preparationTemplate.items` 仍是 `[]`：模板没有企业与判断上下文，给不出 `status`；带四态的清单只出现在判断运行里。
 
@@ -573,14 +573,14 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 验证（2026-11-06，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`；M2 三轮复审改完后重跑）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **782 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **14 passed**，`tests/test_eval_snapshot.py`（50 项）与 `tests/test_eval_dataset_map.py`（20 项）合跑 **70 passed**；无库全量 **731 passed / 62 skipped**。**未执行**：云端实跑（本工具尚未部署）；冻结正文的条件级结果是 Markdown 项目符号，机器只能半结构化解析——已知缺口，见 2.9。
 ### M1 后端实现验证记录（2026-11-06，第七阶段：材料要求导入与四态清单）
 
-按 PR #37 的结论（P2 指派 M1 实现、M2 消费页面；P1 的 GRANT-02/05/06 空事实键要能在接口里表达）落地：迁移 `008_material_requirements.sql`、`app/materials/`（CSV 解析校验 + `check`/`import` 命令行）、`domain/preparation.py`（运行期展开）、`orchestrator` 的条目生成与告警条件、`report` 的四态文案；契约升到 `1.0.0-rc.8`（`PreparationItem` 增 `materialId`、`status`）。
+按 PR #37 的结论（P2 指派 M1 实现、M2 消费页面；P1 的 GRANT-02/05/06 空事实键要能在接口里表达）落地：迁移 `008_material_requirements.sql`、`app/materials/`（CSV 解析校验 + `check`/`import` 命令行）、`domain/preparation.py`（运行期展开）、`orchestrator` 的条目生成与告警条件、`report` 的四态文案；契约升到 `1.0.0-rc.8`（`PreparationItem` 增 `materialId`、`status`）；rc.9 只改 `status` 的两个取值名（`provided`/`missing` → `facts_filled`/`facts_missing`），字段与结构不动。
 
 **实现中改掉的两个口径问题**（不是预先设计的，是跑真实数据时暴露的）：
 
 1. **一个业务代号可以登记多份文号**。`source_register.csv` 里 `CN-TAX-GXJS` 同时有已废止的 `国科发火〔2008〕172号` 与现行 `国科发火〔2016〕32号`，最初的 `read_policy_codes` 见到重复文号就整份报错，把一份本来没用到该代号的清单也挡住了。改成「代号 → 全部文号」原样保留，歧义只在材料真正引用该代号、且各文号在库里指向不同政策时才报错（`test_a_code_with_two_published_documents_is_ambiguous`）。
 2. **没有事实键的条件交材料被静默省略**。GRANT-02/05/06 条件只有文字、`proves_fact_keys` 为空，按「条件交只在被引用时列出」的规则永远不出现——申请书不出现会让人以为不用交。改成：有键的条件交仍按引用决定，无键的条件交一律列出并标 `manual_check`（`missing=true` 保守）。这也让 `manual_check` 在真实数据上真正可达。
 
-**真库端到端**（本地 PostgreSQL 16，临时库 `huice_mat_e2e`，2026-11-06）：应用 001—008（`schema_migration` 八行、基础表 16 张）→ 按 `source_register.csv` 的文号发布 5 项政策（条款为合成表达式）→ `python -m app.materials check` 与 `import`：**可导入 13 行**，跳过 TAX-04、GRANT-09（`待核实（依据未入库）`）；对 5 项政策各跑一次判断，清单 4 / 2 / 5 / 3 / 3 条，四种状态都出现过（如 SME-012 政策：TAX-01 `missing` 因 `establishedDate`/`independentLegalEntity` 无值，TAX-02 `provided`，TAX-05/TAX-06 各 8 个季度引用 `missing`）。临时库只用于这次留证，验证后弃用，不含任何真实企业数据。
+**真库端到端**（本地 PostgreSQL 16，临时库 `huice_mat_e2e`，2026-11-06）：应用 001—008（`schema_migration` 八行、基础表 16 张）→ 按 `source_register.csv` 的文号发布 5 项政策（条款为合成表达式）→ `python -m app.materials check` 与 `import`：**可导入 13 行**，跳过 TAX-04、GRANT-09（`待核实（依据未入库）`）；对 5 项政策各跑一次判断，清单 4 / 2 / 5 / 3 / 3 条，四种状态都出现过（按 rc.9 的名字：SME-012 政策下 TAX-01 为 `facts_missing`，因 `establishedDate`/`independentLegalEntity` 无值，TAX-02 为 `facts_filled`，TAX-05/TAX-06 各 8 个季度引用均为 `facts_missing`；这次跑数在改名前完成，当时叫 `missing` / `provided`）。临时库只用于这次留证，验证后弃用，不含任何真实企业数据。
 
 验证：`pytest -q`（HUICE_TEST_DATABASE_URL 指向本地库）**1 failed / 815 passed / 12 skipped / 77 subtests**；唯一失败是 `test_contract.py::test_types_are_generated_from_current_contract`——契约变更后 `apps/web/src/api/types.ts` 需由 M2 按 rc.8 重新生成（与前几次契约变更同一流程）。`pytest -m db -q` **59 passed**。
 

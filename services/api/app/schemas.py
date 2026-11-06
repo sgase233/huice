@@ -357,10 +357,12 @@ class StaleReason(WireModel):
     changed_fact_refs: list[FactRef]
 
 
-#: 材料的四种状态。``missing`` 只说「不认为已提供」，这四种状态说清「为什么」：
+#: 材料的四种状态，一律说「程序查到什么」，不说「材料有没有交」：
+#: ``facts_filled`` = 这份材料要证明的事实都有取值（**不代表材料已提交或已核验**）；
+#: ``facts_missing`` = 有事实键，但至少一个还没取值；
 #: ``manual_check`` = 这份材料本来就不由程序判断（没有事实键），不能显示成资料缺失；
 #: ``policy_closed`` = 政策已到期或申报窗口已关，材料再齐也没处交。
-MaterialStatus = Literal["provided", "missing", "manual_check", "policy_closed"]
+MaterialStatus = Literal["facts_filled", "facts_missing", "manual_check", "policy_closed"]
 
 
 class PreparationItem(WireModel):

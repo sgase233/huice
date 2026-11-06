@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from ..domain.preparation import (
+    STATUS_FACTS_FILLED,
+    STATUS_FACTS_MISSING,
+    STATUS_MANUAL_CHECK,
+    STATUS_POLICY_CLOSED,
+)
 from ..schemas import AssessmentRun, PolicyAssessment
 
 DISCLAIMER = "政策信息辅助整理；非税务专业意见。"
@@ -73,11 +79,12 @@ _VALIDITY_TEXT = {"current": "当前", "stale": "已失效"}
 _HANDLING_TEXT = {"tax_self_assessment": "自行申报", "grant_application": "申请办理"}
 #: 材料状态的中文说法。报告是不给交互的文本，所以「缺」与「不清楚」必须写成两句话：
 #: 没有事实键的材料本来就判断不了，写成「缺材料」是在断言一件没查过的事。
+#: 键直接用状态常量，不抄字面量：枚举一改，漏改的那条会静默退回原始英文码。
 _MATERIAL_STATUS_TEXT = {
-    "provided": "相关事实已有取值",
-    "missing": "缺材料",
-    "manual_check": "需人工核对",
-    "policy_closed": "政策已关闭，材料不再提交",
+    STATUS_FACTS_FILLED: "所需事实都有取值，但不代表材料已交",
+    STATUS_FACTS_MISSING: "所需事实有缺项",
+    STATUS_MANUAL_CHECK: "需人工核对",
+    STATUS_POLICY_CLOSED: "政策已关闭，材料不再提交",
 }
 
 

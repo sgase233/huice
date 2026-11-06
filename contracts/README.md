@@ -1,6 +1,6 @@
 # 接口契约
 
-`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.8`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
+`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.9`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
@@ -76,6 +76,12 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
     - 数据来源是 `python -m app.materials import` 导入的 `data/policies/material_requirements.csv`（只导入 `review_status=已仲裁` 的行），配套迁移 `infra/sql/008_material_requirements.sql`。**服务启动前云 RDS 必须已执行 001—008**；未导入时 `items` 为空、`warnings` 里保留「申报材料清单待 M3 审核材料导入后补齐」，报告正文同样回落到那句占位文案。
     - 历史 run 不受影响：此前 `preparation.items` 恒为 `[]`，已落库的快照里没有条目，新增必填字段不会让旧快照解析失败。
     - `apps/web/src/api/types.ts` 需由 M2 按 rc.8 重新生成（差异为 `PreparationItem` 多两行、`MaterialStatus` 联合类型一处），在那之前 `python contracts/generate_types.py --check` 与 `npm run build` 都会红。
+
+13. rc.9（2026-11-06，应答 M2 对 PR #40 的 P1）：`PreparationItem.status` 的两个取值改名，`provided` → `facts_filled`、`missing` → `facts_missing`；`manual_check`、`policy_closed`、`missing` 布尔字段与其它字段一律不动。
+    - 为什么改：`provided` 会被读成「材料已提交」，但服务端只读企业事实、从不读材料，它实际只说「这份材料要证明的事实都有取值」。名字比能证明的多说了一层，页面照着写就是过度断言；`missing` 同理，它说的是**事实**缺项。
+    - 四态现在的读法：`facts_filled`（要证明的事实都有取值，**不代表材料已交或已核验**）、`facts_missing`（有事实键、至少一个还没取值）、`manual_check`（没有事实键，程序判断不了）、`policy_closed`（政策已到期或窗口已关）。
+    - `missing` 布尔仍是保守口径（`manual_check` 也算 `true`），语义不变；报告文案同步改为「所需事实都有取值，但不代表材料已交」「所需事实有缺项」，不再出现「缺材料」。
+    - 破坏性：枚举只有这两个值变了，按旧值匹配的消费者会落空。`apps/web/src/api/types.ts` 需由 M2 按 rc.9 重新生成并同步页面文案（把「资料缺失／资料已提供」改成「所需事实有缺项／事实已齐（不代表已交）」口径），在那之前 `python contracts/generate_types.py --check` 会红。
 
 ## 当前实现产出的错误码
 

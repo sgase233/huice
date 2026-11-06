@@ -19,10 +19,10 @@ from app.agents.contracts import MaterialRequirement
 from app.domain.preparation import (
     CONDITIONAL_PREFIX,
     REQUIRED_PREFIX,
+    STATUS_FACTS_FILLED,
+    STATUS_FACTS_MISSING,
     STATUS_MANUAL_CHECK,
-    STATUS_MISSING,
     STATUS_POLICY_CLOSED,
-    STATUS_PROVIDED,
     build_items,
 )
 from app.domain.rules import FACT_UNITS, quarters_of
@@ -206,7 +206,7 @@ def test_a_required_material_is_always_listed() -> None:
     # 条件里一条都没用到，仍要列出：营业执照是登记类材料，缺的事实确实要补
     assert items[0].title.startswith(REQUIRED_PREFIX)
     assert set(items[0].fact_refs) == {("region", *PERIOD), ("industry", *PERIOD)}
-    assert items[0].status == STATUS_PROVIDED
+    assert items[0].status == STATUS_FACTS_FILLED
 
 
 def test_a_conditional_material_without_fact_keys_is_listed_for_a_human() -> None:
@@ -306,7 +306,7 @@ def test_a_missing_quarter_makes_the_material_missing() -> None:
         policy_closed=False,
     )
 
-    assert items[0].status == STATUS_MISSING
+    assert items[0].status == STATUS_FACTS_MISSING
     assert items[0].missing is True
 
 
@@ -364,7 +364,7 @@ def test_the_trigger_condition_rides_along_in_the_description() -> None:
     )
 
     assert items[0].description.endswith("（何时需要：政策含应纳税所得额阈值判断）")
-    assert items[0].status == STATUS_MISSING
+    assert items[0].status == STATUS_FACTS_MISSING
 
 
 def test_items_are_ordered_by_material_id() -> None:
