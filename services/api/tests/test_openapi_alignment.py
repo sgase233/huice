@@ -197,6 +197,61 @@ def test_every_contract_expression_operator_is_accepted_by_the_validator(contrac
     assert set(date_keys) == set(DATE_KEYS)
 
 
+# --------------------------------------------- 用量未知的表达（rc.7 起）
+
+
+def test_model_usage_can_say_the_tokens_are_unknown(contract, schema):
+    """rc.7：`ModelUsage` 多了可选 `tokensUnknown`，用来区分「上游没给用量」与真实 0。
+
+    没有它时，2xx 但缺 `usage` 只能返回 0，消费者分不清「这次真的没花 token」和
+    「不知道花了多少」——日志里的 unknown 传不到接口调用方。这里锁住三件事：
+    契约里它是**可选**布尔、服务端字段名一致、缺省时按「已知」解释，并且**已知时
+    序列化省略该字段**：`ModelUsage` 是 `additionalProperties: false`，若常路径也回
+    `tokensUnknown: false`，按 rc.6 严格校验的旧消费者会连正常响应一起判非法。
+    """
+
+    contract_usage = contract["components"]["schemas"]["ModelUsage"]
+    served_usage = schema["components"]["schemas"]["ModelUsage"]
+
+    assert "tokensUnknown" in contract_usage["properties"]
+    assert contract_usage["properties"]["tokensUnknown"]["type"] == "boolean"
+    # 可选：放进 required 就等于对所有既有调用方强制新字段——那不是「常路径省略、
+    # 只在未知时出现」的迁移，旧消费者会连已知用量的正常响应一起拒掉。
+    assert "tokensUnknown" not in contract_usage["required"]
+    assert "tokensUnknown" in served_usage["properties"]
+    assert "tokensUnknown" not in served_usage["required"]
+
+    from app.schemas import ModelUsage
+
+    # 契约要求还是那五个字段；省略 tokensUnknown 时默认「已知」。
+    assert set(contract_usage["required"]) == {
+        "mode",
+        "modelVersion",
+        "inputTokens",
+        "outputTokens",
+        "elapsedMs",
+    }
+    usage = ModelUsage(
+        mode="deepseek",
+        model_version="deepseek-chat",
+        input_tokens=1,
+        output_tokens=2,
+        elapsed_ms=3,
+    )
+    assert usage.tokens_unknown is False
+    # 已知时不出现在线上响应里；未知时才带 `true`。
+    assert "tokensUnknown" not in usage.model_dump(mode="json", by_alias=True)
+    unknown = ModelUsage(
+        mode="deepseek",
+        model_version="deepseek-chat",
+        input_tokens=0,
+        output_tokens=0,
+        elapsed_ms=3,
+        tokens_unknown=True,
+    )
+    assert unknown.model_dump(mode="json", by_alias=True)["tokensUnknown"] is True
+
+
 # ------------------------------------------------- 轨迹引用与引文的分工（rc.6 起）
 
 

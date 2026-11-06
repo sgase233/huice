@@ -153,6 +153,14 @@ class ModelUsage(WireModel):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     elapsed_ms: int = Field(ge=0)
+    # rc.7：上游没回**完整可用**的用量时为真，这两个数值不得计入费用。
+    # rc.7 自己产生的未知一律是 0/0；重放 rc.6 写下的记录时（rc.6 对两个计数各自
+    # `or 0` 兜底，判不出缺哪一个）数值原样保留，可能是 ``120/0`` 这样的一半。
+    # **已知时省略该字段**：契约是 ``additionalProperties: false``，按 rc.6 严格校验的
+    # 旧消费者会把多出来的属性判为非法响应。省略后常路径（用量已知）的响应与 rc.6
+    # 逐字段一致；只有「未知」这一异常才多一个字段，旧消费者会在那里**失败而不是**
+    # 悄悄把占位 0 当真实用量——失败是这里想要的。
+    tokens_unknown: bool = Field(default=False, exclude_if=lambda value: value is False)
 
 
 class ExtractPolicyInput(WireModel):
