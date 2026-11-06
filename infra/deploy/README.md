@@ -169,6 +169,10 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 缺 `008` 的表现更靠前：服务启动与 `/health` 都正常，但**任何判断运行**（`POST /api/v1/assessment-runs`）会因 `material_requirement` 不存在而 500——判断链路每次都要读材料要求，不是可选路径。政策导入、企业画像读写不受影响，故障容易只落在「跑判断」这一个动作上。
 
+云端已于 2026-11-06 提前补跑 008（`schema_migration` 八行，见 [../README.md](../README.md) §4.1），所以 `migrate.sh` 重跑 008 是 no-op，`INSERT 0 0`。**核对表数时按清单比对**：云 RDS 上另有一张手工备份表 `zz_backup_drafts_20261104`（2026-11-04 清理草稿前的快照，不由迁移创建），因此云端 `public` 基础表是 **17 张**，本地是 16 张，两个数都正常——`material_requirement`、`material_requirement_policy` 在不在才是判据。
+
+> **用 bundle 更新代码前，先删掉手工放进去的迁移文件。** 008 是 scp 进 `/opt/huice/app/infra/sql/` 的未跟踪文件，而分支合并后那个路径是**受版本控制**的：`git fetch` + 检出新提交时会报 `error: Untracked working tree files would be overwritten by checkout` 并停下（同一份内容也一样，git 不比内容）。先 `rm /opt/huice/app/infra/sql/008_material_requirements.sql` 再更新，随后它会随分支一起回来；迁移已入库，重跑任何迁移都是 no-op。
+
 顺序反了不会「降级运行」，而是直接报错：`PATCH /enterprises/{id}/facts/{key}` 的失效事件写入与 `GET /assessment-runs/{runId}` 的事件读取都会因缺列抛 `UndefinedColumn`，分别表现为 500 与历史判断读不出来。反向顺序（先迁移后升级代码）安全，脚本本身可重复执行。
 
 ## 3. 填配置
