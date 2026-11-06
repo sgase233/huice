@@ -135,9 +135,9 @@ INSERT INTO policy_validation_finding (
 
 _INSERT_IDEMPOTENT = """
 INSERT INTO idempotency_record (
-    scope, idempotency_key, request_fingerprint, response, revision
+    scope, idempotency_key, request_fingerprint, response, revision, usage_semantics
 ) VALUES (
-    %(scope)s, %(key)s, %(fingerprint)s, %(response)s, %(revision)s
+    %(scope)s, %(key)s, %(fingerprint)s, %(response)s, %(revision)s, %(usage_semantics)s
 )
 ON CONFLICT (scope, idempotency_key) DO NOTHING
 """
@@ -568,11 +568,18 @@ class PolicyRepository:
         status: str,
         trace_id: str,
         started_at: datetime | None = None,
+        extraction_model: str | None = None,
+        extraction_elapsed_ms: int = 0,
+        extraction_input_chars: int = 0,
     ) -> PolicyDraft:
         """整体替换某版本的条款与校验发现（compare-and-swap）。
 
         ``expected_revision`` 来自请求的 If-Match；与库中当前 revision 不一致说明有人
         先改过，返回 409 并带 ``currentVersion``，绝不覆盖并发的人工修改。
+
+        ``extraction_model`` 只有「本次真的做了抽取」的调用方才会传：传了就在同一事务
+        里、引用校验步骤之前补一条 ``extraction`` 轨迹。手工保存条款（API-06）不传，
+        因此不会凭空多出一条抽取记录。幂等重放不会走到这里，也就不会重复留痕。
         """
 
         started = started_at or datetime.now(timezone.utc)
@@ -610,6 +617,20 @@ class PolicyRepository:
                 """,
                 {"status": status, "revision": new_revision, "id": row["id"]},
             )
+            if extraction_model is not None:
+                self._insert_trace(
+                    conn,
+                    trace_id=trace_id,
+                    stage="extraction",
+                    input_summary=f"抽取正文 {max(0, int(extraction_input_chars))} 字",
+                    output_summary=f"得到条件 {len(criteria)} 条、校验发现 {len(findings)} 条",
+                    policy_version_id=row["id"],
+                    policy_id=row["policy_id"],
+                    policy_version=row["version"],
+                    model_or_rule_version=extraction_model,
+                    elapsed_ms=max(0, int(extraction_elapsed_ms)),
+                    status="needs_review" if findings else "ok",
+                )
             self._insert_trace(
                 conn,
                 trace_id=trace_id,
@@ -623,6 +644,57 @@ class PolicyRepository:
                 elapsed_ms=_elapsed_ms(started),
             )
             return self._load_draft(conn, row["id"])
+
+    def record_extraction_failure(
+        self,
+        *,
+        policy_id: UUID,
+        version: str,
+        trace_id: str,
+        status: str,
+        error_code: str,
+        model_or_rule_version: str,
+        elapsed_ms: int,
+        usage_unknown: bool,
+    ) -> None:
+        """把一次失败的抽取记成一条 ``extraction`` 轨迹步骤。
+
+        **独立事务**，只挂既有的政策版本，不改草稿、不动 revision：调用已经在
+        草稿保存之前发生，模型可能已经计费，不能因为后面的保存失败或进程中断就
+        让这次调用从库里消失。摘要只有错误码与用量口径，不写正文、提示词与凭据。
+
+        ``status`` 由调用方按可重试性决定（``retryable_error`` / ``fatal_error``）。
+        版本不存在等自身失败按异常抛给调用方，由调用方兜底记日志、不替换原错误。
+        """
+
+        with self._db.connection() as conn, conn.transaction():
+            row = self._fetchone(
+                conn,
+                "SELECT id, policy_id, version FROM policy_version "
+                "WHERE policy_id = %s AND version = %s",
+                (policy_id, version),
+            )
+            if row is None:
+                raise ApiProblem(404, "POLICY_NOT_FOUND", "没有找到对应的政策版本。")
+            usage = (
+                "上游是否计费无法确认，用量按未知记录"
+                if usage_unknown
+                else "未发起模型调用，没有用量"
+            )
+            self._insert_trace(
+                conn,
+                trace_id=trace_id,
+                stage="extraction",
+                input_summary="模型抽取失败",
+                output_summary=f"错误码 {error_code}；{usage}",
+                policy_version_id=row["id"],
+                policy_id=row["policy_id"],
+                policy_version=row["version"],
+                model_or_rule_version=model_or_rule_version,
+                elapsed_ms=max(0, int(elapsed_ms)),
+                status=status,
+                error_code=error_code,
+            )
 
     def publish(
         self,
@@ -717,7 +789,7 @@ class PolicyRepository:
 
         with self._db.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                "SELECT request_fingerprint, response, revision "
+                "SELECT request_fingerprint, response, revision, usage_semantics "
                 "FROM idempotency_record WHERE scope = %s AND idempotency_key = %s",
                 (scope, key),
             )
@@ -728,6 +800,7 @@ class PolicyRepository:
             "fingerprint": row["request_fingerprint"],
             "response": row["response"],
             "revision": row["revision"],
+            "usage_semantics": row["usage_semantics"],
         }
 
     def save_idempotent(
@@ -737,8 +810,16 @@ class PolicyRepository:
         fingerprint: str,
         response: dict[str, Any],
         revision: UUID,
+        *,
+        usage_semantics: str,
     ) -> None:
-        """记录一次抽取结果。表只追加，重复键保留首次写入的那条。"""
+        """记录一次抽取结果。表只追加，重复键保留首次写入的那条。
+
+        ``usage_semantics`` 说明这条记录的用量从哪一代服务端来（迁移 007）：
+        ``'explicit'`` = rc.7 起，未知一定带 ``tokensUnknown: true``；``'legacy'``
+        = 更早的写入，两个计数曾被各自 ``or 0`` 兜底。重放时按它决定要不要把用量
+        视为未确认——只看数值判不出来（见 ``routes/admin_policies.py``）。
+        """
 
         with self._db.connection() as conn, conn.transaction():
             self._execute(
@@ -750,6 +831,7 @@ class PolicyRepository:
                     "fingerprint": fingerprint,
                     "response": Jsonb(response),
                     "revision": revision,
+                    "usage_semantics": usage_semantics,
                 },
             )
 
