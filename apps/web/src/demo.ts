@@ -31,6 +31,12 @@ export const factUnits: Record<FactKey, FactUnit> = {
   specificMarketSince: 'date', independentLegalEntity: 'boolean',
 };
 
+export const factUnitLabels: Record<FactUnit, string> = {
+  code: '代码', date: '日期', CNY: '元', boolean: '是／否', person: '人', ratio: '比例（小数）',
+};
+
+export const explanationLabels = { deepseek: 'AI 生成的说明', saved: '已保存的说明', fixture: '固定示例说明' } as const;
+
 export type DemoPolicy = PolicySummary & {
   result: AssessmentResult;
   validity: Validity;
