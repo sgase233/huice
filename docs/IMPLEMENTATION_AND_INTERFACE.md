@@ -184,7 +184,15 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 ### 2.6 FR-06/08：准备清单、解释和报告
 
-每项结果带 `preparation={type,handlingMode,officialEntryUrl,deadline,items[]}`；item 含 `title,description,requiredFactRefs,missing`。税收 handlingMode=`tax_self_assessment`，资金=`grant_application`；真实具体办理说明来自已审核材料要求，模型只改写文字。类型不同必须分栏；关闭窗口不能有立即申报动作。
+每项结果带 `preparation={type,handlingMode,officialEntryUrl,deadline,items[]}`；item 含 `materialId,title,description,requiredFactRefs,missing,status`（契约 `1.0.0-rc.8` 起）。税收 handlingMode=`tax_self_assessment`，资金=`grant_application`；真实具体办理说明来自已审核材料要求，模型只改写文字。类型不同必须分栏；关闭窗口不能有立即申报动作。
+
+**清单条目从哪来（2026-11-06 实现）。** 材料要求由 M3 的 `data/policies/material_requirements.csv` 提供，导入器 `python -m app.materials import` 只收 `review_status=已仲裁` 的行（TAX-04、GRANT-09 仍是「待核实（依据未入库）」，不入库），按 `source_register.csv` 的文号把业务代号解析成库里的政策版本，写进 `material_requirement` / `material_requirement_policy`（迁移 `008`）。判断链路只读这份表：
+
+- **适不适用**：必交材料无条件列出；条件交材料只在本次判断真的引用到它证明的事实键时列出。没有事实键的条件交（申请书一类，条件只有文字）判断不了，按「需人工核对」列出而不是省略——静默消失会让人以为不用交。
+- **要哪些事实**：按本次判断期间展开；季度类键（`assetsStart/assetsEnd`、`employeeCountStart/employeeCountEnd`）展开成四个季度的期初期末共八个引用，与 `rules.referenced_facts` 同一套口径，不另写一份。
+- **四态 `status`**：`provided`（要的事实都已有取值）、`missing`（有事实缺值）、`manual_check`（没有事实键，或条件无法由程序判断）、`policy_closed`（政策已到期或窗口已关闭，材料再齐也交不了）。`missing` 是保守口径：`manual_check` 也算 `true`，展示以 `status` 为准。标题前缀 `【必交】`/`【条件交】` 承载必交属性（契约没有独立字段，口径见 `docs/product/MATERIAL_REQUIREMENTS.md` §4），条件文案并入 `description` 的「（何时需要：…）」。
+- 库里没有材料（政策没挂材料、或清单尚未导入）时 `items` 为空并保留告警「申报材料清单待 M3 审核材料导入后补齐」；有清单时告警消失，报告逐条标出四态。
+- `PolicyDetail.preparationTemplate.items` 仍是 `[]`：模板没有企业与判断上下文，给不出 `status`；带四态的清单只出现在判断运行里。
 
 结果的 `explanationMode=deepseek/saved/fixture`，`warnings[]` 说明解释降级/样例模式。模型失败时规则结果照常返回，使用已存确定性说明；不能把整次判断伪装成模型成功。抽取端模型不可用仍返回 503 并保留草稿。
 
@@ -436,7 +444,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 
 **如实记录的偏差与待办**：
 
-- `preparationTemplate.items` 恒为 `[]`，企业事实一律 `verified:false`：两项都要以 M3 审核过的材料要求为准，未由模型或样例编造。
+- `preparationTemplate.items` 恒为 `[]`（政策详情没有企业上下文，四态给不出来），企业事实一律 `verified:false`：材料要求本身已按 M3 审核过的 CSV 导入（`review_status=已仲裁`），未由模型或样例编造；带四态的条目只在判断运行的 `preparation.items` 里出现。
 - `supersedesRunId` 已校验同企业/同期间/同政策组并记录关联，但重算仍是完整的，尚未按依赖图跳过未受影响条件（契约语义已满足，性能优化后置）。
 - 金额在线上固定两位小数（`"2800000.00"`、`"0.00"`），而 `factVersion` 的哈希会去掉尾随零——同一个内容不会因写法不同而换版本。
 - `closed`、`validity`、`staleReasons`、`validUntil` 都是读取时视图，不回写历史结果。
@@ -510,6 +518,19 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 
 验证（2026-10-27，本机 PostgreSQL 16 + pgvector 0.8.7 / Redis 7.4）：`pytest -q`（无外部依赖）**433 passed / 45 skipped / 75 subtests**；`pytest -m db` **34 passed**（含新增的同键两期间用例）；`HUICE_TEST_DATABASE_URL` 与 `HUICE_TEST_REDIS_URL` 都指向本地服务时全量 **470 passed / 8 skipped**（余下 8 项为 OBS 5 项与 DeepSeek 3 项门控，需真实凭证）。迁移 `004` 在本地库连跑两遍退出码均 0，第二遍仅 `NOTICE ... already exists, skipping`；核对结果：`invalidation_event` 增 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束、`invalidation_event_run_idx (run_id, created_at)` 索引，`schema_migration` 四行齐全。云端 RDS 仍未执行 `004`，随 11/08 部署补齐。**未执行**：OBS/DeepSeek 用例本轮未重跑（改动不涉及这两条链路）。
 
+### M1 后端实现验证记录（2026-11-06，第七阶段：材料要求导入与四态清单）
+
+按 PR #37 的结论（P2 指派 M1 实现、M2 消费页面；P1 的 GRANT-02/05/06 空事实键要能在接口里表达）落地：迁移 `008_material_requirements.sql`、`app/materials/`（CSV 解析校验 + `check`/`import` 命令行）、`domain/preparation.py`（运行期展开）、`orchestrator` 的条目生成与告警条件、`report` 的四态文案；契约升到 `1.0.0-rc.8`（`PreparationItem` 增 `materialId`、`status`）。
+
+**实现中改掉的两个口径问题**（不是预先设计的，是跑真实数据时暴露的）：
+
+1. **一个业务代号可以登记多份文号**。`source_register.csv` 里 `CN-TAX-GXJS` 同时有已废止的 `国科发火〔2008〕172号` 与现行 `国科发火〔2016〕32号`，最初的 `read_policy_codes` 见到重复文号就整份报错，把一份本来没用到该代号的清单也挡住了。改成「代号 → 全部文号」原样保留，歧义只在材料真正引用该代号、且各文号在库里指向不同政策时才报错（`test_a_code_with_two_published_documents_is_ambiguous`）。
+2. **没有事实键的条件交材料被静默省略**。GRANT-02/05/06 条件只有文字、`proves_fact_keys` 为空，按「条件交只在被引用时列出」的规则永远不出现——申请书不出现会让人以为不用交。改成：有键的条件交仍按引用决定，无键的条件交一律列出并标 `manual_check`（`missing=true` 保守）。这也让 `manual_check` 在真实数据上真正可达。
+
+**真库端到端**（本地 PostgreSQL 16，临时库 `huice_mat_e2e`，2026-11-06）：应用 001—008（`schema_migration` 八行、基础表 16 张）→ 按 `source_register.csv` 的文号发布 5 项政策（条款为合成表达式）→ `python -m app.materials check` 与 `import`：**可导入 13 行**，跳过 TAX-04、GRANT-09（`待核实（依据未入库）`）；对 5 项政策各跑一次判断，清单 4 / 2 / 5 / 3 / 3 条，四种状态都出现过（如 SME-012 政策：TAX-01 `missing` 因 `establishedDate`/`independentLegalEntity` 无值，TAX-02 `provided`，TAX-05/TAX-06 各 8 个季度引用 `missing`）。临时库只用于这次留证，验证后弃用，不含任何真实企业数据。
+
+验证：`pytest -q`（HUICE_TEST_DATABASE_URL 指向本地库）**1 failed / 815 passed / 12 skipped / 77 subtests**；唯一失败是 `test_contract.py::test_types_are_generated_from_current_contract`——契约变更后 `apps/web/src/api/types.ts` 需由 M2 按 rc.8 重新生成（与前几次契约变更同一流程）。`pytest -m db -q` **59 passed**。
+
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 
 ### M1：后端、契约、基础设施
@@ -521,11 +542,13 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 | `services/api/app/{config,errors,security,db}.py` | 环境变量加载与按模式校验（缺失只报变量名）、统一错误信封与 `X-Trace-Id`、管理 Bearer 与演示 cookie、psycopg 连接池与健康探测 |
 | `services/api/app/routes/{health,policies,admin_policies,enterprises,assessment_runs}.py` | 本文对应16个接口；只组织请求/响应，不在路由里写规则（API-01—16 均已实现，API-14 轨迹在 `assessment_runs.admin_router`） |
 | `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效（均已实现；季度平均的期间约束与冲突传播见 2.2） |
-| `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；explanation 的清单 `items[]` 待 M3 材料） |
+| `services/api/app/domain/preparation.py`、`services/api/app/materials/{catalog,__main__}.py` | 材料要求的导入与运行期展开：`catalog` 解析并校验 CSV（只收已仲裁行、必交/条件交字段互斥、事实键白名单），`__main__` 是 `python -m app.materials check/import` 命令行，`preparation.build_items` 把材料按本次判断的引用与期间展开成四态条目（2026-11-06，契约 rc.8） |
+| `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；`explanation` 的清单 `items[]` 自 2026-11-06 起由 `orchestrator._material_items` 生成、`report` 按四态渲染） |
 | `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage 已覆盖政策草稿、企业画像、公开政策、run、失效视图与轨迹读取；llm/obs 已实现，`esdk-obs-python` 已入锁，**2026-10-27 已在真实桶与真实 DeepSeek Key 上联调通过**（`test_obs_live.py` 5 项、`test_deepseek_live.py` 3 项）；cache 已实现七字段版本化键、值投影与故障绕过，`redis==8.1.0` 已入锁） |
 | `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow,test_citations}.py` | 静态契约与业务测试，独立报告覆盖范围（refs 解析、四态优先级、AST 求值、引用校验、失效视图与端到端判断链路） |
 | `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_admin_review_http,test_public_read_http,test_enterprise_http,test_report_trace_http,test_profile_units,test_questioning,test_trace,test_cache,test_cache_redis_live,test_extraction_units,test_openapi_alignment,test_obs_object_store,test_obs_live,test_llm_client,test_deepseek_live}.py` | 无数据库 HTTP 测试（假仓储）、各单元口径与契约对齐测试；适配器用假客户端/假传输层/假缓存后端，不联网。三个例外都靠环境变量门控、默认跳过：`test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL`，真实 Redis）、`test_obs_live.py`（`HUICE_TEST_OBS_*` 四项，真实桶）、`test_deepseek_live.py`（`HUICE_TEST_DEEPSEEK_API_KEY`，真实模型） |
 | `services/api/tests/{conftest,support,db_support,test_db_policy_repository,test_db_evaluation,test_db_errors}.py` | `db` 标记的真库用例：独立 schema 建表、用例间清表；覆盖政策导入落库、企业画像 CAS、公开列表与游标、快照闸门、run 落库与失效视图、只追加与不可发布保护 |
+| `services/api/tests/{test_materials,test_db_materials}.py` | 材料要求：CSV 解析与校验、代号多文号解析、导入替换与类型一致性（真库），以及运行期展开成四态、季度八引用、关闭政策与报告文案（2026-11-06，24 + 14 项） |
 | `services/api/AGENT_PROTOCOL.md`、`pyproject.toml`、实现后生成的 `requirements.lock` | 内部协议、真实依赖与测试命令 |
 | `infra/**`、`.env.example`、`.gitignore`、`README.md`、`docs/devlog/M1.md` | 数据库/Compose、网关会话和门禁、部署回滚、环境说明与日志 |
 

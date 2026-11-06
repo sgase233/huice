@@ -71,6 +71,14 @@ _RESULT_TEXT = {
 }
 _VALIDITY_TEXT = {"current": "当前", "stale": "已失效"}
 _HANDLING_TEXT = {"tax_self_assessment": "自行申报", "grant_application": "申请办理"}
+#: 材料状态的中文说法。报告是不给交互的文本，所以「缺」与「不清楚」必须写成两句话：
+#: 没有事实键的材料本来就判断不了，写成「缺材料」是在断言一件没查过的事。
+_MATERIAL_STATUS_TEXT = {
+    "provided": "相关事实已有取值",
+    "missing": "缺材料",
+    "manual_check": "需人工核对",
+    "policy_closed": "政策已关闭，材料不再提交",
+}
 
 
 def _validity_line(assessment: PolicyAssessment) -> str:
@@ -121,7 +129,10 @@ def _policy_section(run: AssessmentRun, assessment: PolicyAssessment) -> list[st
         lines.append(f"- 申报截止：{preparation.deadline.isoformat()}")
     if preparation.items:
         for item in preparation.items:
-            lines.append(f"- {item.title}：{_one_line(item.description)}")
+            lines.append(
+                f"- {item.title}：{_one_line(item.description)}"
+                f"（{_MATERIAL_STATUS_TEXT.get(item.status, item.status)}）"
+            )
     else:
         lines.append("- 具体材料要求待政策材料导入后补齐。")
 
