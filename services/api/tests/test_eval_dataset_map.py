@@ -281,7 +281,9 @@ def test_only_known_files_are_loaded(tmp_path) -> None:
     )
     (tmp_path / "material_review_sheet.csv").write_text("row_no\n1\n", encoding="utf-8")
 
-    rows = load_dataset_rows(str(tmp_path), ["labels.csv", "material_review_sheet.csv"])
+    rows = load_dataset_rows(
+        [tmp_path / "labels.csv", tmp_path / "material_review_sheet.csv"]
+    )
 
     # 材料复核表不是评测输入，不会被拿来做映射
     assert set(rows) == {"labels.csv"}

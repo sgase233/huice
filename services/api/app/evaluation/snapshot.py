@@ -25,6 +25,7 @@ import json
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID
 
@@ -37,7 +38,10 @@ from ..domain.rules import RULE_VERSION
 
 #: 清单结构版本；字段口径变了才动它，改代码不改口径别动。
 #: ``2``：政策条目加 ``documentNumber``、新增 ``datasetMapping``（CSV ↔ 库的逐条映射）。
-MANIFEST_VERSION = "2"
+#: ``3``：``dataset`` 由「文件名 → 哈希」改成「路径 + 哈希」的列表——只留文件名时，
+#: 三份输入分散在不同目录（``data/evaluation``、``data/policies``、``data/fixtures``）
+#: 就无法复现，``verify`` 只能拿同名文件去顶替（M2 复审 P1）。
+MANIFEST_VERSION = "3"
 
 #: 进配置哈希的键。只列非敏感项——名字里带令牌/密钥/连接串的一律不在此表内，
 #: :func:`config_fingerprint` 还会再挡一次。
@@ -224,7 +228,7 @@ def collect_input_snapshot(
     conn: Connection,
     *,
     config: Mapping[str, str] | None = None,
-    dataset: Mapping[str, str] | None = None,
+    dataset: Sequence[Mapping[str, str]] | None = None,
     dataset_rows: Mapping[str, Sequence[Mapping[str, str]]] | None = None,
     code_commit: str | None = None,
     collected_at: datetime | None = None,
@@ -234,8 +238,10 @@ def collect_input_snapshot(
     ``config`` 传的是**运行进程的环境**（部署时由 systemd 注入）；不传就只记键名、
     配置哈希为 ``null``——与其猜，不如显式标「没提供」。
 
-    ``dataset`` 是 ``{文件名: sha256}``，由调用方按文件字节算好；``dataset_rows`` 是
-    同一批 CSV 的行内容，用来与库里的行逐条对齐（见 :mod:`app.evaluation.dataset_map`）。
+    ``dataset`` 是 ``[{"path": 签认路径, "sha256": 哈希}]``，由调用方按文件字节算好；
+    路径要能独立重现（项目内相对项目根，项目外绝对），否则 ``verify`` 只能靠「同名
+    文件」猜。``dataset_rows`` 是同一批 CSV 的行内容，用来与库里的行逐条对齐
+    （见 :mod:`app.evaluation.dataset_map`）。
     ``code_commit`` 在云端（没有 ``.git``）拿不到，就留 ``null``，别编一个。
 
     **四条查询在同一个 REPEATABLE READ、只读事务里执行**：默认 READ COMMITTED 下每条
@@ -260,7 +266,7 @@ def _collect_in_transaction(
     conn: Connection,
     *,
     config: Mapping[str, str] | None,
-    dataset: Mapping[str, str] | None,
+    dataset: Sequence[Mapping[str, str]] | None,
     dataset_rows: Mapping[str, Sequence[Mapping[str, str]]] | None,
     code_commit: str | None,
     collected_at: datetime | None,
@@ -342,7 +348,13 @@ def _collect_in_transaction(
         "appVersion": APP_VERSION,
         "ruleVersion": RULE_VERSION,
         "codeCommit": code_commit,
-        "dataset": None if dataset is None else dict(sorted(dataset.items())),
+        # 每份输入连路径一起记：只留文件名，三份分散在不同目录时 verify 无处可取
+        "dataset": None
+        if dataset is None
+        else [
+            {"path": str(item["path"]), "sha256": str(item["sha256"])}
+            for item in sorted(dataset, key=lambda entry: str(entry["path"]))
+        ],
         "configKeys": list(CONFIG_FINGERPRINT_KEYS),
         "configFingerprint": None if config is None else config_fingerprint(config),
         "policies": policies,
@@ -354,7 +366,11 @@ def _collect_in_transaction(
         # 局部导入：dataset_map 反过来用本模块的哈希函数，模块级导入会成环
         from .dataset_map import align_dataset
 
-        manifest["datasetMapping"] = align_dataset(dataset_rows, manifest)
+        manifest["datasetMapping"] = align_dataset(
+            dataset_rows,
+            manifest,
+            files=[str(item["path"]) for item in (dataset or [])],
+        )
     return manifest
 
 
@@ -392,20 +408,37 @@ def diff_snapshots(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> li
 
     _diff_dataset_mapping(expected, actual, problems)
 
-    # 只核对签认时列出的文件：后来往目录里加了别的 CSV 不影响已签认的输入，
-    # 但签认过的文件改了或没了，必须报出来。
-    before_dataset = expected.get("dataset") or {}
-    now_dataset = actual.get("dataset") or {}
-    for name in sorted(before_dataset):
-        if name not in now_dataset:
-            problems.append(f"数据集文件缺失：{name}")
-        elif before_dataset[name] != now_dataset[name]:
-            problems.append(f"数据集文件 {name} 的哈希不同")
+    _diff_dataset(expected, actual, problems)
 
     _diff_policies(expected.get("policies", []), actual.get("policies", []), problems)
     _diff_enterprises(expected.get("enterprises", []), actual.get("enterprises", []), problems)
     # 两侧可能各自重复报同一条（签认清单与当前库的映射问题相同），去重保序
     return list(dict.fromkeys(problems))
+
+
+def _diff_dataset(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    problems: list[str],
+) -> None:
+    """按**签认路径**比数据集文件：改了、没了要报；签认之后新加的文件不管。"""
+
+    def index(manifest: Mapping[str, Any]) -> dict[str, str]:
+        entries = manifest.get("dataset")
+        if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+            return {}  # 旧格式（文件名 → 哈希）：版本比对已经报了「清单版本不同」
+        return {
+            str(item["path"]): str(item.get("sha256"))
+            for item in entries
+            if isinstance(item, Mapping) and "path" in item
+        }
+
+    before, now = index(expected), index(actual)
+    for path in sorted(before):
+        if path not in now:
+            problems.append(f"数据集文件缺失：{path}")
+        elif before[path] != now[path]:
+            problems.append(f"数据集文件 {path} 的哈希不同")
 
 
 def _diff_dataset_mapping(
@@ -428,8 +461,10 @@ def _diff_dataset_mapping(
     for side, mapping in (("签认清单", before), ("当前库", now)):
         if not isinstance(mapping, Mapping):
             continue
-        # 三份必需输入缺一份，映射就证明不了整体对应——手写或旧版清单在这一步被拦下
-        missing = [name for name in REQUIRED_FILES if name not in (mapping.get("files") or [])]
+        # files 记的是签认路径；必需文件按**文件名**认（目录不同也算同一份输入）。
+        # 三份缺一份，映射就证明不了整体对应——手写或旧版清单在这一步被拦下。
+        listed = {PurePosixPath(str(item)).name for item in (mapping.get("files") or [])}
+        missing = [name for name in REQUIRED_FILES if name not in listed]
         if missing:
             problems.append(
                 f"数据集映射未解决（{side}）：没有核对 {('、'.join(missing))}，映射不完整"

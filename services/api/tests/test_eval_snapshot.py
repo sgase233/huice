@@ -160,10 +160,20 @@ def _manifest(**overrides):
         "appVersion": "1.0.0-rc.7",
         "ruleVersion": "rule:criteria@1",
         "codeCommit": "abc123",
-        "dataset": {"labels.csv": "a" * 64, "criteria_review.csv": "b" * 64, "enterprises.csv": "c" * 64},
+        # 三份输入本来就不在一个目录里（仓库里分别是 evaluation/policies/fixtures），
+        # 清单记的是签认路径，不是文件名
+        "dataset": [
+            {"path": "data/evaluation/labels.csv", "sha256": "a" * 64},
+            {"path": "data/policies/criteria_review.csv", "sha256": "b" * 64},
+            {"path": "data/fixtures/enterprises.csv", "sha256": "c" * 64},
+        ],
         "datasetMapping": {
             "rules": "content-alignment@1",
-            "files": ["criteria_review.csv", "enterprises.csv", "labels.csv"],
+            "files": [
+                "data/evaluation/labels.csv",
+                "data/policies/criteria_review.csv",
+                "data/fixtures/enterprises.csv",
+            ],
             "policies": [
                 {
                     "identifier": "财政部 税务总局公告2023年第12号",
@@ -248,13 +258,18 @@ def test_diff_flags_a_changed_fact_value() -> None:
 def test_diff_flags_config_and_dataset_changes() -> None:
     changed = _manifest(
         configFingerprint="0" * 64,
-        dataset={"labels.csv": "b" * 64, "criteria_review.csv": "b" * 64, "enterprises.csv": "c" * 64},
+        dataset=[
+            {"path": "data/evaluation/labels.csv", "sha256": "b" * 64},
+            {"path": "data/policies/criteria_review.csv", "sha256": "b" * 64},
+            {"path": "data/fixtures/enterprises.csv", "sha256": "c" * 64},
+        ],
     )
 
     problems = diff_snapshots(_manifest(), changed)
 
     assert any("配置哈希" in item for item in problems)
-    assert any("labels.csv" in item for item in problems)
+    # 报的是签认路径，不是裸文件名：同名文件在不同目录里也得能分辨
+    assert any("data/evaluation/labels.csv" in item for item in problems)
 
 
 def test_diff_flags_missing_rows() -> None:
@@ -276,15 +291,29 @@ def test_diff_flags_a_manifest_written_in_an_older_format() -> None:
 def test_diff_ignores_dataset_files_added_after_signing() -> None:
     # 签认之后往目录里加了别的 CSV：不影响已签认的输入，不该拦下评测
     added = _manifest(
-        dataset={
-            "labels.csv": "a" * 64,
-            "criteria_review.csv": "b" * 64,
-            "enterprises.csv": "c" * 64,
-            "later_added.csv": "d" * 64,
-        }
+        dataset=[
+            {"path": "data/evaluation/labels.csv", "sha256": "a" * 64},
+            {"path": "data/policies/criteria_review.csv", "sha256": "b" * 64},
+            {"path": "data/fixtures/enterprises.csv", "sha256": "c" * 64},
+            {"path": "data/evaluation/later_added.csv", "sha256": "d" * 64},
+        ]
     )
 
     assert diff_snapshots(_manifest(), added) == []
+
+
+def test_diff_flags_a_signed_dataset_path_that_is_gone_and_one_that_appeared() -> None:
+    """路径变了要报出来：少了「签认的那一份」，多了「不是签认的那一份」。"""
+
+    gone = _manifest(
+        dataset=[
+            {"path": "data/policies/criteria_review.csv", "sha256": "b" * 64},
+            {"path": "data/fixtures/enterprises.csv", "sha256": "c" * 64},
+        ]
+    )
+    problems = diff_snapshots(_manifest(), gone)
+
+    assert any("数据集文件缺失：data/evaluation/labels.csv" in item for item in problems)
 
 
 def _leaf_paths(node, prefix=()):
@@ -601,10 +630,16 @@ def test_cli_hashes_only_the_dataset_files_it_is_given(
     )
     manifest = json.loads(out.read_text(encoding="utf-8"))
 
-    assert manifest["dataset"] == {
-        name: hashlib.sha256((data / name).read_bytes()).hexdigest() for name in listed
+    # 每份输入连路径一起记：只留文件名的话，换目录或同名文件就分不清了
+    recorded = {item["path"]: item["sha256"] for item in manifest["dataset"]}
+    expected = {
+        (data / name).resolve().as_posix(): hashlib.sha256((data / name).read_bytes()).hexdigest()
+        for name in listed
     }
-    assert "material_review_sheet.csv" not in manifest["dataset"]
+    assert recorded == expected
+    # 临时目录在项目外：记的是绝对路径；文件名仍要能认出是哪一份
+    assert all(Path(path).is_absolute() for path in recorded)
+    assert "material_review_sheet" not in " ".join(recorded)
     assert manifest["collectedAt"].endswith("+00:00")
 
 
@@ -850,11 +885,7 @@ def test_the_cli_maps_dataset_rows_onto_database_rows(
     _write_dataset(data, title=title)
     sealed = tmp_path / "sealed.json"
 
-    files = ["labels.csv", "criteria_review.csv", "enterprises.csv"]
-    args = ["--no-config"]
-    for name in files:
-        args += ["--dataset-file", name]
-    args += ["--dataset-dir", str(data)]
+    args = _dataset_args(data)
 
     assert cli.main(["inputs", "--out", str(sealed), *args]) == 0
     manifest = json.loads(sealed.read_text(encoding="utf-8"))
@@ -864,16 +895,13 @@ def test_the_cli_maps_dataset_rows_onto_database_rows(
     assert mapping["enterprises"][0]["code"] == "E1"
     assert mapping["caseCount"] == 1
 
-    assert cli.main(["verify", str(sealed), *args]) == 0
+    # 核对时不再点名文件：签认清单记着路径，自己会去读那一份
+    assert cli.main(["verify", str(sealed), "--no-config"]) == 0
 
-    # 文件换了个字节：哈希变了，逐条映射也对不上了
-    _write_dataset(tmp_path / "changed", income="3600000.00", title=title)
-    changed_args = ["--no-config"]
-    for name in files:
-        changed_args += ["--dataset-file", name]
-    changed_args += ["--dataset-dir", str(tmp_path / "changed")]
+    # 签认的那份文件被改了：哈希变了，逐条映射也对不上了
+    _write_dataset(data, income="3600000.00", title=title)
 
-    assert cli.main(["verify", str(sealed), *changed_args]) == 1
+    assert cli.main(["verify", str(sealed), "--no-config"]) == 1
 
 
 def _keep_only_header(path: Path) -> None:
@@ -948,4 +976,181 @@ def test_verify_fails_when_one_table_has_no_rows(
     manifest = json.loads(sealed.read_text(encoding="utf-8"))
     assert manifest["datasetMapping"]["problems"], f"{empty} 清空后应留下未解决问题"
 
-    assert cli.main(["verify", str(sealed), *args]) == 1
+    assert cli.main(["verify", str(sealed), "--no-config"]) == 1
+
+
+# ------------------------------------------------- 签认路径（真库 + 仓库布局）
+
+
+def _write_split_dataset(root: Path, *, title: str) -> list[str]:
+    """按仓库真实布局写三份输入：标注在 ``data/evaluation``、条件在 ``data/policies``、
+    企业在 ``data/fixtures``——只记文件名的话，这三份根本没法重现。"""
+
+    staging = root / "staging"
+    _write_dataset(staging, title=title)
+    layout = {
+        "labels.csv": root / "data" / "evaluation" / "labels.csv",
+        "criteria_review.csv": root / "data" / "policies" / "criteria_review.csv",
+        "enterprises.csv": root / "data" / "fixtures" / "enterprises.csv",
+    }
+    for name, target in layout.items():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((staging / name).read_bytes())
+    return sorted(path.relative_to(root).as_posix() for path in layout.values())
+
+
+def _dataset_args_for(paths: list[str]) -> list[str]:
+    args: list[str] = []
+    for path in paths:
+        args += ["--dataset-file", path]
+    return args
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_the_repository_layout_survives_verifying_from_another_directory(
+    repo, database_url_schema, monkeypatch, tmp_path: Path
+) -> None:
+    """三份输入分散在三个目录：清单记相对项目根的路径，换个工作目录也读得到（M2 P1）。"""
+
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    _make_enterprise(repo)
+    _publish_policy(repo, [INCOME_GATE, INDUSTRY_GATE])
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(cli, "PROJECT_ROOT", root)
+    monkeypatch.chdir(root)
+    signed = _write_split_dataset(root, title="深圳市中小企业数字化转型扶持计划")
+
+    sealed = root / "sealed.json"
+    args = ["inputs", "--out", str(sealed), "--no-config"]
+    assert cli.main([*args, *_dataset_args_for(signed)]) == 0
+
+    manifest = json.loads(sealed.read_text(encoding="utf-8"))
+    assert [item["path"] for item in manifest["dataset"]] == signed
+    assert manifest["datasetMapping"]["files"] == signed
+    assert manifest["datasetMapping"]["problems"] == []
+
+    # 换个目录核对：路径以项目根为基准，不能变成「相对当前工作目录」
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert cli.main(["verify", str(sealed), "--no-config"]) == 0
+
+    # 签认的那份文件改了：报的是签认路径
+    (root / "data" / "evaluation" / "labels.csv").write_text(
+        "case_id,enterprise_id,policy_version,criterion_id\nC999,E1,别的计划,G1\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["verify", str(sealed), "--no-config"]) == 1
+
+
+def test_verify_refuses_to_reselect_the_dataset_files_on_the_command_line(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """后传的文件不能顶替签认对象：``verify`` 只按清单里的路径读（M2 P1）。"""
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(cli, "PROJECT_ROOT", root)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+    signed = _write_split_dataset(root, title="某计划")
+    sealed = tmp_path / "sealed.json"
+    sealed.write_text(
+        json.dumps(
+            {
+                "manifestVersion": MANIFEST_VERSION,
+                "dataset": [{"path": path, "sha256": "0" * 64} for path in signed],
+                "datasetMapping": {"files": signed, "problems": []},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["verify", str(sealed), "--dataset-dir", str(root / "data")])
+
+    message = str(error.value.code)
+    assert "签认清单决定" in message
+    assert "data/evaluation/labels.csv" in message
+
+
+def test_verify_names_a_signed_dataset_file_that_is_gone(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(cli, "PROJECT_ROOT", root)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+    signed = _write_split_dataset(root, title="某计划")
+    (root / "data" / "policies" / "criteria_review.csv").unlink()
+    sealed = tmp_path / "sealed.json"
+    sealed.write_text(
+        json.dumps(
+            {
+                "manifestVersion": MANIFEST_VERSION,
+                "dataset": [{"path": path, "sha256": "0" * 64} for path in signed],
+                "datasetMapping": {"files": signed, "problems": []},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["verify", str(sealed), "--no-config"])
+
+    message = str(error.value.code)
+    assert "data/policies/criteria_review.csv" in message
+    assert "不存在" in message
+
+
+def test_the_same_file_cannot_be_signed_twice(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+    data = tmp_path / "evaluation"
+    _write_dataset(data, title="某计划")
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(
+            [
+                "inputs",
+                "--out",
+                "-",
+                "--dataset-dir",
+                str(data),
+                "--dataset-file",
+                "labels.csv",
+                "--dataset-file",
+                "./labels.csv",
+            ]
+        )
+
+    assert "签认了两次" in str(error.value.code)
+
+
+def test_two_files_with_the_same_name_in_different_directories_are_refused(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """不同目录的同名文件一起签：映射按文件名区分三份输入，后一个会顶替前一个。"""
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for directory in (first, second):
+        _write_dataset(directory, title="某计划")
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(
+            [
+                "inputs",
+                "--out",
+                "-",
+                "--dataset-file",
+                str(first / "labels.csv"),
+                "--dataset-file",
+                str(second / "labels.csv"),
+            ]
+        )
+
+    message = str(error.value.code)
+    assert "同名" in message
+    assert "first" in message and "second" in message

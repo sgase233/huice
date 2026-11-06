@@ -86,17 +86,15 @@ def read_dataset_rows(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def load_dataset_rows(
-    directory: str | None, names: Sequence[str]
-) -> dict[str, list[dict[str, str]]]:
-    """读 CSV 的行内容；只读 :data:`REQUIRED_COLUMNS` 里认识的文件。"""
+def load_dataset_rows(paths: Sequence[Path]) -> dict[str, list[dict[str, str]]]:
+    """读 CSV 的行内容；只读 :data:`REQUIRED_COLUMNS` 里认识的文件。
 
-    base = Path(directory) if directory else Path.cwd()
+    键是**文件名**（对齐规则按它区分三份输入，``labels.csv`` 就是标注表），所以调用方
+    必须先保证没有两个不同目录的同名文件——那会让这里的键互相覆盖。
+    """
+
     rows: dict[str, list[dict[str, str]]] = {}
-    for name in names:
-        path = Path(name)
-        if not path.is_absolute():
-            path = base / path
+    for path in paths:
         if path.name in REQUIRED_COLUMNS:
             rows[path.name] = read_dataset_rows(path)
     return rows
@@ -362,8 +360,14 @@ def _align_cases(
 def align_dataset(
     datasets: Mapping[str, Sequence[Mapping[str, str]]],
     manifest: Mapping[str, Any],
+    *,
+    files: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """把 CSV 行与清单里的库侧条目逐条对齐，返回存进清单的映射与问题列表。"""
+    """把 CSV 行与清单里的库侧条目逐条对齐，返回存进清单的映射与问题列表。
+
+    ``files`` 是这几份 CSV 的**签认路径**（命令行传进来），目录不同也能分辨；不传时
+    退回文件名——直接调用本函数的测试不需要路径，但写清单的 CLI 必须传。
+    """
 
     problems: list[str] = []
     policies, policy_problems = _policy_index(manifest)
@@ -389,7 +393,7 @@ def align_dataset(
 
     return {
         "rules": ALIGNMENT_RULES,
-        "files": sorted(datasets),
+        "files": sorted(datasets if files is None else files),
         "policies": [
             {
                 "identifier": identifier,
