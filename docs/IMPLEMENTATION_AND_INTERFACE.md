@@ -214,7 +214,47 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 `TraceStep` 包含 `sequence,stage,status,inputSummary,outputSummary,objectRefs,policyId,policyVersion,modelOrRuleVersion,elapsedMs,errorCode,humanAction`；`objectRefs` 是 `{type,id}` 形式的内部对象引用（`enterprise`/`policy`/`policyVersion`），**不是引文**——可回溯的政策原文引用在 `CriterionResult.evidenceRefs`，两者不共用字段。多政策公共步骤的 policyId/version 可 null。状态仅 `ok/needs_review/retryable_error/fatal_error`。线上 run 应链接所用政策版本的入库、审核轨迹，再列在线轨迹；不能只保留模型最后一句话。summary 不得含密钥、完整提示词或企业资料。
 
-### 2.9 消融对照：单智能体基线 vs 现方案
+### 2.9 评测输入快照（`EVALUATION_FREEZE` §5.2）
+
+`app/evaluation/` 只做「把库里的东西说清楚」，不产出任何评测指标。三份 CSV 的哈希只能识别文件，证明不了它们就是导入进库的那一份，所以映射从**数据库本身**导出：
+
+```bash
+# 三份输入本来就不在一个目录：标注在 data/evaluation、条件在 data/policies、企业在 data/fixtures
+python -m app.evaluation inputs --out snapshot.json \
+    --dataset-file data/evaluation/labels.csv \
+    --dataset-file data/policies/criteria_review.csv \
+    --dataset-file data/fixtures/enterprises.csv
+# 核对时不再点名文件：签认清单记着路径，自己会去读那一份
+python -m app.evaluation verify snapshot.json
+```
+
+数据集只认真实要冻结的那几份：`--dataset-file` 可重复、相对路径按当前工作目录（或 `--dataset-dir`）解析，**不按目录扫全部 CSV**（M3 复核）——`material_review_sheet.csv`、`*_annotation_sheet.csv` 与评测输入同目录，但材料复核一改就会让 `verify` 误报。两侧 `codeCommit` 都是 `null` 时会打印「代码身份未证明」，退出码仍为 0（内容一致，只是没记身份），要用 `--commit` 记录提交号才能逐字比对。
+
+**清单记签认路径，`verify` 按签认路径读（M2 在 #39 三审的 P1）**：原先每份输入只记文件名的哈希，`verify` 再拿文件名去拼 `--dataset-dir`——三份输入分散在三个目录时，「从仓库根用三个相对路径签认、在别处核对」会去找根目录下的 `labels.csv`，某处存在同名文件还会把它顶替成签认对象。现在 `dataset` 记的是 `[{"path": …, "sha256": …}]`：项目内的文件记**相对项目根的 POSIX 路径**（`data/evaluation/labels.csv`），项目外才记绝对路径；`verify` 一律按这些路径读，**不接受** `--dataset-file`/`--dataset-dir`（传了就报错：「核对哪些文件由签认清单决定……后传的文件不能顶替签认的对象」）。两种歧义直接拒：同一个文件被签认两次；两个不同目录的同名文件一起签（映射按文件名区分三份输入，后者会覆盖前者）。
+
+**正式核对要求三份齐全**（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）：少给一份直接非零退出并点名缺的那份，不许「对上一份就算过」。确实只想核对数据库时单独加 `--no-dataset`——这样写出的清单 `datasetMapping` 为 `null`，`verify` 必须带同一个开关，成功时明写「一致（仅数据库）……此结果不能当作数据集已签认」；反方向也拦：带数据集映射的清单加 `--no-dataset` 核对会被拒，两个模式不能互相冒充。`--no-dataset` 与 `--dataset-file`/`--dataset-dir` 同时给也直接报错。
+
+**内容对齐映射（`datasetMapping`，M2 在 #39 复核）**：整文件哈希只证明「文件没变」，证明不了「这些文件就是导入进库的那一份」——两套互不相关、但各自稳定的 CSV 照样能过。所以 `inputs` 还把 CSV 的行与库行**逐条**对上，结果写进清单的 `datasetMapping`（实现在 `app/evaluation/dataset_map.py`）：政策版本按文号（`labels.csv` 的 `policy_version`、`criteria_review.csv` 的 `source_version` ↔ `policy_version.document_number`），没有文号时按标题；条件是政策版本内表达式规范化 JSON 哈希，要求一对一（CSV 匹配到多条、或库里有条件没被任何 CSV 行认领，都报）；企业按 `name_synthetic`；事实按 (key, 期间, unit, source, verified, 值哈希)，值按 `unit` 解析成与库同一类型（CNY/person/ratio → `Decimal`，date → ISO 日期，boolean → true/false，code → 原串）再算同一个哈希；`labels.csv` 每行的 (企业代号, 文号, 条件代号) 必须都能经前面三条落到库里的具体行。库里没有业务代号列——`policy_criterion.criterion_id`、`enterprise.id` 都是导入时生成的 UUID，CSV 的 `CN-TAX-SME-2023-012`/`E-ENT-001` 在库里查不到——所以映射产物是一份**可核对的对照表**（代号 → UUID），`verify` 重算一遍再比对。对齐口径带版本号 `content-alignment@1`：规则一改，旧清单在 `verify` 里报「映射不同（可能是数据集换了、库被改过，或对齐规则版本变了）」，而不是含混的「数据变了」。有未解决项时 `verify` 一律非零退出；`inputs` 只把逐条问题打到 stderr（不改退出码），便于先看清再改数据。**「未解决」包括**：三份文件缺一份（没加载到行内容）、某份文件只有表头没有行（没有任何条件/企业/用例对齐出来）、双向覆盖缺口、值与核验状态对不上——空映射不能当成核对通过。值本身也要口径一致：CSV 的空 `fact_value` 与库里的 `NULL` 同为「未知」，都记 `valueHash: null`；未知不等于 `0`，有用例锁住这两点。
+
+`inputs` 写出（`manifestVersion` 为 `3`：`2` 加 `documentNumber` 与 `datasetMapping`，`3` 把 `dataset` 从「文件名 → 哈希」改成「路径 + 哈希」的列表；更早版本的清单在 `verify` 里报「清单版本不同」，`dataset` 不是列表的则直接要求重新签认）：政策版本 → 条件的 `criterionId`/AST 哈希/审核状态、企业 → 事实值的哈希与**事实版本**（直接调 `agents/profile.fact_version_of`，与 `assessment_run.fact_version` 同一算法）、`appVersion`/`ruleVersion`、数据集每份文件的签认路径与 SHA-256、以及非敏感配置的哈希。`verify` 拿已签认的清单对当前库重算并逐项列差异，非零退出即「不一致」，**停止评测，不得用运行结果反推快照**。
+
+- 四条查询跑在**同一个 `REPEATABLE READ, READ ONLY` 事务**里（M2 复核 P2）：两次查询之间别的连接提交的写入既不会混进这次清单，也不会把只读事务拖成半新半旧。用例同时查 `transaction_isolation`/`transaction_read_only`，并用一条中途提交的写入证明它没被混进来、换一次采集又看得到。
+- 比较是**按字段表逐个走**的（M2 复核 P1）：清单里记下的字段——政策 `documentNumber`/`reviewStatus`/`importedAt`/`revision`/`criteriaSetFingerprint`、条件 `reviewFinding`/`validationStatus`、企业 `factVersion`、事实 `unit`/`source`/`verified`/`valueHash`、顶层 `configKeys`——都参与比较，报「签认 …，当前 …」。有一条用例对清单的每个叶子字段做单点变异，断言 `verify` 都能报出；以后给清单加字段却忘了加进比较，它会先转红。
+
+- 表达式哈希是条件 `expression` 的规范化 JSON（排序键、`Decimal` 去尾零、日期 ISO）SHA-256，与引文 `quoteHash` 不是一回事；事实值只记哈希，值本身不进清单。
+- 配置哈希只覆盖 `CONFIG_FINGERPRINT_KEYS` 白名单；`ADMIN_TOKEN`、`DEEPSEEK_API_KEY`、`DATABASE_URL`、`REDIS_URL`、OBS AK/SK 永不进哈希输入（名字命中也直接报错），有用例锁住「改令牌哈希不变」。
+- 连接串只从环境变量 `DATABASE_URL` 读（不进 argv、不进 shell 历史），失败只报变量名。云端用 `systemd-run -p EnvironmentFile=/etc/huice/api.env` 带服务同款环境执行。
+- **§5.2 第 4 项（结果导出）**按 M3 的口径实现为 `freeze-report`（`app/evaluation/report_freeze.py`）：把 API-13 下载到的 `report.md` 裁成不含「截至下载时刻的有效性」的冻结产物，原始报告连同下载时间与两侧哈希另存审计。
+
+  ```bash
+  python -m app.evaluation freeze-report report.md --out report.frozen.md
+  ```
+
+  按下载时刻现算的内容一并删干净：`- 下载时间：…` 行、整个有效性段、判断结论表的「有效性」列，以及每个政策段的「有效性 / 失效原因 / 有效期至」。剔除只按固定标记整行/整段删除，**不做语义猜测**：输入缺标题、缺有效性段（已裁过或手工改过）、表格列数对不上都直接报错，不生成产物。审计信息（`sourceSha256`、`frozenSha256`、`downloadedAt`、`droppedLines`）以一行 JSON 打到 stderr，`--out -` 时 stdout 只有冻结正文。
+- **映射的边界**：只对 `labels.csv`、`criteria_review.csv`、`enterprises.csv` 三份做逐条对齐（三份都必须给），其余文件仍只算哈希；缺列、CSV 不是 UTF-8、表达式不是合法 JSON、取值与 `unit` 对不上都直接停下报错，不猜列名、不猜类型。企业靠 `name_synthetic` 对齐，合成名称重复即报歧义。映射证明的是「这批 CSV 的内容都在库里」，不证明库里没有别的来源——那由逐字段比较与事实覆盖检查兜住。
+- **已知缺口**：冻结正文里的条件级结果仍是 Markdown 项目符号（四态 + 理由 + 逐字引文 + 计算），人能读、机器只能半结构化解析；`trace` 按契约只有阶段级摘要，不作条件级证据。要机器可解析的条件级导出，需评估 JSON 导出或方案 B（均不新增表），本轮不做，记录在此。
+
+### 2.10 消融对照：单智能体基线 vs 现方案
 
 代码在 `services/api/app/ablation/`（不连库的纯文件模块 + 一条临时库链路），与 `data/` 的评测数据、`infra/sql` 的迁移一起构成一次可复现的对照实验。目的：证明「多阶段 + 规则求值 + 引用校验」比「一个大模型一次判完」强，并且**同一批输入、同一套标注、同一套指标**。2026-11-06 的跑数结果、失败样例与局限见 `docs/devlog/M1-11-12-评测报告.md`。
 
@@ -547,6 +587,20 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 
 验证（2026-10-27，本机 PostgreSQL 16 + pgvector 0.8.7 / Redis 7.4）：`pytest -q`（无外部依赖）**433 passed / 45 skipped / 75 subtests**；`pytest -m db` **34 passed**（含新增的同键两期间用例）；`HUICE_TEST_DATABASE_URL` 与 `HUICE_TEST_REDIS_URL` 都指向本地服务时全量 **470 passed / 8 skipped**（余下 8 项为 OBS 5 项与 DeepSeek 3 项门控，需真实凭证）。迁移 `004` 在本地库连跑两遍退出码均 0，第二遍仅 `NOTICE ... already exists, skipping`；核对结果：`invalidation_event` 增 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束、`invalidation_event_run_idx (run_id, created_at)` 索引，`schema_migration` 四行齐全。云端 RDS 仍未执行 `004`，随 11/08 部署补齐。**未执行**：OBS/DeepSeek 用例本轮未重跑（改动不涉及这两条链路）。
 
+### M1 后端实现验证记录（2026-11-05，评测输入快照）
+
+为 `EVALUATION_FREEZE` §5.2 补输入侧工具（`services/api/app/evaluation/`，见 2.9）。新增 `tests/test_eval_snapshot.py` 27 项：纯函数 17 项锁住哈希口径（键序、`Decimal` 尾零、日期 ↔ ISO 串等价、`null` ≠ 空串、配置白名单挡密钥）与差异比较（忽略采集时间与签认后新增的数据集文件，值/配置/数据集/缺失行都能报出）；CLI 6 项（缺 `DATABASE_URL` 只报变量名、坏清单被拒、数据集目录不存在先于连库报错、只给 `--dataset-dir` 被拒、列出的文件不存在时点名）；`db` 标记 5 项在真库上验「清单的事实版本 == 引擎落库的 `fact_version`」「改事实值后 `verify` 非零退出且不改动清单」「清单文本里没有任何口令/令牌/连接串」「只哈希 `--dataset-file` 列出的文件、同目录的复核表不进清单」「两侧 `codeCommit` 皆 null 时提示代码身份未证明」。后两项按 M3 在 PR #39 的复核改的：目录扫 `*.csv` 会把材料复核表冻结进去，材料一改就误报；双 `null` 曾静默通过。
+
+
+**M2 在 #39 复审的三项（同日改）**：① `verify` 原先把 `reviewFinding` 等会改变判断结果的字段漏在比较之外——改为按字段表逐个比较（见 2.9），并加一条逐叶子字段单点变异的用例，加字段忘了进比较会先转红；② 数据集哈希与库快照并列却不证明二者映射一致——新增 `dataset_map.py`（`content-alignment@1`）做逐条对齐，清单记 `datasetMapping`，未解决项一律非零退出，`tests/test_eval_dataset_map.py` 覆盖匹配/值不同/verified/表达式变/双向未覆盖/同名歧义/无文号回退标题/空表达式/缺列/空值对齐/空表（现 20 项）；③ 快照四条查询改为同一 `REPEATABLE READ, READ ONLY` 事务，真库用例验隔离级别与只读、并用中途提交的写入证明不会混入。
+**M2 第二轮复审的两项（2026-11-06 改）**：① 不给数据集时 `datasetMapping` 为 `null`，`verify` 对两个 `null` 直接放行，等于「从没核对过 CSV 也算一致」——现在 `inputs`/`verify` 默认要求三份评测输入齐全（缺哪份点名哪份，非零退出），只比数据库必须显式加 `--no-dataset`，两个模式的清单不能互相冒充核对；映射里缺文件、空表（只有表头）、条目一条都没对上，一律记成未解决问题；② CSV 空值与库 `NULL` 同为「未知」，原先 CSV 侧还对 `None` 算哈希，与清单里的 `valueHash: null` 永远对不上——已统一为 `null`，并补「未知 ≠ 0」的用例。新增 CLI 回归：无 `--dataset-file`、只给一份、`--no-dataset` 与数据集文件同时给、只比数据库的清单不带开关核对、带映射的清单硬加 `--no-dataset`、三份 CSV 各自清空成只有表头后 `verify` 非零。
+
+**§5.2 第 4 项「结果导出」（2026-11-05，按 M3 口径）**：`freeze-report` 把下载的 `report.md` 裁成不含有效性段的冻结产物。`tests/test_eval_report_freeze.py` 6 项：剔除干净（下载时间 / 有效性段 / 有效性列 / 失效原因 / 有效期至全部消失，条件级内容与办理清单保留）、同一 run 换下载时刻与失效状态后冻结字节一致、已裁过或手工改过的输入被拒（缺标题、缺有效性段）、摘要表列数异常被拒、用**真实渲染器**输出验证剔除口径（前提断言原始报告确实带有效性段）、CLI 写出文件并回报两侧哈希与下载时间。
+
+**M2 第三轮复审的一项（2026-11-06 改，P1）**：清单只记文件名的哈希，`verify` 再按文件名拼 `--dataset-dir`——三份输入分散在 `data/evaluation`、`data/policies`、`data/fixtures`，从仓库根用三个相对路径签认、换个目录核对就会去找错地方，同名文件还会互相顶替。现在清单记**签认路径**（项目内相对项目根，项目外绝对），`verify` 只按这些路径读、拒收 `--dataset-file`/`--dataset-dir`；同一文件签认两次、两个不同目录的同名文件一起签，都直接拒绝。新增用例：仓库三目录布局下签认后**换工作目录**核对、签认文件被改/被删、命令行重新点名被拒、同一个文件签两次、两个同名文件。验证（本机 Docker）：全量 **782 passed / 11 skipped / 77 subtests**；`tests/test_eval_snapshot.py` 与 `tests/test_eval_dataset_map.py` 合跑 **70 passed**。另外用真实 `data/` 三份文件在本机临时库实跑过 `inputs → verify`：清单记的是 `data/evaluation/labels.csv`、`data/fixtures/enterprises.csv`、`data/policies/criteria_review.csv` 三条相对路径，换到仓库根核对仍读得到，传 `--dataset-file` 被拒。
+
+验证（2026-11-06，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`；M2 三轮复审改完后重跑）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **782 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **14 passed**，`tests/test_eval_snapshot.py`（50 项）与 `tests/test_eval_dataset_map.py`（20 项）合跑 **70 passed**；无库全量 **731 passed / 62 skipped**。**未执行**：云端实跑（本工具尚未部署）；冻结正文的条件级结果是 Markdown 项目符号，机器只能半结构化解析——已知缺口，见 2.9。
+
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 
 ### M1：后端、契约、基础设施
@@ -560,6 +614,7 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 | `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效（均已实现；季度平均的期间约束与冲突传播见 2.2） |
 | `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；explanation 的清单 `items[]` 待 M3 材料） |
 | `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage 已覆盖政策草稿、企业画像、公开政策、run、失效视图与轨迹读取；llm/obs 已实现，`esdk-obs-python` 已入锁，**2026-10-27 已在真实桶与真实 DeepSeek Key 上联调通过**（`test_obs_live.py` 5 项、`test_deepseek_live.py` 3 项）；cache 已实现七字段版本化键、值投影与故障绕过，`redis==8.1.0` 已入锁） |
+| `services/api/app/evaluation/`（含 `dataset_map.py`）、`services/api/tests/{test_eval_snapshot,test_eval_dataset_map,test_eval_report_freeze}.py` | 评测输入快照的导出与核对（含 CSV ↔ 库的逐条对齐）、以及 API-13 报告的确定性冻结（`EVALUATION_FREEZE` §5.2 第 1/2/3/4/5 项，见 2.9）；不产出评测指标 |
 | `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow,test_citations}.py` | 静态契约与业务测试，独立报告覆盖范围（refs 解析、四态优先级、AST 求值、引用校验、失效视图与端到端判断链路） |
 | `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_admin_review_http,test_public_read_http,test_enterprise_http,test_report_trace_http,test_profile_units,test_questioning,test_trace,test_cache,test_cache_redis_live,test_extraction_units,test_openapi_alignment,test_obs_object_store,test_obs_live,test_llm_client,test_deepseek_live}.py` | 无数据库 HTTP 测试（假仓储）、各单元口径与契约对齐测试；适配器用假客户端/假传输层/假缓存后端，不联网。三个例外都靠环境变量门控、默认跳过：`test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL`，真实 Redis）、`test_obs_live.py`（`HUICE_TEST_OBS_*` 四项，真实桶）、`test_deepseek_live.py`（`HUICE_TEST_DEEPSEEK_API_KEY`，真实模型） |
 | `services/api/tests/{conftest,support,db_support,test_db_policy_repository,test_db_evaluation,test_db_errors}.py` | `db` 标记的真库用例：独立 schema 建表、用例间清表；覆盖政策导入落库、企业画像 CAS、公开列表与游标、快照闸门、run 落库与失效视图、只追加与不可发布保护 |

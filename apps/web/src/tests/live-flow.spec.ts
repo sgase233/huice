@@ -7,7 +7,7 @@ test('隔离后端真实 HTTP：行业排除与缺失事实', async ({ page }) =
     const url = new URL(route.request().url());
     return url.origin === 'http://127.0.0.1:8000' ? route.continue() : route.abort('blockedbyclient');
   });
-  await page.goto('/');
+  await page.goto('/#enterprise');
   await page.locator('fieldset').filter({ has: page.locator('select option[value="industry"]:checked') }).getByLabel('值').fill('F51');
   const createdPromise = page.waitForResponse(response => response.url().endsWith('/api/v1/enterprises') && response.request().method() === 'POST');
   await page.getByRole('button', { name: '保存当前样本' }).click();
@@ -18,7 +18,7 @@ test('隔离后端真实 HTTP：行业排除与缺失事实', async ({ page }) =
   const etag = created.headers()['etag'];
   expect(etag).toBeTruthy();
   await expect(page.getByText('已保存合成企业：合成企业 A')).toBeVisible();
-  await expect(page.getByText('ETag：服务未返回')).toHaveCount(0);
+  await expect(page.getByText('保存版本标识：服务未返回')).toHaveCount(0);
   await page.getByRole('button', { name: '机会列表' }).click();
   const card = page.locator('article').filter({ hasText: '合成联调：行业排除' });
   await expect(card).toBeVisible();
@@ -40,14 +40,14 @@ test('隔离后端真实 HTTP：行业排除与缺失事实', async ({ page }) =
   await page.getByRole('button', { name: '企业画像' }).click();
   await page.getByRole('button', { name: '复制为新样本' }).click();
   await page.locator('fieldset').filter({ has: page.locator('select option[value="industry"]:checked') }).getByLabel('值').fill('C39');
-  await page.getByRole('button', { name: '添加事实' }).click();
+  await page.getByRole('button', { name: '添加一项信息' }).click();
   const market = page.locator('fieldset').last();
-  await market.getByLabel('字段').selectOption('specificMarketSince');
+  await market.getByLabel('信息类型').selectOption('specificMarketSince');
   await market.getByRole('checkbox', { name: '未知' }).uncheck();
   await market.getByLabel('值').fill('2020-02-29');
-  await page.getByRole('button', { name: '添加事实' }).click();
+  await page.getByRole('button', { name: '添加一项信息' }).click();
   const legal = page.locator('fieldset').last();
-  await legal.getByLabel('字段').selectOption('independentLegalEntity');
+  await legal.getByLabel('信息类型').selectOption('independentLegalEntity');
   await legal.getByRole('checkbox', { name: '未知' }).uncheck();
   await legal.getByLabel('值').selectOption('true');
   const secondPromise = page.waitForResponse(response => response.url().endsWith('/api/v1/enterprises') && response.request().method() === 'POST');
@@ -72,13 +72,13 @@ test('隔离后端真实 HTTP：行业排除与缺失事实', async ({ page }) =
   await page.getByRole('button', { name: '跳过（未知或不确定）' }).click();
   await expect(page.getByText(/当前没有需要补充的问题/)).toBeVisible();
   await page.getByRole('button', { name: '分析所选政策' }).click();
-  await page.getByLabel('回答（CNY）').fill('10000');
+  await page.getByLabel('回答（元）').fill('10000');
   await page.getByRole('button', { name: '保存并重新分析' }).click();
   await expect(page.getByLabel('本次会话的分析历史')).toBeVisible();
   await page.getByRole('button', { name: '清单与报告' }).click();
   await expect(page.getByRole('heading', { name: '准备清单与报告' })).toBeVisible();
   const report = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下载 Markdown 报告' }).click();
+  await page.getByRole('button', { name: '下载报告（Markdown 格式）' }).click();
   expect((await report).suggestedFilename()).toMatch(/^assessment-.*\.md$/);
   await page.getByRole('button', { name: '机会列表' }).click();
   await page.getByRole('button', { name: '清空选择' }).click();
@@ -93,7 +93,7 @@ test('隔离后端真实 HTTP：行业排除与缺失事实', async ({ page }) =
 test('隔离后端：税收与资金清单及多问题跳过', async ({ page }) => {
   test.skip(process.env.HUICE_LIVE !== '1', '仅在明确启动隔离联调服务时运行');
   await page.route('**/api/v1/**', route => new URL(route.request().url()).origin === 'http://127.0.0.1:8000' ? route.continue() : route.abort('blockedbyclient'));
-  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
   await page.getByRole('button', { name: '机会列表' }).click();
   const tax = page.locator('article').filter({ hasText: '合成联调：缺少所得额' });
   const grant = page.locator('article').filter({ hasText: '合成联调：资金多问题' });
