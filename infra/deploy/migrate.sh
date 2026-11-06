@@ -73,9 +73,15 @@ read_env_var() {
 
     # 2) 服务没跑：让 systemd 按 EnvironmentFile 的规则解析一次。--pipe 把 stdout 交回来，
     #    --wait 传递退出码，--collect 跑完即回收这个临时单元。
+    #
+    #    `$` 必须写成 `$$`：systemd 在把命令交给 ExecStart 之前会展开 `${NAME}`，而
+    #    `${DATABASE_URL-}` 里的名字带减号、不是合法变量名，会被当成未知变量换成空串——
+    #    那时 /bin/sh 收到的是 `printf '%s' ""`，退出码 0、输出为空，看着像「变量没配」。
+    #    `$$` 让 systemd 只还回一个字面 `$`，由 /bin/sh 自己去算 `${NAME-}`。
+    #    （2026-11-06 云端实测：未转义时 0 字节，转义后取到 54 字节。）
     err_file=$(mktemp) || die "内部错误：无法创建临时文件。"
     value=$("$SYSTEMD_RUN" --quiet --pipe --wait --collect \
-        -p "EnvironmentFile=$ENV_FILE" /bin/sh -c "printf '%s' \"\${$name-}\"" 2>"$err_file") &&
+        -p "EnvironmentFile=$ENV_FILE" /bin/sh -c "printf '%s' \"\$\${$name-}\"" 2>"$err_file") &&
         rc=0 || rc=$?
     if [ "$rc" -ne 0 ]; then
         printf 'migrate.sh: systemd-run 退出码 %s（stderr 前 10 行）：\n' "$rc" >&2

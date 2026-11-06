@@ -127,9 +127,9 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 | `HUICE_T_SPACE=a b` | `a b` | 空，且报 `b: command not found` |
 | `HUICE_T_CONT=l1 \`（下一行 `l2`） | `l1 l2` | 空，且报 `l2: command not found` |
 
-也就是说 `source` 既可能读错值（`$`、反引号、空格全按 shell 规则处理），也会把文件内容当命令执行；口令里带这些字符时，两种读法拿到的不是同一个连接串。同一份 `api.env` 上，本脚本的两条取值路径——服务在跑时读 `/proc/<MainPID>/environ`、服务没跑时用 `systemd-run -p EnvironmentFile=`——用假值实测拿到**同一个** `DATABASE_URL`（只比 SHA-256，不打印值）。`EnvironmentFile` 指向不存在的文件时 `systemd-run` 以退出码 1 失败（实测），脚本因此停下，不会退回默认连接参数。
+也就是说 `source` 既可能读错值（`$`、反引号、空格全按 shell 规则处理），也会把文件内容当命令执行；口令里带这些字符时，两种读法拿到的不是同一个连接串。同一份 `api.env` 上，本脚本的两条取值路径——服务在跑时读 `/proc/<MainPID>/environ`、服务没跑时用 `systemd-run -p EnvironmentFile=`——用假值实测拿到**同一个** `DATABASE_URL`（只比 SHA-256，不打印值）。这条对照比的是**读法**（`source` vs systemd 的 `EnvironmentFile` 语义），不等于脚本第 2 条路径自身没问题——后者在 2026-11-05/06 两次真实部署里取到过空值，根因与修复见下段。`EnvironmentFile` 指向不存在的文件时 `systemd-run` 以退出码 1 失败（实测），脚本因此停下，不会退回默认连接参数。
 
-**服务还没启动过时，第 2 条是唯一路径**——首次部署正好落在这里。2026-11-05 有一次真实部署在这一步取 `DATABASE_URL` 得到空值，当时没留下退出码与 stderr，原因至今未定；所以取值失败时脚本会把能定位的信息都打出来（只打变量名与路径，绝不打值）：
+**服务还没启动过时，第 2 条是唯一路径**——首次部署正好落在这里。2026-11-05 与 2026-11-06 两次真实部署都在这一步取 `DATABASE_URL` 得到空值，2026-11-06 定位出根因：脚本把 `${DATABASE_URL-}` 原样交给 `systemd-run`，而 **systemd 在把命令交给 `ExecStart` 之前会先展开 `${...}`**——`DATABASE_URL-` 带减号、不是合法变量名，被当成未知变量换成空串，`/bin/sh` 实际收到的是 `printf '%s' ""`，退出码 0、输出为空，看着就是「这个变量没配」。修复是把 `$` 写成 `$$`（systemd 只还回一个字面 `$`，留给 `/bin/sh` 自己算），云端实测未转义 0 字节、转义后 54 字节。**这份修复目前只在本地工作副本里，没有提交、没有部署**，云端的 `migrate.sh` 仍是未转义的那一版。取值失败时脚本会把能定位的信息都打出来（只打变量名与路径，绝不打值）：
 
 - `systemd-run` 的**退出码与 stderr 前 10 行**：「临时单元根本没起来」和「起来了、但这个变量是空的」是两类问题，先分开再查；
 - `systemctl show -p EnvironmentFiles --value huice-api` 的结果：unit 实际读的到底是不是 `/etc/huice/api.env`。对不上就明说脚本读的是另一个文件；unit 改用 `Environment=` 直接声明变量（没有 `EnvironmentFiles`）时也只报这件事，不打印内容；
@@ -145,7 +145,7 @@ grep -nE '^export |[[:space:]]=|=[[:space:]]' /etc/huice/api.env | cut -d= -f1  
 grep -c $'\r' /etc/huice/api.env                             # 非 0 即含 CRLF
 ```
 
-首次部署的留证里要含这三样：`systemd-run` 的退出码、`systemctl show -p EnvironmentFiles huice-api` 的输出、以及取值成功后脚本打印的 `schema_migration` 验收结果。**第 2 条路径目前只在假件（`test_migrate_script.py`）里验证过，还没有真实 systemd 的证据**——首次在空 ECS 上跑 `migrate.sh` 的那次就是这份证据，结果要回填到本段。
+首次部署的留证里要含这三样：`systemd-run` 的退出码、`systemctl show -p EnvironmentFiles huice-api` 的输出、以及取值成功后脚本打印的 `schema_migration` 验收结果。**第 2 条路径已于 2026-11-06 在真实 systemd（255.4）上定位并实测**：未转义写法返回 0 字节，改成 `$$` 后取到 54 字节（只记长度，不记值）；假件 `test_migrate_script.py` 也按同一条规则判——去掉 `$$` 后仍出现 `${` 就判失败。修复尚未部署，重新部署之前，在 ECS 上仍要先 `systemctl start` 再跑迁移。
 
 ```bash
 bash /opt/huice/app/infra/deploy/migrate.sh
@@ -439,7 +439,7 @@ ls /opt/huice/app/infra/sql/ | tail -3     # 与库里的对照
 
 下面三条都是 2026-11-06 实测踩出来的：
 
-- **服务停止时 `migrate.sh` 取不到 `DATABASE_URL`。** 它服务在跑时读 `/proc/<MainPID>/environ`（第 1 条路径），服务停止时改用 `systemd-run -p EnvironmentFile=`（第 2 条路径）；后者在这台机器上返回空值，脚本随即以「`DATABASE_URL` 为空」停下。先 `systemctl start` 再跑迁移即可绕开。第 2 条路径仍待查——它只在假件里验过（§2.1 末尾），这次是第一次在真实机器上跑到它。
+- **服务停止时 `migrate.sh` 取不到 `DATABASE_URL`。** 它服务在跑时读 `/proc/<MainPID>/environ`（第 1 条路径），服务停止时改用 `systemd-run -p EnvironmentFile=`（第 2 条路径）；后者在这台机器上返回空值，脚本随即以「`DATABASE_URL` 为空」停下。根因已定位：systemd 在 `ExecStart` 之前会展开 `${...}`，脚本原样的 `${DATABASE_URL-}` 名字带减号、被换成空串（`read_env_var` 里已改成 `$${DATABASE_URL-}`，**改动只在本地、未提交未部署**，细节见 §2.1）。在修复部署之前，仍要先 `systemctl start` 再跑迁移。
 - **不要在已推进的库上重跑 `migrate.sh`。** 脚本每次从 `001` 顺序重跑，「可重复执行」指的是**幂等**，不是**可以跳过中间状态**：云端库已到 `008` 时重跑，`005` 会把事实字典约束收回 16 键，被库里已有的 `specificMarketSince` 行顶掉，`ERROR: check constraint "enterprise_fact_key_check" ... is violated by some row`。它失败在 `BEGIN` 里、事务回滚，结构没被改动，但这一趟白跑。**库里没有新序号就不要跑**。
 - **`psql` 直查要用服务的环境**：`PID=$(systemctl show -p MainPID --value huice-api)`、`DB=$(tr '\0' '\n' < /proc/$PID/environ | sed -n 's/^DATABASE_URL=//p')`，查完 `unset DB`。连接串会短暂出现在 `psql` 的参数里（`psql` 不认环境变量），别开着 `watch ps`。
 

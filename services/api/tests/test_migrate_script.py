@@ -47,14 +47,27 @@ esac
 if [ -f mainpid ]; then cat mainpid; else printf '0\\n'; fi
 """
 
+#: 假的 ``systemd-run``。它不能只回放 ``env_value``：真 systemd 在把命令交给 ``ExecStart``
+#: 之前会展开 ``${NAME}``，脚本里那个 ``$`` 有没有转义成 ``$$`` 直接决定取不取得到值。
+#: 假件按同一条规则判：``$$`` 还原成字面 ``$`` 后交给 shell；出现未转义的 ``${...}`` 就
+#: 当作被 systemd 展开掉，直接返回失败。
 _FAKE_SYSTEMD_RUN = """#!/bin/sh
 printf '%s\\n' "$*" >> systemd_run_log
 if [ -f env_exit ]; then
     printf 'Failed to start transient service unit\\n' >&2
     exit "$(cat env_exit)"
 fi
-if [ -f env_value ]; then printf '%s' "$(cat env_value)"; fi
-exit 0
+cmd=''
+for arg in "$@"; do cmd=$arg; done
+unescaped=$(printf '%s' "$cmd" | sed 's/\\$\\$//g')
+case $unescaped in
+    *'${'*)
+        printf 'fake systemd-run: ExecStart 里出现未转义的 ${...}，systemd 会先把它展开\\n' >&2
+        exit 97
+        ;;
+esac
+cmd=$(printf '%s' "$cmd" | sed 's/\\$\\$/$/g')
+exec env "DATABASE_URL=$(cat env_value 2>/dev/null)" /bin/sh -c "$cmd"
 """
 
 _FAKE_PSQL = """#!/bin/sh
@@ -281,6 +294,24 @@ def test_every_migration_runs_then_the_verification_query(sandbox: Sandbox) -> N
     assert "schema_migration" in " ".join(calls[-1])
     # 顺序也重要：验收查询必须在最后一次迁移之后
     assert "sql/" in " ".join(calls[0])
+
+
+def test_the_value_is_read_by_the_shell_not_by_systemd(sandbox: Sandbox) -> None:
+    """`${DATABASE_URL-}` 要先用 `$$` 转义再交给 systemd。
+
+    systemd 在把命令交给 `ExecStart` 之前会展开 `${NAME}`；`DATABASE_URL-` 带减号、
+    不是合法变量名，会被当成未知变量换成空串，于是 `/bin/sh` 收到的是
+    `printf '%s' ""`——退出码 0、输出为空，看着像「变量没配」。2026-11-06 云端实测：
+    未转义 0 字节，写成 `$$` 后 54 字节。
+    """
+
+    sandbox.file("env_value", TRICKY_URL)
+
+    result = sandbox.run()
+
+    assert result.returncode == 0, result.stderr
+    logged = " ".join(sandbox.lines("systemd_run_log"))
+    assert "$${DATABASE_URL-}" in logged
 
 
 def test_a_failed_migration_stops_the_rest_and_the_verification(sandbox: Sandbox) -> None:
