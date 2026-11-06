@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from datetime import date
 
@@ -55,6 +56,31 @@ def _run(dataset, *, scheme="baseline", manifest=None, result_map=None, quote=""
         }
         run.case_flags.setdefault(label.case_id, {"expired": False, "summary": ""})
     return run
+
+
+def _dump(run, path):
+    """把一份内存里的 Run 写成 JSONL，供 ``main()`` 的端到端用例读回。"""
+
+    header = {
+        "record": "header",
+        "scheme": run.scheme,
+        "model": run.model,
+        "prompt_version": run.prompt_version,
+        "manifest": run.manifest,
+    }
+    by_case: dict[str, list[dict]] = {}
+    for (case_id, _code), item in run.verdicts.items():
+        by_case.setdefault(case_id, []).append(item)
+    lines = [json.dumps(header, ensure_ascii=False)]
+    for case_id in sorted(by_case):
+        lines.append(
+            json.dumps(
+                {"case_id": case_id, "outcome": "ok", "usage_known": False,
+                 "payload": {"results": by_case[case_id]}},
+                ensure_ascii=False,
+            )
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def test_perfect_run_scores_hundred_percent(dataset):
@@ -188,14 +214,144 @@ def test_failed_case_is_listed_not_dropped(tmp_path):
     assert run.verdicts == {}
 
 
+def test_load_run_rejects_a_repeated_case(tmp_path):
+    path = tmp_path / "run.jsonl"
+    header = json.dumps({"record": "header", "scheme": "baseline", "manifest": {}})
+    record = json.dumps({"case_id": "C001", "outcome": "ok", "payload": {"results": []}})
+    path.write_text(f"{header}\n{record}\n{record}\n", encoding="utf-8")
+
+    with pytest.raises(MetricsError, match="出现了不止一次"):
+        load_run(path)
+
+
+def test_load_run_rejects_a_repeated_criterion(tmp_path):
+    path = tmp_path / "run.jsonl"
+    header = json.dumps({"record": "header", "scheme": "baseline", "manifest": {}})
+    item = {"criterionId": "SME-001", "result": "satisfied", "reason": "r",
+            "quote": None, "facts": []}
+    record = json.dumps({"case_id": "C001", "outcome": "ok",
+                         "payload": {"results": [item, item]}})
+    path.write_text(f"{header}\n{record}\n", encoding="utf-8")
+
+    with pytest.raises(MetricsError, match="两条结论"):
+        load_run(path)
+
+
+def test_an_unanswered_condition_shrinks_the_denominator_and_is_reported(dataset):
+    """缺一条结论时旧写法把它悄悄剔出分母，一致率照样好看：这里要求点名并标记不完整。"""
+
+    run = _run(dataset)
+    missing_key = dataset.scored_labels()[0].key
+    del run.verdicts[missing_key]
+
+    summary = summarise(dataset, run, on=date(2026, 11, 6))
+
+    assert summary["complete"] is False
+    assert summary["accuracy"]["missing"] == [f"{missing_key[0]}/{missing_key[1]}"]
+    text = render(
+        {"same_input": True, "runs": {"baseline": summary}},
+        names=(("baseline", "基线"),),
+    )
+    assert "未返回条数" in text
+    assert "不能当作完整对照" in text
+
+
+def test_an_unanswered_hard_gate_case_is_not_counted_as_correct(dataset):
+    # 标注「不满足」却没有结论的，既不是漏判也不是判对：单列未返回
+    run = _run(dataset)
+    labels = dataset.scored_labels()
+    target = next(label for label in labels if label.result == "not_satisfied")
+    del run.verdicts[target.key]
+
+    result = hard_gate_misses(run, labels)
+
+    assert f"{target.case_id}/{target.criterion_code}" in result["unreturned"]
+    assert f"{target.case_id}/{target.criterion_code}" not in result["cases"]
+    assert result["denominator"] == 11
+    assert result["judged"] == 10
+
+
+def test_main_exits_four_when_a_condition_is_unanswered(dataset, tmp_path):
+    from app.ablation.metrics import main
+
+    run = _run(dataset)
+    del run.verdicts[dataset.scored_labels()[0].key]
+    other = _run(dataset, scheme="pipeline")
+    baseline_path = tmp_path / "baseline.jsonl"
+    pipeline_path = tmp_path / "pipeline.jsonl"
+    _dump(run, baseline_path)
+    _dump(other, pipeline_path)
+
+    code = main(
+        ["--baseline", str(baseline_path), "--pipeline", str(pipeline_path), "--as-of", "2026-11-06"],
+        dataset=dataset,
+        stream=io.StringIO(),
+    )
+
+    assert code == 4
+
+
 def test_compare_marks_different_inputs(dataset):
     left = _run(dataset, scheme="baseline")
     right = _run(dataset, scheme="pipeline", manifest={"评价/labels.csv": "0" * 64})
     payload = compare(dataset, {"baseline": left, "pipeline": right}, on=date(2026, 11, 6))
     assert payload["same_input"] is False
     text = render(payload, names=(("baseline", "基线"), ("pipeline", "现方案")))
-    assert "输入哈希不一致" in text
+    assert "输入不可比" in text
     assert "四态一致率" in text
+
+
+def test_compare_refuses_when_one_manifest_is_missing(dataset):
+    """一份有清单、一份没有：过滤掉空清单后只剩一个，旧写法会判成「同输入」。"""
+
+    left = _run(dataset, scheme="baseline")
+    right = _run(dataset, scheme="pipeline", manifest={})
+    payload = compare(dataset, {"baseline": left, "pipeline": right}, on=date(2026, 11, 6))
+
+    assert payload["same_input"] is False
+    assert any("pipeline" in problem and "没有输入清单" in problem for problem in payload["input_problems"])
+
+
+def test_compare_refuses_when_both_manifests_are_empty(dataset):
+    runs = {
+        "baseline": _run(dataset, scheme="baseline", manifest={}),
+        "pipeline": _run(dataset, scheme="pipeline", manifest={}),
+    }
+
+    payload = compare(dataset, runs, on=date(2026, 11, 6))
+
+    assert payload["same_input"] is False
+    assert len(payload["input_problems"]) == 2  # 两份各自点名
+
+
+def test_compare_refuses_when_the_two_runs_agree_but_the_data_has_moved(dataset):
+    """两份旧跑数彼此一致，但标注已经改过：旧写法只看两份互相一致，仍判「同输入」。"""
+
+    stale = {name: "0" * 64 for name in dataset.manifest()}
+    runs = {
+        "baseline": _run(dataset, scheme="baseline", manifest=stale),
+        "pipeline": _run(dataset, scheme="pipeline", manifest=stale),
+    }
+
+    payload = compare(dataset, runs, on=date(2026, 11, 6))
+
+    assert payload["same_input"] is False
+    assert any("与当前数据不一致" in problem for problem in payload["input_problems"])
+
+
+def test_compare_refuses_when_the_manifests_list_different_files(dataset):
+    full = dataset.manifest()
+    short = {key: full[key] for key in list(full)[:2]}
+    runs = {
+        "baseline": _run(dataset, scheme="baseline", manifest=full),
+        "pipeline": _run(dataset, scheme="pipeline", manifest=short),
+    }
+
+    payload = compare(dataset, runs, on=date(2026, 11, 6))
+
+    assert payload["same_input"] is False
+    assert any("清单缺" in problem for problem in payload["input_problems"])
+    assert any("互不相同" in problem for problem in payload["input_problems"])
 
 
 def test_render_has_one_column_per_scheme(dataset):

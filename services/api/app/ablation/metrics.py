@@ -7,12 +7,15 @@
 
 指标定义（对齐策划案第 7 节，逐条写明「怎么算」而不是「大概多好」）：
 
-* **四态一致率**：与 ``adjudicated_result`` 相同的条数 ÷ 分母。分母 146 条（排除
-  2008 版那 2 条，见 ``dataset.EXCLUDED_VERSIONS``），dev / holdout 分列。
-  标注只有三类，方案输出 ``conflict`` 一律算不一致，并单列条数。
+* **四态一致率**：与 ``adjudicated_result`` 相同的条数 ÷ 分母。分母由标注决定
+  （当前 146 条，排除 2008 版那 2 条，见 ``dataset.EXCLUDED_VERSIONS``），dev /
+  holdout 分列。标注只有三类，方案输出 ``conflict`` 一律算不一致，并单列条数。
+  没返回结论的条件不进分母，但会单列「未返回条数」——分母变小会抬高一致率，
+  有未返回项时不能当作完整对照。
 * **硬门槛误判**：标注 ``not_satisfied`` 却判 ``satisfied`` 的条数 ÷ 标注为
-  ``not_satisfied`` 的 11 条，附 Wilson 95% 区间；11 条这个分母下区间很宽，
-  报告只说「实测 0 例」，不说「零风险」。
+  ``not_satisfied`` 且返回了结论的条数（当前 11 条），附 Wilson 95% 区间；这个
+  分母下区间很宽，报告只说「实测 0 例」，不说「零风险」。没返回的同样单列，
+  不按「没误判」处理。
 * **无依据断言率**：结论是 satisfied 或 not_satisfied（不是「证据不足」），却既
   没有引用原文、也没有列任何企业事实的条数 ÷ 全部确定结论条数。这是「幻觉」
   在判断阶段的等价物：抽取阶段的幻觉条款率只有现方案有（基线没有抽取阶段）。
@@ -78,11 +81,18 @@ def load_run(path: Path) -> Run:
         prompt_version=str(header.get("prompt_version") or ""),
         manifest=dict(header.get("manifest") or {}),
     )
+    seen: set[str] = set()
     for raw in lines[1:]:
         record = json.loads(raw)
         case_id = str(record.get("case_id") or "")
         if not case_id:
             raise MetricsError(f"{path.name} 有一行没有 case_id")
+        # 同一个 case 出现两行时，后一行会静默盖掉前一行：指标照算，但算的是哪一条没人知道
+        if case_id in seen:
+            raise MetricsError(
+                f"{path.name} 的 {case_id} 出现了不止一次；重复行会互相覆盖，先合并再算指标"
+            )
+        seen.add(case_id)
         if record.get("outcome") != "ok" or not record.get("payload"):
             run.failures[case_id] = record
             continue
@@ -102,6 +112,11 @@ def load_run(path: Path) -> Run:
             code = str(item.get("criterionId") or "")
             if not code:
                 raise MetricsError(f"{path.name} 的 {case_id} 有结论没写 criterionId")
+            if (case_id, code) in run.verdicts:
+                raise MetricsError(
+                    f"{path.name} 的 {case_id}/{code} 有两条结论；重复会让后一条覆盖前一条，"
+                    "先确认哪一条是真的"
+                )
             run.verdicts[(case_id, code)] = item
     return run
 
@@ -151,16 +166,25 @@ def hard_gate_misses(run: Run, labels: Sequence[Label]) -> dict[str, Any]:
     """标注「不满足」被判成「满足」——这是最贵的错误，单独数。"""
 
     truths = [label for label in labels if label.result == "not_satisfied"]
+    # 没返回结论的不能算「没误判」：那是没判，不是判对了（M2 在 #41 的 P2）
+    unreturned = [
+        f"{label.case_id}/{label.criterion_code}"
+        for label in truths
+        if (label.case_id, label.criterion_code) not in run.verdicts
+    ]
     missed = [
         f"{label.case_id}/{label.criterion_code}"
         for label in truths
         if run.verdicts.get((label.case_id, label.criterion_code), {}).get("result") == "satisfied"
     ]
+    judged = len(truths) - len(unreturned)
     return {
         "denominator": len(truths),
+        "judged": judged,
+        "unreturned": unreturned,
         "count": len(missed),
-        "rate": len(missed) / len(truths) if truths else None,
-        "wilson": wilson(len(missed), len(truths)),
+        "rate": len(missed) / judged if judged else None,
+        "wilson": wilson(len(missed), judged),
         "cases": missed,
     }
 
@@ -270,13 +294,14 @@ def summarise(dataset: Dataset, run: Run, *, on: date) -> dict[str, Any]:
     scored = dataset.scored_labels()
     dev = [label for label in scored if label.split == "dev"]
     holdout = [label for label in scored if label.split == "holdout"]
-    return {
+    accuracy = confusion(run, scored)
+    summary = {
         "scheme": run.scheme,
         "model": run.model,
         "prompt_version": run.prompt_version,
         "labels": len(scored),
         "failures": sorted(run.failures),
-        "accuracy": confusion(run, scored),
+        "accuracy": accuracy,
         "accuracy_dev": confusion(run, dev),
         "accuracy_holdout": confusion(run, holdout),
         "hard_gate": hard_gate_misses(run, scored),
@@ -285,16 +310,43 @@ def summarise(dataset: Dataset, run: Run, *, on: date) -> dict[str, Any]:
         "timeliness": timeliness(dataset, run, on=on),
         "tokens": tokens(run),
     }
+    # 完整对照：每个预期 case/条件都要有结论。缺的已在 ``accuracy.missing`` 里点名；
+    # 重复在 ``load_run`` 就拒绝了，不会走到这里。
+    summary["complete"] = not accuracy["missing"]
+    return summary
 
 
 def compare(dataset: Dataset, runs: Mapping[str, Run], *, on: date) -> dict[str, Any]:
-    """两个方案的汇总 + 输入是否同一份的核对。"""
+    """两个方案的汇总 + 输入是否同一份的核对。
 
-    manifests = {name: run.manifest for name, run in runs.items()}
-    distinct = {json.dumps(manifest, sort_keys=True) for manifest in manifests.values() if manifest}
+    三个条件全满足才算同一份输入：每份清单都存在且键集合与当前数据一致；两份清单彼此
+    一致；清单与**现在读到的** ``dataset.manifest()`` 一致。只把两份跑数头互相比是不够
+    的——标注改过之后，两份旧跑数仍然互相一致，指标却已经不在同一份输入上了
+    （M2 在 #41 的 P1）。
+    """
+
+    expected = dataset.manifest()
+    manifests = {name: dict(run.manifest) for name, run in runs.items()}
+    problems: list[str] = []
+    for name, manifest in manifests.items():
+        if not manifest:
+            problems.append(f"{name}：跑数头里没有输入清单，证明不了跑的是哪份数据")
+            continue
+        missing = sorted(set(expected) - set(manifest))
+        extra = sorted(set(manifest) - set(expected))
+        if missing:
+            problems.append(f"{name}：清单缺 {', '.join(missing)}")
+        if extra:
+            problems.append(f"{name}：清单多出 {', '.join(extra)}")
+        changed = sorted(key for key in set(manifest) & set(expected) if manifest[key] != expected[key])
+        if changed:
+            problems.append(f"{name}：与当前数据不一致的输入 {', '.join(changed)}")
+    if len({json.dumps(manifest, sort_keys=True) for manifest in manifests.values()}) > 1:
+        problems.append("两份跑数的输入清单互不相同")
     return {
         "as_of": on.isoformat(),
-        "same_input": len(distinct) <= 1,
+        "same_input": not problems,
+        "input_problems": problems,
         "manifests": manifests,
         "runs": {name: summarise(dataset, run, on=on) for name, run in runs.items()},
     }
@@ -321,12 +373,17 @@ def render(payload: Mapping[str, Any], *, names: Iterable[tuple[str, str]]) -> s
 
     header = ["指标", *(display for _, display in names)]
 
-    row("四态一致率（146 条）", lambda run: run["accuracy"]["accuracy"], pct=True)
-    row("　dev（120 条）", lambda run: run["accuracy_dev"]["accuracy"], pct=True)
-    row("　holdout（26 条）", lambda run: run["accuracy_holdout"]["accuracy"], pct=True)
+    # 分母不写死在行名里：缺条件时实际分母会变小，行名还写「146 条」就是在骗人（M2 的 P2）
+    row("四态一致率", lambda run: run["accuracy"]["accuracy"], pct=True)
+    row("　dev", lambda run: run["accuracy_dev"]["accuracy"], pct=True)
+    row("　holdout", lambda run: run["accuracy_holdout"]["accuracy"], pct=True)
     row("　正确条数", lambda run: f"{run['accuracy']['correct']}/{run['accuracy']['total']}")
-    row("硬门槛误判（分母 11）", lambda run: run["hard_gate"]["count"])
+    row("　分母（应判条数）", lambda run: run["labels"])
+    row("　未返回条数", lambda run: len(run["accuracy"]["missing"]))
+    row("硬门槛误判", lambda run: run["hard_gate"]["count"])
     row("　误判率", lambda run: run["hard_gate"]["rate"], pct=True)
+    row("　分母（标注不满足）", lambda run: run["hard_gate"]["denominator"])
+    row("　其中未返回", lambda run: len(run["hard_gate"]["unreturned"]))
     row("无依据断言率", lambda run: run["unsupported"]["rate"], pct=True)
     row("　分母", lambda run: run["unsupported"]["denominator"])
     row("引用可证实率", lambda run: run["quotes"]["rate"], pct=True)
@@ -342,7 +399,15 @@ def render(payload: Mapping[str, Any], *, names: Iterable[tuple[str, str]]) -> s
     lines.extend("| " + " | ".join(cells) + " |" for cells in rows)
     if not payload.get("same_input"):
         lines.append("")
-        lines.append("> 两份跑数文件的输入哈希不一致：不是同一批输入，指标不能并排比较。")
+        lines.append("> 输入不可比（清单缺失、两份不一致，或与当前数据不符）：指标不能并排比较。")
+        for problem in payload.get("input_problems") or []:
+            lines.append(f"> - {problem}")
+    if any(not sub.get("complete", True) for sub in runs.values()):
+        lines.append("")
+        lines.append(
+            "> 有条件没返回结论（见「未返回条数」）：指标只覆盖已返回的部分，"
+            "不能当作完整对照——分母变小会抬高一致率。"
+        )
     return "\n".join(lines)
 
 
@@ -386,9 +451,12 @@ def main(argv: Sequence[str] | None = None, *, dataset: Dataset | None = None,
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     if not payload["same_input"]:
-        print("两份跑数文件的输入哈希不一致，先查输入再谈指标。", file=sys.stderr)
+        print("两份跑数文件的输入不可比，先查输入再谈指标。", file=sys.stderr)
         return 3
     if any(sub["failures"] for sub in payload["runs"].values()):
         print("有 case 没跑成功，指标不完整，详见分段 JSON。", file=sys.stderr)
         return 2
+    if any(not sub["complete"] for sub in payload["runs"].values()):
+        print("有条件没返回结论，指标只覆盖已返回的部分，不能当作完整对照。", file=sys.stderr)
+        return 4
     return 0
