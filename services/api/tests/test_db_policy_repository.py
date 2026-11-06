@@ -10,8 +10,11 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from pydantic import ValidationError, create_model
+from psycopg.types.json import Jsonb
 
 from app.errors import ApiProblem
+from app.schemas import ModelUsage
 from db_support import create, query_all, query_one, source
 from support import MIGRATIONS
 
@@ -192,22 +195,35 @@ def test_idempotent_record_roundtrip(repo):
 
     assert repo.read_idempotent("extract", key) is None
 
-    repo.save_idempotent("extract", key, "a" * 64, payload, revision)
+    repo.save_idempotent(
+        "extract", key, "a" * 64, payload, revision, usage_semantics="explicit"
+    )
 
     stored = repo.read_idempotent("extract", key)
-    assert stored == {"fingerprint": "a" * 64, "response": payload, "revision": revision}
+    assert stored == {
+        "fingerprint": "a" * 64,
+        "response": payload,
+        "revision": revision,
+        "usage_semantics": "explicit",
+    }
     # 作用域隔离：同一个键在别的接口下不算重放
     assert repo.read_idempotent("publish", key) is None
 
 
 def test_idempotent_record_keeps_the_first_write_and_is_append_only(repo, database_url_schema):
     key = uuid4()
-    repo.save_idempotent("extract", key, "b" * 64, {"n": 1}, uuid4())
-    repo.save_idempotent("extract", key, "c" * 64, {"n": 2}, uuid4())
+    repo.save_idempotent(
+        "extract", key, "b" * 64, {"n": 1}, uuid4(), usage_semantics="legacy"
+    )
+    repo.save_idempotent(
+        "extract", key, "c" * 64, {"n": 2}, uuid4(), usage_semantics="explicit"
+    )
 
     stored = repo.read_idempotent("extract", key)
     assert stored["fingerprint"] == "b" * 64
     assert stored["response"] == {"n": 1}
+    # 来源标记跟着首次写入那条走，不会被后来的写入覆盖
+    assert stored["usage_semantics"] == "legacy"
     assert query_one(database_url_schema, "SELECT count(*) FROM idempotency_record")[0] == 1
 
     for statement in (
@@ -218,6 +234,89 @@ def test_idempotent_record_keeps_the_first_write_and_is_append_only(repo, databa
             with psycopg.connect(database_url_schema) as conn:
                 conn.execute(statement)
                 conn.commit()
+
+
+def _rc6_usage_validator():
+    """rc.6 的 `ModelUsage`：字段与现在一致，但没有 `tokensUnknown`（仍是 `extra="forbid"`）。"""
+
+    fields = {
+        name: (field.annotation, field)
+        for name, field in ModelUsage.model_fields.items()
+        if name != "tokens_unknown"
+    }
+    return create_model("Rc6ModelUsage", __config__=ModelUsage.model_config, **fields)
+
+
+def test_unknown_usage_flag_is_stored_with_the_replayed_response(repo):
+    """rc.7 的 `tokensUnknown` 随抽取响应**整体**落进 `idempotency_record`。
+
+    回滚口径依赖这件事：这张表只追加（删不掉），回退到 rc.6 后重放同键记录会在
+    `ModelUsage`（`extra="forbid"`）处解析失败，而不是「把字段丢掉继续跑」。
+    """
+
+    usage = ModelUsage(
+        mode="deepseek",
+        model_version="test-model",
+        input_tokens=0,
+        output_tokens=0,
+        elapsed_ms=7,
+        tokens_unknown=True,
+    )
+    key = uuid4()
+    revision = uuid4()
+    repo.save_idempotent(
+        "extract",
+        key,
+        "d" * 64,
+        {"usage": usage.model_dump(by_alias=True, mode="json")},
+        revision,
+        usage_semantics="explicit",
+    )
+
+    stored = repo.read_idempotent("extract", key)
+    assert stored["response"]["usage"]["tokensUnknown"] is True
+    assert stored["usage_semantics"] == "explicit"
+    assert ModelUsage.model_validate(stored["response"]["usage"]).tokens_unknown is True
+    with pytest.raises(ValidationError):
+        _rc6_usage_validator().model_validate(stored["response"]["usage"])
+
+
+def test_records_written_by_the_old_code_fall_back_to_the_legacy_meaning(database_url_schema):
+    """迁移 007：回退到 rc.6 期间写入的行不带这一列，DEFAULT 落 ``'legacy'``。
+
+    这正是重放口径要的：旧代码写下的用量可能被 ``or 0`` 兜底，遗漏的一侧自动
+    落到「不可信」而不是被当成已知；语义列本身也不收臆造的值。
+    """
+
+    key = uuid4()
+    with psycopg.connect(database_url_schema) as conn:
+        # 旧代码的 INSERT 不写 usage_semantics 这一列
+        conn.execute(
+            "INSERT INTO idempotency_record "
+            "(scope, idempotency_key, request_fingerprint, response, revision) "
+            "VALUES ('extract', %s, %s, %s, %s)",
+            (key, "e" * 64, Jsonb({"usage": {"inputTokens": 120}}), uuid4()),
+        )
+        conn.commit()
+    assert (
+        query_one(
+            database_url_schema,
+            "SELECT usage_semantics FROM idempotency_record WHERE idempotency_key = %s",
+            (key,),
+        )[0]
+        == "legacy"
+    )
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with psycopg.connect(database_url_schema) as conn:
+            conn.execute(
+                "INSERT INTO idempotency_record "
+                "(scope, idempotency_key, request_fingerprint, response, revision, "
+                "usage_semantics) "
+                "VALUES ('extract', %s, %s, %s, %s, 'guessed')",
+                (uuid4(), "f" * 64, Jsonb({}), uuid4()),
+            )
+            conn.commit()
 
 
 def test_enterprise_fact_uses_the_contract_source_enum(database_url_schema):
@@ -348,3 +447,163 @@ def test_rc4_facts_only_accept_their_own_unit(database_url_schema):
                 (enterprise_id,),
             )
         conn.rollback()
+
+
+def test_extraction_step_is_written_before_citation_validation(repo, database_url_schema):
+    draft = create(repo)
+    trace_id = str(uuid4())
+
+    repo.save_criteria(
+        policy_id=draft.id,
+        version=draft.version,
+        expected_revision=draft.revision,
+        criteria=[],
+        findings=[],
+        status="pending_review",
+        trace_id=trace_id,
+        extraction_model="deepseek-chat",
+        extraction_elapsed_ms=7,
+        extraction_input_chars=42,
+    )
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT stage, status, input_summary, model_or_rule_version, evidence_refs::text "
+        "FROM trace_step WHERE trace_id = %s ORDER BY sequence",
+        (trace_id,),
+    )
+    # 抽取是真实发生过的一步，必须排在它引发的引用校验之前。
+    assert [row[0] for row in rows] == ["extraction", "citation_validation"]
+    assert rows[0][1] == "ok"
+    assert rows[0][2] == "抽取正文 42 字"
+    assert rows[0][3] == "deepseek-chat"
+    assert "policyVersion" in rows[0][4]
+
+
+def test_save_without_extraction_writes_no_extraction_step(repo, database_url_schema):
+    draft = create(repo)
+    trace_id = str(uuid4())
+
+    repo.save_criteria(
+        policy_id=draft.id,
+        version=draft.version,
+        expected_revision=draft.revision,
+        criteria=[],
+        findings=[],
+        status="pending_review",
+        trace_id=trace_id,
+    )
+
+    stages = [
+        row[0]
+        for row in query_all(
+            database_url_schema,
+            "SELECT stage FROM trace_step WHERE trace_id = %s ORDER BY sequence",
+            (trace_id,),
+        )
+    ]
+    # 手工保存条款没有调用模型，不能凭空写一条抽取轨迹。
+    assert stages == ["citation_validation"]
+
+
+def test_a_failed_extraction_is_recorded_without_touching_the_draft(repo, database_url_schema):
+    draft = create(repo)
+    trace_id = str(uuid4())
+
+    repo.record_extraction_failure(
+        policy_id=draft.id,
+        version=draft.version,
+        trace_id=trace_id,
+        status="retryable_error",
+        error_code="DEPENDENCY_UNAVAILABLE",
+        model_or_rule_version="deepseek-chat",
+        elapsed_ms=30001,
+        usage_unknown=True,
+    )
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT stage, status, output_summary, error_code, model_or_rule_version, elapsed_ms, "
+        "policy_version, evidence_refs::text FROM trace_step WHERE trace_id = %s ORDER BY sequence",
+        (trace_id,),
+    )
+    assert len(rows) == 1
+    stage, status, summary, error_code, model, elapsed_ms, version, refs = rows[0]
+    assert stage == "extraction" and status == "retryable_error"
+    assert error_code == "DEPENDENCY_UNAVAILABLE"
+    assert model == "deepseek-chat" and elapsed_ms == 30001
+    assert version == draft.version and "policyVersion" in refs
+    # 用量未知要写清楚，不能写成 0 混进费用统计。
+    assert "用量按未知记录" in summary
+
+    # 独立事务：草稿状态与 revision 都不动，也没有条款被写进去。
+    repo_draft = repo.get_admin_policy(draft.id, draft.version)
+    assert repo_draft.revision == draft.revision
+    assert repo_draft.status == "pending_parse"
+    assert query_one(database_url_schema, "SELECT count(*) FROM policy_criterion")[0] == 0
+
+
+def test_a_non_retryable_failure_is_recorded_as_fatal(repo, database_url_schema):
+    draft = create(repo)
+    trace_id = str(uuid4())
+
+    repo.record_extraction_failure(
+        policy_id=draft.id,
+        version=draft.version,
+        trace_id=trace_id,
+        status="fatal_error",
+        error_code="DEPENDENCY_UNAVAILABLE",
+        model_or_rule_version="deepseek-chat",
+        elapsed_ms=12,
+        usage_unknown=False,
+    )
+
+    status, summary = query_one(
+        database_url_schema,
+        "SELECT status, output_summary FROM trace_step WHERE trace_id = %s",
+        (trace_id,),
+    )
+    assert status == "fatal_error"
+    # 只有确认「没发起调用」时才写没有用量；与「发起过但拿不到」区分开。
+    assert "未发起模型调用" in summary
+    assert "用量未知" not in summary
+
+
+def test_a_stale_revision_fails_before_any_trace_row_is_written(repo, database_url_schema):
+    draft = create(repo)
+    first_trace = str(uuid4())
+    conflict_trace = str(uuid4())
+    repo.save_criteria(
+        policy_id=draft.id,
+        version=draft.version,
+        expected_revision=draft.revision,
+        criteria=[],
+        findings=[],
+        status="pending_review",
+        trace_id=first_trace,
+        extraction_model="deepseek-chat",
+    )
+
+    with pytest.raises(ApiProblem) as conflict:
+        # 第二次仍拿旧 revision：命中 compare-and-swap 冲突。
+        repo.save_criteria(
+            policy_id=draft.id,
+            version=draft.version,
+            expected_revision=draft.revision,
+            criteria=[],
+            findings=[],
+            status="pending_review",
+            trace_id=conflict_trace,
+            extraction_model="deepseek-chat",
+        )
+
+    assert conflict.value.status_code == 409
+    # 冲突在第一次写库之前就返回，抽取步骤与引用校验步骤都不能留下半条。
+    assert (
+        query_all(
+            database_url_schema,
+            "SELECT 1 FROM trace_step WHERE trace_id = %s",
+            (conflict_trace,),
+        )
+        == []
+    )

@@ -58,13 +58,13 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 
 ### 2.1 数据库结构必须先于服务启动（硬前提）
 
-代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），且企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），**服务启动前云 RDS 必须已执行 001—006 全部迁移**：
+代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），幂等记录的用量来源列 `idempotency_record.usage_semantics` 由 `007` 引入（`legacy`/`explicit`，缺列时写入直接报错），**服务启动前云 RDS 必须已执行 001—007 全部迁移**：
 
 ```bash
-for f in 001_init 002_evaluation_and_idempotency 003_trace_step_details 004_invalidation_event_period 005_fact_dictionary_extension 006_fact_dictionary_extension_rc4; do
+for f in 001_init 002_evaluation_and_idempotency 003_trace_step_details 004_invalidation_event_period 005_fact_dictionary_extension 006_fact_dictionary_extension_rc4 007_idempotency_usage_semantics; do
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "/opt/huice/app/infra/sql/$f.sql" || break
 done
-psql "$DATABASE_URL" -tAc "SELECT id FROM schema_migration ORDER BY id"   # 应输出六行
+psql "$DATABASE_URL" -tAc "SELECT id FROM schema_migration ORDER BY id"   # 应输出七行
 ```
 
 漏掉 `006` 不会在启动时报错，而是在**写入地方通知企业事实时**才炸：`enterprise_fact_key_check` 与 `enterprise_fact_key_unit` 仍是 16 键版本，`specificMarketSince`/`independentLegalEntity` 会被约束直接拒绝（500），而 SRDI-001、RDSUB-001/002 正好要用这两键。
@@ -230,7 +230,7 @@ cp /opt/huice/app.bak/* /opt/huice/app/   # 恢复上一份代码（若事先备
 systemctl restart huice-api
 ```
 
-数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `006_fact_dictionary_extension_rc4.sql`，下一份是 `007_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
+数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `007_idempotency_usage_semantics.sql`，下一份是 `008_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
 
 ## 7. 安全约束
 

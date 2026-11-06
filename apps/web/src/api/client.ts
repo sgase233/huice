@@ -85,7 +85,7 @@ function assertShape(value: unknown, kind: string): void {
     assertShape(record.draft, 'PolicyDraft');
     if (!Array.isArray(record.validationFindings) || !Array.isArray(kind === 'ExtractionResult' ? record.criteriaDrafts : record.criteria)) throw new Error(`接口契约错误：${kind} 字段缺失`);
     if (!(record.validationFindings as unknown[]).every(safeFinding) || !((kind === 'ExtractionResult' ? record.criteriaDrafts : record.criteria) as unknown[]).every(safeCriterion)) throw new Error(`接口契约错误：${kind} 条件或校验结果无效`);
-    if (kind === 'ExtractionResult' && (!isObject(record.usage) || !['deepseek', 'fixture', 'saved'].includes(String(record.usage.mode)) || !(record.usage.modelVersion === null || typeof record.usage.modelVersion === 'string') || typeof record.usage.inputTokens !== 'number' || typeof record.usage.outputTokens !== 'number' || typeof record.usage.elapsedMs !== 'number')) throw new Error('接口契约错误：模型使用记录无效');
+    if (kind === 'ExtractionResult' && (!isObject(record.usage) || !['deepseek', 'fixture', 'saved'].includes(String(record.usage.mode)) || !(record.usage.modelVersion === null || typeof record.usage.modelVersion === 'string') || typeof record.usage.inputTokens !== 'number' || typeof record.usage.outputTokens !== 'number' || typeof record.usage.elapsedMs !== 'number' || (record.usage.tokensUnknown !== undefined && typeof record.usage.tokensUnknown !== 'boolean'))) throw new Error('接口契约错误：模型使用记录无效');
   }
   if (kind === 'PolicyList') {
     for (const item of record.items as unknown[]) {
