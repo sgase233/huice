@@ -21,6 +21,7 @@ from .integrations.cache import build_cache
 from .integrations.llm import build_llm_client
 from .integrations.obs import build_object_store
 from .integrations.storage import PolicyRepository
+from .logging_setup import configure_logging
 from .routes import admin_policies, assessment_runs, enterprises, health, policies
 
 API_PREFIX = "/api/v1"
@@ -32,6 +33,9 @@ ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or Settings.from_env()
+    # uvicorn 默认只配置 uvicorn.* 的 logger，应用里的 logger.info 会落在 WARNING 之下
+    # 而被丢弃；这里显式让 app.* / huice.* 以 INFO 输出到 stderr（systemd 转 journal）。
+    configure_logging()
     database = Database(resolved.database_url)
     repository = PolicyRepository(database, cursor_secret=_cursor_secret(resolved))
     object_store = build_object_store(resolved)

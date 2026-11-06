@@ -2,8 +2,8 @@
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约
-  version: 1.0.0-rc.6
-  description: 2026-11-03 候选冻结版（rc.6：轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。M1 已实现 API-01/04/15/16（健康检查、政策导入、后台草稿列表与详情），其余接口按里程碑实现；M2 复核后定版 1.0.0。restricted 模式需要网关会话；local 模式免 DemoSession，但管理 Bearer 仍必需。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。语义/流程见工作区《惠策协同_功能实现逻辑与接口协作约定.md》。
+  version: 1.0.0-rc.7
+  description: 2026-11-05 候选冻结版（rc.7：ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。M1 已实现 API-01/04/15/16（健康检查、政策导入、后台草稿列表与详情），其余接口按里程碑实现；M2 复核后定版 1.0.0。restricted 模式需要网关会话；local 模式免 DemoSession，但管理 Bearer 仍必需。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。语义/流程见工作区《惠策协同_功能实现逻辑与接口协作约定.md》。
 servers:
 - url: /api/v1
 tags:
@@ -2055,6 +2055,10 @@ components:
         elapsedMs:
           type: integer
           minimum: 0
+        tokensUnknown:
+          type: boolean
+          default: false
+          description: 上游没有返回**完整可用**的用量时为 true（包括 2xx 但缺 usage、只给一半、格式异常）。此时 inputTokens/outputTokens **不得计入费用统计**，也不能与真实零用量混为一谈：rc.7 自己产生的未知一律是 0/0；幂等重放 rc.6 时期写下的记录时，rc.6 对两个计数是**各自**兜底的，无法判断缺的是哪一个，因此数值原样保留（可能是 120/0 这样的一半）并补上该标记。真实状态以调用日志的 usage=unknown 与轨迹摘要为准。缺省 false 表示两个数值是本次调用的真实用量（fixture 未发起调用时也是真实的 0）。**服务端在用量已知时省略该字段**：本对象是 additionalProperties:false，常路径带上 tokensUnknown:false 会让按 rc.6 严格校验的旧消费者把正常响应判为非法；省略后已知用量的响应与 rc.6 逐字段一致，只有未知这一异常会多出字段（旧消费者在那里失败，而不是把占位 0 当真）。
     ExtractPolicyInput:
       type: object
       additionalProperties: false

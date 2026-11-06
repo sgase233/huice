@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 from uuid import uuid4
 
 import pytest
+import yaml
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import ValidationError
 
 from app.agents.ingestion import PreparedSource
+from app.errors import ApiProblem
+from app.integrations.llm import LlmResult
 from app.schemas import PolicyImportMetadata
-from support import build_draft, metadata_payload
+from support import CONTRACT_PATH, build_draft, metadata_payload
 
 BODY_TEXT = (
     "第一条 在本市登记的中小企业，年应纳税所得额不超过300万元的，减按25%计入应纳税所得额。\n"
@@ -131,6 +138,8 @@ def test_extract_moves_draft_to_pending_review_with_cited_criteria(client, auth,
     body = response.json()
     assert body["draft"]["status"] == "pending_review"
     assert body["usage"]["mode"] == "fixture"
+    # 规则抽取没有发起调用，0 是真实的 0，不挂「未知」标记（契约 rc.7 已知时省略该字段）。
+    assert "tokensUnknown" not in body["usage"]
     assert len(body["criteriaDrafts"]) == 1
     criterion = body["criteriaDrafts"][0]
     assert criterion["validationStatus"] == "passed"
@@ -158,6 +167,504 @@ def test_extract_is_idempotent_for_the_same_key_and_body(client, auth, repositor
     assert second.status_code == 200
     assert second.json() == first.json()
     assert len(repository.saved_criteria) == 1  # 没有重复落库、没有重复计费
+    # 重放没有发生新的模型调用，因此也不该再写一条抽取轨迹。
+    assert len(repository.saved_extractions) == 1
+
+
+def test_extract_records_the_extraction_step_for_the_trace(client, auth, repository):
+    draft = seed_draft(repository)
+    body = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    ).json()
+
+    recorded = repository.saved_extractions[-1]
+    assert recorded["model"] == body["usage"]["modelVersion"]
+    assert recorded["input_chars"] == len(BODY_TEXT)
+    assert recorded["elapsed_ms"] >= 0
+
+
+class _ModelExtractionLlm:
+    """真实模型抽取分支的替身：回一条带原文引文的条款，用量固定。"""
+
+    mode = "deepseek"
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        item = {
+            "title": "合成演示阈值",
+            "expression": THRESHOLD_EXPRESSION,
+            "quote": QUOTE,
+            "section": "第一条",
+        }
+        return LlmResult(
+            text=json.dumps([item], ensure_ascii=False),
+            model="deepseek-chat",
+            prompt_tokens=120,
+            completion_tokens=45,
+            elapsed_ms=300,
+        )
+
+
+def test_a_real_model_extraction_logs_its_usage_once(app, client, auth, repository, caplog):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _ModelExtractionLlm()
+
+    client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("model_call purpose=extraction")
+    ]
+    assert len(lines) == 1
+    assert "model=deepseek-chat" in lines[0]
+    assert "prompt=120" in lines[0] and "completion=45" in lines[0]
+    assert str(draft.id) in lines[0]
+    # 只记用量与对象标识：不写提示词、正文与密钥。
+    assert QUOTE not in lines[0]
+    # 轨迹里记的是模型名，与日志里的 model= 对得上。
+    assert repository.saved_extractions[-1]["model"] == "deepseek-chat"
+
+
+class _NoUsageExtractionLlm:
+    """上游 2xx、正文可解析，但响应里没有可用 usage：用量按未知记（契约 rc.7）。"""
+
+    mode = "deepseek"
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        item = {
+            "title": "合成演示阈值",
+            "expression": THRESHOLD_EXPRESSION,
+            "quote": QUOTE,
+            "section": "第一条",
+        }
+        return LlmResult(
+            text=json.dumps([item], ensure_ascii=False),
+            model="deepseek-chat",
+            prompt_tokens=0,
+            completion_tokens=0,
+            elapsed_ms=120,
+            usage_known=False,
+        )
+
+
+def test_a_successful_extraction_without_usage_says_so_in_the_response(
+    app, client, auth, repository, caplog
+):
+    """拿不到用量时响应必须标出来，不能让消费者把占位 0 当成真实用量。"""
+
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _NoUsageExtractionLlm()
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    usage = body["usage"]
+    assert usage["tokensUnknown"] is True
+    assert usage["inputTokens"] == 0 and usage["outputTokens"] == 0
+    # 抽取本身成功：条款照常产出，只有用量不可用。
+    assert len(body["criteriaDrafts"]) == 1
+    assert "usage=unknown" in caplog.text
+    assert "prompt=unknown" in caplog.text
+
+
+def test_a_real_model_extraction_reports_known_tokens(app, client, auth, repository):
+    """有完整用量时不置未知标记，两个数值就是真实用量。"""
+
+    draft = seed_draft(repository)
+    app.state.llm = _ModelExtractionLlm()
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    usage = response.json()["usage"]
+    # 已知用量不出现在响应里：按 rc.6 严格校验的旧消费者不会因为新字段拒绝它。
+    assert "tokensUnknown" not in usage
+    assert usage["inputTokens"] == 120 and usage["outputTokens"] == 45
+
+
+# ------------------------------------------------ rc.7 的兼容性（旧消费者 / 重放）
+
+
+def _extraction_validator(*, rc6: bool) -> Draft202012Validator:
+    """按当前契约校验抽取响应；``rc6=True`` 时还原成没有 `tokensUnknown` 的旧契约。
+
+    `ModelUsage` 是 ``additionalProperties: false``，所以「旧消费者」不是忽略新字段，
+    而是**会因为多出字段直接判非法**。这个差异必须用真实响应验，不能靠读 schema 推断。
+    """
+
+    contract = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+    if rc6:
+        del contract["components"]["schemas"]["ModelUsage"]["properties"]["tokensUnknown"]
+    return Draft202012Validator(
+        {"$ref": "#/components/schemas/ExtractionResult", "components": contract["components"]},
+        format_checker=FormatChecker(),
+    )
+
+
+def _extract_with_llm(app, client, auth, repository, llm, *, key=None):
+    draft = seed_draft(repository)
+    app.state.llm = llm
+    return draft, client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=key or uuid4()),
+        json={"version": draft.version},
+    )
+
+
+def test_a_known_usage_response_still_passes_an_rc6_strict_consumer(app, client, auth, repository):
+    """部署顺序的依据：用量已知的响应与 rc.6 逐字段一致，旧消费者照常通过。"""
+
+    _, response = _extract_with_llm(app, client, auth, repository, _ModelExtractionLlm())
+
+    assert response.status_code == 200
+    _extraction_validator(rc6=True).validate(response.json())
+
+
+def test_an_unknown_usage_response_is_only_valid_for_rc7_consumers(app, client, auth, repository):
+    """未知用量是**有意的**不兼容：旧消费者在这里报错，而不是把占位 0 当真。"""
+
+    _, response = _extract_with_llm(app, client, auth, repository, _NoUsageExtractionLlm())
+    body = response.json()
+
+    assert body["usage"]["tokensUnknown"] is True
+    _extraction_validator(rc6=False).validate(body)
+    with pytest.raises(ValidationError):
+        _extraction_validator(rc6=True).validate(body)
+
+
+def test_replaying_an_unknown_usage_extraction_keeps_the_marker_without_new_calls(
+    app, client, auth, repository
+):
+    """幂等重放：同一个键返回同样的标记，且没有第二次调用。
+
+    重放不能把「未知」变成「已知零」——那会让对账凭空多出一次「确定没花 token」。
+    """
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app, client, auth, repository, _NoUsageExtractionLlm(), key=key
+    )
+    second = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, first.json()["draft"]["revision"], key=key),
+        json={"version": draft.version},
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert first.json()["usage"]["tokensUnknown"] is True
+    assert len(repository.saved_extractions) == 1
+
+
+class _FixedUsageExtractionLlm(_ModelExtractionLlm):
+    """与 ``_ModelExtractionLlm`` 同一条条款，用量可指定——覆盖 rc.6 的部分兜底形状。"""
+
+    def __init__(self, prompt_tokens: int, completion_tokens: int) -> None:
+        self._usage = (prompt_tokens, completion_tokens)
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        result = super().complete(system=system, user=user, max_tokens=max_tokens)
+        return LlmResult(
+            text=result.text,
+            model=result.model,
+            prompt_tokens=self._usage[0],
+            completion_tokens=self._usage[1],
+            elapsed_ms=result.elapsed_ms,
+        )
+
+
+def _downgrade_to_legacy(record: dict) -> None:
+    """把一条 rc.7 记录还原成 rc.6 写下的样子：来源是 legacy，响应里没有标记。"""
+
+    record["usage_semantics"] = "legacy"
+    response = json.loads(json.dumps(record["response"]))
+    response["usage"].pop("tokensUnknown", None)
+    record["response"] = response
+
+
+def _replay(client, auth, draft, *, key, revision):
+    return client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, revision, key=key),
+        json={"version": draft.version},
+    )
+
+
+def test_replaying_an_rc6_record_marks_the_fallback_zero_as_unknown(
+    app, client, auth, repository
+):
+    """历史记录：rc.6 写下的 deepseek 0/0 没有标记，重放时服务端补成未知。
+
+    「当前服务是 rc.7」证明不了某条重放记录的用量已知——存储里的记录可能是 rc.6 时期
+    写下的兜底 0。补标让线路语义自洽，消费者不必按 `/health` 的版本猜来源。
+    """
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app, client, auth, repository, _NoUsageExtractionLlm(), key=key
+    )
+    _downgrade_to_legacy(repository.idempotency[("extract", key)])
+
+    replay = _replay(
+        client, auth, draft, key=key, revision=first.json()["draft"]["revision"]
+    )
+
+    assert replay.status_code == 200
+    assert replay.json()["usage"]["tokensUnknown"] is True
+    # 只改本次响应视图：存下的那条仍保持旧形状，不写回（表只追加）
+    assert "tokensUnknown" not in repository.idempotency[("extract", key)]["response"]["usage"]
+
+
+@pytest.mark.parametrize(
+    ("prompt_tokens", "completion_tokens"),
+    [(120, 0), (0, 45), (120, 45)],
+    ids=["only-prompt", "only-completion", "both-given"],
+)
+def test_replaying_a_legacy_record_never_calls_its_usage_known(
+    app, client, auth, repository, prompt_tokens, completion_tokens
+):
+    """rc.6 的两个计数是**各自**兜底的，凭数值判不出用量是否完整。
+
+    `120/0` 只说明 prompt 给了、completion 没给，`0/45` 反之；连 `120/45` 也不能
+    凭「非零」认定完整——来源不可确认时一律按未确认，数值原样保留给人核对。
+    """
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app,
+        client,
+        auth,
+        repository,
+        _FixedUsageExtractionLlm(prompt_tokens, completion_tokens),
+        key=key,
+    )
+    _downgrade_to_legacy(repository.idempotency[("extract", key)])
+
+    replay = _replay(
+        client, auth, draft, key=key, revision=first.json()["draft"]["revision"]
+    )
+
+    assert replay.status_code == 200
+    usage = replay.json()["usage"]
+    assert usage["tokensUnknown"] is True
+    # 数值原样保留：能确认的那一半仍是真实值，只是不能被当成完整用量
+    assert (usage["inputTokens"], usage["outputTokens"]) == (
+        prompt_tokens,
+        completion_tokens,
+    )
+
+
+def test_replaying_a_legacy_fixture_record_keeps_the_real_zero(
+    app, client, auth, repository
+):
+    """fixture 没有发起调用，0 是真实的零用量：来源旧不等于要补标。"""
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app, client, auth, repository, app.state.llm, key=key
+    )
+    _downgrade_to_legacy(repository.idempotency[("extract", key)])
+
+    replay = _replay(
+        client, auth, draft, key=key, revision=first.json()["draft"]["revision"]
+    )
+
+    assert replay.status_code == 200
+    usage = replay.json()["usage"]
+    assert usage["mode"] == "fixture"
+    assert "tokensUnknown" not in usage
+    assert (usage["inputTokens"], usage["outputTokens"]) == (0, 0)
+
+
+def test_replaying_a_record_with_real_tokens_does_not_invent_unknown(
+    app, client, auth, repository
+):
+    """rc.7 写下的记录自带来源标记：没有未知标记就是完整已知，重放不改变结论。"""
+
+    key = uuid4()
+    draft, first = _extract_with_llm(
+        app, client, auth, repository, _ModelExtractionLlm(), key=key
+    )
+    assert repository.idempotency[("extract", key)]["usage_semantics"] == "explicit"
+
+    replay = _replay(
+        client, auth, draft, key=key, revision=first.json()["draft"]["revision"]
+    )
+
+    assert replay.status_code == 200
+    usage = replay.json()["usage"]
+    assert "tokensUnknown" not in usage
+    assert (usage["inputTokens"], usage["outputTokens"]) == (120, 45)
+
+
+def test_a_rule_based_extraction_is_not_logged_as_a_model_call(app, client, auth, repository, caplog):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+
+    client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    assert "model_call purpose=extraction" not in caplog.text
+    # 规则抽取仍然是一次真实的抽取：轨迹与用量照记，只是不算模型开销。
+    assert repository.saved_extractions[-1]["model"]
+
+
+class _FailingExtractionLlm:
+    """抽取时直接失败：``problem`` 决定是限流、超时还是上游 4xx。"""
+
+    mode = "deepseek"
+    model_name = "deepseek-chat"
+
+    def __init__(self, problem) -> None:
+        self._problem = problem
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        raise self._problem
+
+
+def _failing_llm(*, retryable: bool, usage_unknown: bool, status_code: int, code: str):
+    return _FailingExtractionLlm(
+        ApiProblem(
+            status_code,
+            code,
+            "模型服务暂不可用，已改用规则结果与已存说明。",
+            retryable=retryable,
+            usage_unknown=usage_unknown,
+        )
+    )
+
+
+def _extract(client, auth, draft):
+    return client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, draft.revision, key=uuid4()),
+        json={"version": draft.version},
+    )
+
+
+def test_a_rate_limited_extraction_is_recorded_as_retryable(app, client, auth, repository, caplog):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _failing_llm(
+        retryable=True, usage_unknown=True, status_code=429, code="UPSTREAM_RATE_LIMITED"
+    )
+
+    response = _extract(client, auth, draft)
+
+    # 响应形状不变：限流仍是 429，不因为要留痕就改成 503。
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "UPSTREAM_RATE_LIMITED"
+    failed = repository.failed_extractions[-1]
+    assert failed["status"] == "retryable_error"
+    assert failed["error_code"] == "UPSTREAM_RATE_LIMITED"
+    # 429 也没有「未计费」的证据：用量记未知，不能混进确定的 0。
+    assert failed["usage_unknown"] is True
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
+    assert "outcome=error" in line and "usage=unknown" in line
+    assert "prompt=unknown" in line and "completion=unknown" in line
+
+
+def test_a_timeout_during_extraction_is_retryable_with_unknown_usage(app, client, auth, repository, caplog):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _failing_llm(
+        retryable=True, usage_unknown=True, status_code=503, code="DEPENDENCY_UNAVAILABLE"
+    )
+
+    response = _extract(client, auth, draft)
+
+    assert response.status_code == 503
+    failed = repository.failed_extractions[-1]
+    assert failed["status"] == "retryable_error"
+    # 超时时上游可能已处理并计费：用量登记为未知，不能当 0。
+    assert failed["usage_unknown"] is True
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
+    assert "usage=unknown" in line and "prompt=unknown" in line
+
+
+def test_an_upstream_client_error_is_fatal_and_not_retried(app, client, auth, repository):
+    draft = seed_draft(repository)
+    app.state.llm = _failing_llm(
+        retryable=False, usage_unknown=True, status_code=503, code="DEPENDENCY_UNAVAILABLE"
+    )
+
+    response = _extract(client, auth, draft)
+
+    assert response.status_code == 503
+    failed = repository.failed_extractions[-1]
+    # 密钥/模型名写错这类失败重试也不会好，记 fatal_error 让人直接去查配置；
+    # 但「不该重试」不等于「上游没处理」，用量仍记未知。
+    assert failed["status"] == "fatal_error"
+    assert failed["usage_unknown"] is True
+
+
+def test_a_failed_extraction_leaves_the_draft_untouched(app, client, auth, repository):
+    draft = seed_draft(repository)
+    app.state.llm = _failing_llm(
+        retryable=True, usage_unknown=True, status_code=503, code="DEPENDENCY_UNAVAILABLE"
+    )
+
+    _extract(client, auth, draft)
+
+    # 失败留痕是独立事务：草稿内容、状态与 revision 都不变，也没有半条条款落库。
+    assert repository.saved_criteria == []
+    assert repository.get_version_for_edit(draft.id, draft.version).revision == draft.revision
+
+
+def test_a_call_that_then_loses_the_save_stays_on_the_call_record(
+    app, client, auth, repository, caplog
+):
+    caplog.set_level(logging.INFO)
+    draft = seed_draft(repository)
+    app.state.llm = _ModelExtractionLlm()
+
+    response = client.post(
+        f"/api/v1/admin/policies/{draft.id}/extract",
+        headers=headers(auth, uuid4(), key=uuid4()),
+        json={"version": draft.version},
+    )
+
+    assert response.status_code == 409
+    assert repository.saved_criteria == []
+    # 草稿保存被 409 挡下、抽取轨迹随事务回滚，但这次调用已经发生并计费：
+    # 调用记录独立于草稿保存事务，必须留在日志里可核对。
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("model_call")
+    ]
+    assert len(lines) == 1
+    assert "outcome=ok" in lines[0] and "prompt=120" in lines[0]
+    # 调用本身没失败，只是没保存成功，不该记一条失败步骤。
+    assert repository.failed_extractions == []
+
+
+def test_manual_save_does_not_claim_an_extraction(client, auth, repository):
+    draft = seed_draft(repository)
+    response = save_criteria(client, auth, draft, [criterion_payload(draft)])
+
+    assert response.status_code == 200
+    # 手工保存条款没有调用模型，不能凭空写一条抽取轨迹。
+    assert repository.saved_extractions[-1]["model"] is None
 
 
 def test_extract_rejects_same_key_with_different_body(client, auth, repository):

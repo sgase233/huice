@@ -279,7 +279,7 @@ test('抽取结果不确定时显式重试复用请求键和版本', async ({ pa
     if (req.method() === 'POST') {
       keys.push(req.headers()['idempotency-key']); matches.push(req.headers()['if-match']);
       if (keys.length === 1) return route.fulfill({ status: 503, json: { error: { code: 'UNAVAILABLE', message: '暂不可用', details: {} }, traceId: 't' } });
-      return route.fulfill({ headers: { ETag: '"new"', 'Access-Control-Expose-Headers': 'ETag' }, json: { draft: { ...draft, status: 'pending_review' }, criteriaDrafts: [], validationFindings: [], usage: { mode: 'fixture', modelVersion: null, inputTokens: 0, outputTokens: 0, elapsedMs: 1 } } });
+      return route.fulfill({ headers: { ETag: '"new"', 'Access-Control-Expose-Headers': 'ETag' }, json: { draft: { ...draft, status: 'pending_review' }, criteriaDrafts: [], validationFindings: [], usage: { mode: 'deepseek', modelVersion: 'test', inputTokens: 120, outputTokens: 0, elapsedMs: 1, tokensUnknown: true } } });
     }
     if (new URL(req.url()).pathname.endsWith('/policies')) return route.fulfill({ json: { items: [draft], nextCursor: null } });
     return route.fulfill({ headers: { ETag: '"old"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft });
@@ -293,7 +293,8 @@ test('抽取结果不确定时显式重试复用请求键和版本', async ({ pa
   await expect(page.getByText(/抽取结果不确定/)).toBeVisible();
   await page.getByRole('button', { name: '按原请求重试抽取' }).click();
   await expect(page.getByText('演示 · v1 · 待审核')).toBeVisible();
-  await expect(page.getByText(/抽取模式：固定样例/)).toBeVisible();
+  await expect(page.getByText(/用量未知/)).toBeVisible();
+  await expect(page.getByText('输入 120 tokens', { exact: false })).toHaveCount(0);
   expect(keys).toHaveLength(2); expect(keys[0]).toBeTruthy(); expect(keys[1]).toBe(keys[0]); expect(matches).toEqual(['"old"', '"old"']);
 });
 
@@ -688,3 +689,30 @@ test('缺少浏览器加密 API 时提示并禁用依赖加密的操作', async 
   await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /安全上下文草稿/ }).click();
   await expect(page.getByRole('button', { name: '抽取条款' })).toBeDisabled(); await expect(page.getByRole('button', { name: '添加条件', exact: true })).toBeDisabled();
 });
+
+for (const scenario of [
+  { name: '未知用量', usage: { mode: 'deepseek', inputTokens: 120, outputTokens: 0, tokensUnknown: true }, expected: '用量未知', hidden: '输入 120 tokens' },
+  { name: '旧版无状态', usage: { mode: 'deepseek', inputTokens: 0, outputTokens: 0 }, expected: '用量状态未确认', hidden: '输入 0 tokens' },
+  { name: '显式已知', usage: { mode: 'deepseek', inputTokens: 120, outputTokens: 45, tokensUnknown: false }, expected: '输入 120 tokens · 输出 45 tokens', hidden: '用量未知' },
+  { name: '固定样例', usage: { mode: 'fixture', inputTokens: 0, outputTokens: 0 }, expected: '输入 0 tokens · 输出 0 tokens', hidden: '用量状态未确认' },
+  { name: '无效标记', usage: { mode: 'deepseek', inputTokens: 0, outputTokens: 0, tokensUnknown: 'true' }, expected: '抽取结果不确定', hidden: '输入 0 tokens' },
+]) {
+  test(`审核页正确处理${scenario.name}`, async ({ page }) => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const draft = { id, version: 'v1', title: '合成草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_parse', sources: [testSource], criteria: [], validationFindings: [] };
+    await page.route('**/api/v1/admin/policies**', async route => {
+      const req = route.request();
+      if (req.method() === 'POST') return route.fulfill({ headers: { ETag: '"new"', 'Access-Control-Expose-Headers': 'ETag' }, json: { draft: { ...draft, status: 'pending_review' }, criteriaDrafts: [], validationFindings: [], usage: { modelVersion: null, elapsedMs: 1, ...scenario.usage } } });
+      if (new URL(req.url()).pathname.endsWith('/policies')) return route.fulfill({ json: { items: [draft], nextCursor: null } });
+      return route.fulfill({ headers: { ETag: '"old"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft });
+    });
+    await page.goto('/#admin');
+    await page.getByLabel('管理令牌').fill('test-token');
+    await page.getByRole('button', { name: '使用令牌' }).click();
+    await page.getByRole('button', { name: '读取草稿' }).click();
+    await page.getByRole('button', { name: /合成草稿/ }).click();
+    await page.getByRole('button', { name: '抽取条款' }).click();
+    await expect(page.getByText(scenario.expected)).toBeVisible();
+    await expect(page.getByText(scenario.hidden)).toHaveCount(0);
+  });
+}

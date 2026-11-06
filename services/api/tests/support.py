@@ -77,6 +77,8 @@ class FakeRepository:
         self.list_calls: list[dict] = []
         self.get_calls: list[tuple] = []
         self.saved_criteria: list[dict] = []
+        self.saved_extractions: list[dict] = []
+        self.failed_extractions: list[dict] = []
         self.published: list[PolicyDraft] = []
         self.idempotency: dict[tuple[str, object], dict] = {}
         self.error: Exception | None = None
@@ -151,10 +153,21 @@ class FakeRepository:
         status,
         trace_id,
         started_at=None,
+        extraction_model=None,
+        extraction_elapsed_ms=0,
+        extraction_input_chars=0,
     ) -> PolicyDraft:
         draft = self.get_version_for_edit(policy_id, version)
         self._assert_editable(draft, expected_revision)
         self.saved_criteria.append({"criteria": list(criteria), "findings": list(findings), "status": status})
+        # 只有真的抽取过才传 extraction_model；手工保存不传，测试据此断言「不凭空多一条抽取轨迹」。
+        self.saved_extractions.append(
+            {
+                "model": extraction_model,
+                "elapsed_ms": extraction_elapsed_ms,
+                "input_chars": extraction_input_chars,
+            }
+        )
         updated = draft.model_copy(
             update={
                 "criteria": [
@@ -183,6 +196,32 @@ class FakeRepository:
         )
         self._replace(draft, updated)
         return updated
+
+    def record_extraction_failure(
+        self,
+        *,
+        policy_id,
+        version,
+        trace_id,
+        status,
+        error_code,
+        model_or_rule_version,
+        elapsed_ms,
+        usage_unknown,
+    ) -> None:
+        """失败留痕是独立事务：只记下来，不改草稿、不动 revision。"""
+        self.get_version_for_edit(policy_id, version)
+        self.failed_extractions.append(
+            {
+                "version": version,
+                "trace_id": trace_id,
+                "status": status,
+                "error_code": error_code,
+                "model": model_or_rule_version,
+                "elapsed_ms": elapsed_ms,
+                "usage_unknown": usage_unknown,
+            }
+        )
 
     def publish(self, *, policy_id, version, expected_revision, trace_id, started_at=None) -> PolicyDraft:
         draft = self.get_version_for_edit(policy_id, version)
@@ -247,9 +286,17 @@ class FakeRepository:
     def read_idempotent(self, scope: str, key):
         return self.idempotency.get((scope, key))
 
-    def save_idempotent(self, scope: str, key, fingerprint: str, response: dict, revision) -> None:
+    def save_idempotent(
+        self, scope: str, key, fingerprint: str, response: dict, revision, *, usage_semantics
+    ) -> None:
         self.idempotency.setdefault(
-            (scope, key), {"fingerprint": fingerprint, "response": response, "revision": revision}
+            (scope, key),
+            {
+                "fingerprint": fingerprint,
+                "response": response,
+                "revision": revision,
+                "usage_semantics": usage_semantics,
+            },
         )
 
     # ------------------------------------------------------------ 公开政策
