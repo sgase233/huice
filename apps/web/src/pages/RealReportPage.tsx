@@ -4,6 +4,13 @@ import { explanationLabels, factLabels, taxNotice } from '../demo';
 
 type Props = { run: AssessmentRun; policies: PolicyDetail[]; onDownload: () => void; busy: boolean };
 
+const materialStatus = {
+  facts_filled: '所需事实已填写，不代表材料已提交或核验',
+  facts_missing: '所需事实有缺项',
+  manual_check: '需人工核对',
+  policy_closed: '政策已关闭',
+} as const;
+
 export default function RealReportPage({ run, policies, onDownload, busy }: Props) {
   return <section className="page-block real-report"><h1>准备清单与报告</h1>
     <p>分析时间：{run.createdAt}；分析涉及的期间：{run.period.startDate} 至 {run.period.endDate}</p>
@@ -18,7 +25,7 @@ export default function RealReportPage({ run, policies, onDownload, busy }: Prop
           {policy?.status === 'closed' && <p>申报窗口已关闭，仅供查看历史信息。</p>}
           <p>{item.explanation}</p><p>说明来源：{explanationLabels[item.explanationMode]}</p>{item.warnings.map((warning, i) => <p key={i}>{warning}</p>)}{item.staleReasons.map((reason, i) => <p key={i}>{reason.message}</p>)}
           <p>办理方式：{item.preparation.handlingMode === 'tax_self_assessment' ? '自行判断' : '项目申请'}；截止时间：{item.preparation.deadline ?? '未提供'}</p>
-          <ul>{item.preparation.items.map((entry, i) => <li key={i}><strong>{entry.title}</strong>：{entry.description}（{entry.missing ? '资料缺失' : '资料已提供'}）{entry.requiredFactRefs.map(ref => <span key={`${ref.key}-${ref.period.startDate}-${ref.period.endDate}`}> {factLabels[ref.key]}：{ref.period.startDate} 至 {ref.period.endDate}</span>)}</li>)}</ul>
+          <ul>{item.preparation.items.map((entry, i) => <li key={i}><strong>{entry.title}</strong>：{entry.description}（{materialStatus[entry.status] ?? '材料状态未确认，请人工核对'}）{entry.requiredFactRefs.map(ref => <span key={`${ref.key}-${ref.period.startDate}-${ref.period.endDate}`}> {factLabels[ref.key]}：{ref.period.startDate} 至 {ref.period.endDate}</span>)}</li>)}</ul>
           <a href={item.preparation.officialEntryUrl} target="_blank" rel="noreferrer">查看官方入口</a>
           {item.criteriaResults.map(criterion => <section key={criterion.criterionId}><p>{criterion.reason}</p>{criterion.evidenceRefs.map((evidence, i) => <blockquote key={i}>{evidence.quote} <a href={evidence.sourceUrl} target="_blank" rel="noreferrer">官方原文</a></blockquote>)}</section>)}
         </article>;

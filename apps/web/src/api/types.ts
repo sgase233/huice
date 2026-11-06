@@ -203,10 +203,12 @@ export type PreparationTemplateItem = {
 };
 
 export type PreparationItem = {
+  materialId: string;
   title: string;
   description: string;
   requiredFactRefs: Array<FactRef>;
   missing: boolean;
+  status: "facts_filled" | "facts_missing" | "manual_check" | "policy_closed";
 };
 
 export type PreparationTemplate = {

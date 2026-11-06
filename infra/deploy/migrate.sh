@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 执行 001—007 迁移与验收查询。取值走 systemd 自己的解析，不复制它的语法：
+# 执行 001—008 迁移与验收查询。取值走 systemd 自己的解析，不复制它的语法：
 #
 #   1) 服务在跑：读 /proc/<MainPID>/environ——那是 systemd 真正传进进程的那份值，
 #      与它加载 EnvironmentFile 的规则无关，天然一致；
@@ -37,6 +37,7 @@ MIGRATIONS=(
     005_fact_dictionary_extension
     006_fact_dictionary_extension_rc4
     007_idempotency_usage_semantics
+    008_material_requirements
 )
 
 # 只报变量名与原因：连接串里有口令，绝不能回显。

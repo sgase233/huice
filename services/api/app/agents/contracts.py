@@ -35,6 +35,24 @@ class AgentContext:
 
 
 @dataclass(frozen=True, slots=True)
+class MaterialRequirement:
+    """一份已仲裁的材料要求，已按政策解析过「适不适用」。
+
+    只放展示与判定需要的东西：运行期要据 ``proves_fact_keys`` 判断「相关事实有没有
+    取值」，据 ``is_required`` 决定是否无条件出现在清单里。业务代号与文号的对应关系
+    留在导入侧，判断链路不读 CSV。
+    """
+
+    material_id: str
+    policy_type: str
+    title: str
+    is_required: bool
+    condition_desc: str | None
+    description: str
+    proves_fact_keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class SnapshotCriterion:
     """已审核条件在 run 里的快照形态。"""
 
@@ -55,6 +73,10 @@ class PolicySnapshot:
     effective_to: date | None
     window_closes_at: datetime | None
     criteria: Sequence[SnapshotCriterion] = ()
+    materials: Sequence[MaterialRequirement] = ()
+    #: 政策此刻已关闭（适用期已过或申报窗口已关）。库里的 ``status`` 已经按同一口径
+    #: 派生（:data:`app.integrations.storage._CLOSED_CONDITION`），这里只搬运，不重算。
+    closed: bool = False
 
     @property
     def rules(self) -> list[CriterionRule]:
