@@ -400,15 +400,18 @@ journalctl -u huice-api --since today | grep model_call
 ```bash
 cd "/d/Study/比赛/华为ICT大赛/huice"
 X=$(git rev-parse --short HEAD)            # 换成要部署的提交
-git archive --format=tar.gz --prefix=huice/ -o "/tmp/huice-$X.tar.gz" "$X"
+git -c core.autocrlf=false archive --format=tar.gz --prefix=huice/ -o "/tmp/huice-$X.tar.gz" "$X"
 scp "/tmp/huice-$X.tar.gz" root@139.9.33.46:/tmp/
 ```
 
-**ECS 上：备份 → 换整棵目录 → 按需装依赖 → 按需迁移 → 重启**
+**`-c core.autocrlf=false` 不能省**（Windows 上尤其）：`core.autocrlf=true` 时 `git archive` 会把文本文件转成 CRLF 打进包里，`.sh` 直接坏掉（变量名后面多一个 `\r`，读到的值是空串），`.py` 虽能跑但与提交不再逐字节相同，`sha256sum` 核对全部对不上。2026-11-06 第一次按本节部署就栽在这里：`migrate.sh` 报 `DATABASE_URL 为空`，根因是它自己的 CRLF。
+
+**ECS 上：停服务 → 备份 → 换整棵目录 → 按需装依赖 → 起服务 → 按需迁移**
 
 ```bash
 set -e
 X=<刚部署的提交>                            # 与上面一致
+systemctl stop huice-api                    # 先停：别让运行中的进程看着脚底下的目录被移走
 tar -czf "/root/app-before-$X-$(date +%Y%m%d).tar.gz" -C /opt/huice app   # 备份整棵 app
 mv /opt/huice/app "/opt/huice/app.old-$X"
 mkdir -p /opt/huice/app
@@ -418,15 +421,27 @@ chown -R huice:huice /opt/huice/app
 # 依赖只在 requirements.lock 变过时才装：比哈希，别靠印象
 sha256sum /opt/huice/app/services/api/requirements.lock "/opt/huice/app.old-$X/services/api/requirements.lock"
 
-# 迁移只在 infra/sql/ 出现新序号时才跑（顺序与校验见 §2.1）
-ls /opt/huice/app/infra/sql/ | tail -3
-# bash /opt/huice/app/infra/deploy/migrate.sh
+# 换行符自查：应当没有任何输出（CRLF 的 .sh 会坏，见上）
+grep -rlU $'\r' /opt/huice/app --include=*.sh | head
 
-systemctl restart huice-api
+systemctl start huice-api
 systemctl is-active huice-api
 curl -i http://127.0.0.1:8000/api/v1/health
 journalctl -u huice-api -n 30 --no-pager
 ```
+
+**迁移要等服务起来之后再跑**，且**只在 `infra/sql/` 出现了库里没有的序号时才跑**：
+
+```bash
+ls /opt/huice/app/infra/sql/ | tail -3     # 与库里的对照
+# bash /opt/huice/app/infra/deploy/migrate.sh
+```
+
+下面三条都是 2026-11-06 实测踩出来的：
+
+- **服务停止时 `migrate.sh` 取不到 `DATABASE_URL`。** 它服务在跑时读 `/proc/<MainPID>/environ`（第 1 条路径），服务停止时改用 `systemd-run -p EnvironmentFile=`（第 2 条路径）；后者在这台机器上返回空值，脚本随即以「`DATABASE_URL` 为空」停下。先 `systemctl start` 再跑迁移即可绕开。第 2 条路径仍待查——它只在假件里验过（§2.1 末尾），这次是第一次在真实机器上跑到它。
+- **不要在已推进的库上重跑 `migrate.sh`。** 脚本每次从 `001` 顺序重跑，「可重复执行」指的是**幂等**，不是**可以跳过中间状态**：云端库已到 `008` 时重跑，`005` 会把事实字典约束收回 16 键，被库里已有的 `specificMarketSince` 行顶掉，`ERROR: check constraint "enterprise_fact_key_check" ... is violated by some row`。它失败在 `BEGIN` 里、事务回滚，结构没被改动，但这一趟白跑。**库里没有新序号就不要跑**。
+- **`psql` 直查要用服务的环境**：`PID=$(systemctl show -p MainPID --value huice-api)`、`DB=$(tr '\0' '\n' < /proc/$PID/environ | sed -n 's/^DATABASE_URL=//p')`，查完 `unset DB`。连接串会短暂出现在 `psql` 的参数里（`psql` 不认环境变量），别开着 `watch ps`。
 
 **核对装上去的是哪份代码**：`app/evaluation` 的 `fingerprint` 子命令（PR #42 合入后可用）在**两边各算一次**，值相同才算对上；在那之前只能逐文件 `sha256sum` 比对，且注意别拿分支上的文件去比云端 main 的文件：
 
@@ -437,6 +452,10 @@ cd services/api && python -m app.evaluation fingerprint
 ```
 
 **已经手工打过临时补丁的机器不能「只换改过的文件」**：`/opt/huice/app` 一旦被单文件覆盖过（2026-11-06 的抽取提示词热补丁就是），它就不再等于任何提交，只有整目录替换才能回到「某提交的原样」。替换完把差异处理记进 `infra/README.md` §7，别只写在聊天里。
+
+2026-11-06 已按本节把云端从「rc.6 + 热补丁」换成 `112d0a7`（rc.7），热补丁退役：备份在 `/root/app-hotpatched-20261106.tar.gz` 与 `/opt/huice/app.hotpatched-20261106`，确认稳定后可删。提示词本身的修正走 PR #45 回仓库，合并后云端只需换成 main 的提交，内容不变。
+
+**`fingerprint` 也算工作区字节**：同一提交在 Windows（CRLF 检出）与 Linux（LF 部署）算出的指纹不同。核对时要么两边都按提交内容算（`git -c core.autocrlf=false` 导出后再算），要么就接受「换行符不同」这一条差异，别直接判成「部署的代码不一样」。
 
 ### 6.2 回滚到上一个提交
 

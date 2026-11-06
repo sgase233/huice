@@ -114,7 +114,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/007_idempotency_usage_semanti
 
 迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `007_idempotency_usage_semantics.sql`，下一份是 `008_*.sql`），不改历史脚本；每条迁移同样登记 `schema_migration`。
 
-## 4. 云端资源状态（截至 2026-11-03）
+## 4. 云端资源状态（截至 2026-11-06）
 
 ### 4.1 已开通
 
@@ -126,7 +126,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/007_idempotency_usage_semanti
 | 登录方式 | 密码（用户 `root`） | 密码不入文档；建议后续换成密钥对 |
 | CodeArts / Skills | 本人 2026-10-23 告知已开通（未在控制台复核） | **本项目不接入**：队长 2026-10-23 决定，开发过程记录以实际使用的编码工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
 | Redis（DCS） | **已购买并实测连通（2026-10-23）**：`huice-redis`，Redis 7.0（`INFO server` 报 `redis_version:7.x`），**主备**，1 GB，内网 `192.168.0.38:6379` | 在 ECS `huice-api-01` 上 `AUTH` 返回 `OK`、`PING` 返回 `PONG`；密码只进服务器 `.env`，不入库不入文档。**2026-10-26 复测**：`/dev/tcp/192.168.0.38/6379` 可连、`redis-cli --askpass PING` → `PONG`，控制台显示小版本 `7.2.11.5`，白名单已含 ECS 内网 `192.168.0.86`（2026-10-24 的「连接被拒」不复现）。2026-10-26 起判断链路有版本化求值缓存（键前缀 `huice:eval:v1:`，TTL 300 秒），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；Redis 不可达时自动按「未命中重算」执行 |
-| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 按序执行**（`schema_migration` 六行、`fact_period_start/fact_period_end` 两列与 18 键约束均已核对）；**`007_idempotency_usage_semantics.sql` 已于 2026-11-05（UTC 15:11 前后验收）在云端补跑**（项目负责人在 ECS 上执行 `/tmp` 里的副本，文件由分支 blob 导出、`sha256 c3bbc5db…4ce25` 核对一致后才跑；输出 `BEGIN`→四条 DDL→`NOTICE: constraint ... does not exist, skipping`（首跑时 `DROP CONSTRAINT IF EXISTS` 的正常提示）→`INSERT 0 1`→`COMMIT`）。验收：`schema_migration` **七行**；`usage_semantics` 列 `NOT NULL DEFAULT 'legacy'`；`idempotency_record_usage_semantics_check` 就位；表内既有 **1 条**记录落 `legacy`；`/api/v1/health` 仍 200（当时代码仍是 rc.6，先迁移后升级代码是安全方向） |
+| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 按序执行**（`schema_migration` 六行、`fact_period_start/fact_period_end` 两列与 18 键约束均已核对）；**`007_idempotency_usage_semantics.sql` 已于 2026-11-05（UTC 15:11 前后验收）在云端补跑**（项目负责人在 ECS 上执行 `/tmp` 里的副本，文件由分支 blob 导出、`sha256 c3bbc5db…4ce25` 核对一致后才跑；输出 `BEGIN`→四条 DDL→`NOTICE: constraint ... does not exist, skipping`（首跑时 `DROP CONSTRAINT IF EXISTS` 的正常提示）→`INSERT 0 1`→`COMMIT`）。验收：`schema_migration` **七行**；`usage_semantics` 列 `NOT NULL DEFAULT 'legacy'`；`idempotency_record_usage_semantics_check` 就位；表内既有 **1 条**记录落 `legacy`；`/api/v1/health` 仍 200（当时代码仍是 rc.6，先迁移后升级代码是安全方向）。**`008_material_requirements` 在云端已应用，但本文件没有它的执行记录**：2026-11-06 换代码时复核 `schema_migration` 是**八行**（`001`—`008`），008 来自 PR #37 分支的 `351c037`，只建 `material_requirement` / `material_requirement_policy` 两张表并加一行登记、不改既有结构；而当时部署的树只含 001—007，即**库比代码领先一份**（rc.7 不引用这两张表，良性）。同次复核：18 键约束 `enterprise_fact_key_check` 含 `specificMarketSince`/`independentLegalEntity`，`idempotency_record.usage_semantics` 列在位 |
 | OBS（对象存储） | **已购买并建桶（2026-10-23）**：桶 `huice-policies`，**私有**，区域 `cn-south-1`（华南-广州），endpoint `obs.cn-south-1.myhuaweicloud.com` | 区域级服务，不进 VPC；`ObsObjectStore` 已用 `esdk-obs-python` 3.26.6 实现（`obs/<uuid>` 命名空间、失败映射 503），**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项：写入→独立客户端读回字节、删除后 404、两次写入键不冲突、导入正文真正落桶、不可写桶 503 且不泄露凭证，见 §4.3）；**云端已于 2026-11-04 填入四项并实测通过**：`OBJECT_STORE_MODE=obs` 下导入返回 201，库里新来源的 `storage_key` 为 `obs/<uuid>.txt`，用同凭据的 SDK `getObjectMetadata` 查桶内对象返回 200。AK/SK 只存在 ECS 的 `/etc/huice/api.env`（600、仅 root/huice 可读），经 `read -s` 读入，不进命令行与 shell 历史（本地联调用过的一对因失败输出误打印已作废重建） |
 | Docker Desktop + WSL2（本地） | WSL 3.0.3.0 + Docker Desktop 4.96.3 | 已解除，本地 compose 可用 |
 
@@ -298,6 +298,7 @@ systemctl show huice-api -p ExecStart --no-pager
 
 - [x] 首版部署到 ECS（2026-11-02）：`provision.sh` 六步通过、`/health` 本机与外网 200（`1.0.0-rc.5`）、鉴权分层与写路径冒烟通过；详见 `docs/devlog/M1.md` 同日条目
 - [x] 重新部署到 rc.6（2026-11-03）：`51d4f44` → `3f72e31` 快进，`/health` 本机与外网 200、版本 `1.0.0-rc.6`、响应无堆栈；仅 `TraceStep.objectRefs` 一处运行时改动，无新依赖、无新迁移
+- [x] 整目录替换到 rc.7（2026-11-06）：`112d0a7`（= main `7b4b72b` + PR #45 的抽取提示词修正）按 `deploy/README.md` §6.1 替换，退出「rc.6 + 热补丁」漂移状态。`/health` 本机 `1.0.0-rc.7`、外网 `/api/v1/health` 与 `/` 均 200；`extraction.py` 与 `migrate.sh` 逐字节对上提交；无新依赖（`requirements.lock` 未变）、无新迁移。三处坑已回写 §6.1：Windows 上 `git archive` 的 CRLF、服务停止时 `migrate.sh` 取不到 `DATABASE_URL`、已推进的库不可重跑迁移
 - [ ] 从空环境按本文件 + 部署脚本复现（11/15 要求）
 - [ ] 记录镜像/依赖版本、目标规格、地域、VPC 与初始化命令
 - [ ] 回滚：镜像回退 + 数据库只增不改（新增 `002_*.sql`），不 `DROP` 生产表
@@ -334,7 +335,7 @@ systemctl show huice-api -p ExecStart --no-pager
 services\api\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir services/api --host 127.0.0.1 --port 8000
 
 # 正常（2026-10-23 实测：连本地 compose 的 PostgreSQL 16.15）
-curl.exe -i http://127.0.0.1:8000/api/v1/health          # 200 {"status":"ok","version":"1.0.0-rc.6"} + X-Trace-Id
+curl.exe -i http://127.0.0.1:8000/api/v1/health          # 200 {"status":"ok","version":"1.0.0-rc.7"} + X-Trace-Id
 
 # 停掉数据库后（实测：docker compose stop db 后返回 503，X-Trace-Id 与 body.traceId 一致）
 curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":"DEPENDENCY_UNAVAILABLE",...}}
@@ -342,7 +343,7 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 健康检查不鉴权、不返回连接串或主机名。502/503 只表示依赖不可用，不代表进程异常。
 
-## 7. 部署（venv + systemd + nginx；2026-11-02 首版上线，2026-11-03 起为 443 同源站点）
+## 7. 部署（venv + systemd + nginx；2026-11-02 首版上线，2026-11-03 起为 443 同源站点，2026-11-06 换为 rc.7）
 
 方式：**venv + systemd + nginx**，文件在 [deploy/](deploy/)，步骤见 [deploy/README.md](deploy/README.md)。
 
@@ -356,9 +357,11 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 `infra/deploy/deploy.ps1` 未删除，仍是占位文件；本阶段以 `deploy/README.md` 的手工步骤为准。
 
-**执行前提（均已完成，留作复现口径）**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **007**（`schema_migration` 七行，004—006 于 2026-11-02 补齐、007 于 2026-11-05 补跑，见 §4.1）；**代码仍是 rc.6**，rc.7 待 PR #34 合入后部署。代码侧 2026-11-02 首版部署、2026-11-03 重新部署到 `1.0.0-rc.6` 并启用 443 同源站点（勾选项见 §5.2，过程见 `docs/devlog/M1.md`），此后只需按提交更新代码。MaaS 已不在范围内；云端 `MODEL_MODE` 现为 `deepseek`（2026-11-04 验证成功路径，见 §4.3 与 §4.2），`OBJECT_STORE_MODE` 现为 `obs`（2026-11-04 实测通过，见 §4.1）。仍未闭合的是**从空环境按本文件与部署脚本从零复现**（11/15 要求，§5.2 尚未勾选）。
+**执行前提（均已完成，留作复现口径）**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **008**（`schema_migration` 八行：004—006 于 2026-11-02 补齐、007 于 2026-11-05 补跑、008 见 §4.1 那条说明）；**代码是 rc.7**，2026-11-06 按 `deploy/README.md` §6.1 整目录换成 `112d0a7`（此前是「rc.6 + 抽取提示词单文件热补丁」的漂移状态）。代码侧 2026-11-02 首版部署、2026-11-03 重新部署到 `1.0.0-rc.6` 并启用 443 同源站点（勾选项见 §5.2，过程见 `docs/devlog/M1.md`），此后只需按提交更新代码。MaaS 已不在范围内；云端 `MODEL_MODE` 现为 `deepseek`（2026-11-04 验证成功路径，见 §4.3 与 §4.2），`OBJECT_STORE_MODE` 现为 `obs`（2026-11-04 实测通过，见 §4.1）。仍未闭合的是**从空环境按本文件与部署脚本从零复现**（11/15 要求，§5.2 尚未勾选）。
 
 上云前的准备项、环境变量对照与目标时间表见第 5 节；计划的云端节点是 11/08，实际已于 2026-11-02 提前完成部署，剩下的是 11/15 的空环境复现。
+
+**2026-11-06：从「rc.6 + 热补丁」换回某个提交（`112d0a7`）。** 背景：当天为让真实跑数可用，把 `/opt/huice/app/.../agents/extraction.py` 单文件覆盖成修好的提示词（rc.6 底座 + 仅提示词，16897 字节，`sha256 76d8576c…81c8a`，备份 `/root/extraction.py.bak-20261106`）——从此云端不再等于任何提交。按 `deploy/README.md` §6.1 整目录替换到 `112d0a7` 后：`/health` 本机与外网均 `1.0.0-rc.7`，`/` 200（前端未受影响，站点根 `/opt/huice/web` 在 app 目录之外），日志无堆栈与连接串；`extraction.py`（`7e21da39…`）与 `migrate.sh`（`3c6c54f2…`）逐字节对上提交；无新依赖、无新迁移。抽取冒烟（`extract_criteria` 直调，不连库）：`criteria=3 status=needs_review usage_known=True model=deepseek-flash`——`usage_known` 由 `n/a` 变为真布尔值，同时证明新代码与修好的提示词都在跑；条数比热补丁时的 4 条少 1，属模型波动（见 §4.3「覆盖率是下限」）。回滚留档：`/root/app-hotpatched-20261106.tar.gz` 与 `/opt/huice/app.hotpatched-20261106`，稳定后可删。提示词修正本身走 PR #45 回仓库，合并后云端再换成 main 的提交时内容不变、无需再打补丁。
 
 ## 8. 回退
 
