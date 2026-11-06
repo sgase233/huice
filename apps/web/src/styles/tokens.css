@@ -1,15 +1,15 @@
 :root {
   font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  color: #182b32;
-  background: #f4f7f7;
+  color: #171717;
+  background: #fafafa;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --ink: #182b32;
-  --muted: #546872;
-  --line: #d9e3e5;
-  --brand: #0a5362;
-  --brand-dark: #083e49;
+  --ink: #171717;
+  --muted: #646464;
+  --line: #e5e5e5;
+  --brand: #171717;
+  --brand-dark: #333333;
   --surface: #ffffff;
-  --canvas: #f4f7f7;
-  --focus: #d96918;
+  --canvas: #fafafa;
+  --focus: #7b7b7b;
 }

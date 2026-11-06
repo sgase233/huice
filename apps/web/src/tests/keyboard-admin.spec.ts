@@ -78,7 +78,7 @@ test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取',
   await expect(page.getByRole('status')).toContainText('发布请求已成功'); await expect(page.getByRole('alert')).toHaveCount(0); expect(published).toBe(true);
   const traceNav = page.getByRole('button', { name: '处理轨迹' });
   await tabTo(page, traceNav); await page.keyboard.press('Enter');
-  const run = page.getByLabel('分析运行 UUID');
+  const run = page.getByLabel('分析记录编号');
   await expect(run).toBeVisible(); await tabTo(page, run); await page.keyboard.insertText(id);
   await expectLabels(page);
   await tabTo(page, page.getByRole('button', { name: '读取轨迹' })); await page.keyboard.press('Enter');

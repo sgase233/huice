@@ -9,6 +9,16 @@ const ref = { policyId: pid, sourceId: id, sourceUrl: 'https://www.gov.cn/', sou
 const assessment = { policyId: pid, result: 'not_satisfied', validity: 'stale', staleReasons: [{ code: 'fact_changed', message: '事实已变化', changedCriterionIds: [], changedFactRefs: [] }], criteriaResults: [{ criterionId: id, result: 'not_satisfied', reason: '行业排除', factRefs: [{ key: 'industry', period }], evidenceRefs: [ref], calculation: null }], missingFacts: [], nextQuestion: null, validUntil: null, preparation: {}, explanation: '测试解释', explanationMode: 'fixture', warnings: [] };
 const run = { id: rid, enterpriseId: id, period, asOf: '2026-10-30T00:00:00Z', createdAt: '2026-10-30T00:00:00Z', policyVersionMap: { [pid]: 'v1' }, factVersion: 'abc', ruleVersion: 'v1', supersedesRunId: null, assessments: [assessment] };
 
+test('跳到主要内容不会退出工作台', async ({ page }) => {
+  await page.goto('/#enterprise');
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('link', { name: '跳到主要内容' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#real-main$/);
+  await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '主导航' })).toBeVisible();
+});
+
 test('真实模式通过 API 创建画像、分析并按快照版本读取证据', async ({ page }) => {
   let enterprise: object = {};
   let detailUrl = '';
@@ -26,7 +36,7 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
     if (url.pathname.endsWith(`/policies/${pid}`)) { detailUrl = request.url(); return json({ ...policy, criteria: [{ id, title: '行业条件', sourceSpans: [ref] }] }); }
     return route.abort();
   });
-  await page.goto('/');
+  await page.goto('/#enterprise');
   await page.getByRole('button', { name: '保存当前样本' }).click();
   await expect(page.getByText('已保存合成企业：合成企业 A')).toBeVisible();
   await page.getByRole('button', { name: '机会列表' }).click();
@@ -49,22 +59,22 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
 
 test('真实模式保留输入并显示接口错误，不切换成固定结果', async ({ page }) => {
   await page.route('**/api/v1/enterprises', route => route.fulfill({ status: 503, json: { error: { code: 'DEPENDENCY_UNAVAILABLE', message: '服务暂不可用', details: {} }, traceId: 'trace-test' } }));
-  await page.goto('/');
+  await page.goto('/#enterprise');
   await page.getByRole('button', { name: '保存当前样本' }).click();
   await expect(page.getByRole('alert')).toContainText('服务暂不可用');
   await expect(page.getByRole('alert')).toContainText('trace-test');
-  await expect(page.getByLabel('合成企业名称')).toHaveValue('合成企业 A');
+  await expect(page.getByLabel('示例企业名称')).toHaveValue('合成企业 A');
   await expect(page.getByText('静态合成演示 · 未进行真实资格判断')).toHaveCount(0);
 });
 
 test('新增布尔事实以 JSON 布尔值保存，比例和负增量可填写', async ({ page }) => {
   let posted: { facts: Array<{ key: string; value: unknown }> } | undefined;
   await page.route('**/api/v1/enterprises', async route => { posted = route.request().postDataJSON(); await route.fulfill({ status: 503, json: { error: { message: '测试终止' } } }); });
-  await page.goto('/');
+  await page.goto('/#enterprise');
   for (const [key, value] of [['creditRecord', 'true'], ['rdAddDeductionClaimed', 'false'], ['rdExpenseIncrease', '-125.50'], ['rdExpenseRevenueRatio', '0.03']]) {
-    await page.getByRole('button', { name: '添加事实' }).click();
+    await page.getByRole('button', { name: '添加一项信息' }).click();
     const fact = page.locator('fieldset').last();
-    await fact.getByLabel('字段').selectOption(key);
+    await fact.getByLabel('信息类型').selectOption(key);
     await fact.getByRole('checkbox', { name: '未知' }).uncheck();
     if (key === 'creditRecord' || key === 'rdAddDeductionClaimed') await fact.getByLabel('值').selectOption(value);
     else await fact.getByLabel('值').fill(value);
@@ -79,12 +89,12 @@ test('新增布尔事实以 JSON 布尔值保存，比例和负增量可填写',
 
 test('真实模式移动端可读且错误摘要可定位', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto('/');
-  await page.getByLabel('合成企业名称').fill('');
+  await page.goto('/#enterprise');
+  await page.getByLabel('示例企业名称').fill('');
   await page.getByRole('button', { name: '保存当前样本' }).click();
   await expect(page.getByRole('alert')).toBeFocused();
-  await page.getByRole('link', { name: '请填写合成企业名称。' }).click();
-  await expect(page.getByLabel('合成企业名称')).toBeFocused();
+  await page.getByRole('link', { name: '请填写示例企业名称。' }).click();
+  await expect(page.getByLabel('示例企业名称')).toBeFocused();
   for (const width of [375, 768, 1440]) {
     await page.setViewportSize({ width, height: 812 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -106,7 +116,7 @@ for (const [state, label] of [['satisfied', '条件初步满足'], ['insufficien
       if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, status: 'closed', criteria: [{ id, title: '合成条件', sourceSpans: [ref] }] } });
       return route.abort();
     });
-    await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click();
+    await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
     await page.getByRole('button', { name: '机会列表' }).click();
     await page.getByRole('checkbox', { name: '选择分析' }).check();
     await page.getByRole('button', { name: '分析所选政策' }).click();
@@ -134,16 +144,16 @@ test('未保存画像切换页面后保留，提交期间禁止重复操作', as
     await new Promise(resolve => setTimeout(resolve, 1000));
     await route.fulfill({ status: 422, json: { error: { code: 'VALIDATION_ERROR', message: '请检查字段' }, traceId: 'trace-422' } });
   });
-  await page.goto('/');
-  await page.getByLabel('合成企业名称').fill('尚未保存的样本');
+  await page.goto('/#enterprise');
+  await page.getByLabel('示例企业名称').fill('尚未保存的样本');
   await page.getByRole('button', { name: '机会列表' }).click();
   await page.getByRole('button', { name: '企业画像' }).click();
-  await expect(page.getByLabel('合成企业名称')).toHaveValue('尚未保存的样本');
+  await expect(page.getByLabel('示例企业名称')).toHaveValue('尚未保存的样本');
   await page.getByRole('button', { name: '保存当前样本' }).click();
   await expect(page.getByRole('button', { name: '机会列表' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '保存中…' })).toBeDisabled();
   await expect(page.getByRole('alert')).toContainText('trace-422');
-  await expect(page.getByLabel('合成企业名称')).toHaveValue('尚未保存的样本');
+  await expect(page.getByLabel('示例企业名称')).toHaveValue('尚未保存的样本');
   expect(requests).toBe(1);
 });
 
@@ -155,7 +165,7 @@ test('列表 403 和版本详情 404 明确显示，不回退到样例', async (
     if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ status: 404, json: { error: { code: 'POLICY_NOT_FOUND', message: '政策版本不存在' }, traceId: 'trace-404' } });
     return route.abort();
   });
-  await page.goto('/'); await page.getByRole('button', { name: '机会列表' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '机会列表' }).click();
   await expect(page.getByRole('alert')).toContainText('trace-403');
   denied = false; await page.getByRole('button', { name: '刷新列表' }).click();
   await expect(page.getByText('已审合成政策')).toBeVisible();
@@ -178,7 +188,7 @@ test('刷新运行失败不展示旧结论，错误政策版本不能充当快�
     if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, version: wrongVersion ? 'v2' : 'v1', criteria: [] } });
     return route.abort();
   });
-  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
   await page.getByRole('button', { name: '机会列表' }).click();
   await page.getByRole('checkbox', { name: '选择分析' }).check();
   await page.getByRole('button', { name: '分析所选政策' }).click();
@@ -188,16 +198,16 @@ test('刷新运行失败不展示旧结论，错误政策版本不能充当快�
   await expect(page.getByText('结果暂不可用，请刷新后核对。')).toBeVisible();
   await expect(page.getByText('不满足条件')).toHaveCount(0);
   runReadFails = false; await page.getByRole('button', { name: '查看详情' }).click();
-  await expect(page.getByRole('alert')).toContainText('政策版本与分析快照不一致');
+  await expect(page.getByRole('alert')).toContainText('政策版本与本次分析记录不一致');
   await expect(page.getByText('测试原文')).toHaveCount(0);
   wrongVersion = false;
   await page.getByRole('button', { name: '机会列表' }).click();
   await page.getByRole('button', { name: '查看详情' }).click();
-  await expect(page.getByRole('alert')).toContainText('政策条件与分析快照不一致');
+  await expect(page.getByRole('alert')).toContainText('政策条件与本次分析记录不一致');
 });
 
 test('字段错误提示关联输入且摘要可定位至出错值', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/#enterprise');
   const income = page.locator('fieldset').nth(2);
   await income.getByRole('checkbox', { name: '未知' }).uncheck();
   await income.getByLabel('值').fill('1.234');
@@ -205,7 +215,7 @@ test('字段错误提示关联输入且摘要可定位至出错值', async ({ pa
   const input = income.getByLabel('值');
   await expect(input).toHaveAttribute('aria-invalid', 'true');
   await expect(input).toHaveAttribute('aria-describedby', 'fact-error-2');
-  await page.getByRole('link', { name: /应纳税所得额需要/ }).click();
+  await page.getByRole('link', { name: /应纳税所得额请填写/ }).click();
   await expect(input).toBeFocused();
 });
 
@@ -217,7 +227,7 @@ test('分页、筛选保留可见的选择计数，切换模式清空会话', as
     if (url.searchParams.get('type') === 'grant') return route.fulfill({ json: { items: [second], nextCursor: null } });
     return route.fulfill({ json: { items: [policy], nextCursor: 'next-page' } });
   });
-  await page.goto('/'); await page.getByRole('button', { name: '机会列表' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '机会列表' }).click();
   await page.getByRole('checkbox', { name: '选择分析' }).check();
   await page.getByRole('button', { name: '加载更多' }).click();
   await expect(page.getByText('另一项合成政策')).toBeVisible();
@@ -241,7 +251,7 @@ test('真实模式支持 hash 入口与浏览器前进后退', async ({ page }) 
   await page.goBack();
   await expect(page.getByRole('heading', { name: '政策机会' })).toBeVisible();
   await page.goForward();
-  await expect(page.getByRole('heading', { name: '先把企业事实说清楚' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
 });
 
 test('较早的列表响应不会覆盖更新的请求', async ({ page }) => {
@@ -278,7 +288,7 @@ test('分析网络中断不自动重试，401 显示错误且不生成结论', a
     }
     return route.abort();
   });
-  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
   await page.getByRole('button', { name: '机会列表' }).click();
   await page.getByRole('checkbox', { name: '选择分析' }).check();
   await page.getByRole('button', { name: '分析所选政策' }).click();
@@ -304,7 +314,7 @@ test('人工核查条件保持证据不足并展示后端理由', async ({ page 
     if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: [{ id, title: '人工核查条件', expression: { op: 'manual_review', reason: '需人工核查法人资格' }, sourceSpans: [ref] }] } });
     return route.abort();
   });
-  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
   await page.getByRole('button', { name: '机会列表' }).click();
   await page.getByRole('checkbox', { name: '选择分析' }).check();
   await page.getByRole('button', { name: '分析所选政策' }).click();
@@ -335,12 +345,20 @@ test('补问写入事实并重算，跳过不修改事实，报告按版本下�
     if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: [{ id, title: '行业条件', sourceSpans: [ref] }] } });
     return route.abort();
   });
-  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
   await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
-  await page.getByLabel('回答（CNY）').fill('1.234'); await page.getByRole('button', { name: '保存并重新分析' }).click();
-  await expect(page.getByLabel('回答（CNY）')).toBeFocused(); await expect(page.getByLabel('回答（CNY）')).toHaveAttribute('aria-invalid', 'true');
+  for (const width of [375, 768, 1440]) {
+    await page.setViewportSize({ width, height: 850 });
+    const input = await page.getByLabel('回答（元）').boundingBox();
+    const button = await page.getByRole('button', { name: '保存并重新分析' }).boundingBox();
+    expect(input && button && input.y + input.height <= button.y).toBeTruthy();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (width === 375 || width === 1440) await page.getByRole('region', { name: '优先补充问题' }).screenshot({ path: `test-results/question-${width}.png` });
+  }
+  await page.getByLabel('回答（元）').fill('1.234'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await expect(page.getByLabel('回答（元）')).toBeFocused(); await expect(page.getByLabel('回答（元）')).toHaveAttribute('aria-invalid', 'true');
   expect(patches).toBe(0);
-  await page.getByLabel('回答（CNY）').fill('0'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await page.getByLabel('回答（元）').fill('0'); await page.getByRole('button', { name: '保存并重新分析' }).click();
   await expect(page.getByText('诚信记录是否良好')).toBeVisible(); await page.getByRole('button', { name: '跳过（未知或不确定）' }).click();
   await expect(page.getByText(/当前没有需要补充的问题/)).toBeVisible(); expect(patches).toBe(1);
   await page.getByLabel('本次会话的分析历史').selectOption(rid);
@@ -355,11 +373,11 @@ test('补问写入事实并重算，跳过不修改事实，报告按版本下�
     await expect(page.getByRole('heading', { name: '准备清单与报告' })).toBeVisible();
     await page.screenshot({ path: `test-results/real-report-${width}.png`, fullPage: true });
   }
-  const downloadButton = page.getByRole('button', { name: '下载 Markdown 报告' });
+  const downloadButton = page.getByRole('button', { name: '下载报告（Markdown 格式）' });
   await downloadButton.focus(); await expect(downloadButton).toBeFocused();
   const download = page.waitForEvent('download'); await page.keyboard.press('Enter'); expect((await download).suggestedFilename()).toBe(`assessment-${thirdId}.md`);
   failReport = true;
-  await page.getByRole('button', { name: '下载 Markdown 报告' }).click();
+  await page.getByRole('button', { name: '下载报告（Markdown 格式）' }).click();
   await expect(page.getByRole('alert')).toContainText('报告暂不可用');
   await expect(page.getByRole('alert')).toContainText('report-trace');
 });
@@ -379,8 +397,8 @@ test('补问冲突保留输入并读取当前画像；重算失败只重试分�
     if (path.endsWith('/assessment-runs') && req.method() === 'POST') { creates++; if (creates === 2) return route.fulfill({ status: 503, json: { error: { message: '分析暂不可用' } } }); return route.fulfill({ json: creates === 1 ? first : next }); }
     return route.abort();
   });
-  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
-  const answer = page.getByLabel('回答（CNY）'); await answer.fill('200'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  const answer = page.getByLabel('回答（元）'); await answer.fill('200'); await page.getByRole('button', { name: '保存并重新分析' }).click();
   await expect(page.getByRole('alert')).toContainText('画像已更改'); await expect(answer).toHaveValue('200'); expect(reads).toBe(1); expect(patches).toBe(1);
   await page.getByRole('button', { name: '保存并重新分析' }).click(); await expect(page.getByRole('alert')).toContainText('事实已保存，但分析未完成');
   await page.getByRole('button', { name: '重试分析' }).click(); await expect(page.getByText(/当前没有需要补充的问题/)).toBeVisible(); expect(patches).toBe(2); expect(creates).toBe(3);
@@ -400,11 +418,11 @@ test('补问写入网络中断后先读取画像且不自动重发', async ({ pa
     if (path.endsWith('/assessment-runs')) return route.fulfill({ json: snapshot });
     return route.abort();
   });
-  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
-  await page.getByLabel('回答（CNY）').fill('200'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await page.getByLabel('回答（元）').fill('200'); await page.getByRole('button', { name: '保存并重新分析' }).click();
   await expect(page.getByRole('alert')).toContainText('请重新读取画像并核对后重试');
-  await expect(page.getByText('当前画像中的值：200')).toBeVisible();
-  await expect(page.getByLabel('回答（CNY）')).toHaveValue('200');
+  await expect(page.getByText('当前填写的内容：200')).toBeVisible();
+  await expect(page.getByLabel('回答（元）')).toHaveValue('200');
   expect(reads).toBe(1); expect(patches).toBe(1);
 });
 
@@ -424,7 +442,7 @@ test('历史切换保留各运行跳过记录，报告加载失败提示不可�
     if (path.endsWith(`/assessment-runs/${otherId}`)) return failRun ? route.fulfill({ status: 503, json: { error: { message: '加载失败' } } }) : route.fulfill({ json: second });
     return route.abort();
   });
-  await page.goto('/'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click(); await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
   await page.getByRole('button', { name: '跳过（未知或不确定）' }).click(); await expect(page.getByText('第二问')).toBeVisible();
   await page.getByLabel('本次会话的分析历史').selectOption(rid); await page.getByLabel('本次会话的分析历史').selectOption(otherId);
   await page.getByRole('button', { name: '跳过（未知或不确定）' }).click(); await expect(page.getByRole('alert')).toContainText('测试终止'); expect(lastSkipped).toEqual([ref1, ref2]);
