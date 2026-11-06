@@ -9,8 +9,8 @@
 脚本时用绝对路径、显式给工作目录、不靠 ``cd`` 兜底。命令本身能否跑通仍要在真实 systemd
 上验，本用例只挡住「照抄一定失败」的那类写法。
 
-§6.2 的回滚用例同理：只检查「对象目录是否无条件随回滚走、有没有校验、命名是否与 §6.1
-一致」，不执行 && / cp 这些命令。
+§6.2 同理：回滚的命令放在 ``infra/deploy/rollback.sh``，行为由
+``test_rollback_script.py`` 真跑 shell 覆盖；这里只检查手册没有又手写一套命令。
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def test_no_example_relies_on_cd_before_systemd_run():
             f"{block}"
         )
 
-# ------------------------------------------------------------- §6.1/§6.2 回滚契约
+# ------------------------------------------------------------- §6.2 回滚契约
 
 
 def _section(text: str, title: str, next_title: str) -> str:
@@ -100,77 +100,31 @@ def _section(text: str, title: str, next_title: str) -> str:
 
 
 def _rollback_section() -> str:
-    text = DEPLOY_README.read_text(encoding="utf-8")
-    return _section(text, "### 6.2 ", "\n## ")
+    return _section(DEPLOY_README.read_text(encoding="utf-8"), "### 6.2 ", "\n## ")
 
 
-def test_the_rollback_merges_objects_unconditionally():
-    """§6.1 会把 ``.local-objects`` 搬进新目录，旧树里通常**没有**这个子目录。
+def test_every_command_in_the_rollback_section_is_the_tested_script():
+    """回滚不再手写「comm 有输出就停下」这类命令：判据得由命令自己返回非零。
 
-    「两边都在才合并」在这种状态下永远为假，更新窗内的对象会全部留在 ``app.bad-*``
-    里，回滚后的服务读不到（M2 在 #44 的 P1）。所以：目标目录必须无条件建出来，
-    合并源必须是被替换掉的那棵树。
+    ``comm`` 有差异时退出码仍是 0、``cp -an`` 遇到同名文件会静默跳过——这两条都不是
+    写在文档里就会生效的（M2 在 #44 的复审 P1）。命令改由 ``infra/deploy/rollback.sh``
+    执行，行为由 ``test_rollback_script.py`` 在临时目录里真跑 shell 覆盖。
     """
 
+    blocks = _FENCE.findall(_rollback_section())
+    assert blocks, "§6.2 里没有可执行的示例"
+    for block in blocks:
+        assert "rollback.sh" in block, f"§6.2 里还有手写命令：\n{block}"
+
+
+def test_the_rollback_section_states_the_exit_codes():
     section = _rollback_section()
-    assert "[ -d /opt/huice/app/.local-objects ] && [ -d" not in section, (
-        "§6.2 仍在用「两边都在才合并」的条件：§6.1 已经把对象搬走，这个条件在真实"
-        "回滚路径上永远是假。"
-    )
-    commands = [line.strip() for line in section.splitlines()]
-    merge = next(
-        (
-            index
-            for index, line in enumerate(commands)
-            if line.startswith('cp -an "/opt/huice/app.bad-$X/.local-objects/.')
-        ),
-        None,
-    )
-    assert merge is not None, "§6.2 没有把 app.bad-$X 里的对象并回旧树"
-    assert any(
-        line.startswith("install -d") and "app.old-$X/.local-objects" in line
-        for line in commands[:merge]
-    ), "合并不前先建目标目录：旧树里通常已经没有 .local-objects，cp 会直接失败"
+    assert "退出码" in section
+    for code in ("**0**", "**2**", "**3**", "**4**", "**5**"):
+        assert code in section, f"§6.2 没写退出码 {code} 的含义"
 
 
-def test_the_rollback_verifies_every_object_arrived():
-    """合并后要能证明「源里的每个文件都在目标里」，而不是 merger 完就当成功。"""
-
-    section = _rollback_section()
-    assert "comm -23" in section, "§6.2 没有校验对象是否全部搬过去"
-    before_check = section.split("comm -23", 1)[0]
-    assert "app.bad-$X/.local-objects" in before_check, "校验的源清单应取自 app.bad-$X"
-
-
-def test_the_rollback_uses_the_same_directory_names_as_the_update():
-    """更新以目标提交命名 ``app.old-$X``，回滚照着用即可——换个名字容易找错目录。"""
-
-    section = _rollback_section()
-    assert "<上一个提交>" not in section, (
-        "§6.2 仍写「app.old-<上一个提交>」：§6.1 实际建的是 app.old-$X（X 是本次部署"
-        "的提交），两节名字对不上。"
-    )
-    assert "app.old-$X" in section
-
-
-def test_the_update_refuses_to_overwrite_an_existing_old_directory():
-    """``app.old-$X`` 已存在时 ``mv`` 会把它塞到里面，事后从目录名上看不出来。"""
-
-    text = DEPLOY_README.read_text(encoding="utf-8")
-    update = _section(text, "### 6.1 ", "### 6.2 ")
-    assert '[ ! -e "/opt/huice/app.old-$X" ]' in update, "§6.1 缺 app.old-$X 已存在时的守卫"
-
-
-def test_the_backup_restore_keeps_objects_created_during_the_update():
-    """备份包是**更新前**打的，直接解包会把更新窗内的新对象覆盖掉：先另存、再并回。"""
-
-    section = _rollback_section()
-    extract = section.index("tar -xzf")
-    assert section.index("objects-after-update-$X") < extract, (
-        "备份包路线要先另存当前对象再解包，否则更新窗内的对象随目录一起没了"
-    )
-    assert section.index('cp -an "/root/objects-after-update-$X/."') > extract, (
-        "解包之后要把另存的对象并回去（不覆盖）"
-    )
-    assert "comm -23" in section.split("tar -xzf", 1)[1], "备份包路线同样要校验对象齐全"
-
+def test_the_update_section_points_back_to_the_rollback():
+    update = _section(DEPLOY_README.read_text(encoding="utf-8"), "### 6.1 ", "### 6.2 ")
+    assert "§6.2" in update, "§6.1 没有告诉人回滚按哪一节做"
+    assert "app.old-$X" in update, "§6.1 的旧目录名与 §6.2 的对不上"

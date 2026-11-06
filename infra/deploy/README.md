@@ -430,7 +430,8 @@ if [ -d "/opt/huice/app.old-$X/.local-objects" ]; then
 fi
 chown -R huice:huice /opt/huice/app
 chmod 750 /opt/huice/app/.local-objects 2>/dev/null || true   # 没有对象目录时（obs 模式）跳过
-# 搬走之后 app.old-$X 里就没有这个子目录了：回滚时按 §6.2 无条件搬回去，别在那边写「两边都在才合并」——那个条件在真实回滚路径上永远是假。
+# 搬走之后 app.old-$X 里就没有这个子目录了：回滚必须把它带回去，由 §6.2 的
+# rollback.sh 无条件搬回并逐个校验（同名对象内容不同就停下），别在这里或那边手写分支。
 
 # 依赖只在 requirements.lock 变过时才装：比哈希，别靠印象
 sha256sum /opt/huice/app/services/api/requirements.lock "/opt/huice/app.old-$X/services/api/requirements.lock"
@@ -509,66 +510,38 @@ cd services/api && python -m app.evaluation fingerprint
 
 ### 6.2 回滚到上一个提交
 
-回滚有两条不能省的约束，缺一条都会落到「服务起来了、附件却没了」：整棵目录要换回**更新前**的那棵树，对象目录要**无条件**跟着回滚一起走。§6.1 已经把 `.local-objects` 从 `app.old-$X` 搬进了新目录，所以回滚时旧树里通常**没有**这个子目录——按「两边都在才合并」写，条件正好为假，对象就全留在坏目录里了（M2 在 #44 的 P1）。
+回滚有两件事必须同时成立，缺一条都是「服务起来了、附件却没了」：代码树换回**更新前**那份，持久对象目录跟着一起走。§6.1 已经把 `.local-objects` **搬**进了新目录，所以旧树里通常没有这个子目录；而 `cp -a` 的 `-n` 只保证不覆盖、遇到同名文件会静默跳过，`comm` 有差异时退出码也仍是 0——写在手册里的「有输出就停下」不会自己发生。所以这一段不再手写命令，改由 `infra/deploy/rollback.sh` 执行：判据由命令自己返回非零，行为由 `services/api/tests/test_rollback_script.py` 在临时目录里真跑 shell 覆盖（正常更新→更新窗内新增对象→回滚、同名对象内容不同、对象放不进去、obs 模式、备份包还原）。
 
-下面的 `X` 用 §6.1 那次**实际部署**的提交号（也就是坏掉的那个），不是「上一个提交」：`app.old-$X` 这个名字是 §6.1 起的，里面装的是更新前的代码，名字跟着新提交走。回滚时别再换一套命名，否则容易找错目录。
-
-```bash
-set -e
-X=<§6.1 部署的提交>                        # 与 6.1 的 X 一致；app.old-$X = 更新前的树
-systemctl stop huice-api
-
-[ -d /opt/huice/app ] || { echo "/opt/huice/app 不存在，先看 6.1 是不是做了一半"; exit 1; }
-[ -d "/opt/huice/app.old-$X" ] || { echo "找不到 /opt/huice/app.old-$X，改用文末的备份包路线"; exit 1; }
-[ ! -e "/opt/huice/app.bad-$X" ] || { echo "app.bad-$X 已存在，先人工确认它是什么"; exit 1; }
-
-mv /opt/huice/app "/opt/huice/app.bad-$X"
-
-# 当前全部对象（更新前的 + 更新窗内新导入的）现在在 app.bad-$X/.local-objects 里。
-# 旧树里这个子目录通常已被 6.1 搬走：无条件建一个再整体并入——不建就没地方并，
-# 「两边都在才合并」在这里一定是假，对象会全部留在坏目录里。
-install -d -o huice -g huice -m 750 "/opt/huice/app.old-$X/.local-objects"
-cp -an "/opt/huice/app.bad-$X/.local-objects/." "/opt/huice/app.old-$X/.local-objects/"
-
-# 校验：源里的每个文件都必须出现在目标里。comm -23 应无输出；
-# 有输出说明有对象没搬过去，别起服务，先查权限与空间。
-(cd "/opt/huice/app.bad-$X/.local-objects" && find . -type f | sort) > /tmp/rollback-src.txt
-(cd "/opt/huice/app.old-$X/.local-objects" && find . -type f | sort) > /tmp/rollback-dst.txt
-comm -23 /tmp/rollback-src.txt /tmp/rollback-dst.txt
-
-chown -R huice:huice "/opt/huice/app.old-$X"
-chmod 750 "/opt/huice/app.old-$X/.local-objects"
-mv "/opt/huice/app.old-$X" /opt/huice/app
-systemctl start huice-api
-curl -i http://127.0.0.1:8000/api/v1/health
-```
-
-`cp -an` 是「不覆盖」：同名文件说明更新窗内写过同名对象，`comm -23` 那一关能过，但目标里留的是旧的那份——先人工比对再决定留哪个。回滚后同样按 §6.1 末尾那两条验一次对象可读可写（换目录会改属主）。`app.bad-$X` **先别删**：它是回滚前后的唯一现场，确认对象都在、服务正常之后再清。
-
-**从备份包还原**（`app.old-$X` 已被删或不可用时）。包是**更新前**打的，里面没有更新窗内新导入的对象，直接解包会连当前目录一起覆盖掉。先另存、再合并：
+`X` 用 §6.1 那次**实际部署**的提交号（也就是坏掉的那个），不是「上一个提交」：`app.old-$X` 这个目录名是 §6.1 起的，里面装的是更新前的代码，回滚时别再换一套命名。
 
 ```bash
-set -e
-X=<§6.1 部署的提交>
-systemctl stop huice-api
-mkdir -p "/root/objects-after-update-$X"
-if [ -d /opt/huice/app/.local-objects ]; then                            # obs 模式没有这个目录
-    cp -a /opt/huice/app/.local-objects/. "/root/objects-after-update-$X/"   # 先留住更新窗内的对象
-fi
-[ ! -e "/opt/huice/app.bad-$X" ] || { echo "app.bad-$X 已存在，先人工确认它是什么"; exit 1; }
-mv /opt/huice/app "/opt/huice/app.bad-$X"
-tar -xzf "/root/app-before-$X-<日期>.tar.gz" -C /opt/huice               # 包内是 app/，不加 --strip-components
-install -d -o huice -g huice -m 750 /opt/huice/app/.local-objects       # obs 模式的包里没有这个目录
-cp -an "/root/objects-after-update-$X/." /opt/huice/app/.local-objects/  # 再把新对象并回去，不覆盖
-(cd "/root/objects-after-update-$X" && find . -type f | sort) > /tmp/rollback-src.txt
-(cd /opt/huice/app/.local-objects && find . -type f | sort) > /tmp/rollback-dst.txt
-comm -23 /tmp/rollback-src.txt /tmp/rollback-dst.txt                     # 应无输出
-chown -R huice:huice /opt/huice/app
-chmod 750 /opt/huice/app/.local-objects
-systemctl start huice-api
+cd /opt/huice
+bash /opt/huice/app/infra/deploy/rollback.sh <X>                  # X 与 §6.1 一致
 ```
 
-**完整演练要连对象一起走一遍**：更新 → 在更新窗内导入一个新附件（库里多一条对象记录、`.local-objects` 里多一个文件）→ 回滚 → 用回滚后的服务把那个附件读出来。只做到「服务起来了」不算，读得到才算。
+它做的事，顺序就是安全边界：
+
+1. 停服务，然后把旧树摆到 `app.stage-$X`——**`app` 在换目录之前一动不动**；
+2. 把 `app/.local-objects` 里的每个对象并进 stage：缺的复制、同名且**内容相同**的跳过、同名而内容不同的**一律停下**（不覆盖，交给人决定留哪份）；
+3. 逐文件比 sha256 校验：stage 里必须同名同内容，缺一个就非零退出；
+4. 以上都过了才换目录（`app` → `app.bad-$X`，stage → `app`），最后起服务。
+
+退出码：**0** 成功；**2** 前置条件不满足（什么都没动，服务都没停）；**3** 同名对象内容不同、或对象放不进去（目录没换，服务按原代码重新拉起）；**4** 合并后校验不过（同样没换，兜底用，正常路径不该出现）；**5** 已换完但服务没起来（看 `journalctl -u huice-api`，被换下来的那份在 `app.bad-$X`）。
+
+退出码 3/4 时**不要手工接着往下做**：现场仍是原来那棵，按提示把同名对象处理掉再重跑一次即可。
+
+**从备份包还原**（`app.old-$X` 已被删或不可用）：包是**更新前**打的、不含更新窗内新导入的对象，脚本先把当前对象并进从包里还原出的树、再校验，所以这批对象不会丢：
+
+```bash
+cd /opt/huice
+bash /opt/huice/app/infra/deploy/rollback.sh <X> --from-backup /root/app-before-<X>-<日期>.tar.gz
+```
+
+**obs 模式**（`OBJECT_STORE_MODE=obs`，app 里本来就没有 `.local-objects`）：脚本跳过对象那一步、照常换目录，并打印一行说明——不会因为目录不存在而中断在「app 已挪走」的半路。
+
+**脚本之外还要人做的两件事**：回滚后按 §6.1 末尾那两条验一次对象可读可写（换目录会动属主）；`app.bad-$X` **先别删**，确认对象都在、服务正常之后再清。
+
+**演练要连对象一起走**：更新 → 在更新窗内导入一个新附件（库里多一条对象记录、`.local-objects` 里多一个文件）→ 回滚 → 用回滚后的服务把那个附件读出来。只做到「服务起来了」不算，读得到才算。`test_rollback_script.py` 覆盖的是同一组状态在临时目录里的行为，真实 ECS 上的演练仍待做。
 
 **迁移不回退**：库结构只增不改，回滚代码时**不要**删列删表——旧代码在新库结构上照常工作（新列有默认值或可空）。真要回退结构，按 `infra/README.md` §8 的逆序 `DROP` 并同步删 `schema_migration` 对应行。
 
