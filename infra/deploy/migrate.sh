@@ -5,7 +5,8 @@
 #      与它加载 EnvironmentFile 的规则无关，天然一致；
 #   2) 服务没跑：让 systemd 自己按 EnvironmentFile 解析一次（systemd-run --pipe），
 #      语法、引号、续行全由 systemd 决定，本脚本不解释文件内容；
-#   3) 两条都不行：退出码非零，不猜、不退回默认连接参数。
+#   3) 两条都不行：退出码非零，不猜、不退回默认连接参数；并打印 systemd-run 的退出码、
+#      stderr 前 10 行与 unit 实际的 EnvironmentFiles/Environment（只打路径与变量名，不打值）。
 #
 # 守卫：读不到、读到空值、任一迁移失败，都在下一步之前停下——没迁移完的库上不会跑验收查询。
 #
@@ -45,7 +46,7 @@ die() {
 }
 
 read_env_var() {
-    local name=$1 pid value
+    local name=$1 pid value err_file rc
 
     case $name in
         '' | [0-9]* | *[!A-Za-z0-9_]*) die "内部错误：变量名 $name 不合法。" ;;
@@ -72,8 +73,56 @@ read_env_var() {
 
     # 2) 服务没跑：让 systemd 按 EnvironmentFile 的规则解析一次。--pipe 把 stdout 交回来，
     #    --wait 传递退出码，--collect 跑完即回收这个临时单元。
-    "$SYSTEMD_RUN" --quiet --pipe --wait --collect \
-        -p "EnvironmentFile=$ENV_FILE" /bin/sh -c "printf '%s' \"\${$name-}\""
+    err_file=$(mktemp) || die "内部错误：无法创建临时文件。"
+    value=$("$SYSTEMD_RUN" --quiet --pipe --wait --collect \
+        -p "EnvironmentFile=$ENV_FILE" /bin/sh -c "printf '%s' \"\${$name-}\"" 2>"$err_file") &&
+        rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf 'migrate.sh: systemd-run 退出码 %s（stderr 前 10 行）：\n' "$rc" >&2
+        sed -n '1,10p' "$err_file" | sed 's/^/  | /' >&2 || true
+        rm -f "$err_file"
+        explain_empty_env
+        die "读不到 $name（服务未运行，systemd-run 也读不了 $ENV_FILE）。停止：不执行任何迁移。"
+    fi
+    rm -f "$err_file"
+    [ -n "$value" ] || explain_empty_env
+    printf '%s' "$value"
+}
+
+# 取到空值时把原因说清楚：**只打印路径与变量名，绝不打印值**。
+# 最常见的两种：unit 的 EnvironmentFile 根本不是这个文件；文件里有 systemd 不认的写法
+# （`export KEY=value`、等号两侧空格、CRLF/BOM），systemd 会把那行当无效行跳过、不报错。
+unit_env_files() {
+    # 输出形如 `/etc/huice/api.env (ignore_errors=no)`；可选前缀 `-` 表示文件可以不存在。
+    "$SYSTEMCTL" show -p EnvironmentFiles --value "$SERVICE" 2>/dev/null |
+        tr ' ' '\n' |
+        sed -E 's/^[[:space:]]*//; s/^-//; s/[[:space:]]*\(ignore_errors=[a-z]+\)$//; /^$/d'
+}
+
+explain_empty_env() {
+    local listed inline
+    listed=$(unit_env_files | tr '\n' ' ' || true)  # systemctl 失败时别把整个脚本带崩
+    inline=$("$SYSTEMCTL" show -p Environment --value "$SERVICE" 2>/dev/null || true)
+    if [ -n "${listed// /}" ]; then
+        case " $listed " in
+            *" $ENV_FILE "*)
+                printf 'migrate.sh: unit %s 的 EnvironmentFiles 含 %s，路径没错；接着查文件内容。\n' \
+                    "$SERVICE" "$ENV_FILE" >&2
+                ;;
+            *)
+                printf 'migrate.sh: 注意：unit %s 的 EnvironmentFiles 是 %s，不是 %s——服务未运行时脚本按后者取值，读的是另一个文件。\n' \
+                    "$SERVICE" "$listed" "$ENV_FILE" >&2
+                ;;
+        esac
+    elif [ -n "${inline// /}" ]; then
+        printf 'migrate.sh: unit %s 没有 EnvironmentFiles，而是用 Environment= 直接声明变量（内容不打印）。\n' \
+            "$SERVICE" >&2
+    else
+        printf 'migrate.sh: unit %s 没有配置 EnvironmentFiles，也没读到 Environment=（unit 是否存在？）。\n' \
+            "$SERVICE" >&2
+    fi
+    printf 'migrate.sh: 自查 %s：每行必须是 KEY=value，不要写 export、等号两侧不要空格、不要 CRLF/BOM；systemd 对这类行只记 journal 警告、取值仍为空。\n' \
+        "$ENV_FILE" >&2
 }
 
 DB_URL=$(read_env_var DATABASE_URL) ||

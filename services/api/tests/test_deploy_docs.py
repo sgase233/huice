@@ -58,6 +58,27 @@ def test_a_transient_unit_running_project_code_pins_the_working_directory():
         )
 
 
+#: 取值失败时手册必须给出的诊断线索：unit 实际读哪个文件、systemd 认了哪些变量、文件写法是否合法。
+#: 这几项都只涉及路径与变量名，不含任何值。
+_EMPTY_VALUE_MARKERS = (
+    "systemctl show -p EnvironmentFiles huice-api",
+    "退出码",
+    "stderr",
+    "KEY=value",
+    "export",
+    "CRLF",
+)
+
+
+def test_the_manual_says_what_to_check_when_the_value_comes_back_empty():
+    """「读不到」不能停在猜测上：手册要给出可执行的下一步，而不是再试一次。"""
+
+    text = DEPLOY_README.read_text(encoding="utf-8")
+    section = text.split("### 2.1 ", 1)[1].split("\n## ", 1)[0]
+    missing = [marker for marker in _EMPTY_VALUE_MARKERS if marker not in section]
+    assert not missing, f"§2.1 缺少取值失败时的诊断线索：{missing}"
+
+
 def test_no_example_relies_on_cd_before_systemd_run():
     """``cd`` 只改调用 shell 的 cwd，对临时单元无效——留着它会给人错误的安全感。"""
 

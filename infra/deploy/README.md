@@ -127,7 +127,25 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 | `HUICE_T_SPACE=a b` | `a b` | 空，且报 `b: command not found` |
 | `HUICE_T_CONT=l1 \`（下一行 `l2`） | `l1 l2` | 空，且报 `l2: command not found` |
 
-也就是说 `source` 既可能读错值（`$`、反引号、空格全按 shell 规则处理），也会把文件内容当命令执行；口令里带这些字符时，两种读法拿到的不是同一个连接串。同一份 `api.env` 上，本脚本的两条取值路径——服务在跑时读 `/proc/<MainPID>/environ`、服务没跑时用 `systemd-run -p EnvironmentFile=`——实测拿到**同一个** `DATABASE_URL`（只比 SHA-256，不打印值）。`EnvironmentFile` 指向不存在的文件时 `systemd-run` 以退出码 1 失败（实测），脚本因此停下，不会退回默认连接参数。
+也就是说 `source` 既可能读错值（`$`、反引号、空格全按 shell 规则处理），也会把文件内容当命令执行；口令里带这些字符时，两种读法拿到的不是同一个连接串。同一份 `api.env` 上，本脚本的两条取值路径——服务在跑时读 `/proc/<MainPID>/environ`、服务没跑时用 `systemd-run -p EnvironmentFile=`——用假值实测拿到**同一个** `DATABASE_URL`（只比 SHA-256，不打印值）。`EnvironmentFile` 指向不存在的文件时 `systemd-run` 以退出码 1 失败（实测），脚本因此停下，不会退回默认连接参数。
+
+**服务还没启动过时，第 2 条是唯一路径**——首次部署正好落在这里。2026-11-05 有一次真实部署在这一步取 `DATABASE_URL` 得到空值，当时没留下退出码与 stderr，原因至今未定；所以取值失败时脚本会把能定位的信息都打出来（只打变量名与路径，绝不打值）：
+
+- `systemd-run` 的**退出码与 stderr 前 10 行**：「临时单元根本没起来」和「起来了、但这个变量是空的」是两类问题，先分开再查；
+- `systemctl show -p EnvironmentFiles --value huice-api` 的结果：unit 实际读的到底是不是 `/etc/huice/api.env`。对不上就明说脚本读的是另一个文件；unit 改用 `Environment=` 直接声明变量（没有 `EnvironmentFiles`）时也只报这件事，不打印内容；
+- 路径对得上、值仍为空：提示查文件格式，也就是下面这段。
+
+`api.env` 的格式是硬要求——**systemd 不按 shell 解析**：每行只写 `KEY=value`，不要写 `export`，等号两侧不要空格，不要 CRLF/BOM。systemd 对不认识的行**只记一条 journal 警告、然后把那行当不存在**，脚本拿到的就是空值；所以「文件里明明有这行」和「systemd 读到了」是两件事。自查（只输出路径、变量名、行号，不输出值）：
+
+```bash
+systemctl show -p EnvironmentFiles huice-api
+systemd-run --quiet --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+    /bin/sh -c 'env | cut -d= -f1 | sort'                    # systemd 认得的变量名
+grep -nE '^export |[[:space:]]=|=[[:space:]]' /etc/huice/api.env | cut -d= -f1   # 可疑行号
+grep -c $'\r' /etc/huice/api.env                             # 非 0 即含 CRLF
+```
+
+首次部署的留证里要含这三样：`systemd-run` 的退出码、`systemctl show -p EnvironmentFiles huice-api` 的输出、以及取值成功后脚本打印的 `schema_migration` 验收结果。**第 2 条路径目前只在假件（`test_migrate_script.py`）里验证过，还没有真实 systemd 的证据**——首次在空 ECS 上跑 `migrate.sh` 的那次就是这份证据，结果要回填到本段。
 
 ```bash
 bash /opt/huice/app/infra/deploy/migrate.sh
@@ -136,6 +154,8 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 要 **root** 执行：读 `/proc/<PID>/environ` 与调用 `systemd-run` 都需要（`huice` 用户读不到别人的进程环境）。
 
 脚本按 001—007 顺序执行（每步 `-v ON_ERROR_STOP=1`）。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对七个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
+
+**「立即停下」保护的是后面的步骤，不是整批的原子性。** 迁移是一条一条提交的：第 N 条失败（或 `infra/sql/` 里缺了某个 `.sql`）时，前面几条**已经写进库**，库就停在这个部分迁移的状态——先跑 001—006、再因 007 缺失停下，和「在任何迁移之前停下」是两回事。每份迁移本身可重复执行（`DROP CONSTRAINT IF EXISTS` / `ADD COLUMN IF NOT EXISTS` / `ON CONFLICT (id) DO NOTHING`），修好原因直接重跑 `migrate.sh` 就会补齐；验收查询只在全部执行完之后才跑，所以部分状态不会被报成「全部应用」。
 
 脚本里的清单与 `infra/sql/` 下的文件由 `services/api/tests/test_migrate_script.py` 的一条守卫用例比对：新增迁移只加 SQL 文件、忘了进清单，用例就转红。验收查询也按清单逐项核对，所以清单漏一条时它不会替那条「登记上了」——漏掉的是执行本身。
 
@@ -198,7 +218,7 @@ echo "退出码: $?"
 
 **必须用虚拟环境的解释器**：脚本会导入 `app.security`，后者在模块级导入 FastAPI，而依赖只装在 `/opt/huice/venv`。用系统 `python3` 运行会直接抛 `ModuleNotFoundError`（脚本会打印提示并以退出码 2 结束，而不是抛堆栈）。
 
-两点注意：**不要 `set -a; . /etc/huice/api.env`**——shell 会按 shell 规则解析整个文件，而 `systemd` 的 `EnvironmentFile` 不是 shell（不做变量展开、不执行命令），密钥里含 `$`、反引号或引号时两边读到的值可能不同，甚至把文件内容当命令执行；改用上面的 `systemd-run` 后这条风险不再存在（两种读法的实测对照表见 §2.1）。签发完成后按 §3.2 的例外说明限定有效期、用完清掉并按需轮换 `DEMO_SESSION_SECRET`。
+两点注意：**不要 `set -a; . /etc/huice/api.env`**——shell 会按 shell 规则解析整个文件，而 `systemd` 的 `EnvironmentFile` 不是 shell（不做变量展开、不执行命令），密钥里含 `$`、反引号或引号时两边读到的值可能不同，甚至把文件内容当命令执行；改用上面的 `systemd-run` 后这条风险不再存在（两种读法的实测对照表见 §2.1）；但读回**空值**时仍要按 §2.1 的自查查 `api.env` 的写法与 unit 的 `EnvironmentFiles`——临时单元读的和 `migrate.sh` 是同一份文件、同一套规则。签发完成后按 §3.2 的例外说明限定有效期、用完清掉并按需轮换 `DEMO_SESSION_SECRET`。
 
 输出两行：cookie 值和可直接使用的 `Set-Cookie` 头。把 `Set-Cookie` 配到网关/演示入口（或在浏览器开发者工具里手工设置 cookie，见 §3.2 的例外说明），之后带着它访问后台接口。
 

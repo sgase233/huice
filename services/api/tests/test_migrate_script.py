@@ -32,13 +32,27 @@ MIGRATION_IDS = (
 TRICKY_URL = "postgresql://u:p$a ss@db.example:5432/huice"
 
 _FAKE_SYSTEMCTL = """#!/bin/sh
-# 只回答 MainPID：有 mainpid 文件就用它，否则视为服务未运行。
+# 按被问到的属性回答；没准备对应文件就返回空，效果与「unit 没配」一致。
+case "$*" in
+    *"-p EnvironmentFiles "*)
+        if [ -f environment_files ]; then cat environment_files; fi
+        exit 0
+        ;;
+    *"-p Environment "*)
+        if [ -f environment_inline ]; then cat environment_inline; fi
+        exit 0
+        ;;
+esac
+# MainPID：有 mainpid 文件就用它，否则视为服务未运行。
 if [ -f mainpid ]; then cat mainpid; else printf '0\\n'; fi
 """
 
 _FAKE_SYSTEMD_RUN = """#!/bin/sh
 printf '%s\\n' "$*" >> systemd_run_log
-if [ -f env_exit ]; then exit "$(cat env_exit)"; fi
+if [ -f env_exit ]; then
+    printf 'Failed to start transient service unit\\n' >&2
+    exit "$(cat env_exit)"
+fi
 if [ -f env_value ]; then printf '%s' "$(cat env_value)"; fi
 exit 0
 """
@@ -189,6 +203,60 @@ def test_an_empty_value_stops_before_any_psql(sandbox: Sandbox) -> None:
 
     assert result.returncode != 0
     assert "为空" in result.stderr
+    assert sandbox.psql_calls() == []
+
+
+def test_a_failed_systemd_run_shows_its_exit_code_and_stderr(sandbox: Sandbox) -> None:
+    """服务未运行时唯一取值路径失败：要说清退出码与 stderr，而不是只报「读不到」。"""
+
+    sandbox.file("env_exit", "3")
+
+    result = sandbox.run()
+
+    assert result.returncode != 0
+    assert "3" in result.stderr
+    assert "Failed to start transient service unit" in result.stderr
+    assert sandbox.psql_calls() == []
+
+
+def test_an_empty_value_points_at_the_units_environment_file(sandbox: Sandbox) -> None:
+    """unit 读的是别的文件，却按手册里的路径去取：空值不是「没配」，而是读错了地方。"""
+
+    sandbox.file("env_value", "")
+    sandbox.file("environment_files", "/etc/huice/other.env (ignore_errors=no)\n")
+
+    result = sandbox.run(HUICE_ENV_FILE="/etc/huice/api.env")
+
+    assert result.returncode != 0
+    assert "/etc/huice/other.env" in result.stderr
+    assert "/etc/huice/api.env" in result.stderr
+    assert "为空" in result.stderr
+    assert sandbox.psql_calls() == []
+
+
+def test_an_empty_value_with_the_right_file_asks_about_the_file_format(sandbox: Sandbox) -> None:
+    # 路径对得上，值仍为空：最可能是 systemd 不认的写法（export、等号两侧空格、CRLF）
+    sandbox.file("env_value", "")
+    sandbox.file("environment_files", "-/etc/huice/api.env (ignore_errors=yes)\n")
+
+    result = sandbox.run(HUICE_ENV_FILE="/etc/huice/api.env")
+
+    assert result.returncode != 0
+    assert "路径没错" in result.stderr
+    assert "KEY=value" in result.stderr
+    assert sandbox.psql_calls() == []
+
+
+def test_an_empty_value_when_the_unit_uses_inline_environment(sandbox: Sandbox) -> None:
+    sandbox.file("env_value", "")
+    sandbox.file("environment_inline", "DATABASE_URL=postgresql://never-used\n")
+
+    result = sandbox.run()
+
+    assert result.returncode != 0
+    assert "Environment=" in result.stderr
+    # 只报「用了 Environment=」，绝不把变量值打出来
+    assert "never-used" not in result.stderr
     assert sandbox.psql_calls() == []
 
 
