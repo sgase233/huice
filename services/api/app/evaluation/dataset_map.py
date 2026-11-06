@@ -62,6 +62,9 @@ REQUIRED_COLUMNS: Mapping[str, tuple[str, ...]] = {
     ),
 }
 
+#: 正式评测冻结必须齐的三份输入；缺任何一份，映射就证明不了整体对应关系。
+REQUIRED_FILES: tuple[str, ...] = tuple(REQUIRED_COLUMNS)
+
 #: 这些单位的 CSV 文本在库里是 ``numeric`` 列。
 _DECIMAL_UNITS = frozenset({"CNY", "person", "ratio"})
 
@@ -282,10 +285,13 @@ def _align_enterprises(
             continue
         unit = _text(row, "unit")
         try:
-            value_hash = sha256_hex(_parse_value(_text(row, "fact_value"), unit))
+            value = _parse_value(_text(row, "fact_value"), unit)
         except SnapshotError as exc:
             problems.append(f"enterprises.csv 的企业 {code} 的事实 {fact_key}：{exc}")
             continue
+        # 未知值在清单里就是 ``valueHash: null``（见 ``snapshot._fact_entry``），
+        # 不能先哈希 None——那会得到一个字符串哈希，和库里的空值永远对不上
+        value_hash = None if value is None else sha256_hex(value)
         wanted = (
             fact_key,
             period_start,
@@ -363,9 +369,23 @@ def align_dataset(
     policies, policy_problems = _policy_index(manifest)
     problems.extend(policy_problems)
 
+    provided = set(datasets)
+    # 只对上了一份、或一份都没给，都不算「映射做完了」：正式冻结要三份齐全
+    for name in REQUIRED_FILES:
+        if name not in provided:
+            problems.append(f"数据集映射未解决：没有加载 {name} 的行内容")
+
     criteria = _align_criteria(datasets.get("criteria_review.csv", []), policies, problems)
     enterprises = _align_enterprises(datasets.get("enterprises.csv", []), manifest, problems)
     case_count = _align_cases(datasets.get("labels.csv", []), enterprises, criteria, problems)
+
+    # 「文件给了但一条都没对上」同样是没做完：空映射不能当作核对通过
+    if "criteria_review.csv" in provided and not criteria:
+        problems.append("数据集映射未解决：没有任何条件被对齐到库里的条件")
+    if "enterprises.csv" in provided and not enterprises:
+        problems.append("数据集映射未解决：没有任何企业对得上库里的企业")
+    if "labels.csv" in provided and case_count == 0:
+        problems.append("数据集映射未解决：labels.csv 没有可用的标注用例")
 
     return {
         "rules": ALIGNMENT_RULES,

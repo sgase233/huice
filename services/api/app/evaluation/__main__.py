@@ -16,8 +16,12 @@ JSON 对当前库重算一遍，逐项列出差异，非零退出即「与签认
 
 数据集只认 ``--dataset-file`` 显式列出的文件（可重复），不按目录扫全部 CSV：
 材料复核表、标注表也在同一个目录里，但它们不是评测输入，扫进来会让 ``verify``
-在复核改动后误报。``verify`` 核对的文件由签认清单本身决定；两侧 ``codeCommit``
-都是 ``null`` 时它会提示「代码身份未证明」——没记不等于证明相同。
+在复核改动后误报。正式评测核对**要求三份齐全**（``labels.csv``、``criteria_review.csv``、
+``enterprises.csv``），少一份直接非零退出——只对上两份证明不了整体对应。
+真要只核对数据库，单独加 ``--no-dataset``：这样写出的清单 ``datasetMapping`` 为
+``null``，``verify`` 也必须带同一个开关，成功时明说「仅数据库」，不能被当成数据集已签认。
+``verify`` 核对的文件由签认清单本身决定；两侧 ``codeCommit`` 都是 ``null`` 时它会提示
+「代码身份未证明」——没记不等于证明相同。
 
 连接串只从环境变量 ``DATABASE_URL`` 读：命令行参数会留在 shell 历史与 ``ps`` 里，
 错误信息也只说变量名，不打印值。部署机上用 ``systemd-run`` 带上服务同款环境变量：
@@ -46,7 +50,7 @@ from typing import Any
 
 import psycopg
 
-from .dataset_map import load_dataset_rows
+from .dataset_map import REQUIRED_FILES, load_dataset_rows
 from .report_freeze import ReportError, freeze_report
 from .snapshot import SnapshotError, collect_input_snapshot, diff_snapshots
 
@@ -103,6 +107,24 @@ def _config_from_env(use_config: bool) -> dict[str, str] | None:
     return dict(os.environ) if use_config else None
 
 
+def _require_required_files(names: list[str] | None) -> list[str]:
+    """正式评测核对要三份输入齐全；缺哪份就点名哪份，不退回「只比数据库」。"""
+
+    if not names:
+        raise SystemExit(
+            f"{PROGRAM}：正式评测核对要求三份评测输入（{'、'.join(REQUIRED_FILES)}），"
+            "请用可重复的 --dataset-file 给出；只核对数据库请显式加 --no-dataset"
+        )
+    provided = {Path(name).name for name in names}
+    missing = [name for name in REQUIRED_FILES if name not in provided]
+    if missing:
+        raise SystemExit(
+            f"{PROGRAM}：缺少评测输入 {('、'.join(missing))}——三份都要给，"
+            "少一份就只能证明部分对应关系"
+        )
+    return names
+
+
 def _build_manifest(
     args: argparse.Namespace, *, files: list[str] | None = None
 ) -> dict[str, Any]:
@@ -115,12 +137,24 @@ def _build_manifest(
 
     # 先把不依赖数据库的参数校验完再连库：参数错了不该先去碰生产库
     selected = args.dataset_file if files is None else files
-    dataset = _dataset_hashes(args.dataset_dir, selected)
-    # 行内容与整文件哈希来自同一批文件：哈希证明「文件没变」，逐条映射证明「就是库里那份」
-    try:
-        dataset_rows = load_dataset_rows(args.dataset_dir, selected) if selected else None
-    except SnapshotError as exc:
-        raise SystemExit(f"{PROGRAM}：{exc}") from None
+    if args.no_dataset:
+        # 显式声明「只核对数据库」：这种清单不能当作数据集映射通过，`verify` 会认模式
+        if selected or args.dataset_dir is not None:
+            raise SystemExit(
+                f"{PROGRAM}：--no-dataset 只能单独用——给了 --dataset-file/--dataset-dir "
+                "就是数据集核对，不能同时声明只比数据库"
+            )
+        dataset = None
+        dataset_rows = None
+    else:
+        # 先报「目录不存在 / 点名的文件不存在」（路径写错要立刻看出来），再要求三份齐全
+        dataset = _dataset_hashes(args.dataset_dir, selected)
+        selected = _require_required_files(selected)
+        # 行内容与整文件哈希来自同一批文件：哈希证明「文件没变」，逐条映射证明「就是库里那份」
+        try:
+            dataset_rows = load_dataset_rows(args.dataset_dir, selected)
+        except SnapshotError as exc:
+            raise SystemExit(f"{PROGRAM}：{exc}") from None
     with _connect() as conn:
         return collect_input_snapshot(
             conn,
@@ -144,8 +178,8 @@ def _report_mapping(manifest: dict[str, Any]) -> None:
     mapping = manifest.get("datasetMapping")
     if not isinstance(mapping, dict):
         print(
-            "警告：没有给任何 CSV 行内容，数据集与库的逐条映射没有做——"
-            "verify 只能证明库没变，证明不了 CSV 就是库里那份",
+            "注意：--no-dataset 模式，数据集与库的逐条映射没有做——"
+            "这份清单只证明库没变，证明不了 CSV 就是库里那份，不能当作评测输入已签认",
             file=sys.stderr,
         )
         return
@@ -192,6 +226,18 @@ def _load_manifest(path: str) -> dict[str, Any]:
 
 def _cmd_verify(args: argparse.Namespace) -> int:
     expected = _load_manifest(args.manifest)
+    # 模式必须一致：只比数据库的清单不能说成「数据集核对通过」，反之也不行
+    db_only = expected.get("datasetMapping") is None
+    if args.no_dataset != db_only:
+        if args.no_dataset:
+            raise SystemExit(
+                f"{PROGRAM}：这份清单签认时核对了评测输入 CSV（datasetMapping 非空），"
+                "不能用 --no-dataset 核对"
+            )
+        raise SystemExit(
+            f"{PROGRAM}：这份清单签认时只核对了数据库（datasetMapping 为 null），"
+            "确认它请显式加 --no-dataset；正式评测冻结要的是带数据集映射的清单"
+        )
     # 核对哪些文件由**签认清单**决定：签认时列了谁就查谁，不跟着目录里的新增文件走
     signed = list((expected.get("dataset") or {}).keys())
     actual = _build_manifest(args, files=signed or args.dataset_file)
@@ -208,9 +254,22 @@ def _cmd_verify(args: argparse.Namespace) -> int:
             "要证明同一份代码，导出与核对时都要用 --commit 记录提交号",
             file=sys.stderr,
         )
+    if args.no_dataset:
+        print(
+            "一致（仅数据库）：{} 个政策版本、{} 个企业；未核对评测输入 CSV，"
+            "此结果不能当作数据集已签认".format(
+                len(actual.get("policies", [])), len(actual.get("enterprises", []))
+            )
+        )
+        return 0
+    mapping = actual.get("datasetMapping") or {}
     print(
-        "一致：{} 个政策版本、{} 个企业".format(
-            len(actual.get("policies", [])), len(actual.get("enterprises", []))
+        "一致：{} 个政策版本、{} 个企业；数据集映射 {} 个政策版本、{} 个企业、{} 条用例".format(
+            len(actual.get("policies", [])),
+            len(actual.get("enterprises", [])),
+            len(mapping.get("policies", [])),
+            len(mapping.get("enterprises", [])),
+            mapping.get("caseCount", 0),
         )
     )
     return 0
@@ -267,6 +326,14 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dataset-dir",
         help="数据集基准目录（如 data/evaluation）；不再按目录扫全部 CSV",
+    )
+    parser.add_argument(
+        "--no-dataset",
+        action="store_true",
+        help=(
+            "只核对数据库、不核对评测输入 CSV（清单的 datasetMapping 为 null，verify 也要带这个开关）；"
+            "正式评测冻结必须给三份 CSV，不能用它替代"
+        ),
     )
     parser.add_argument(
         "--commit",

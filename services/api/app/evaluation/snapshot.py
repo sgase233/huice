@@ -415,6 +415,9 @@ def _diff_dataset_mapping(
 ) -> None:
     """CSV ↔ 库的逐条映射：既比对照表，也不允许带着未解决的问题通过。"""
 
+    # 局部导入：dataset_map 反过来用本模块的哈希函数，模块级导入会成环
+    from .dataset_map import REQUIRED_FILES
+
     before = expected.get("datasetMapping")
     now = actual.get("datasetMapping")
     if before != now:
@@ -425,8 +428,12 @@ def _diff_dataset_mapping(
     for side, mapping in (("签认清单", before), ("当前库", now)):
         if not isinstance(mapping, Mapping):
             continue
-        if not mapping.get("files"):
-            problems.append(f"数据集映射未解决（{side}）：没有给任何 CSV 行内容，映射等于没做")
+        # 三份必需输入缺一份，映射就证明不了整体对应——手写或旧版清单在这一步被拦下
+        missing = [name for name in REQUIRED_FILES if name not in (mapping.get("files") or [])]
+        if missing:
+            problems.append(
+                f"数据集映射未解决（{side}）：没有核对 {('、'.join(missing))}，映射不完整"
+            )
         for problem in mapping.get("problems", []):
             problems.append(f"数据集映射未解决（{side}）：{problem}")
 

@@ -160,10 +160,10 @@ def _manifest(**overrides):
         "appVersion": "1.0.0-rc.7",
         "ruleVersion": "rule:criteria@1",
         "codeCommit": "abc123",
-        "dataset": {"labels.csv": "a" * 64},
+        "dataset": {"labels.csv": "a" * 64, "criteria_review.csv": "b" * 64, "enterprises.csv": "c" * 64},
         "datasetMapping": {
             "rules": "content-alignment@1",
-            "files": ["labels.csv"],
+            "files": ["criteria_review.csv", "enterprises.csv", "labels.csv"],
             "policies": [
                 {
                     "identifier": "财政部 税务总局公告2023年第12号",
@@ -246,7 +246,10 @@ def test_diff_flags_a_changed_fact_value() -> None:
 
 
 def test_diff_flags_config_and_dataset_changes() -> None:
-    changed = _manifest(configFingerprint="0" * 64, dataset={"labels.csv": "b" * 64})
+    changed = _manifest(
+        configFingerprint="0" * 64,
+        dataset={"labels.csv": "b" * 64, "criteria_review.csv": "b" * 64, "enterprises.csv": "c" * 64},
+    )
 
     problems = diff_snapshots(_manifest(), changed)
 
@@ -272,7 +275,14 @@ def test_diff_flags_a_manifest_written_in_an_older_format() -> None:
 
 def test_diff_ignores_dataset_files_added_after_signing() -> None:
     # 签认之后往目录里加了别的 CSV：不影响已签认的输入，不该拦下评测
-    added = _manifest(dataset={"labels.csv": "a" * 64, "later_added.csv": "c" * 64})
+    added = _manifest(
+        dataset={
+            "labels.csv": "a" * 64,
+            "criteria_review.csv": "b" * 64,
+            "enterprises.csv": "c" * 64,
+            "later_added.csv": "d" * 64,
+        }
+    )
 
     assert diff_snapshots(_manifest(), added) == []
 
@@ -363,7 +373,7 @@ def test_diff_refuses_a_mapping_that_never_looked_at_any_file() -> None:
 
     problems = diff_snapshots(manifest, manifest)
 
-    assert any("没有给任何 CSV 行内容" in item for item in problems)
+    assert any("没有核对" in item for item in problems)
 
 
 # ------------------------------------------------------------------ 命令行
@@ -373,7 +383,7 @@ def test_the_cli_names_the_variable_it_needs(monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
     with pytest.raises(SystemExit) as error:
-        cli.main(["inputs", "--out", "-"])
+        cli.main(["inputs", "--out", "-", "--no-dataset"])
 
     assert "DATABASE_URL" in str(error.value.code)
 
@@ -458,7 +468,7 @@ def test_the_manifest_records_the_engine_fact_version(
     published = _publish_policy(repo, [INCOME_GATE, INDUSTRY_GATE])
     out = tmp_path / "manifest.json"
 
-    assert cli.main(["inputs", "--out", str(out), "--no-config"]) == 0
+    assert cli.main(["inputs", "--out", str(out), "--no-config", "--no-dataset"]) == 0
     manifest = json.loads(out.read_text(encoding="utf-8"))
 
     entry = next(
@@ -491,7 +501,7 @@ def test_the_manifest_never_carries_secret_values(
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
     out = tmp_path / "manifest.json"
 
-    assert cli.main(["inputs", "--out", str(out)]) == 0
+    assert cli.main(["inputs", "--out", str(out), "--no-dataset"]) == 0
     text = out.read_text(encoding="utf-8")
 
     for name, value in markers.items():
@@ -518,11 +528,12 @@ def test_verify_passes_then_fails_when_a_fact_changes(
                 "--no-config",
                 "--collected-at",
                 "2026-11-05T10:00:00+00:00",
+                "--no-dataset",
             ]
         )
         == 0
     )
-    assert cli.main(["verify", str(sealed), "--no-config"]) == 0
+    assert cli.main(["verify", str(sealed), "--no-config", "--no-dataset"]) == 0
 
     # 签认之后有人动了事实值：核对必须发现，且不改动已签认的清单
     with psycopg.connect(database_url_schema, autocommit=True) as conn:
@@ -531,7 +542,7 @@ def test_verify_passes_then_fails_when_a_fact_changes(
         )
     sealed_bytes = sealed.read_bytes()
 
-    assert cli.main(["verify", str(sealed), "--no-config"]) == 1
+    assert cli.main(["verify", str(sealed), "--no-config", "--no-dataset"]) == 1
     assert sealed.read_bytes() == sealed_bytes
     assert str(enterprise.id) in sealed.read_text(encoding="utf-8")
 
@@ -546,17 +557,19 @@ def test_verify_says_the_code_identity_is_unproven_when_both_sides_are_null(
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
     _make_enterprise(repo)
     sealed = tmp_path / "sealed.json"
-    assert cli.main(["inputs", "--out", str(sealed), "--no-config"]) == 0
+    assert cli.main(["inputs", "--out", str(sealed), "--no-config", "--no-dataset"]) == 0
     capsys.readouterr()
 
-    assert cli.main(["verify", str(sealed), "--no-config"]) == 0
+    assert cli.main(["verify", str(sealed), "--no-config", "--no-dataset"]) == 0
     captured = capsys.readouterr()
     # 内容一致（退出码 0、标准输出说「一致」），但代码身份没记，标准错误要点出来
     assert "一致" in captured.out
     assert "代码身份未证明" in captured.err
 
     # 记了提交号就不再是「未证明」，而是逐字比对：签认时是 null，现在有值 → 不一致
-    assert cli.main(["verify", str(sealed), "--no-config", "--commit", "abc1234"]) == 1
+    assert cli.main(
+        ["verify", str(sealed), "--no-config", "--commit", "abc1234", "--no-dataset"]
+    ) == 1
 
 
 @pytest.mark.db
@@ -573,35 +586,24 @@ def test_cli_hashes_only_the_dataset_files_it_is_given(
 
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
     data = tmp_path / "evaluation"
-    data.mkdir()
-    # labels.csv 是认识的表，列必须齐全：缺列说明拿错了文件，直接停下而不是猜列名
-    labels = (
-        b"case_id,enterprise_id,policy_version,criterion_id\r\n"
-        b"C001,E-ENT-001,\xe6\x9f\x90\xe6\x96\x87\xe5\x8f\xb7,SME-002\r\n"
-    )
-    (data / "labels.csv").write_bytes(labels)
+    _write_dataset(data, title="某某扶持计划")
     (data / "material_review_sheet.csv").write_bytes(b"row,reviewer\n1,m3\n")
     (data / "notes.txt").write_bytes(b"not a csv")
+    listed = ["labels.csv", "criteria_review.csv", "enterprises.csv"]
+    args: list[str] = []
+    for name in listed:
+        args += ["--dataset-file", name]
     out = tmp_path / "manifest.json"
 
     assert (
-        cli.main(
-            [
-                "inputs",
-                "--out",
-                str(out),
-                "--no-config",
-                "--dataset-dir",
-                str(data),
-                "--dataset-file",
-                "labels.csv",
-            ]
-        )
+        cli.main(["inputs", "--out", str(out), "--no-config", "--dataset-dir", str(data), *args])
         == 0
     )
     manifest = json.loads(out.read_text(encoding="utf-8"))
 
-    assert manifest["dataset"] == {"labels.csv": hashlib.sha256(labels).hexdigest()}
+    assert manifest["dataset"] == {
+        name: hashlib.sha256((data / name).read_bytes()).hexdigest() for name in listed
+    }
     assert "material_review_sheet.csv" not in manifest["dataset"]
     assert manifest["collectedAt"].endswith("+00:00")
 
@@ -648,6 +650,48 @@ def test_a_missing_dataset_directory_is_an_error(tmp_path: Path, monkeypatch) ->
         cli.main(["inputs", "--out", "-", "--dataset-dir", str(tmp_path / "nope")])
 
     assert "数据集目录" in str(error.value.code)
+
+
+def test_inputs_refuses_to_run_without_any_dataset_file(tmp_path: Path, monkeypatch) -> None:
+    """既不给 CSV 也不声明 --no-dataset：不生成「没核对数据集却像是签认了」的清单。"""
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["inputs", "--out", "-"])
+
+    message = str(error.value.code)
+    for name in ("labels.csv", "criteria_review.csv", "enterprises.csv"):
+        assert name in message
+    assert "--no-dataset" in message
+
+
+def test_inputs_names_the_dataset_files_that_are_missing(tmp_path: Path, monkeypatch) -> None:
+    """只给一份：点名还缺哪两份，而不是「部分对应也算过」。"""
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+    data = tmp_path / "evaluation"
+    data.mkdir()
+    (data / "labels.csv").write_text(
+        "case_id,enterprise_id,policy_version,criterion_id\nC001,E-ENT-001,某文号,SME-002\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["inputs", "--out", "-", "--dataset-dir", str(data), "--dataset-file", "labels.csv"])
+
+    message = str(error.value.code)
+    assert "criteria_review.csv" in message
+    assert "enterprises.csv" in message
+
+
+def test_no_dataset_flag_cannot_be_combined_with_dataset_files(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["inputs", "--out", "-", "--no-dataset", "--dataset-file", "labels.csv"])
+
+    assert "--no-dataset" in str(error.value.code)
 
 
 # ------------------------------------------------- 一致视图与数据集映射（真库）
@@ -830,3 +874,78 @@ def test_the_cli_maps_dataset_rows_onto_database_rows(
     changed_args += ["--dataset-dir", str(tmp_path / "changed")]
 
     assert cli.main(["verify", str(sealed), *changed_args]) == 1
+
+
+def _keep_only_header(path: Path) -> None:
+    """把一份 CSV 清成「只有表头」：表在、行没了。"""
+
+    path.write_bytes(path.read_bytes().splitlines(keepends=True)[0])
+
+
+def _dataset_args(directory: Path) -> list[str]:
+    args = ["--no-config"]
+    for name in ("labels.csv", "criteria_review.csv", "enterprises.csv"):
+        args += ["--dataset-file", name]
+    return args + ["--dataset-dir", str(directory)]
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_database_only_manifest_must_be_verified_in_that_mode(
+    repo, database_url_schema, monkeypatch, tmp_path: Path
+) -> None:
+    """只比数据库的清单，`verify` 不带 `--no-dataset` 就拒绝——免得被读成「数据集核对通过」。"""
+
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    _make_enterprise(repo)
+    sealed = tmp_path / "sealed.json"
+    assert cli.main(["inputs", "--out", str(sealed), "--no-config", "--no-dataset"]) == 0
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["verify", str(sealed), "--no-config"])
+
+    assert "--no-dataset" in str(error.value.code)
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_dataset_manifest_cannot_be_verified_as_database_only(
+    repo, database_url_schema, monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    _make_enterprise(repo)
+    _publish_policy(repo, [INCOME_GATE, INDUSTRY_GATE])
+    data = tmp_path / "data"
+    _write_dataset(data, title="深圳市中小企业数字化转型扶持计划")
+    sealed = tmp_path / "sealed.json"
+    args = _dataset_args(data)
+    assert cli.main(["inputs", "--out", str(sealed), *args]) == 0
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["verify", str(sealed), "--no-config", "--no-dataset"])
+
+    assert "--no-dataset" in str(error.value.code)
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+@pytest.mark.parametrize("empty", ["labels.csv", "criteria_review.csv", "enterprises.csv"])
+def test_verify_fails_when_one_table_has_no_rows(
+    empty, repo, database_url_schema, monkeypatch, tmp_path: Path
+) -> None:
+    """空表不算「对上了」：签认时带问题、核对时必须非零退出（M2 复审：缺条件/企业/用例）。"""
+
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    _make_enterprise(repo)
+    _publish_policy(repo, [INCOME_GATE, INDUSTRY_GATE])
+    data = tmp_path / "data"
+    _write_dataset(data, title="深圳市中小企业数字化转型扶持计划")
+    _keep_only_header(data / empty)
+    sealed = tmp_path / "sealed.json"
+    args = _dataset_args(data)
+
+    assert cli.main(["inputs", "--out", str(sealed), *args]) == 0
+    manifest = json.loads(sealed.read_text(encoding="utf-8"))
+    assert manifest["datasetMapping"]["problems"], f"{empty} 清空后应留下未解决问题"
+
+    assert cli.main(["verify", str(sealed), *args]) == 1

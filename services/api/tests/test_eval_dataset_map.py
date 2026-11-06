@@ -285,3 +285,53 @@ def test_only_known_files_are_loaded(tmp_path) -> None:
 
     # 材料复核表不是评测输入，不会被拿来做映射
     assert set(rows) == {"labels.csv"}
+
+
+def test_an_empty_value_matches_a_null_in_the_database() -> None:
+    """CSV 空串与库里的 NULL 是同一个「未知」，不能一个记 null、一个记哈希。"""
+
+    manifest = _manifest()
+    manifest["enterprises"][0]["facts"][0]["valueHash"] = None
+    enterprises = _datasets()["enterprises.csv"]
+    enterprises[0]["fact_value"] = ""
+
+    mapping = align_dataset(_datasets(enterprises=enterprises), manifest)
+
+    assert mapping["problems"] == []
+
+
+def test_an_unknown_value_is_not_the_same_as_zero() -> None:
+    manifest = _manifest()
+    manifest["enterprises"][0]["facts"][0]["valueHash"] = None
+    enterprises = _datasets()["enterprises.csv"]
+    enterprises[0]["fact_value"] = "0"
+
+    problems = align_dataset(_datasets(enterprises=enterprises), manifest)["problems"]
+
+    assert any("taxableIncome" in item for item in problems)
+
+
+def test_every_required_file_must_be_loaded() -> None:
+    datasets = _datasets()
+    del datasets["labels.csv"]
+
+    mapping = align_dataset(datasets, _manifest())
+
+    assert any("labels.csv" in item and "没有加载" in item for item in mapping["problems"])
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("labels.csv", "没有可用的标注用例"),
+        ("criteria_review.csv", "没有任何条件被对齐"),
+        ("enterprises.csv", "没有任何企业对得上"),
+    ],
+)
+def test_an_empty_table_is_not_a_completed_mapping(name: str, message: str) -> None:
+    datasets = _datasets()
+    datasets[name] = []
+
+    mapping = align_dataset(datasets, _manifest())
+
+    assert any(message in item for item in mapping["problems"])
