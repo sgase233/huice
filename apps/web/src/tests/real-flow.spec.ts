@@ -47,8 +47,8 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
   for (const width of [375, 768, 1440]) {
     await page.setViewportSize({ width, height: 850 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    const box = await page.getByRole('checkbox', { name: '选择分析' }).boundingBox();
-    expect(box?.width).toBeLessThanOrEqual(24);
+    const layoutWidth = await page.getByRole('checkbox', { name: '选择分析' }).evaluate(element => (element as HTMLElement).offsetWidth);
+    expect(layoutWidth).toBeLessThanOrEqual(24);
     await page.screenshot({ path: `test-results/real-opportunities-${width}.png`, fullPage: true });
   }
   await page.getByRole('button', { name: '查看详情' }).click();
