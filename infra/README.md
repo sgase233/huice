@@ -378,6 +378,10 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 上云前的准备项、环境变量对照与目标时间表见第 5 节；计划的云端节点是 11/08，实际已于 2026-11-02 提前完成部署，剩下的是 11/15 的空环境复现。
 
+**单文件热补丁（2026-11-06，抽取提示词）**：云端跑 rc.6 时，抽取提示词没写清表达式键名，模型自己起了 `type`/`conditions`，条款全部被判 `EXTRACTION_EXPRESSION_INVALID` 丢弃（跑数与根因见 `docs/devlog/M1-11-12-评测报告.md` §5）。当天只替换了一个文件：`/opt/huice/app/services/api/app/agents/extraction.py`，内容 = **云端现有版本（同 `209d9c9`）为底、仅叠提示词改动**，16897 字节、sha256 `76d8576c…81c8a`；`systemctl restart huice-api` 后实测同一段原文收下 4 条、`model=deepseek-flash`。原文件备份在 `/root/extraction.py.bak-20261106`（sha256 `115d0f0d…39d8f`），回滚即 `cp -a` 还原再重启。
+
+两条约束：**不能用基于 rc.7 的那份补丁**——它依赖 `ModelUsage.tokens_unknown`，rc.6 契约里没有这个字段，装上会导致抽取接口报错；这是临时热修，`/opt/huice/app` 与 `origin/main` 已产生漂移，PR #41 合入后应按 main 重新部署复原。
+
 ## 8. 回退
 
 1. 停止 API：结束 uvicorn 进程（Ctrl+C）。
