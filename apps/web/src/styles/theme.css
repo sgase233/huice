@@ -73,9 +73,8 @@
 [data-theme="dark"] .home-brand small, [data-theme="dark"] .home-lead, [data-theme="dark"] .home-note, [data-theme="dark"] .home-section-heading p, [data-theme="dark"] .home-section-aside, [data-theme="dark"] .home-steps p, [data-theme="dark"] .home-step-number { color: #c4c4c4; }
 [data-theme="dark"] .home-brand-mark, [data-theme="dark"] .home-primary { background: #eee; color: #171717; }
 [data-theme="dark"] .home-primary:hover { background: #ccc; color: #111; }
-[data-theme="dark"] .home-reveal-accent, [data-theme="dark"] .home-steps h3, [data-theme="dark"] .home-step-icon, [data-theme="dark"] .home-image-label svg { color: #ffb085; }
+[data-theme="dark"] .home-reveal-accent, [data-theme="dark"] .home-steps h3, [data-theme="dark"] .home-step-icon { color: #ffb085; }
 [data-theme="dark"] .home-step-icon { background: #493022; }
-[data-theme="dark"] .home-image-placeholder, [data-theme="dark"] .home-image-placeholder:nth-child(2), [data-theme="dark"] .home-image-placeholder:nth-child(3) { background: #48362c; color: #fff0e6; border-color: #b88e79; }
 [data-theme="dark"] .home-steps li, [data-theme="dark"] .home-about-detail { border-color: #666; }
 [data-theme="dark"] .home-about { background: #242424; color: #eee; }
 [data-theme="dark"] .home-about p, [data-theme="dark"] .home-about-detail a { color: #ddd; }
