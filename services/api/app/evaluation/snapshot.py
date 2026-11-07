@@ -41,6 +41,12 @@ from ..domain.rules import RULE_VERSION
 #: ``3``：``dataset`` 由「文件名 → 哈希」改成「路径 + 哈希」的列表——只留文件名时，
 #: 三份输入分散在不同目录（``data/evaluation``、``data/policies``、``data/fixtures``）
 #: 就无法复现，``verify`` 只能拿同名文件去顶替（M2 复审 P1）。
+#:
+#: ``3`` 另一个没有升版的增补：``codeFingerprint``/``codeFiles``/``codeScope``/
+#: ``processStartedAt`` 是**可选**字段（2026-11-06 加，见 :mod:`app.evaluation.code_fingerprint`）。
+#: 旧清单没有它，``verify`` 仍能核对库与数据集，只是会明说「磁盘代码身份未证明」；
+#: 记了就参与比对。不升 4 是因为现有 v3 清单不需要失效——它们少的那一项会被指出来，
+#: 而不是报「版本不同」让人无从下手。
 MANIFEST_VERSION = "3"
 
 #: 进配置哈希的键。只列非敏感项——名字里带令牌/密钥/连接串的一律不在此表内，
@@ -231,6 +237,8 @@ def collect_input_snapshot(
     dataset: Sequence[Mapping[str, str]] | None = None,
     dataset_rows: Mapping[str, Sequence[Mapping[str, str]]] | None = None,
     code_commit: str | None = None,
+    code: Mapping[str, Any] | None = None,
+    process_started_at: str | None = None,
     collected_at: datetime | None = None,
 ) -> dict[str, Any]:
     """导出当前库的输入映射。
@@ -243,6 +251,12 @@ def collect_input_snapshot(
     文件」猜。``dataset_rows`` 是同一批 CSV 的行内容，用来与库里的行逐条对齐
     （见 :mod:`app.evaluation.dataset_map`）。
     ``code_commit`` 在云端（没有 ``.git``）拿不到，就留 ``null``，别编一个。
+
+    ``code`` 是 :meth:`app.evaluation.code_fingerprint.CodeInspection.manifest_fields`
+    的产物（``codeFingerprint``/``codeFiles``/``codeScope``）；不传就记 ``null``——
+    「没算」与「算出来是空的」必须能区分。``process_started_at`` 只记录、**不参与
+    比对**：服务重启是正常操作，拿它当差异会让每次核对都失败；它的用处是让人能把
+    「进程启动时间」与代码文件时间对上（见 ``code_fingerprint.stale_code_files``）。
 
     **四条查询在同一个 REPEATABLE READ、只读事务里执行**：默认 READ COMMITTED 下每条
     查询各自看一个提交，并发导入时可能拼出一份「从未同时存在过」的清单。只读是给
@@ -258,6 +272,8 @@ def collect_input_snapshot(
             dataset=dataset,
             dataset_rows=dataset_rows,
             code_commit=code_commit,
+            code=code,
+            process_started_at=process_started_at,
             collected_at=collected_at,
         )
 
@@ -269,6 +285,8 @@ def _collect_in_transaction(
     dataset: Sequence[Mapping[str, str]] | None,
     dataset_rows: Mapping[str, Sequence[Mapping[str, str]]] | None,
     code_commit: str | None,
+    code: Mapping[str, Any] | None,
+    process_started_at: str | None,
     collected_at: datetime | None,
 ) -> dict[str, Any]:
     criteria_by_version: dict[str, list[dict[str, Any]]] = {}
@@ -348,6 +366,12 @@ def _collect_in_transaction(
         "appVersion": APP_VERSION,
         "ruleVersion": RULE_VERSION,
         "codeCommit": code_commit,
+        # 部署文件指纹：可复算，与手填的 codeCommit 互相独立（见 code_fingerprint 模块）
+        "codeFingerprint": None if code is None else code["codeFingerprint"],
+        "codeFiles": None if code is None else code["codeFiles"],
+        "codeScope": None if code is None else list(code["codeScope"]),
+        # 只记录，不参与比对：重启是正常操作，比它会让每次核对都失败
+        "processStartedAt": process_started_at,
         # 每份输入连路径一起记：只留文件名，三份分散在不同目录时 verify 无处可取
         "dataset": None
         if dataset is None
@@ -406,6 +430,8 @@ def diff_snapshots(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> li
         if before != now:
             problems.append(f"{label}不同：签认 {before!r}，当前 {now!r}")
 
+    _diff_code_identity(expected, actual, problems)
+
     _diff_dataset_mapping(expected, actual, problems)
 
     _diff_dataset(expected, actual, problems)
@@ -414,6 +440,31 @@ def diff_snapshots(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> li
     _diff_enterprises(expected.get("enterprises", []), actual.get("enterprises", []), problems)
     # 两侧可能各自重复报同一条（签认清单与当前库的映射问题相同），去重保序
     return list(dict.fromkeys(problems))
+
+
+def _diff_code_identity(
+    expected: Mapping[str, Any],
+    actual: Mapping[str, Any],
+    problems: list[str],
+) -> None:
+    """比部署文件指纹。签认清单没有这一项时不报差异——由 ``verify`` 另给提示。
+
+    为什么不比 ``processStartedAt``：服务重启是正常操作（签认后重启过就不该判失败）。
+    指纹证明的是磁盘上的字节，进程里跑的是不是这份代码，靠签认期的启动时间交叉核对
+    与「有没有文件比进程新」来提示，不在这里假装能证明。
+    """
+
+    if expected.get("codeFingerprint") is None:
+        # 旧清单（或 --no-code 之类没算的情况）：没有可比的对象，交给 CLI 说明清楚
+        return
+    for field, label in (
+        ("codeFingerprint", "部署代码指纹"),
+        ("codeFiles", "参与指纹的代码文件数"),
+        ("codeScope", "代码指纹范围"),
+    ):
+        before, now = expected.get(field), actual.get(field)
+        if before != now:
+            problems.append(f"{label}不同：签认 {before!r}，当前 {now!r}")
 
 
 def _diff_dataset(
