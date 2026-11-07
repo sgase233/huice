@@ -48,7 +48,7 @@
 | 1 | 传代码到 `/opt/huice/app`（§1） | Windows 侧 + ECS | 后面所有脚本都找不到 |
 | 2 | `provision.sh`（§2）：装包、建 `huice` 用户与 venv、装依赖、装 unit 与 80 配置 | ECS | — |
 | 3 | 填 `/etc/huice/api.env`（§3） | ECS | 第 2 步结束时模板里的必填项还是空值，服务会以「缺少变量名」启动失败，属预期（脚本那一步就算失败也继续执行下一步） |
-| 4 | 执行迁移 001—007（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 七行 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500（§2.1 末段） |
+| 4 | 执行迁移 001—008（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 八行 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500、判断运行因 `material_requirement` 不存在 500（§2.1 末段） |
 | 5 | `systemctl restart huice-api`，再 `nginx -t && systemctl reload nginx` | ECS | 只 `enable` 不 `reload`：外网 404 且 `Server` 头暴露 nginx 版本（见 §8「外网 404」一行） |
 | 6 | 健康检查 200（§4 第 **1—4** 项）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
 | 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3）。**完成后**按 §4 的三批安排补跑第 **8—11** 项（第 5—7 项在第 6 步之后就能跑，不必等这里） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403；若先跑第 8—9 项，会因为 443 还不存在而误判成部署失败 |
@@ -108,7 +108,7 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 
 ### 2.1 数据库结构必须先于服务启动（硬前提）
 
-代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），**服务启动前云 RDS 必须已执行 001—007 全部迁移**。
+代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），`1.0.0-rc.8` 起判断运行会读材料要求（`008_material_requirements.sql` 建 `material_requirement` / `material_requirement_policy`），**服务启动前云 RDS 必须已执行 001—008 全部迁移**。
 
 **取值交给 `migrate.sh`，不要 `source` 整个文件，也不要自己解析。** `systemd` 的 `EnvironmentFile` 不是 shell——不做变量展开、不执行命令，只处理引号、转义与续行。`set -a; . /etc/huice/api.env; set +a` 会让 shell 按 shell 规则解析**整个文件**：口令或密钥里出现 `$`、反引号、`!`、未配对引号时，读到的值可能和 systemd 实际传给服务进程的不一样（迁移就打到错的库），甚至把文件内容当命令执行。
 
@@ -153,7 +153,7 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 要 **root** 执行：读 `/proc/<PID>/environ` 与调用 `systemd-run` 都需要（`huice` 用户读不到别人的进程环境）。
 
-脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—007 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对七个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
+脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—008 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对八个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
 
 **为什么不是「从 001 全量重放」**：迁移文件各自幂等，但**幂等不等于能跳过中间状态**。库已到 `008` 时重放 `005`，事实字典约束会被收回到 16 键，撞上库里已有的 `specificMarketSince` 行而报错（2026-11-06 云端实测）。所以「有新序号就重跑脚本」在旧版里根本推不动，新版按登记表判断。
 
@@ -170,6 +170,12 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 漏掉 `006` 不会在启动时报错，而是在**写入地方通知企业事实时**才炸：`enterprise_fact_key_check` 与 `enterprise_fact_key_unit` 仍是 16 键版本，`specificMarketSince`/`independentLegalEntity` 会被约束直接拒绝（500），而 SRDI-001、RDSUB-001/002 正好要用这两键。
 
 漏掉 `007` 同样不在启动时报错：`/api/v1/health` 200、其余接口正常，只有**抽取并保存政策草稿**那一条写幂等记录时因缺列 500（`idempotency_record.usage_semantics` 不存在）。所以验收查询必须跑完整个清单，只看「服务起来了」证明不了迁移齐了。
+
+缺 `008` 的表现更靠前：服务启动与 `/health` 都正常，但**任何判断运行**（`POST /api/v1/assessment-runs`）会因 `material_requirement` 不存在而 500——判断链路每次都要读材料要求，不是可选路径。政策导入、企业画像读写不受影响，故障容易只落在「跑判断」这一个动作上。
+
+云端已于 2026-11-06 提前补跑 008（`schema_migration` 八行，见 [../README.md](../README.md) §4.1），所以 `migrate.sh` 重跑 008 是 no-op，`INSERT 0 0`。**核对表数时按清单比对**：云 RDS 上另有一张手工备份表 `zz_backup_drafts_20261104`（2026-11-04 清理草稿前的快照，不由迁移创建），因此云端 `public` 基础表是 **17 张**，本地是 16 张，两个数都正常——`material_requirement`、`material_requirement_policy` 在不在才是判据。
+
+> **用 bundle 更新代码前，先删掉手工放进去的迁移文件。** 008 是 scp 进 `/opt/huice/app/infra/sql/` 的未跟踪文件，而分支合并后那个路径是**受版本控制**的：`git fetch` + 检出新提交时会报 `error: Untracked working tree files would be overwritten by checkout` 并停下（同一份内容也一样，git 不比内容）。先 `rm /opt/huice/app/infra/sql/008_material_requirements.sql` 再更新，随后它会随分支一起回来；迁移已入库，重跑任何迁移都是 no-op。
 
 顺序反了不会「降级运行」，而是直接报错：`PATCH /enterprises/{id}/facts/{key}` 的失效事件写入与 `GET /assessment-runs/{runId}` 的事件读取都会因缺列抛 `UndefinedColumn`，分别表现为 500 与历史判断读不出来。反向顺序（先迁移后升级代码）安全，脚本本身可重复执行。
 

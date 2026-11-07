@@ -1,6 +1,6 @@
 # 接口契约
 
-`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.7`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
+`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.9`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
@@ -65,6 +65,23 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
     - **不要用「换个 Idempotency-Key 重来」当默认处置**：换键会重新发起抽取与模型调用，可能重复计费，且新结果会覆盖同一草稿的条款。先查 `idempotency_record`（是否已有记录）、轨迹与 `model_call` 日志确认这次调用是否已经发生、结果是否已保存，再决定是重放、修复还是重新调用。
 
     `apps/web/src/api/types.ts` 需由 M2 重新生成（差异为 `ModelUsage` 多一行 `tokensUnknown?: boolean;`），在那之前 `python contracts/generate_types.py --check` 会报 `Frontend types differ`。
+
+12. rc.8（2026-11-06，应答 M2 对 PR #37 的 P1/P2）：`PreparationItem` 新增**必填** `materialId` 与 `status`，`missing` 保留。此前 `missing` 是唯一的判据，页面只能把它映射成「资料缺失」——而没有事实键的材料（项目申请书、信用报告、社保凭证）本来就无法自动判断是否已提供，政策到期或申报窗口已关闭时材料也不再提交，两种情况都会被写成「缺材料」，是在断言一件没查过的事。
+    - `status` 四种取值：`provided`（这份材料要证明的事实都已有取值，**不等于已核验**）、`missing`（有事实键、至少一个还没取值）、`manual_check`（没有事实键，程序判断不了，需人工核对）、`policy_closed`（政策已到期或窗口已关）。
+    - `missing` **语义不变**、仍是保守口径：`manual_check` 也算 `true`。**展示请以 `status` 为准**，`missing` 只保留给暂未升级的消费者。前端在升级前仍会把这四类都显示成「资料缺失 / 资料已提供」，这是已知的过度断言，不是这次后端能替它修好的。
+    - `title` 已带「【必交】/【条件交】」前缀（`required`/`condition_desc` 的承载方式按 MATERIAL_REQUIREMENTS §4 的方案 ②，不加字段），条件交材料在 `description` 末尾附「（何时需要：…）」。
+    - `requiredFactRefs` 是**运行期展开**的结果：季度类键（资产负债、从业人数）展开成四个季度的期初与期末共八个引用，随判断期间变化的键按本次期间给出具体起止日期；契约不接受 `"assessment"` 字符串。
+    - 哪些材料会出现在清单里：必交无条件列出；条件交只在本次判断真的引用到它证明的事实键时列出。**没有事实键的条件交（GRANT-02/05/06：申请书、社保凭证、信用报告）一律列出并标 `manual_check`**——条件只有文字、程序判断不了，省略会让人以为这项不用交。
+    - 材料表的 `applies_to_policy_ids` 是业务代号，导入时借 `source_register.csv` 的文号落到库里的政策版本；一个代号可以登记新旧多份文号（`CN-TAX-GXJS` 就有 2008 与 2016 两版），只有材料真正引用该代号、且这些文号在库里指向不同政策时才算歧义并整体失败。
+    - 数据来源是 `python -m app.materials import` 导入的 `data/policies/material_requirements.csv`（只导入 `review_status=已仲裁` 的行），配套迁移 `infra/sql/008_material_requirements.sql`。**服务启动前云 RDS 必须已执行 001—008**；未导入时 `items` 为空、`warnings` 里保留「申报材料清单待 M3 审核材料导入后补齐」，报告正文同样回落到那句占位文案。
+    - 历史 run 不受影响：此前 `preparation.items` 恒为 `[]`，已落库的快照里没有条目，新增必填字段不会让旧快照解析失败。
+    - `apps/web/src/api/types.ts` 需由 M2 按 rc.8 重新生成（差异为 `PreparationItem` 多两行、`MaterialStatus` 联合类型一处），在那之前 `python contracts/generate_types.py --check` 与 `npm run build` 都会红。
+
+13. rc.9（2026-11-06，应答 M2 对 PR #40 的 P1）：`PreparationItem.status` 的两个取值改名，`provided` → `facts_filled`、`missing` → `facts_missing`；`manual_check`、`policy_closed`、`missing` 布尔字段与其它字段一律不动。
+    - 为什么改：`provided` 会被读成「材料已提交」，但服务端只读企业事实、从不读材料，它实际只说「这份材料要证明的事实都有取值」。名字比能证明的多说了一层，页面照着写就是过度断言；`missing` 同理，它说的是**事实**缺项。
+    - 四态现在的读法：`facts_filled`（要证明的事实都有取值，**不代表材料已交或已核验**）、`facts_missing`（有事实键、至少一个还没取值）、`manual_check`（没有事实键，程序判断不了）、`policy_closed`（政策已到期或窗口已关）。
+    - `missing` 布尔仍是保守口径（`manual_check` 也算 `true`），语义不变；报告文案同步改为「所需事实都有取值，但不代表材料已交」「所需事实有缺项」，不再出现「缺材料」。
+    - 破坏性：枚举只有这两个值变了，按旧值匹配的消费者会落空。`apps/web/src/api/types.ts` 需由 M2 按 rc.9 重新生成并同步页面文案（把「资料缺失／资料已提供」改成「所需事实有缺项／事实已齐（不代表已交）」口径），在那之前 `python contracts/generate_types.py --check` 会红。
 
 ## 当前实现产出的错误码
 

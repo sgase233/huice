@@ -26,6 +26,7 @@ MIGRATION_IDS = (
     "005_fact_dictionary_extension",
     "006_fact_dictionary_extension_rc4",
     "007_idempotency_usage_semantics",
+    "008_material_requirements",
 )
 
 #: 含空格与 ``$``：若脚本用 ``$(...)`` 直接拼命令行，这个值会被拆成多个参数或被展开。
