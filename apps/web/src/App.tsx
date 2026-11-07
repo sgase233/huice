@@ -27,6 +27,25 @@ const pageFromHash = (): PageId => {
 export default function App() {
   const [hash, setHash] = useState(location.hash);
   useEffect(() => {
+    const ripple = (event: PointerEvent) => {
+      if (event.button !== 0 || !(event.target instanceof Element) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      const button = event.target.closest<HTMLElement>('.app-shell .main-content button');
+      if (!button || button.matches(':disabled')) return;
+      const rect = button.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const size = 2 * Math.hypot(Math.max(x, rect.width - x), Math.max(y, rect.height - y));
+      button.style.setProperty('--ripple-x', `${x}px`);
+      button.style.setProperty('--ripple-y', `${y}px`);
+      button.style.setProperty('--ripple-size', `${size}px`);
+      button.classList.remove('is-rippling');
+      void button.offsetWidth;
+      button.classList.add('is-rippling');
+    };
+    document.addEventListener('pointerdown', ripple);
+    return () => document.removeEventListener('pointerdown', ripple);
+  }, []);
+  useEffect(() => {
     // The workbench may restore its hash after the user cancels leaving an unsaved review.
     const update = () => setTimeout(() => setHash(location.hash), 0);
     window.addEventListener('hashchange', update);

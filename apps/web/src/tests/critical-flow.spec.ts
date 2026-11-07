@@ -77,13 +77,17 @@ test('工作流程切换时播放过渡，减少动态效果时不播放', async
     await page.evaluate(() => {
       const original = Element.prototype.animate;
       Element.prototype.animate = function (...args) {
-        if (this.classList.contains('main-content')) document.body.dataset.workflowAnimations = String(Number(document.body.dataset.workflowAnimations || 0) + 1);
+        if (this.classList.contains('main-content')) {
+          document.body.dataset.workflowAnimations = String(Number(document.body.dataset.workflowAnimations || 0) + 1);
+          document.body.dataset.workflowDuration = String(typeof args[1] === 'number' ? args[1] : args[1]?.duration);
+        }
         return original.apply(this, args);
       };
     });
     const navigation = page.getByRole('navigation', { name: '主导航' });
     await navigation.getByText('机会列表').click();
     await expect(page.locator('body')).toHaveAttribute('data-workflow-animations', '1');
+    await expect(page.locator('body')).toHaveAttribute('data-workflow-duration', '960');
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await navigation.getByText('企业画像').click();
     await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
