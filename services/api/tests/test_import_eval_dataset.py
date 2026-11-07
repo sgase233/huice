@@ -117,6 +117,31 @@ def test_出处没有官方链接时拦截引用它的条件而不是借用主�
     assert any("财税〔2015〕119号" in note and "待补" in note for note in plan.notes)
 
 
+def test_附件引文的_quote_sourceId_sourceUrl_与来源行一一对应(
+    importer: ModuleType, monkeypatch, tmp_path
+) -> None:
+    """M2 要的「quote、sourceId、sourceUrl 与原文一一对应」落在校验层的证据：
+
+    由 ``_draft_for`` 造出的草稿里，每条 span 的链接必须等于它 ``sourceId`` 指向的
+    那一行来源；引文必须逐字出现在那一行的正文里。
+    """
+
+    url = _with_reference(importer, monkeypatch, tmp_path)
+    plans, _ = importer.build_plans()
+    plan = {item.document: item for item in plans}["深科技创新规〔2021〕5号"]
+    by_id = {str(source.id): source for source in importer._draft_for(plan).sources}
+
+    ht007 = next(crit for crit in plan.criteria if crit.code == "HT-007")
+    spans = importer._spans_for(plan, ht007)
+
+    assert spans, "HT-007 应当有引文"
+    for span in spans:
+        row = by_id[str(span.source_id)]
+        assert str(span.source_url) == row.source_url == url
+        assert row.kind == "attachment"
+        assert span.quote in row.text
+
+
 def test_引文落在待补出处上时该条件被判_blocked(importer: ModuleType) -> None:
     """判定发生在拼 span 之前：不为待补的出处生成任何 span，也就不会带走主政策链接。"""
 
@@ -218,7 +243,18 @@ def _plan(*codes: str):
     )
 
 
-def _state(importer: ModuleType, *, status: str, criteria=(), hashes=frozenset({"h"})):
+#: 计划与库里都一致的一组来源链接。
+_URLS = frozenset({("正文", "https://www.gov.cn/x")})
+
+
+def _state(
+    importer: ModuleType,
+    *,
+    status: str,
+    criteria=(),
+    hashes=frozenset({"h"}),
+    urls=_URLS,
+):
     return importer.VersionState(
         policy_id=uuid4(),
         version="v1",
@@ -226,17 +262,18 @@ def _state(importer: ModuleType, *, status: str, criteria=(), hashes=frozenset({
         revision=uuid4(),
         criteria=tuple(criteria),
         source_hashes=hashes,
+        source_urls=urls,
     )
 
 
 def test_库里没有这个文号就新建(importer: ModuleType) -> None:
-    assert importer._decide([], _plan("A"), frozenset({"h"}))[0] == "create"
+    assert importer._decide([], _plan("A"), frozenset({"h"}), _URLS)[0] == "create"
 
 
 def test_已完整发布的版本重跑直接跳过(importer: ModuleType) -> None:
     state = _state(importer, status="published", criteria=[("A", "passed")])
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}))
+    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)
 
     assert action == "skip"
     assert "全部 passed" in reason
@@ -247,7 +284,7 @@ def test_已发布但缺条件算冲突而不是跳过(importer: ModuleType) -> 
 
     state = _state(importer, status="published", criteria=[("A", "passed")])
 
-    action, reason = importer._decide([state], _plan("A", "B"), frozenset({"h"}))
+    action, reason = importer._decide([state], _plan("A", "B"), frozenset({"h"}), _URLS)
 
     assert action == "conflict"
     assert "缺条件 B" in reason
@@ -256,7 +293,7 @@ def test_已发布但缺条件算冲突而不是跳过(importer: ModuleType) -> 
 def test_已发布但条件没通过算冲突(importer: ModuleType) -> None:
     state = _state(importer, status="published", criteria=[("A", "failed")])
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}))
+    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)
 
     assert action == "conflict"
     assert "不是 passed" in reason
@@ -265,28 +302,47 @@ def test_已发布但条件没通过算冲突(importer: ModuleType) -> None:
 def test_已发布但正文变过算冲突(importer: ModuleType) -> None:
     state = _state(importer, status="published", criteria=[("A", "passed")])
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"别的正文"}))
+    action, reason = importer._decide([state], _plan("A"), frozenset({"别的正文"}), _URLS)
 
     assert action == "conflict"
     assert "来源与本轮计划不一致" in reason
 
 
+def test_已发布但附件还指着主政策链接算冲突(importer: ModuleType) -> None:
+    """旧导入器写进去的附件链接与正文相同，内容哈希却一样——只比哈希会误判成已导好。"""
+
+    state = _state(
+        importer,
+        status="published",
+        criteria=[("A", "passed")],
+        urls=frozenset({("正文", "https://www.gov.cn/x"), ("附件", "https://www.gov.cn/x")}),
+    )
+    planned = frozenset(
+        {("正文", "https://www.gov.cn/x"), ("附件", "https://www.chinatax.gov.cn/y")}
+    )
+
+    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}), planned)
+
+    assert action == "conflict"
+    assert "来源链接" in reason
+
+
 def test_建版后中断的草稿走续跑(importer: ModuleType) -> None:
     state = _state(importer, status="pending_parse")
 
-    assert importer._decide([state], _plan("A"), frozenset({"h"}))[0] == "resume"
+    assert importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)[0] == "resume"
 
 
 def test_存条款后中断的草稿也走续跑(importer: ModuleType) -> None:
     state = _state(importer, status="pending_review", criteria=[("A", "failed")])
 
-    assert importer._decide([state], _plan("A"), frozenset({"h"}))[0] == "resume"
+    assert importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)[0] == "resume"
 
 
 def test_pending_parse_却有条件记录算冲突(importer: ModuleType) -> None:
     state = _state(importer, status="pending_parse", criteria=[("A", "passed")])
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}))
+    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)
 
     assert action == "conflict"
     assert "库被改过" in reason
@@ -298,7 +354,7 @@ def test_同一个文号有多个版本时不去猜该续跑哪一个(importer: 
         _state(importer, status="published", criteria=[("A", "passed")]),
     ]
 
-    action, reason = importer._decide(states, _plan("A"), frozenset({"h"}))
+    action, reason = importer._decide(states, _plan("A"), frozenset({"h"}), _URLS)
 
     assert action == "conflict"
     assert "无法判断" in reason
@@ -392,6 +448,7 @@ def test_已完整发布的版本重跑一次都不写(importer: ModuleType, mon
         revision=uuid4(),
         criteria=(("A", "passed"),),
         source_hashes=frozenset({hashlib.sha256("正文内容".encode()).hexdigest()}),
+        source_urls=frozenset({("正文", "https://www.gov.cn/x")}),
     )
     repo, plan = _wire_apply(importer, monkeypatch, state)
 
@@ -407,6 +464,7 @@ def test_对不上的版本重跑返回非零且不写(importer: ModuleType, mon
         revision=uuid4(),
         criteria=(("A", "passed"),),
         source_hashes=frozenset({"另一份正文的哈希"}),
+        source_urls=frozenset({("正文", "https://www.gov.cn/x")}),
     )
     repo, plan = _wire_apply(importer, monkeypatch, state)
 

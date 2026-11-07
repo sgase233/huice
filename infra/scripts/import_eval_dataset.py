@@ -181,6 +181,9 @@ class VersionState:
     criteria: tuple[tuple[str, str], ...]
     #: 该版本已落库的全部来源内容哈希。
     source_hashes: frozenset[str]
+    #: ``(来源名, 官方链接)``。链接也算「来源是什么」的一部分：旧导入器把附件
+    #: 指向主政策链接，内容哈希一模一样，只比哈希会把它当成导好了。
+    source_urls: frozenset[tuple[str, str | None]]
 
 
 # ------------------------------------------------------------------ 组装计划
@@ -514,6 +517,15 @@ def _storage_keys(plan: PolicyPlan) -> list[str]:
     return [f"evaluation/{plan.document}/{source.name}.txt" for source in _sources_of(plan)]
 
 
+def _source_name(title: str, file_name: str) -> str:
+    """库里的来源名带 ``.txt``，计划里的不带；比较时取带后缀之前的写法。"""
+
+    for value in (title or "", file_name or ""):
+        if value.endswith(".txt"):
+            return value[: -len(".txt")]
+    return title or file_name
+
+
 def _version_state(dsn: str, document_number: str) -> list[VersionState]:
     """读库：这个文号现在有几个版本、各自停在哪一步。"""
 
@@ -535,9 +547,11 @@ def _version_state(dsn: str, document_number: str) -> list[VersionState]:
             )
             criteria = tuple((item["title"], item["validation_status"]) for item in cur.fetchall())
             cur.execute(
-                "SELECT content_hash FROM policy_source WHERE policy_version_id = %s",
+                "SELECT title, file_name, content_hash, source_url FROM policy_source "
+                "WHERE policy_version_id = %s",
                 (row["id"],),
             )
+            sources = cur.fetchall()
             states.append(
                 VersionState(
                     policy_id=row["policy_id"],
@@ -545,20 +559,27 @@ def _version_state(dsn: str, document_number: str) -> list[VersionState]:
                     review_status=row["review_status"] or "",
                     revision=row["revision"],
                     criteria=criteria,
-                    source_hashes=frozenset(item["content_hash"] for item in cur.fetchall()),
+                    source_hashes=frozenset(item["content_hash"] for item in sources),
+                    source_urls=frozenset(
+                        (_source_name(item["title"], item["file_name"]), item["source_url"])
+                        for item in sources
+                    ),
                 )
             )
     return states
 
 
 def _decide(
-    states: list[VersionState], plan: PolicyPlan, source_hashes: frozenset[str]
+    states: list[VersionState],
+    plan: PolicyPlan,
+    source_hashes: frozenset[str],
+    source_urls: frozenset[tuple[str, str | None]],
 ) -> tuple[str, str]:
     """重跑该干什么：``create`` 新建、``resume`` 续跑、``skip`` 跳过、``conflict`` 交人工。
 
     返回 ``(动作, 理由)``。判断只看库里已有的记录，不猜：状态不认识、条件缺了、
-    校验不是 passed、来源变过，都算 ``conflict``——宁可让运维看一眼，也不能让
-    「进程在中途被杀」看起来像「已经导好了」。
+    校验不是 passed、来源（内容或链接）变过，都算 ``conflict``——宁可让运维看一眼，
+    也不能让「进程在中途被杀」或「旧导入器留下的错链接」看起来像「已经导好了」。
     """
 
     if not states:
@@ -581,6 +602,8 @@ def _decide(
             return "conflict", f"已发布，但有条件不是 passed：{'、'.join(blocked)}"
         if state.source_hashes != source_hashes:
             return "conflict", "已发布，但来源与本轮计划不一致（正文或附件变过）"
+        if state.source_urls != source_urls:
+            return "conflict", "已发布，但来源链接与本轮计划不一致（如旧导入器把附件指向主政策）"
         return "skip", f"已发布，{len(state.criteria)} 条条件全部 passed"
 
     if state.review_status in {"pending_parse", "pending_review"}:
@@ -588,6 +611,8 @@ def _decide(
             return "conflict", "状态是 pending_parse 却已有条件记录，库被改过"
         if state.source_hashes != source_hashes:
             return "conflict", "草稿的来源与本轮计划不一致（正文或附件变过）"
+        if state.source_urls != source_urls:
+            return "conflict", "草稿的来源链接与本轮计划不一致，请人工核对"
         return "resume", f"未发布（{state.review_status}），从中断处续跑"
 
     return "conflict", f"未识别的状态 {state.review_status!r}"
@@ -625,7 +650,12 @@ def _apply(plans: list[PolicyPlan], dsn: str, *, repository: Any | None = None) 
         # 每条引文按它自己那份来源的链接走；主政策链接只属于正文。
         urls = {source.name: (source.url or meta.source_url) for source in source_plans}
         states = _version_state(dsn, meta.document_number)
-        action, reason = _decide(states, plan, frozenset(digests.values()))
+        action, reason = _decide(
+            states,
+            plan,
+            frozenset(digests.values()),
+            frozenset(urls.items()),
+        )
 
         if action == "skip":
             print(f"跳过 {plan.document}：{reason}")
