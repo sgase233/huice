@@ -13,15 +13,16 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Sequence
 from uuid import UUID, uuid4
 
-from ..domain import questioning, rules, versioning
+from ..domain import preparation, questioning, rules, versioning
 from ..errors import ApiProblem
 from ..integrations.cache import EvaluationCache, NullCache, evaluation_key
-from ..integrations.llm import LlmClient
+from ..integrations.llm import LlmClient, LlmResult
 from ..schemas import (
     AssessmentInput,
     AssessmentRun,
@@ -35,11 +36,14 @@ from ..schemas import (
     Period,
     PolicyAssessment,
     Preparation,
+    PreparationItem,
 )
 from .contracts import AgentContext, PolicySnapshot
-from .explanation import CriterionLine, explain
+from .explanation import CriterionLine, Explanation, explain
 from .profile import NormalizedFact, fact_snapshots
 from .trace import TraceRecorder
+
+logger = logging.getLogger(__name__)
 
 MATERIAL_LIST_WARNING = "申报材料清单待 M3 审核材料导入后补齐，当前只展示办理方式与入口。"
 
@@ -122,8 +126,12 @@ def assess(
         ),
     )
 
-    assessments = [
-        _policy_assessment(
+    assessments: list[PolicyAssessment] = []
+    model_usages: list[LlmResult] = []
+    unknown_usages = 0
+    known_refs = {fact.ref for fact in facts.values() if fact.known}
+    for snapshot, evaluation in zip(snapshots, evaluations):
+        assessment, usage, failure = _policy_assessment(
             snapshot=snapshot,
             evaluation=evaluation,
             missing=missing_by_policy[snapshot.id],
@@ -133,14 +141,32 @@ def assess(
                 effective_to=snapshot.effective_to,
                 window_closes_at=snapshot.window_closes_at,
             ),
+            period=period,
+            known_refs=known_refs,
             now=created_at,
         )
-        for snapshot, evaluation in zip(snapshots, evaluations)
-    ]
+        assessments.append(assessment)
+        if usage is not None and usage.usage_known:
+            model_usages.append(usage)
+        elif usage is not None:
+            # 回答拿到了但上游没给用量：不计入合计，按未知单列。
+            unknown_usages += 1
+        if failure is not None and failure.usage_unknown:
+            unknown_usages += 1
+        if usage is not None or failure is not None:
+            # 失败也记一行：模型可能已被调用并计费，不能因为解析失败就从账上消失。
+            _log_model_call(
+                purpose="explanation",
+                usage=usage,
+                usage_unknown=failure.usage_unknown if failure is not None else False,
+                policy_id=snapshot.id,
+                version=snapshot.version,
+            )
+
     trace.add(
         "explanation",
         input_summary="按四态生成解释",
-        output_summary="、".join(f"{item.policy_id}={item.explanation_mode}" for item in assessments),
+        output_summary=_explanation_summary(assessments, model_usages, unknown_usages),
     )
 
     run = AssessmentRun(
@@ -282,8 +308,12 @@ def _policy_assessment(
     question: questioning.Question | None,
     llm: LlmClient | None,
     boundary: versioning.PolicyBoundary,
+    period: tuple[date, date],
+    known_refs: set[tuple[str, date, date]],
     now: datetime,
-) -> PolicyAssessment:
+) -> tuple[PolicyAssessment, LlmResult | None, Explanation | None]:
+    """返回契约里的单政策判断、解释阶段的模型用量（未调模型为 ``None``），
+    以及调用失败时的解释结果（成功或未调模型为 ``None``）。"""
     criteria_results = [
         _criterion_result(snapshot, criterion) for criterion in evaluation.criteria
     ]
@@ -313,7 +343,11 @@ def _policy_assessment(
         llm=llm,
     )
 
-    return PolicyAssessment(
+    items = _material_items(
+        snapshot=snapshot, period=period, known_refs=known_refs
+    )
+
+    assessment = PolicyAssessment(
         policy_id=snapshot.id,
         result=evaluation.result,
         validity=versioning.CURRENT,
@@ -327,11 +361,113 @@ def _policy_assessment(
             handling_mode=handling_mode,
             official_entry_url=snapshot.official_entry_url,
             deadline=snapshot.window_closes_at,
-            items=[],
+            items=items,
         ),
         explanation=explanation.text,
         explanation_mode=explanation.mode,
-        warnings=[*explanation.warnings, MATERIAL_LIST_WARNING],
+        # 「待补齐」只在真的一条材料都没有时说；有清单还挂这句话会让人以为清单是空的
+        warnings=[*explanation.warnings, *([] if items else [MATERIAL_LIST_WARNING])],
+    )
+    return assessment, explanation.usage, (explanation if explanation.call_failed else None)
+
+
+def _material_items(
+    *,
+    snapshot: PolicySnapshot,
+    period: tuple[date, date],
+    known_refs: set[tuple[str, date, date]],
+) -> list[PreparationItem]:
+    """这次判断要交的材料；政策条件实际用到哪些事实，就从条件里读，不另写一份。"""
+
+    referenced: list[tuple[str, date, date]] = []
+    for criterion in snapshot.criteria:
+        referenced.extend(
+            rules.referenced_facts(criterion.rule.expression, period=period)
+        )
+    items = preparation.build_items(
+        materials=snapshot.materials,
+        referenced=referenced,
+        known=known_refs,
+        period=period,
+        policy_closed=snapshot.closed,
+    )
+    return [
+        PreparationItem(
+            material_id=item.material_id,
+            title=item.title,
+            description=item.description,
+            required_fact_refs=[
+                FactRef(key=ref[0], period=_period(ref)) for ref in item.fact_refs
+            ],
+            missing=item.missing,
+            status=item.status,
+        )
+        for item in items
+    ]
+
+
+def _explanation_summary(
+    assessments: Sequence[PolicyAssessment],
+    usages: Sequence[LlmResult],
+    unknown_usages: int = 0,
+) -> str:
+    """轨迹摘要：先写模型用量（有真实调用时），再写每项政策的解释来源。
+
+    用量只进摘要与日志，不进契约响应；``TraceRecorder`` 会按 200 字截断，
+    所以多政策时把用量放前面，避免被截掉。失败次数单列，不与已知用量相加。
+    """
+
+    parts = []
+    if usages:
+        prompt = sum(item.prompt_tokens for item in usages)
+        completion = sum(item.completion_tokens for item in usages)
+        parts.append(f"模型 tokens 入 {prompt} 出 {completion}")
+    if unknown_usages:
+        # 失败与「成功但响应缺用量」同属未知：都可能已计费，都不并入上面的合计。
+        parts.append(f"另有 {unknown_usages} 次调用用量未知（失败或响应缺用量，可能已计费）")
+    parts.append("、".join(f"{item.policy_id}={item.explanation_mode}" for item in assessments))
+    return "；".join(parts)
+
+
+def _log_model_call(
+    *,
+    purpose: str,
+    usage: LlmResult | None,
+    usage_unknown: bool = False,
+    policy_id: UUID | None = None,
+    version: str | None = None,
+) -> None:
+    """一次模型调用一行；只记用量与对象标识，不记提示词与正文。
+
+    ``usage`` 为 ``None`` 表示调用失败：``usage_unknown`` 为真时用量写 ``unknown``
+    （上游是否计费无法确认），否则写 ``0`` / ``none``（未发起调用）。
+    成功但上游没给用量（``usage.usage_known`` 为假）同样写 ``unknown``。
+    """
+
+    if usage is not None:
+        known = usage.usage_known
+        logger.info(
+            "model_call purpose=%s outcome=ok usage=%s model=%s prompt=%s completion=%s "
+            "elapsed_ms=%d policy_id=%s version=%s",
+            purpose,
+            "known" if known else "unknown",
+            usage.model,
+            usage.prompt_tokens if known else "unknown",
+            usage.completion_tokens if known else "unknown",
+            usage.elapsed_ms,
+            policy_id,
+            version,
+        )
+        return
+    logger.info(
+        "model_call purpose=%s outcome=error usage=%s prompt=%s completion=%s "
+        "elapsed_ms=unknown policy_id=%s version=%s",
+        purpose,
+        "unknown" if usage_unknown else "none",
+        "unknown" if usage_unknown else 0,
+        "unknown" if usage_unknown else 0,
+        policy_id,
+        version,
     )
 
 

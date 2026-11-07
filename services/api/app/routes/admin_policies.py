@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -52,6 +54,8 @@ from ..schemas import (
     SaveCriteriaResult,
 )
 from ..security import require_admin
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/admin",
@@ -224,15 +228,50 @@ async def extract_policy(
                 {"currentVersion": str(draft.revision)},
             )
         response.headers["ETag"] = f'"{draft.revision}"'
-        return ExtractionResult.model_validate(replayed["response"])
+        return _normalize_replayed_usage(replayed)
 
-    outcome = await run_in_threadpool(
-        extract_criteria,
-        version=draft.version,
-        sources=_extraction_sources(draft),
-        llm=request.app.state.llm,
-        model_version=body.model_version,
-    )
+    sources = _extraction_sources(draft)
+    attempt_started = time.monotonic()
+    try:
+        outcome = await run_in_threadpool(
+            extract_criteria,
+            version=draft.version,
+            sources=sources,
+            llm=request.app.state.llm,
+            model_version=body.model_version,
+        )
+    except ApiProblem as problem:
+        # 调用已经发生：结果与用量/失败留痕都要独立于后面的草稿保存事务。
+        await _record_failed_extraction(
+            request,
+            policy_id=policyId,
+            draft=draft,
+            problem=problem,
+            elapsed_ms=int((time.monotonic() - attempt_started) * 1000),
+        )
+        raise
+
+    usage = outcome.usage
+    extraction_model: str | None = None
+    if usage is not None:
+        # 轨迹里记「这次抽取用了什么」：模型名，或规则抽取的版本号。
+        extraction_model = usage.model_version or usage.mode
+        if usage.mode == "deepseek":
+            # 只有真的调了模型才记一行用量；rule/fixture 路径的 tokens 恒为 0，
+            # 记成 model_call 会让人误以为每次抽取都有模型开销。
+            # 上游 2xx 却没给用量时记「未知」，不把占位的 0 当成真实零用量。
+            known = outcome.usage_known
+            logger.info(
+                "model_call purpose=extraction outcome=ok usage=%s model=%s prompt=%s "
+                "completion=%s elapsed_ms=%d policy_id=%s version=%s",
+                "known" if known else "unknown",
+                usage.model_version,
+                usage.input_tokens if known else "unknown",
+                usage.output_tokens if known else "unknown",
+                usage.elapsed_ms,
+                policyId,
+                draft.version,
+            )
     drafts = [
         _domain_criterion(item.id, item.title, item.expression, item.spans, item.review_finding)
         for item in outcome.criteria
@@ -249,6 +288,9 @@ async def extract_policy(
         status="pending_review",
         trace_id=trace_id_of(request),
         started_at=started_at,
+        extraction_model=extraction_model,
+        extraction_elapsed_ms=usage.elapsed_ms if usage is not None else 0,
+        extraction_input_chars=sum(len(source.text) for source in sources),
     )
     result = ExtractionResult(
         draft=saved,
@@ -263,6 +305,9 @@ async def extract_policy(
         fingerprint,
         result.model_dump(by_alias=True, mode="json"),
         saved.revision,
+        # 记录来源：rc.7 起未知一定带 tokensUnknown。重放时靠它区分「rc.7 写下的
+        # 已知」与「rc.6 写下的兜底 0」，两者在线路上长得一样。
+        usage_semantics="explicit",
     )
     response.headers["ETag"] = f'"{saved.revision}"'
     return result
@@ -441,6 +486,39 @@ def _ensure_editable(draft: PolicyDraft) -> None:
         )
 
 
+def _normalize_replayed_usage(replayed: dict[str, Any]) -> ExtractionResult:
+    """按**记录自己的来源**判断用量语义，把可信不了的用量补标为未知。
+
+    `idempotency_record` 只追加，重放原样返回存储的响应。rc.6 写下的记录里，上游
+    `usage` 缺失的两个计数是**各自** `or 0` 兜底的：`120/0` 只说明 prompt 给了、
+    completion 没给，`0/45` 反之，`0/0` 两个都缺。所以只看数值判不出用量是否完整——
+    「双 0 才可疑」会漏掉部分缺失，「有非零就当已知」同样会漏。
+
+    判据是迁移 007 的 `usage_semantics`：
+
+    * `explicit`（rc.7 起写入）：未知一定带 `tokensUnknown: true`，没有标记即完整
+      已知，原样返回；
+    * 其余（`legacy`，即 007 之前写入，含回退到 rc.6 期间写入）：`mode=deepseek`
+      的用量可能部分或全部是兜底，且无法从数值反推哪一个是补的，一律按「未确认」
+      补 `tokensUnknown: true`，数值原样保留供人核对；`fixture`/`saved` 没有发起
+      调用，回到的 0 是真实的，不补标。
+
+    只改本次响应视图，不写回记录（该表只追加）。
+    """
+
+    result = ExtractionResult.model_validate(replayed["response"])
+    usage = result.usage
+    if (
+        replayed.get("usage_semantics") == "explicit"
+        or usage.tokens_unknown
+        or usage.mode != "deepseek"
+    ):
+        return result
+    return result.model_copy(
+        update={"usage": usage.model_copy(update={"tokens_unknown": True})}
+    )
+
+
 def _fingerprint(policy_id: UUID, body: ExtractPolicyInput) -> str:
     payload = json.dumps(
         {"policyId": str(policy_id), **body.model_dump(by_alias=True, mode="json")},
@@ -448,6 +526,60 @@ def _fingerprint(policy_id: UUID, body: ExtractPolicyInput) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+async def _record_failed_extraction(
+    request: Request,
+    *,
+    policy_id: UUID,
+    draft: PolicyDraft,
+    problem: ApiProblem,
+    elapsed_ms: int,
+) -> None:
+    """抽取失败时留两处痕：一行调用日志 + 一条独立事务的失败轨迹。
+
+    两者都不许替换原来的错误——接口仍按原状态码（429/503）返回，轨迹写不进去
+    只记一条告警。这里记的是「调用发生过」这一事实，与后面草稿保存是否成功无关。
+    """
+
+    retryable = bool(getattr(problem, "retryable", False))
+    usage_unknown = bool(getattr(problem, "usage_unknown", True))
+    llm = request.app.state.llm
+    model = getattr(llm, "model_name", None) or getattr(llm, "mode", "unknown")
+
+    logger.info(
+        "model_call purpose=extraction outcome=error usage=%s model=%s prompt=%s completion=%s "
+        "elapsed_ms=%d policy_id=%s version=%s code=%s",
+        "unknown" if usage_unknown else "none",
+        model,
+        "unknown" if usage_unknown else 0,
+        "unknown" if usage_unknown else 0,
+        elapsed_ms,
+        policy_id,
+        draft.version,
+        problem.code,
+    )
+
+    repository = request.app.state.repository
+    try:
+        await run_in_threadpool(
+            repository.record_extraction_failure,
+            policy_id=policy_id,
+            version=draft.version,
+            trace_id=trace_id_of(request),
+            status="retryable_error" if retryable else "fatal_error",
+            error_code=problem.code,
+            model_or_rule_version=model,
+            elapsed_ms=elapsed_ms,
+            usage_unknown=usage_unknown,
+        )
+    except Exception:  # noqa: BLE001 - 留痕失败不能盖掉原来的 429/503
+        logger.warning(
+            "抽取失败步骤未能写入，仅保留调用日志 policy_id=%s version=%s code=%s",
+            policy_id,
+            draft.version,
+            problem.code,
+        )
 
 
 def _extraction_sources(draft: PolicyDraft) -> list[ExtractionSource]:

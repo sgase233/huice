@@ -17,7 +17,7 @@ export default function TracePage({ runId, onUnauthorized }: { runId: string | n
   async function load() {
     const request = ++sequence.current;
     setSteps(null); setError('');
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) { setError('请输入有效的运行 UUID。'); return; }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) { setError('请输入有效的分析记录编号（UUID 格式）。'); return; }
     setBusy(true);
     try {
       const result = await api.getTrace(id);
@@ -28,5 +28,5 @@ export default function TracePage({ runId, onUnauthorized }: { runId: string | n
       setError(e instanceof Error ? e.message : '轨迹读取失败。');
     } finally { if (request === sequence.current) setBusy(false); }
   }
-  return <section className="page-block"><h1>智能体处理轨迹</h1><label>分析运行 UUID <input value={id} onChange={e => { sequence.current++; setBusy(false); setSteps(null); setError(''); setId(e.target.value); }} /></label><button className="button button-secondary" disabled={busy} onClick={() => void load()}>{busy ? '正在加载…' : '读取轨迹'}</button>{!id && !error && <p>尚未选择分析运行，请输入运行 UUID 后读取轨迹。</p>}{error && <p role="alert">{error}</p>}{steps && (steps.length === 0 ? <p>该运行没有轨迹步骤。</p> : <ol className="trace-steps">{steps.map((step, index) => <li className="panel" key={`${step.sequence}-${index}`}><h2>{step.sequence}. {stageLabels[step.stage]} · {statusLabels[step.status]}</h2><p>输入：{step.inputSummary}</p><p>输出：{step.outputSummary}</p><p>政策：{step.policyId ?? '无'} · 版本：{step.policyVersion ?? '无'}</p><p>模型或规则版本：{step.modelOrRuleVersion} · 耗时：{step.elapsedMs} ms</p>{step.errorCode && <p>错误：{step.errorCode}</p>}{step.humanAction && <p>人工操作：{step.humanAction}</p>}{step.objectRefs.map((ref, i) => <p key={i}>关联对象：{{ enterprise: '企业', policy: '政策', policyVersion: '政策版本' }[ref.type]} · {ref.id}</p>)}</li>)}</ol>)}</section>;
+  return <section className="page-block"><h1>智能体处理轨迹</h1><label>分析记录编号 <input value={id} onChange={e => { sequence.current++; setBusy(false); setSteps(null); setError(''); setId(e.target.value); }} /></label><button className="button button-secondary" disabled={busy} onClick={() => void load()}>{busy ? '正在加载…' : '读取轨迹'}</button>{!id && !error && <p>尚未选择分析记录，请输入记录编号后查看处理过程。</p>}{error && <p role="alert">{error}</p>}{steps && (steps.length === 0 ? <p>这条分析记录没有处理步骤。</p> : <ol className="trace-steps">{steps.map((step, index) => <li className="panel" key={`${step.sequence}-${index}`}><h2>{step.sequence}. {stageLabels[step.stage]} · {statusLabels[step.status]}</h2><p>输入：{step.inputSummary}</p><p>输出：{step.outputSummary}</p><p>政策：{step.policyId ?? '无'} · 版本：{step.policyVersion ?? '无'}</p><p>使用的模型或规则版本：{step.modelOrRuleVersion} · 耗时：{step.elapsedMs} 毫秒</p>{step.errorCode && <p>错误：{step.errorCode}</p>}{step.humanAction && <p>人工操作：{step.humanAction}</p>}{step.objectRefs.map((ref, i) => <p key={i}>关联对象：{{ enterprise: '企业', policy: '政策', policyVersion: '政策版本' }[ref.type]} · {ref.id}</p>)}</li>)}</ol>)}</section>;
 }

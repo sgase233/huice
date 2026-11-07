@@ -1,6 +1,6 @@
 # 接口契约
 
-`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.6`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
+`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.9`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
@@ -38,6 +38,50 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 7. rc.3 内追加（2026-10-29，仅描述）：API-02 的 `region` 参数补语义说明——按区划码筛同时包含全国性政策（全国性政策记 `region=CN`），传 `CN` 只返回全国性政策。**只改描述文字，不改 schema**，`apps/web/src/api/types.ts` 不变（`generate_types.py --check` 通过）。同步落在 `services/api/app/integrations/storage.py` 的 `NATIONAL_REGION_CODE` 与同一条过滤口径。
 8. rc.4（2026-10-29，按 #9 的三键讨论结论）：`FactKey` 由 16 键扩到 18 键——新增 `specificMarketSince`（`date`，企业**开始从事该细分市场之日**）与 `independentLegalEntity`（`boolean`，`true` = 具有独立法人资格），专精特新的细分市场年限与法人资格条款要用。**只放宽枚举，`FactUnit` 与任何既有字段、端点都不动**；**`apps/web/src/api/types.ts` 未由 M1 改动**（前端目录归 M2），需 M2 执行 `python contracts/generate_types.py` 重新生成（差异只有 `FactKey` 一行）；在那之前 `generate_types.py --check` 会报 `Frontend types differ`，`npm run build` 也会因为新键没有映射而失败。两个设计取舍：①年限做成**日期**而不是数值——年数是相对量，同一份企业快照换个年份重算就得出另一结论、不可复现，`date` 算子按绝对日期判断；②法人资格键名从提案的 `legalPersonStatus` 改为 `independentLegalEntity`，原名看不出 true 指「合法」还是「具备法人资格」。另有行为变更：`date` 算子由「只认 `establishedDate`」改为认 `rules.DATE_KEYS`（白名单）。配套迁移 `infra/sql/006_fact_dictionary_extension_rc4.sql`。被否决的提案：`restrictedIndustry`（布尔）——标注规范已规定「不属于限制禁止行业」用 `industry_exclusion` 表达，加布尔键会与自身口径冲突，未解的问题是码表粒度而不是表达力。
 9. rc.5（2026-10-31，应答 M2 在 PR #9 的 P1）：`Expression` 新增 `manual_review`（`{"op":"manual_review","reason":"…"}`，reason 1–200 字），求值固定返回 `insufficient_evidence` 并回显 reason，**不会被当成满足**；引文仍须逐字可查；发布闸门照常放行（`validationStatus` 说的是结构与引文没问题，与「判定为真」不是一回事）。用途是把「这条按政策口径本就不由程序判」写进数据模型——此前标注方只能在「硬写一个大概率错的表达式」和「退回待核实、整版政策发不出去」之间二选一。抽取智能体不得生成该算子。同时修正 rc.4 的 `DateExpression.factKey`：schema 当时仍写死 `establishedDate`，与描述和服务端 `rules.DATE_KEYS` 不一致，照 schema 写 `specificMarketSince` 的日期条件会被拒；rc.5 改为 `enum` 两个日期键，并在 `test_openapi_alignment.py` 加了算子集合与日期键集合的对齐断言。**`apps/web/src/api/types.ts` 仍归 M2 生成**，需按 rc.5 重新生成一次（含新增 schema 与版本号）。
+10. rc.6（2026-11-03，应答 M2 issue #27）：`TraceStep.evidenceRefs` 改名 `objectRefs`，元素换成新 schema `TraceObjectRef={type,id}`，与 `CriterionResult.evidenceRefs` 的政策原文引文分开。服务端同字段由 `list[dict]` 收紧为 `list[TraceObjectRef]`；`trace_step.evidence_refs` 列名不变，无新迁移。**`apps/web/src/api/types.ts` 需按 rc.6 重新生成**（由 M2 执行）。
+11. rc.7（2026-11-05，应答 M2 对 PR #34 的 P1）：`ModelUsage` 新增**可选** `tokensUnknown`（布尔，缺省 false）。`true` 表示上游没有返回**完整可用**的用量（2xx 但缺 `usage`、只给一半、格式异常），此时 `inputTokens`/`outputTokens` **不得计入费用或合计**，也不能与真实零用量混同；`fixture`、规则抽取这类**没有发起调用**的路径仍是真实的 0，不带该标记。数值本身不保证是 0：rc.7 自己产生的未知一律是 `0/0`，而重放 rc.6 时期写下的历史记录时，rc.6 对两个计数是**各自**兜底的，判不出缺的是哪一个，数值原样保留（可能是 `120/0` 这样的一半，见下）。服务端另有迁移 `infra/sql/007_idempotency_usage_semantics.sql`（`idempotency_record` 加 `usage_semantics` 列），纯服务端内部、不影响线路。
+    **不是纯加法：这是带行为语义的契约迁移，服务端在已知用量时省略该字段。** `ModelUsage` 是 `additionalProperties: false`，若常路径也回 `tokensUnknown: false`，按 rc.6 严格校验的旧消费者会把**正常响应**判为非法。省略后：已知用量的响应与 rc.6 逐字段一致（旧消费者照常通过）；未知用量时多出 `tokensUnknown: true`，旧消费者会**失败**——这是有意的，比让它把占位 0 当真实用量好。忽略未知属性的旧消费者在未知场景仍只能看到 0，这类调用方本来就无法区分，需按本文件与 `infra/README.md` §4.3 的口径自行标注。
+    迁移约定：**不是「后端先上」**。现有前端不是严格消费者——`apps/web/src/api/client.ts` 允许额外字段、审核页直接显示 `usage.inputTokens/outputTokens`，收到 `tokensUnknown: true` + 占位 0 会显示「输入 0 / 输出 0 tokens」。后端先上等于把「未知」**安静地**变成「零」，比解析失败更糟。因此顺序是：
+
+    1. **前端先行**：M2 按 rc.7 重新生成 `types.ts`，在展示与统计处先判 `tokensUnknown`：`true` 显示「未知」并排除出合计。**「响应里没有该字段」不等于「已知」**——它只说明服务器没给这个状态。后端仍是 rc.6 时，rc.6 在上游没回 `usage` 时对两个计数**各自**用 0 兜底（`integrations/llm.py` 的 `usage.get(...) or 0`），这个 0 与真实零用量分不开，部分缺失（`120/0`）也看不出来。所以在「后端还是 rc.6」的窗口里，前端应把该区块标成「旧版未提供用量状态」（或暂停这部分合计），不能当成已确认的 0。
+    2. **后端随后**上 rc.7，此时「未知」才第一次出现在线路上，而接收方已经能表达它。
+    3. **严格校验旧响应形状的第三方消费者单独安排**：已知路径逐字段一致、不受影响；未知路径会解析失败（fail-closed），要么先升级，要么接受这类调用在这条路径上不可用。
+
+    回滚分两种，结论不同：
+
+    - **只回退 rc.7 的「未知」表达、保留 #34 的其余部分**：`model_call ... usage=unknown` 日志与轨迹摘要「另有 K 次调用用量未知」仍在——它们来自 #34，不是 rc.6 自带的。
+    - **整体回退到 rc.6（main）**：`model_call` 日志、`extraction` 轨迹步骤、用量三态**一起消失**，回滚后未知调用没有任何记录可查；此前写下的行留在只追加表里，但不会再有新增。别按「回滚后还能查日志」验收。
+
+    已经落库的 rc.7 响应：`idempotency_record.response` 存的是抽取响应**整体**（路由里 `result.model_dump(by_alias=True, mode="json")`），未知用量时里面就有 `usage.tokensUnknown: true`；该表带 `reject_mutation()` 触发器，删不掉也改不了。回退到 rc.6 的 `ModelUsage`（`extra="forbid"`）后，用**同一个 Idempotency-Key、草稿 revision 未变**地重放**未知用量**的那些记录，会在 `ExtractionResult.model_validate` 处失败（500）；用量已知的记录响应形状与 rc.6 逐字段一致，照常可重放（新增的 `usage_semantics` 列旧代码不读，不影响）。影响面限于「同键 + 同版本」的幂等重放，换新键不受影响；不能接受就在回滚时保留能读该字段的解析（只回退「未知」的输出路径），或明确接受这些键不可重放。因此**「该字段不落库」不成立**：它没有做成业务表字段（迁移 `007` 的 `usage_semantics` 是**记录来源**，与用量本身无关），但它落在 `idempotency_record.response` 与轨迹摘要文本里。
+
+    前端在回滚期间：**不能**把「没有该字段」当已知（理由同上，rc.6 的 0 兜底与真实 0 分不开）；显示「旧版未提供用量状态」并暂停这部分合计，或干脆不展示 tokens。前端这套逻辑保证的是**格式兼容**，不是**语义正确**——rc.6 窗口里的用量状态，前端无法区分。
+
+    **历史记录的两个重放方向**（幂等重放原样返回存储的响应，所以「当前服务版本」证明不了这条响应的用量语义）：
+
+    - **记录来源写在库里（迁移 `007`）**：`idempotency_record` 的 `usage_semantics` 列标明这条记录出自哪一代服务端——`'explicit'` = rc.7 起写入，未知一定带标记、缺省即已知；`'legacy'` = 本迁移之前写入，也可能是回退到 rc.6 期间写入的（旧代码不写这一列，`DEFAULT` 就是 `'legacy'`，语义正好）。响应本体不动，回退到 rc.6 后已知用量的记录仍能原样重放。
+    - **rc.6 写下的记录 + rc.7 服务端重放**：rc.6 对 `prompt_tokens`、`completion_tokens` 是**各自** `or 0` 兜底的——`120/0` 只说明 prompt 给了、completion 没给，`0/45` 反之，`0/0` 两个都缺，连 `120/45` 也不能凭「非零」认定完整。所以判据不是数值而是来源：记录是 `legacy` 且 `mode=deepseek`，一律按未确认处理，补 `tokensUnknown: true`，**数值原样保留**（可能是 `120/0` 这样的一半）供人核对；`mode=fixture`/`saved` 没有发起调用，0 是真实的，不补标。只改本次响应视图，**不写回记录**（该表只追加）。因此 rc.7 服务端不会把来源不可确认的历史用量当已知回给线路。
+    - **rc.7 写下的记录 + rc.6 服务端重放**：未知用量的记录 `ModelUsage` 是 `extra="forbid"`，解析失败 → 500（见上）；已知用量的记录形状与 rc.6 一致，照常重放。服务端侧无法补救，只能按上面的回滚约定处理。
+    - **消费者规则（不依赖 `/health`，也不按数值猜）**：`tokensUnknown: true` → 未知，两个数值都不得计入费用或合计；`mode=fixture`/`saved` → 没有发起调用，是真实的 0；其余「无标记」只在**这条响应出自 rc.7 服务端**时才算已知（rc.7 会给来源不可确认的历史记录补标）。rc.6 窗口内的响应没有标记也不可信——rc.6 的 0 兜底与真实 0 分不开。「`mode=deepseek` 且双 0 → 未知」这条老判断只覆盖「两个都缺」，漏得掉部分缺失（`120/0`、`0/45`），只能算兜底的一层，不能当主判据。
+    - **不要用「换个 Idempotency-Key 重来」当默认处置**：换键会重新发起抽取与模型调用，可能重复计费，且新结果会覆盖同一草稿的条款。先查 `idempotency_record`（是否已有记录）、轨迹与 `model_call` 日志确认这次调用是否已经发生、结果是否已保存，再决定是重放、修复还是重新调用。
+
+    `apps/web/src/api/types.ts` 需由 M2 重新生成（差异为 `ModelUsage` 多一行 `tokensUnknown?: boolean;`），在那之前 `python contracts/generate_types.py --check` 会报 `Frontend types differ`。
+
+12. rc.8（2026-11-06，应答 M2 对 PR #37 的 P1/P2）：`PreparationItem` 新增**必填** `materialId` 与 `status`，`missing` 保留。此前 `missing` 是唯一的判据，页面只能把它映射成「资料缺失」——而没有事实键的材料（项目申请书、信用报告、社保凭证）本来就无法自动判断是否已提供，政策到期或申报窗口已关闭时材料也不再提交，两种情况都会被写成「缺材料」，是在断言一件没查过的事。
+    - `status` 四种取值：`provided`（这份材料要证明的事实都已有取值，**不等于已核验**）、`missing`（有事实键、至少一个还没取值）、`manual_check`（没有事实键，程序判断不了，需人工核对）、`policy_closed`（政策已到期或窗口已关）。
+    - `missing` **语义不变**、仍是保守口径：`manual_check` 也算 `true`。**展示请以 `status` 为准**，`missing` 只保留给暂未升级的消费者。前端在升级前仍会把这四类都显示成「资料缺失 / 资料已提供」，这是已知的过度断言，不是这次后端能替它修好的。
+    - `title` 已带「【必交】/【条件交】」前缀（`required`/`condition_desc` 的承载方式按 MATERIAL_REQUIREMENTS §4 的方案 ②，不加字段），条件交材料在 `description` 末尾附「（何时需要：…）」。
+    - `requiredFactRefs` 是**运行期展开**的结果：季度类键（资产负债、从业人数）展开成四个季度的期初与期末共八个引用，随判断期间变化的键按本次期间给出具体起止日期；契约不接受 `"assessment"` 字符串。
+    - 哪些材料会出现在清单里：必交无条件列出；条件交只在本次判断真的引用到它证明的事实键时列出。**没有事实键的条件交（GRANT-02/05/06：申请书、社保凭证、信用报告）一律列出并标 `manual_check`**——条件只有文字、程序判断不了，省略会让人以为这项不用交。
+    - 材料表的 `applies_to_policy_ids` 是业务代号，导入时借 `source_register.csv` 的文号落到库里的政策版本；一个代号可以登记新旧多份文号（`CN-TAX-GXJS` 就有 2008 与 2016 两版），只有材料真正引用该代号、且这些文号在库里指向不同政策时才算歧义并整体失败。
+    - 数据来源是 `python -m app.materials import` 导入的 `data/policies/material_requirements.csv`（只导入 `review_status=已仲裁` 的行），配套迁移 `infra/sql/008_material_requirements.sql`。**服务启动前云 RDS 必须已执行 001—008**；未导入时 `items` 为空、`warnings` 里保留「申报材料清单待 M3 审核材料导入后补齐」，报告正文同样回落到那句占位文案。
+    - 历史 run 不受影响：此前 `preparation.items` 恒为 `[]`，已落库的快照里没有条目，新增必填字段不会让旧快照解析失败。
+    - `apps/web/src/api/types.ts` 需由 M2 按 rc.8 重新生成（差异为 `PreparationItem` 多两行、`MaterialStatus` 联合类型一处），在那之前 `python contracts/generate_types.py --check` 与 `npm run build` 都会红。
+
+13. rc.9（2026-11-06，应答 M2 对 PR #40 的 P1）：`PreparationItem.status` 的两个取值改名，`provided` → `facts_filled`、`missing` → `facts_missing`；`manual_check`、`policy_closed`、`missing` 布尔字段与其它字段一律不动。
+    - 为什么改：`provided` 会被读成「材料已提交」，但服务端只读企业事实、从不读材料，它实际只说「这份材料要证明的事实都有取值」。名字比能证明的多说了一层，页面照着写就是过度断言；`missing` 同理，它说的是**事实**缺项。
+    - 四态现在的读法：`facts_filled`（要证明的事实都有取值，**不代表材料已交或已核验**）、`facts_missing`（有事实键、至少一个还没取值）、`manual_check`（没有事实键，程序判断不了）、`policy_closed`（政策已到期或窗口已关）。
+    - `missing` 布尔仍是保守口径（`manual_check` 也算 `true`），语义不变；报告文案同步改为「所需事实都有取值，但不代表材料已交」「所需事实有缺项」，不再出现「缺材料」。
+    - 破坏性：枚举只有这两个值变了，按旧值匹配的消费者会落空。`apps/web/src/api/types.ts` 需由 M2 按 rc.9 重新生成并同步页面文案（把「资料缺失／资料已提供」改成「所需事实有缺项／事实已齐（不代表已交）」口径），在那之前 `python contracts/generate_types.py --check` 会红。
 
 ## 当前实现产出的错误码
 

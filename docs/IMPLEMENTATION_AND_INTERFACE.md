@@ -141,6 +141,22 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 > **2026-11-03（契约 `1.0.0-rc.6`，应答 M2 的 issue #27）**：轨迹步骤的 `evidenceRefs` 改名为 `objectRefs`，元素类型由 `EvidenceRef`（政策原文引文）换成新的 `TraceObjectRef={type,id}`（`enterprise`/`policy`/`policyVersion`）。根因是同一个 `EvidenceRef` 被两类结构共用：轨迹只记「这一步动了哪个内部对象」，服务端从未在轨迹里写过引文；可回溯的原文引文一直在 `CriterionResult.evidenceRefs`（报告页也用它）。按旧契约校验的前端会把每条带 `{type,id}` 的步骤判成「契约错误」，整页轨迹不展示。服务端 `TraceStep` 的字段同时由 `list[dict]` 收紧为 `list[TraceObjectRef]`，未知 `type` 或非 UUID 的 `id` 直接报错，不再把任意结构透传给前端。**`trace_step.evidence_refs` 列名保留不改**（不需要新迁移）：语义上它一直存的是对象引用，`get_trace` 正是靠其中的 `policyVersion` 把入库/审核轨迹挂到 run 上。`test_report_trace_http.py` 增加断言：引用只含 `{type,id}` 且 `type` 在枚举内、响应体不含 `quote`/`textHash`。`apps/web/src/api/types.ts` 仍需 M2 按 rc.6 重新生成一次。
 
+> **2026-11-04（`extraction` 轨迹步骤与模型用量记录）**：契约九阶段里的 `extraction` 此前没有写入点，现由抽取路径补齐（决策见 PR #33，方案 A）。写入点在 `PolicyRepository.save_criteria`：抽取成功后与条款、校验发现在**同一事务**内、`citation_validation` 步骤**之前**写一条 `stage="extraction"` 的轨迹，`objectRefs` 只含 `{type:"policyVersion", id}`，摘要为「抽取正文 N 字」/「得到条件 K 条、校验发现 M 条」，有 finding 即 `status=needs_review`，`elapsedMs` 为调用耗时。`modelOrRuleVersion` 记真实模型名（`MODEL_MODE=deepseek` 时取响应里的 `model`），规则抽取时记 `rule:extraction@1`（或请求体的 `modelVersion`）。三条边界：**幂等重放不写第二遍**（重放在任何落库之前就返回原响应，`test_extract_is_idempotent_for_the_same_key_and_body` 断言只落一次）、**手工保存 API-06 不写抽取步骤**（不传 `extraction_model`）、**保存冲突先于写库**（`_assert_editable` 在第一次写入前返回 409，事务里不留半条步骤）。契约结构不变，`TraceStep` 仍是 `additionalProperties: false`。
+>
+> 用量不进轨迹：`TraceStep` 没有 token 字段，本轮**不**给 `TraceStep` 加字段（契约里带 tokens 的只有 `ModelUsage`，rc.7 给它加了 `tokensUnknown` 用来表达「未知」，见第 6 条）。抽取的 tokens 走 `ExtractionResult.usage`（接口原本就返回）与一行日志；解释调用的 tokens 汇总进 `explanation` 步骤的 `outputSummary`（前缀「模型 tokens 入 N 出 M」；`MAX_SUMMARY=200` 会截断，多政策只记总数，不逐条列）。日志格式固定为 `model_call purpose=<extraction|explanation> outcome=<ok|error> usage=<known|unknown|none> model=<名称> prompt=<n|unknown|0> completion=<n|unknown|0> elapsed_ms=<ms|unknown> policy_id=<id> version=<版本>`（失败行再带 `code=<错误码>`），只记对象标识与用量，不记提示词、正文与密钥；`fixture`、规则抽取与幂等重放不记行，以免把零开销的路径算成模型调用。费用折算口径见 `infra/README.md` §4.3。
+>
+> **失败留痕与用量三态（2026-11-04 补，按 M2 复审）：**
+>
+> 1. **失败也记一行**。调用失败时 `outcome=error`；`usage=unknown` 表示上游是否计费无法从客户端确认（超时、连接中断、5xx、2xx 但解析失败，**以及 429 与上游 4xx**——2026-11-05 改判，状态码本身证明不了上游没处理这次请求），`usage=none` 只用于确认没发起调用的路径。未知**单列**，不并入 0 参与费用合计。成功但回答为空（解释路径）仍算调用成功，tokens 照记，只把措辞退回已存说明。
+> 2. **失败步骤写独立事务**。`PolicyRepository.record_extraction_failure` 只挂既有 `policyVersion`（`objectRefs` 与成功步骤同构），不改草稿、不动 revision，摘要是「模型抽取失败」→「错误码 …；上游是否计费无法确认，用量按未知记录 / 未发起模型调用，没有用量」，`status` 按可重试性取 `retryable_error`（429、超时/连接、5xx、坏响应）或 `fatal_error`（上游 4xx，重试不会自愈）。可重试性与是否可能计费是两件事，fatal 的调用同样记未知。写失败步骤自身出错只记告警，**不替换**原来的 429/503，响应形状不变。两个判断标记挂在 `ApiProblem` 上，不进响应体。
+> 3. **调用记录独立于草稿保存事务**。模型成功但 `save_criteria` 撞 409 时，草稿与成功步骤一起回滚，而**调用返回并完成日志写入之后**那行 `model_call` 仍在、可核对；不补记失败步骤（调用本身没失败）。这句只覆盖「调用已返回、日志已写出」之后发生的中断——请求发出后、返回前进程被杀的情形见第 7 条，那时可能一行都没有。
+> 4. **API-14 可见性边界**。API-14 从分析 run 按政策版本关联入库轨迹：草稿未发布、没有关联 run 时失败步骤不保证立即可见；发布后读到的历史失败也不代表当前在线分析失败。
+> 5. **日志管线**。uvicorn 的默认日志配置不管 `app.*`/`huice.*`（root 停在 WARNING、无 handler），应用侧 `logger.info` 会静默丢弃；`app/logging_setup.py` 在 `create_app` 时给这两个命名空间挂 stderr handler 并设为 INFO，systemd 收集到 journald。别用 `caplog.set_level` 的通过当作部署可见性的证据。
+> 6. **成功但缺用量（2026-11-05 补，2026-11-05 晚按 M2 的 P1 改为契约表达）**。上游 2xx 却没给 `usage`、只给一半、或数字格式不可解析时，`LlmResult.usage_known=False`，tokens 只是占位 0：日志写 `usage=unknown prompt=unknown completion=unknown`，解释摘要计入「另有 K 次调用用量未知」而不并入已知合计，抽取路径同样按未知记。**响应侧不再让消费者猜**：契约 rc.7 给 `ModelUsage` 加了可选 `tokensUnknown`，这种情形返回 `tokensUnknown: true`（rc.7 自己产生的未知一律 `0/0`；重放 rc.6 历史记录时数值原样保留，可能是 `120/0` 这样的一半），消费者必须先看这个标记再决定能不能按 tokens 计费；`fixture`、规则抽取这类**没发起调用**的路径仍是真实的 0，不带标记。**服务端在已知用量时省略该字段**（`Field(exclude_if=...)`），所以常路径的响应与 rc.6 逐字段一致，按 rc.6 严格校验的旧消费者照常通过；只有「未知」这一异常会多出 `tokensUnknown: true`，旧严格消费者在那里会拒绝——这是有意的 fail-closed，比让它把占位 0 当真实用量好。因此**不能按纯加法变更宣传**：这是带行为语义的迁移，而且**不能后端先上**——现有前端允许额外字段、审核页直接显示 `usage.inputTokens/outputTokens`，后端先上会把「未知」安静地显示成「0 / 0」。顺序是前端先能表达「未知」（生成类型 + 展示与统计先判 `tokensUnknown`），后端再上 rc.7。**「没有该字段」不等于「已知」**：rc.6 后端在上游缺 `usage` 时同样用 0 兜底，字段缺失只说明服务器没给状态；前端在 rc.6 窗口与回滚期间应显示「旧版未提供用量状态」并暂停这部分合计，不能当作已确认的 0。回滚还会连带失去 `model_call` 日志与轨迹摘要（两者来自本 PR，rc.6 没有），已写进 `idempotency_record.response` 的 `tokensUnknown` 因只追加触发器无法清理，同键同版本重放在 rc.6 上会解析失败（500）。**历史重放两个方向都要看住**：rc.6 对两个计数是**各自** `or 0` 兜底的，`120/0`（只给了 prompt）、`0/45`（只给了 completion）、`0/0`（两个都缺）都常见，连 `120/45` 也不能凭非零认定完整——所以判据不是数值，是**记录来源**。迁移 `infra/sql/007_idempotency_usage_semantics.sql` 给 `idempotency_record` 加 `usage_semantics` 列（`'explicit'` = rc.7 起写入，未知一定带标记；`'legacy'` = 此前写入，含回退到 rc.6 期间写入的，`DEFAULT` 即 `'legacy'`），响应本体不动。重放时：`explicit` 原样返回（无标记即已知）；`legacy` 且 `mode=deepseek` 一律补 `tokensUnknown: true`、数值原样保留（可能是 `120/0` 这样的一半），`fixture`/`saved` 的真实 0 不补标；只改本次响应视图、不写回只追加表。反过来 rc.7 的**未知用量**记录被 rc.6 重放则 500，已知用量的记录形状与 rc.6 一致、照常可重放。不要用「换一个 Idempotency-Key 重来」当默认处置——那会重新发起抽取与模型调用，可能重复计费，先查 `idempotency_record`、轨迹与日志确认这次调用是否已发生。完整约定见 `contracts/README.md` 第 11 条。
+> **M2 前端接入（2026-11-06）**：审核页校验 `tokensUnknown` 的类型；为兼容 rc.6、回滚及历史重放，`deepseek` 响应缺少该字段时显示「用量状态未确认」，即使数值非零也不把它当作已确认用量。字段为 `true` 时显示「用量未知」，不展示占位数值；显式 `false` 才展示已知模型用量。`fixture` / `saved` 且无未知标记时可展示零。当前界面没有用量合计。此保守处理也适用于 rc.7 已知用量省略标记的响应；要精确展示需另行对齐可区分已知及旧响应的契约。
+>
+> 7. **记录覆盖的边界（2026-11-05 补）**。日志与失败步骤都在调用返回或抛错**之后**才写。请求已发出而进程在返回前被杀（OOM、强杀、掉电）时，这次调用可能完全无记录。覆盖它需要调用前持久化「开始记录」并事后对账，本轮不做；对账时把「日志缺失」与「确认未调用」分开看，不要用「事务回滚兜住了」下结论。
+
 > **比例条件的引文核对（2026-10-29，应答 M2 PR #10 的 P1）**：`rdExpenseRevenueRatio` 不再「跳过数值核对」，改为单独走 `citations.ratio_bounds`——把原文的百分比换算成小数（「不低于 3%」→ `0.03`、`gte`，「5%以下」→ `0.05`、`lte`，`‰` 与「千分之」按 1000 除），再与 AST 的 `compare` 比数值和方向。与金额阈值分开是因为换算基准不同：混在一起会把「3%」按「万元」换算成 300，让写成 `0.30` 的条件反而通过。识别只认三种写法（前置方向词 + `百分之/千分之`、前置方向词 + `%`、数字 + `%` + 后端词），且**仅在百分比前 24 字内出现「比重/占比/比例/百分比/占」时才认定为比例条件**——原文没有这类线索时报 `CITATION_THRESHOLD_NOT_FOUND`，挡住发布并要求人工复核，而不是拿别处的百分比（如「研发费用增长不低于 10%」）凑数。已知边界：中文数字（「百分之三」）不解析，会落到「找不到阈值」，同样是挡住而非放行。
 
 所有事实 `value=null` 均表示未知；省略事实等价于尚未提供。空字符串、字符串 `"null"`、NaN 均拒绝。数值的通用词法允许最多 6 位小数，按上述字段进一步校验；`"0"` 是有效已知值。`period={startDate,endDate}` 使用日期，包含两端；开始不能晚于结束。同一 key 不同年度是不同事实，不互相覆盖。
@@ -168,7 +184,15 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 ### 2.6 FR-06/08：准备清单、解释和报告
 
-每项结果带 `preparation={type,handlingMode,officialEntryUrl,deadline,items[]}`；item 含 `title,description,requiredFactRefs,missing`。税收 handlingMode=`tax_self_assessment`，资金=`grant_application`；真实具体办理说明来自已审核材料要求，模型只改写文字。类型不同必须分栏；关闭窗口不能有立即申报动作。
+每项结果带 `preparation={type,handlingMode,officialEntryUrl,deadline,items[]}`；item 含 `materialId,title,description,requiredFactRefs,missing,status`（契约 `1.0.0-rc.8` 起；`status` 取值自 rc.9 起为 `facts_filled/facts_missing/manual_check/policy_closed`）。税收 handlingMode=`tax_self_assessment`，资金=`grant_application`；真实具体办理说明来自已审核材料要求，模型只改写文字。类型不同必须分栏；关闭窗口不能有立即申报动作。
+
+**清单条目从哪来（2026-11-06 实现）。** 材料要求由 M3 的 `data/policies/material_requirements.csv` 提供，导入器 `python -m app.materials import` 只收 `review_status=已仲裁` 的行（TAX-04、GRANT-09 仍是「待核实（依据未入库）」，不入库），按 `source_register.csv` 的文号把业务代号解析成库里的政策版本，写进 `material_requirement` / `material_requirement_policy`（迁移 `008`）。判断链路只读这份表：
+
+- **适不适用**：必交材料无条件列出；条件交材料只在本次判断真的引用到它证明的事实键时列出。没有事实键的条件交（申请书一类，条件只有文字）判断不了，按「需人工核对」列出而不是省略——静默消失会让人以为不用交。
+- **要哪些事实**：按本次判断期间展开；季度类键（`assetsStart/assetsEnd`、`employeeCountStart/employeeCountEnd`）展开成四个季度的期初期末共八个引用，与 `rules.referenced_facts` 同一套口径，不另写一份。
+- **四态 `status`（事实口径，rc.9 起）**：`facts_filled`（要的事实都有取值）、`facts_missing`（有事实键但缺值）、`manual_check`（没有事实键，或条件无法由程序判断）、`policy_closed`（政策已到期或窗口已关闭，材料再齐也交不了）。**名字说的是程序查到什么，不是材料交没交**：服务端只读企业事实，从不读材料本身，所以 `facts_filled` 不等于「材料已提交/已核验」。`missing` 是保守口径：`manual_check` 也算 `true`，展示以 `status` 为准。rc.8 里这两个取值叫 `provided` / `missing`，因名字比能证明的多说了一层，在 rc.9 改名（M2 在 #40 的 P1）。标题前缀 `【必交】`/`【条件交】` 承载必交属性（契约没有独立字段，口径见 `docs/product/MATERIAL_REQUIREMENTS.md` §4），条件文案并入 `description` 的「（何时需要：…）」。
+- 库里没有材料（政策没挂材料、或清单尚未导入）时 `items` 为空并保留告警「申报材料清单待 M3 审核材料导入后补齐」；有清单时告警消失，报告逐条标出四态。
+- `PolicyDetail.preparationTemplate.items` 仍是 `[]`：模板没有企业与判断上下文，给不出 `status`；带四态的清单只出现在判断运行里。
 
 结果的 `explanationMode=deepseek/saved/fixture`，`warnings[]` 说明解释降级/样例模式。模型失败时规则结果照常返回，使用已存确定性说明；不能把整次判断伪装成模型成功。抽取端模型不可用仍返回 503 并保留草稿。
 
@@ -197,6 +221,93 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 `AgentContext` 只有上下文（trace/request ID、asOf、period、版本图、预算）；业务参数由独立 `AssessmentInput` 传入，不能把 enterpriseId/policyIds 塞进未定义的 context 字段。内部 snake_case 转外部 camelCase 只在 schema 边界做。
 
 `TraceStep` 包含 `sequence,stage,status,inputSummary,outputSummary,objectRefs,policyId,policyVersion,modelOrRuleVersion,elapsedMs,errorCode,humanAction`；`objectRefs` 是 `{type,id}` 形式的内部对象引用（`enterprise`/`policy`/`policyVersion`），**不是引文**——可回溯的政策原文引用在 `CriterionResult.evidenceRefs`，两者不共用字段。多政策公共步骤的 policyId/version 可 null。状态仅 `ok/needs_review/retryable_error/fatal_error`。线上 run 应链接所用政策版本的入库、审核轨迹，再列在线轨迹；不能只保留模型最后一句话。summary 不得含密钥、完整提示词或企业资料。
+
+### 2.9 评测输入快照（`EVALUATION_FREEZE` §5.2）
+
+`app/evaluation/` 只做「把库里的东西说清楚」，不产出任何评测指标。三份 CSV 的哈希只能识别文件，证明不了它们就是导入进库的那一份，所以映射从**数据库本身**导出：
+
+```bash
+# 三份输入本来就不在一个目录：标注在 data/evaluation、条件在 data/policies、企业在 data/fixtures
+python -m app.evaluation inputs --out snapshot.json \
+    --dataset-file data/evaluation/labels.csv \
+    --dataset-file data/policies/criteria_review.csv \
+    --dataset-file data/fixtures/enterprises.csv
+# 核对时不再点名文件：签认清单记着路径，自己会去读那一份
+python -m app.evaluation verify snapshot.json
+```
+
+数据集只认真实要冻结的那几份：`--dataset-file` 可重复、相对路径按当前工作目录（或 `--dataset-dir`）解析，**不按目录扫全部 CSV**（M3 复核）——`material_review_sheet.csv`、`*_annotation_sheet.csv` 与评测输入同目录，但材料复核一改就会让 `verify` 误报。`codeCommit` 仍在清单里，但它只是**注记**：云端没有 `.git`，那个值只能手打，既不能证明那台机器上跑的就是那个提交，两侧都 `null` 时更是什么都没证明。代码身份改由下面的部署文件指纹回答。
+
+**清单记签认路径，`verify` 按签认路径读（M2 在 #39 三审的 P1）**：原先每份输入只记文件名的哈希，`verify` 再拿文件名去拼 `--dataset-dir`——三份输入分散在三个目录时，「从仓库根用三个相对路径签认、在别处核对」会去找根目录下的 `labels.csv`，某处存在同名文件还会把它顶替成签认对象。现在 `dataset` 记的是 `[{"path": …, "sha256": …}]`：项目内的文件记**相对项目根的 POSIX 路径**（`data/evaluation/labels.csv`），项目外才记绝对路径；`verify` 一律按这些路径读，**不接受** `--dataset-file`/`--dataset-dir`（传了就报错：「核对哪些文件由签认清单决定……后传的文件不能顶替签认的对象」）。两种歧义直接拒：同一个文件被签认两次；两个不同目录的同名文件一起签（映射按文件名区分三份输入，后者会覆盖前者）。
+
+**部署文件指纹（`codeFingerprint`，M2 在 #39 同意、要求单独 PR 落地）**：清单顶层记 `codeFingerprint`/`codeFiles`/`codeScope`——对**部署机上实际存在的代码文件**算一遍规范化哈希（`app/evaluation/code_fingerprint.py`）。范围固定为 `services/api/app/**/*.py`、`contracts/openapi.yaml`、`services/api/requirements.lock`，排除 `__pycache__` 与 `*.pyc`；每项取 `(相对项目根的 POSIX 路径, 文件字节 sha256)`，按路径排序后用与清单其他哈希相同的 `canonical_json`/`sha256_hex` 再取一次 SHA-256。**缺文件、空集合一律报错**，不允许「扫到 0 个文件」算出一个稳定值——那等于什么都没证明，却长得像证明过。`python -m app.evaluation fingerprint`（`--json` 出逐文件明细，`--root` 指定另一棵树）不连库，任何人把某个提交 checkout 出来复算就能把「提交 ↔ 指纹」对上。
+
+三件事分开证明，谁也不冒充谁：**磁盘上的代码是什么**由指纹回答；**这份代码是不是某个提交**要 checkout 复算；**进程里跑的是不是它**指纹答不了。第三条只能交叉核对：`--process-pid` 记下服务进程启动时间（读 `/proc` 的第 22 字段与 `btime`，不用 `ps` 文本），并把**写于进程启动之后**的代码文件全部列出；有这种文件就直接停下并请先重启（盘上新的、进程里大概率是旧的）。`processStartedAt` 只记录、**不参与比对**——签认后重启是正常操作，比它会让每次核对都失败。这个 mtime 比对只是**辅助证据**：时间戳可以被保留或改写（`cp -p`、解包、还原备份都会），所以「没有更新的文件」不等于「进程里跑的就是盘上这份」，进程身份要另行核实。
+
+**指纹算原始字节，不做换行归一化（M2 在 #42 的判断）**：`git archive` 在 `core.autocrlf=true` 的 Windows 上会把文本转成 CRLF，同一个提交在 Windows 检出与 Linux 部署上字节不同、指纹也就不同——这是**有意保留**的，因为 `.sh` 的换行会直接改变执行行为，归一化等于替核对方决定「这点差异不算」。跨系统核对时用 `git -c core.autocrlf=false archive` 导出同一份 LF 内容再算，并在记录里写明用的是哪种导出方式；将来若确有跨平台语义等价比较的需求，另加一个单独命名、版本化的归一化指纹，不改 `codeFingerprint` 的含义。
+
+**证明范围只有 `CODE_SCOPE` 那三项**（`services/api/app`、`contracts/openapi.yaml`、`services/api/requirements.lock`）：**不覆盖**迁移 SQL、部署脚本、静态资源（前端构建产物）、已安装依赖与环境变量。因此指纹一致只说明「这三处的代码字节一致」，**不能**据此声称「整棵部署树等于某个提交」或「运行进程等于某个提交」；正式冻结仍以 #36 的独立标注、映射、输入与结果证据为准。
+
+`verify` 对代码身份只说到这里：指纹一致时打印「磁盘代码与签认一致（指纹 …，N 个文件）；但『这份代码对应哪个提交』与『进程里跑的是不是它』仍未证明」，签认时没记启动时间的再加一句「两者之间没有交叉证据」。**不会**因为指纹一致就说成「运行代码身份已证明」（M2 在 #39 的原话：`codeCommit=null` 不应只因磁盘指纹一致就笼统改成已证明）。清单没有 `codeFingerprint`（2026-11-06 之前签认的）时仍可核对库与数据集，但要明说「磁盘代码身份未证明」，并提示用当前版本重新签认；`manifestVersion` 仍是 `3`，这四个字段是可选增补，旧清单不因缺它而报「版本不同」。
+
+**正式核对要求三份齐全**（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）：少给一份直接非零退出并点名缺的那份，不许「对上一份就算过」。确实只想核对数据库时单独加 `--no-dataset`——这样写出的清单 `datasetMapping` 为 `null`，`verify` 必须带同一个开关，成功时明写「一致（仅数据库）……此结果不能当作数据集已签认」；反方向也拦：带数据集映射的清单加 `--no-dataset` 核对会被拒，两个模式不能互相冒充。`--no-dataset` 与 `--dataset-file`/`--dataset-dir` 同时给也直接报错。
+
+**内容对齐映射（`datasetMapping`，M2 在 #39 复核）**：整文件哈希只证明「文件没变」，证明不了「这些文件就是导入进库的那一份」——两套互不相关、但各自稳定的 CSV 照样能过。所以 `inputs` 还把 CSV 的行与库行**逐条**对上，结果写进清单的 `datasetMapping`（实现在 `app/evaluation/dataset_map.py`）：政策版本按文号（`labels.csv` 的 `policy_version`、`criteria_review.csv` 的 `source_version` ↔ `policy_version.document_number`），没有文号时按标题；条件是政策版本内表达式规范化 JSON 哈希，要求一对一（CSV 匹配到多条、或库里有条件没被任何 CSV 行认领，都报）；企业按 `name_synthetic`；事实按 (key, 期间, unit, source, verified, 值哈希)，值按 `unit` 解析成与库同一类型（CNY/person/ratio → `Decimal`，date → ISO 日期，boolean → true/false，code → 原串）再算同一个哈希；`labels.csv` 每行的 (企业代号, 文号, 条件代号) 必须都能经前面三条落到库里的具体行。库里没有业务代号列——`policy_criterion.criterion_id`、`enterprise.id` 都是导入时生成的 UUID，CSV 的 `CN-TAX-SME-2023-012`/`E-ENT-001` 在库里查不到——所以映射产物是一份**可核对的对照表**（代号 → UUID），`verify` 重算一遍再比对。对齐口径带版本号 `content-alignment@1`：规则一改，旧清单在 `verify` 里报「映射不同（可能是数据集换了、库被改过，或对齐规则版本变了）」，而不是含混的「数据变了」。有未解决项时 `verify` 一律非零退出；`inputs` 只把逐条问题打到 stderr（不改退出码），便于先看清再改数据。**「未解决」包括**：三份文件缺一份（没加载到行内容）、某份文件只有表头没有行（没有任何条件/企业/用例对齐出来）、双向覆盖缺口、值与核验状态对不上——空映射不能当成核对通过。值本身也要口径一致：CSV 的空 `fact_value` 与库里的 `NULL` 同为「未知」，都记 `valueHash: null`；未知不等于 `0`，有用例锁住这两点。
+
+`inputs` 写出（`manifestVersion` 为 `3`：`2` 加 `documentNumber` 与 `datasetMapping`，`3` 把 `dataset` 从「文件名 → 哈希」改成「路径 + 哈希」的列表；更早版本的清单在 `verify` 里报「清单版本不同」，`dataset` 不是列表的则直接要求重新签认）：政策版本 → 条件的 `criterionId`/AST 哈希/审核状态、企业 → 事实值的哈希与**事实版本**（直接调 `agents/profile.fact_version_of`，与 `assessment_run.fact_version` 同一算法）、`appVersion`/`ruleVersion`、数据集每份文件的签认路径与 SHA-256、以及非敏感配置的哈希。`verify` 拿已签认的清单对当前库重算并逐项列差异，非零退出即「不一致」，**停止评测，不得用运行结果反推快照**。
+
+- 四条查询跑在**同一个 `REPEATABLE READ, READ ONLY` 事务**里（M2 复核 P2）：两次查询之间别的连接提交的写入既不会混进这次清单，也不会把只读事务拖成半新半旧。用例同时查 `transaction_isolation`/`transaction_read_only`，并用一条中途提交的写入证明它没被混进来、换一次采集又看得到。
+- 比较是**按字段表逐个走**的（M2 复核 P1）：清单里记下的字段——政策 `documentNumber`/`reviewStatus`/`importedAt`/`revision`/`criteriaSetFingerprint`、条件 `reviewFinding`/`validationStatus`、企业 `factVersion`、事实 `unit`/`source`/`verified`/`valueHash`、顶层 `configKeys`——都参与比较，报「签认 …，当前 …」。有一条用例对清单的每个叶子字段做单点变异，断言 `verify` 都能报出；以后给清单加字段却忘了加进比较，它会先转红。
+
+- 表达式哈希是条件 `expression` 的规范化 JSON（排序键、`Decimal` 去尾零、日期 ISO）SHA-256，与引文 `quoteHash` 不是一回事；事实值只记哈希，值本身不进清单。
+- 配置哈希只覆盖 `CONFIG_FINGERPRINT_KEYS` 白名单；`ADMIN_TOKEN`、`DEEPSEEK_API_KEY`、`DATABASE_URL`、`REDIS_URL`、OBS AK/SK 永不进哈希输入（名字命中也直接报错），有用例锁住「改令牌哈希不变」。
+- 连接串只从环境变量 `DATABASE_URL` 读（不进 argv、不进 shell 历史），失败只报变量名。云端用 `systemd-run -p EnvironmentFile=/etc/huice/api.env` 带服务同款环境执行。
+- **§5.2 第 4 项（结果导出）**按 M3 的口径实现为 `freeze-report`（`app/evaluation/report_freeze.py`）：把 API-13 下载到的 `report.md` 裁成不含「截至下载时刻的有效性」的冻结产物，原始报告连同下载时间与两侧哈希另存审计。
+
+  ```bash
+  python -m app.evaluation freeze-report report.md --out report.frozen.md
+  ```
+
+  按下载时刻现算的内容一并删干净：`- 下载时间：…` 行、整个有效性段、判断结论表的「有效性」列，以及每个政策段的「有效性 / 失效原因 / 有效期至」。剔除只按固定标记整行/整段删除，**不做语义猜测**：输入缺标题、缺有效性段（已裁过或手工改过）、表格列数对不上都直接报错，不生成产物。审计信息（`sourceSha256`、`frozenSha256`、`downloadedAt`、`droppedLines`）以一行 JSON 打到 stderr，`--out -` 时 stdout 只有冻结正文。
+- **映射的边界**：只对 `labels.csv`、`criteria_review.csv`、`enterprises.csv` 三份做逐条对齐（三份都必须给），其余文件仍只算哈希；缺列、CSV 不是 UTF-8、表达式不是合法 JSON、取值与 `unit` 对不上都直接停下报错，不猜列名、不猜类型。企业靠 `name_synthetic` 对齐，合成名称重复即报歧义。映射证明的是「这批 CSV 的内容都在库里」，不证明库里没有别的来源——那由逐字段比较与事实覆盖检查兜住。
+- **已知缺口**：冻结正文里的条件级结果仍是 Markdown 项目符号（四态 + 理由 + 逐字引文 + 计算），人能读、机器只能半结构化解析；`trace` 按契约只有阶段级摘要，不作条件级证据。要机器可解析的条件级导出，需评估 JSON 导出或方案 B（均不新增表），本轮不做，记录在此。
+
+### 2.10 消融对照：单智能体基线 vs 现方案
+
+代码在 `services/api/app/ablation/`（不连库的纯文件模块 + 一条临时库链路），与 `data/` 的评测数据、`infra/sql` 的迁移一起构成一次可复现的对照实验。目的：证明「多阶段 + 规则求值 + 引用校验」比「一个大模型一次判完」强，并且**同一批输入、同一套标注、同一套指标**。2026-11-06 的跑数结果、失败样例与局限见 `docs/devlog/M1-11-12-评测报告.md`。
+
+五个子命令各自产出文件，任何一步失败都不影响前一步：
+
+```bash
+cd services/api
+python -m app.ablation extraction  --out runs/extraction.jsonl   # 现方案的冷启动抽取
+python -m app.ablation baseline    --out runs/baseline.jsonl     # 单智能体基线
+python -m app.ablation pipeline    --out runs/pipeline.jsonl     # 现方案（临时库 + assess()）
+python -m app.ablation metrics --baseline runs/baseline.jsonl --pipeline runs/pipeline.jsonl
+python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline runs/pipeline.jsonl --out runs/review.csv
+```
+
+`pipeline` 的库地址只认 `HUICE_EVAL_DATABASE_URL`（或 `--dsn`），**不读 `DATABASE_URL`**：脚本会在其中建临时 schema、跑完全部迁移两遍、结束时删掉，因此必须指向可建 schema 的空闲库；与 `DATABASE_URL` 相同的地址会被拒绝。`asOf` 默认取运行当天的北京时间正午，命令行 `--as-of` 可覆盖，两个方案必须用同一个值。
+
+指标口径（`app/ablation/metrics.py` 的模块文档为准，这里只列结论）：
+
+- **分母 146 条**：`labels.csv` 148 条去掉 `国科发火〔2008〕172号` 那 2 条（C031/C033）——接口按 `asOf` 只解析到 2016 版，判不了的不算方案错。dev 120 / holdout 26 分列。
+- **四态一致率**：与已仲裁结果相同的条数 ÷ 分母；标注只有三值，方案给 `conflict` 一律算不一致并单列条数。
+- **硬门槛误判**：标注「不满足」却判「满足」的条数 ÷ 11 条，附 Wilson 95% 区间。11 条样本下 0 例只能说「实测 0 例」，报告不得写成「零风险」。
+- **无依据断言率**：给出确定结论（`satisfied`/`not_satisfied`）却既无引文也无事实引用的比例。这是基线也能算的「幻觉等价物」；**幻觉条款率只对现方案算**（基线没有抽取阶段），分母是模型实际给出的条款数（收下的 + 因引文不实/表达式不合法被丢弃的）。
+- **引用可证实率**：引文能在出处原文里逐字找到（NFKC + 去空白后比较）的比例。`RD-001` 的出处只有节选，**不进分母**——本仓没有原文不能算模型幻觉。
+- **时效识别**：已过适用期（`effectiveTo` 早于运行日）的 case 里，方案是否告知「已过期 / 申报窗口已关闭」。现方案的标记取自 `get_run` 的**读取时**有效性视图（`versioning.resolve_validity`，用户页面上看到的那一版），不是 `assess` 写入时的 `staleReasons`（按设计只看记录之后发生的事件，永远不含过期）。
+- **token**：冷启动（政策入库抽取）与边际（每个 case）分开报；用量未知的调用不补 0，单列条数。基线每个 case 最多 1 次重试，重试次数与 `max_tokens` 写进 JSONL 表头。
+- **人工复核**：每方案按方案结论四态分层抽 30 条（每个非空类别至少 1 条，`not_satisfied` 至少 5 条——硬门槛误判只有人工看得见），种子固定，写入 CSV；引文是否可证实由程序先判一次，复核人只判「结论对不对」并计时。
+- **抽取覆盖率是下限**：只有抽取结果的引文包含标注原文片段才算命中，抽到同一条件但引文取短了也记未命中。模型单次抽样波动明显（2026-11-06 同一提示词三轮：32% / 36% / 40%），报告要写多轮的区间，不能报单轮精确值。
+- **费用**：单价取自 `infra/README.md` §4.3（2026-11-06 取数，`deepseek-flash` 高峰价：输入未命中 2 元/百万 tokens、输出 8 元/百万）。客户端不解析响应里的缓存命中 token 数，一律按未命中价折算，故金额是**上限**；分母、分子都从 JSONL 的 `usage_prompt`/`usage_completion` 直接相加，不估算。
+
+已知取舍，写进评测报告的「局限」段而不是藏起来：
+
+1. 基线拿得到条件清单（代号 + 原文片段），否则对不上 `criterionId`，这是**对基线有利**的取舍。
+2. 灌库时把三个「先执行、后发文」版本的发布日压到生效日，只为满足 `policy_version_dates` 的 `effective_from >= published_at`；改的是临时库，不是 CSV。
+3. `applicable_entities` 登记表没有这一列，灌库时统一填「企业」占位；它只进政策详情与准备清单模板，不参与条件求值。
+4. 同一政策只灌一个版本；进指标的 case 若横跨同一政策的多个版本，`pipeline.seed` 直接报错而不是按发布时间戳抢答。
 
 ## 3. HTTP 共同约束
 
@@ -373,7 +484,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 | 资源 | 状态 | 证据 |
 | --- | --- | --- |
 | ECS | 已开通并登录 | `huice-api-01`，Ubuntu 24.04.4、Python 3.12.3、内网 `192.168.0.86`，22 端口实测可连 |
-| RDS for PostgreSQL | **已实测（2026-10-24 复测；2026-10-26 补齐迁移）** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器），`vector` 0.8.0（本地 0.8.7）；`schema_migration` 三行齐全（`001_init` 10-23 17:37、`002_evaluation_and_idempotency` 10-26 23:47:03、`003_trace_step_details` 10-26 23:47:13，`applied_at` 显示 `+08` 即实例默认 `Asia/Shanghai`；`004_invalidation_event_period` 待 11/08 部署补齐）；`trace_step` 六列与 `trace_step_status_check`/`trace_step_stage_check`、`trace_step_no_update_delete` 均已核对；`policy` 与 `policy_version` 仍 0 行 |
+| RDS for PostgreSQL | **已实测（2026-10-24 复测；2026-10-26 补齐迁移）** | 16.13，内网 `192.168.0.80`，库 `huice`；`001_init.sql` 执行成功，13 张表 / 13 个业务触发器（`public` 下 `pg_trigger` 全量 61 行，其中 48 行为外键内部触发器），`vector` 0.8.0（本地 0.8.7）；`schema_migration` 三行齐全（`001_init` 10-23 17:37、`002_evaluation_and_idempotency` 10-26 23:47:03、`003_trace_step_details` 10-26 23:47:13，`applied_at` 显示 `+08` 即实例默认 `Asia/Shanghai`；`004`—`006` 已于 2026-11-02 补齐、`007_idempotency_usage_semantics` 已于 2026-11-05 补跑，`008_material_requirements` 亦已在库（来源 PR #37 的 `351c037`，本文件无其执行记录），`schema_migration` 八行；`usage_semantics` 列 `NOT NULL DEFAULT 'legacy'`、`idempotency_record_usage_semantics_check` 就位，既有 1 条记录落 `legacy`；云端代码已于 2026-11-06 换为 rc.7（`112d0a7`），此前为「rc.6 + 提示词热补丁」，先迁移后升级）；`trace_step` 六列与 `trace_step_status_check`/`trace_step_stage_check`、`trace_step_no_update_delete` 均已核对；`policy` 与 `policy_version` 仍 0 行 |
 | Redis（DCS） | **已实测** | `huice-redis` 主备 1GB，小版本 `7.2.11.5`，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG`；2026-10-24 复测时实例未开启（端口拒绝），2026-10-26 在 ECS 上复测恢复：端口可连、`--askpass PING` 返回 `PONG`、白名单已含 ECS `192.168.0.86`。判断链路的版本化求值缓存已实现（2026-10-26），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；云端 API 尚未部署，该项在云端的命中待部署后复测 |
 | OBS | **已实测（2026-10-27，真实桶）** | 桶 `huice-policies`（私有，`cn-south-1`）；`ObsObjectStore`（`esdk-obs-python` 3.26.6）在真实桶上 `-m obs` 5 项通过：写入→独立客户端读回字节、删除后 404、两次写入键不冲突、导入正文真正落桶、不可写桶 503 且不泄露凭证（命令与输出见 `infra/README.md` §4.3） |
 | DeepSeek | 已接入，**2026-10-27 用真实 Key 联调通过**（`tests/test_deepseek_live.py` 3 项：补全返回文本/用量、错误 Key→503 不回显、整链 `explanationMode=deepseek` 而结论仍由规则给出） | `app/integrations/llm.py`（`fixture`/`deepseek` 两模式，OpenAI 兼容 `/chat/completions`）；契约 rc.2 中 `ModelUsage.mode`/`explanationMode` 的 `maas` 已改为 `deepseek`；`MODEL_MODE` 默认值仍为 `fixture`，由 `.env` 切换 |
@@ -420,7 +531,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 
 **如实记录的偏差与待办**：
 
-- `preparationTemplate.items` 恒为 `[]`，企业事实一律 `verified:false`：两项都要以 M3 审核过的材料要求为准，未由模型或样例编造。
+- `preparationTemplate.items` 恒为 `[]`（政策详情没有企业上下文，四态给不出来），企业事实一律 `verified:false`：材料要求本身已按 M3 审核过的 CSV 导入（`review_status=已仲裁`），未由模型或样例编造；带四态的条目只在判断运行的 `preparation.items` 里出现。
 - `supersedesRunId` 已校验同企业/同期间/同政策组并记录关联，但重算仍是完整的，尚未按依赖图跳过未受影响条件（契约语义已满足，性能优化后置）。
 - 金额在线上固定两位小数（`"2800000.00"`、`"0.00"`），而 `factVersion` 的哈希会去掉尾随零——同一个内容不会因写法不同而换版本。
 - `closed`、`validity`、`staleReasons`、`validUntil` 都是读取时视图，不回写历史结果。
@@ -494,6 +605,35 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 
 验证（2026-10-27，本机 PostgreSQL 16 + pgvector 0.8.7 / Redis 7.4）：`pytest -q`（无外部依赖）**433 passed / 45 skipped / 75 subtests**；`pytest -m db` **34 passed**（含新增的同键两期间用例）；`HUICE_TEST_DATABASE_URL` 与 `HUICE_TEST_REDIS_URL` 都指向本地服务时全量 **470 passed / 8 skipped**（余下 8 项为 OBS 5 项与 DeepSeek 3 项门控，需真实凭证）。迁移 `004` 在本地库连跑两遍退出码均 0，第二遍仅 `NOTICE ... already exists, skipping`；核对结果：`invalidation_event` 增 `fact_period_start/fact_period_end` 两列、`invalidation_event_fact_period_check` 约束、`invalidation_event_run_idx (run_id, created_at)` 索引，`schema_migration` 四行齐全。云端 RDS 仍未执行 `004`，随 11/08 部署补齐。**未执行**：OBS/DeepSeek 用例本轮未重跑（改动不涉及这两条链路）。
 
+### M1 后端实现验证记录（2026-11-05，评测输入快照）
+
+为 `EVALUATION_FREEZE` §5.2 补输入侧工具（`services/api/app/evaluation/`，见 2.9）。新增 `tests/test_eval_snapshot.py` 27 项：纯函数 17 项锁住哈希口径（键序、`Decimal` 尾零、日期 ↔ ISO 串等价、`null` ≠ 空串、配置白名单挡密钥）与差异比较（忽略采集时间与签认后新增的数据集文件，值/配置/数据集/缺失行都能报出）；CLI 6 项（缺 `DATABASE_URL` 只报变量名、坏清单被拒、数据集目录不存在先于连库报错、只给 `--dataset-dir` 被拒、列出的文件不存在时点名）；`db` 标记 5 项在真库上验「清单的事实版本 == 引擎落库的 `fact_version`」「改事实值后 `verify` 非零退出且不改动清单」「清单文本里没有任何口令/令牌/连接串」「只哈希 `--dataset-file` 列出的文件、同目录的复核表不进清单」「两侧 `codeCommit` 皆 null 时提示代码身份未证明」。后两项按 M3 在 PR #39 的复核改的：目录扫 `*.csv` 会把材料复核表冻结进去，材料一改就误报；双 `null` 曾静默通过。
+
+
+**M2 在 #39 复审的三项（同日改）**：① `verify` 原先把 `reviewFinding` 等会改变判断结果的字段漏在比较之外——改为按字段表逐个比较（见 2.9），并加一条逐叶子字段单点变异的用例，加字段忘了进比较会先转红；② 数据集哈希与库快照并列却不证明二者映射一致——新增 `dataset_map.py`（`content-alignment@1`）做逐条对齐，清单记 `datasetMapping`，未解决项一律非零退出，`tests/test_eval_dataset_map.py` 覆盖匹配/值不同/verified/表达式变/双向未覆盖/同名歧义/无文号回退标题/空表达式/缺列/空值对齐/空表（现 20 项）；③ 快照四条查询改为同一 `REPEATABLE READ, READ ONLY` 事务，真库用例验隔离级别与只读、并用中途提交的写入证明不会混入。
+**M2 第二轮复审的两项（2026-11-06 改）**：① 不给数据集时 `datasetMapping` 为 `null`，`verify` 对两个 `null` 直接放行，等于「从没核对过 CSV 也算一致」——现在 `inputs`/`verify` 默认要求三份评测输入齐全（缺哪份点名哪份，非零退出），只比数据库必须显式加 `--no-dataset`，两个模式的清单不能互相冒充核对；映射里缺文件、空表（只有表头）、条目一条都没对上，一律记成未解决问题；② CSV 空值与库 `NULL` 同为「未知」，原先 CSV 侧还对 `None` 算哈希，与清单里的 `valueHash: null` 永远对不上——已统一为 `null`，并补「未知 ≠ 0」的用例。新增 CLI 回归：无 `--dataset-file`、只给一份、`--no-dataset` 与数据集文件同时给、只比数据库的清单不带开关核对、带映射的清单硬加 `--no-dataset`、三份 CSV 各自清空成只有表头后 `verify` 非零。
+
+**§5.2 第 4 项「结果导出」（2026-11-05，按 M3 口径）**：`freeze-report` 把下载的 `report.md` 裁成不含有效性段的冻结产物。`tests/test_eval_report_freeze.py` 6 项：剔除干净（下载时间 / 有效性段 / 有效性列 / 失效原因 / 有效期至全部消失，条件级内容与办理清单保留）、同一 run 换下载时刻与失效状态后冻结字节一致、已裁过或手工改过的输入被拒（缺标题、缺有效性段）、摘要表列数异常被拒、用**真实渲染器**输出验证剔除口径（前提断言原始报告确实带有效性段）、CLI 写出文件并回报两侧哈希与下载时间。
+
+**M2 第三轮复审的一项（2026-11-06 改，P1）**：清单只记文件名的哈希，`verify` 再按文件名拼 `--dataset-dir`——三份输入分散在 `data/evaluation`、`data/policies`、`data/fixtures`，从仓库根用三个相对路径签认、换个目录核对就会去找错地方，同名文件还会互相顶替。现在清单记**签认路径**（项目内相对项目根，项目外绝对），`verify` 只按这些路径读、拒收 `--dataset-file`/`--dataset-dir`；同一文件签认两次、两个不同目录的同名文件一起签，都直接拒绝。新增用例：仓库三目录布局下签认后**换工作目录**核对、签认文件被改/被删、命令行重新点名被拒、同一个文件签两次、两个同名文件。验证（本机 Docker）：全量 **782 passed / 11 skipped / 77 subtests**；`tests/test_eval_snapshot.py` 与 `tests/test_eval_dataset_map.py` 合跑 **70 passed**。另外用真实 `data/` 三份文件在本机临时库实跑过 `inputs → verify`：清单记的是 `data/evaluation/labels.csv`、`data/fixtures/enterprises.csv`、`data/policies/criteria_review.csv` 三条相对路径，换到仓库根核对仍读得到，传 `--dataset-file` 被拒。
+
+**部署文件指纹（2026-11-06，按 M2 在 #39 的「单独 PR 跟进」落地）**：`codeCommit` 人工传入或两侧皆空都证明不了部署物身份（M2 在 #36 的判断），而云端没有 `.git`、服务也不暴露 commit，清单里「代码身份」这一项此前没有可复算的证据。新增 `app/evaluation/code_fingerprint.py`：对 `services/api/app/**/*.py`、`contracts/openapi.yaml`、`services/api/requirements.lock`（排除 `__pycache__`、`*.pyc`）逐个取文件字节 sha256，按相对项目根的 POSIX 路径排序后规范化序列化再取 sha256，记进清单的 `codeFingerprint`/`codeFiles`/`codeScope`；新增不连库的 `python -m app.evaluation fingerprint`（`--json` 逐文件明细、`--root` 复算另一棵树）。M2 点的四条边界逐一落实：**文件范围**记进清单且参与比对（只算 3 个文件与算全量必须能区分）、**缺文件/空集合报错**（`services/api/requirements.lock` 缺失、目录扫到 0 个文件都停下）、**规范化**与其他哈希共用 `canonical_json`/`sha256_hex` 且不含大小与时间（`cp`、`git checkout` 内容不变则指纹不变）、**旧清单兼容**（缺这四个字段不报「版本不同」，只提示磁盘身份未证明）。「运行进程 ↔ 磁盘版本」按 M2 的提醒单独处理：`--process-pid` 读 `/proc` 的启动时间并列出写于其后的代码文件，有就停下要求先重启；`processStartedAt` 只记录不比对（重启是正常操作）。`verify` 措辞相应改成「磁盘代码与签认一致；但对应哪个提交、进程里跑的是不是它仍未证明」，不再因指纹一致就宣称运行代码身份已证明。`tests/test_eval_code_fingerprint.py` 20 项（同树两次一致、创建顺序无关、单字节变异、排除字节码、缺文件点名、空集合报错、范围入清单、`stale_code_files` 三例、Linux 才跑的 `/proc` 两例、CLI 三例、比对五例），`test_eval_snapshot.py` 原「两侧 `codeCommit` 皆 null」用例改写为「指纹一致但未证明什么」并新增「旧清单仍可核对且明说未证明」。验证（本机 Docker 库）：全量 **873 passed / 13 skipped / 77 subtests**（新增 20 项、改写 1 项）；`tests/test_eval_snapshot.py` + `test_eval_code_fingerprint.py` + `test_eval_dataset_map.py` 合跑 **90 passed / 1 skipped**。**未执行**：云端实跑（`--process-pid` 依赖 Linux `/proc`，需在 ECS 上验一次）。
+
+验证（2026-11-06，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`；M2 三轮复审改完后重跑）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **782 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **14 passed**，`tests/test_eval_snapshot.py`（50 项）与 `tests/test_eval_dataset_map.py`（20 项）合跑 **70 passed**；无库全量 **731 passed / 62 skipped**。**未执行**：云端实跑（本工具尚未部署）；冻结正文的条件级结果是 Markdown 项目符号，机器只能半结构化解析——已知缺口，见 2.9。
+
+### M1 后端实现验证记录（2026-11-06，第七阶段：材料要求导入与四态清单）
+
+按 PR #37 的结论（P2 指派 M1 实现、M2 消费页面；P1 的 GRANT-02/05/06 空事实键要能在接口里表达）落地：迁移 `008_material_requirements.sql`、`app/materials/`（CSV 解析校验 + `check`/`import` 命令行）、`domain/preparation.py`（运行期展开）、`orchestrator` 的条目生成与告警条件、`report` 的四态文案；契约升到 `1.0.0-rc.8`（`PreparationItem` 增 `materialId`、`status`）；rc.9 只改 `status` 的两个取值名（`provided`/`missing` → `facts_filled`/`facts_missing`），字段与结构不动。
+
+**实现中改掉的两个口径问题**（不是预先设计的，是跑真实数据时暴露的）：
+
+1. **一个业务代号可以登记多份文号**。`source_register.csv` 里 `CN-TAX-GXJS` 同时有已废止的 `国科发火〔2008〕172号` 与现行 `国科发火〔2016〕32号`，最初的 `read_policy_codes` 见到重复文号就整份报错，把一份本来没用到该代号的清单也挡住了。改成「代号 → 全部文号」原样保留，歧义只在材料真正引用该代号、且各文号在库里指向不同政策时才报错（`test_a_code_with_two_published_documents_is_ambiguous`）。
+2. **没有事实键的条件交材料被静默省略**。GRANT-02/05/06 条件只有文字、`proves_fact_keys` 为空，按「条件交只在被引用时列出」的规则永远不出现——申请书不出现会让人以为不用交。改成：有键的条件交仍按引用决定，无键的条件交一律列出并标 `manual_check`（`missing=true` 保守）。这也让 `manual_check` 在真实数据上真正可达。
+
+**真库端到端**（本地 PostgreSQL 16，临时库 `huice_mat_e2e`，2026-11-06）：应用 001—008（`schema_migration` 八行、基础表 16 张）→ 按 `source_register.csv` 的文号发布 5 项政策（条款为合成表达式）→ `python -m app.materials check` 与 `import`：**可导入 13 行**，跳过 TAX-04、GRANT-09（`待核实（依据未入库）`）；对 5 项政策各跑一次判断，清单 4 / 2 / 5 / 3 / 3 条，四种状态都出现过（按 rc.9 的名字：SME-012 政策下 TAX-01 为 `facts_missing`，因 `establishedDate`/`independentLegalEntity` 无值，TAX-02 为 `facts_filled`，TAX-05/TAX-06 各 8 个季度引用均为 `facts_missing`；这次跑数在改名前完成，当时叫 `missing` / `provided`）。临时库只用于这次留证，验证后弃用，不含任何真实企业数据。
+
+验证：`pytest -q`（HUICE_TEST_DATABASE_URL 指向本地库）**1 failed / 815 passed / 12 skipped / 77 subtests**；唯一失败是 `test_contract.py::test_types_are_generated_from_current_contract`——契约变更后 `apps/web/src/api/types.ts` 需由 M2 按 rc.8 重新生成（与前几次契约变更同一流程）。`pytest -m db -q` **59 passed**。
+
 ## 9. 各成员的文件编写范围（以 huice/ 为根）
 
 ### M1：后端、契约、基础设施
@@ -505,11 +645,14 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 | `services/api/app/{config,errors,security,db}.py` | 环境变量加载与按模式校验（缺失只报变量名）、统一错误信封与 `X-Trace-Id`、管理 Bearer 与演示 cookie、psycopg 连接池与健康探测 |
 | `services/api/app/routes/{health,policies,admin_policies,enterprises,assessment_runs}.py` | 本文对应16个接口；只组织请求/响应，不在路由里写规则（API-01—16 均已实现，API-14 轨迹在 `assessment_runs.admin_router`） |
 | `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效（均已实现；季度平均的期间约束与冲突传播见 2.2） |
-| `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；explanation 的清单 `items[]` 待 M3 材料） |
+| `services/api/app/domain/preparation.py`、`services/api/app/materials/{catalog,__main__}.py` | 材料要求的导入与运行期展开：`catalog` 解析并校验 CSV（只收已仲裁行、必交/条件交字段互斥、事实键白名单），`__main__` 是 `python -m app.materials check/import` 命令行，`preparation.build_items` 把材料按本次判断的引用与期间展开成四态条目（2026-11-06，契约 rc.8） |
+| `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；`explanation` 的清单 `items[]` 自 2026-11-06 起由 `orchestrator._material_items` 生成、`report` 按四态渲染） |
 | `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage 已覆盖政策草稿、企业画像、公开政策、run、失效视图与轨迹读取；llm/obs 已实现，`esdk-obs-python` 已入锁，**2026-10-27 已在真实桶与真实 DeepSeek Key 上联调通过**（`test_obs_live.py` 5 项、`test_deepseek_live.py` 3 项）；cache 已实现七字段版本化键、值投影与故障绕过，`redis==8.1.0` 已入锁） |
+| `services/api/app/evaluation/`（含 `dataset_map.py`）、`services/api/tests/{test_eval_snapshot,test_eval_dataset_map,test_eval_report_freeze}.py` | 评测输入快照的导出与核对（含 CSV ↔ 库的逐条对齐）、以及 API-13 报告的确定性冻结（`EVALUATION_FREEZE` §5.2 第 1/2/3/4/5 项，见 2.9）；不产出评测指标 |
 | `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow,test_citations}.py` | 静态契约与业务测试，独立报告覆盖范围（refs 解析、四态优先级、AST 求值、引用校验、失效视图与端到端判断链路） |
 | `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_admin_review_http,test_public_read_http,test_enterprise_http,test_report_trace_http,test_profile_units,test_questioning,test_trace,test_cache,test_cache_redis_live,test_extraction_units,test_openapi_alignment,test_obs_object_store,test_obs_live,test_llm_client,test_deepseek_live}.py` | 无数据库 HTTP 测试（假仓储）、各单元口径与契约对齐测试；适配器用假客户端/假传输层/假缓存后端，不联网。三个例外都靠环境变量门控、默认跳过：`test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL`，真实 Redis）、`test_obs_live.py`（`HUICE_TEST_OBS_*` 四项，真实桶）、`test_deepseek_live.py`（`HUICE_TEST_DEEPSEEK_API_KEY`，真实模型） |
 | `services/api/tests/{conftest,support,db_support,test_db_policy_repository,test_db_evaluation,test_db_errors}.py` | `db` 标记的真库用例：独立 schema 建表、用例间清表；覆盖政策导入落库、企业画像 CAS、公开列表与游标、快照闸门、run 落库与失效视图、只追加与不可发布保护 |
+| `services/api/tests/{test_materials,test_db_materials}.py` | 材料要求：CSV 解析与校验、代号多文号解析、导入替换与类型一致性（真库），以及运行期展开成四态、季度八引用、关闭政策与报告文案（2026-11-06，24 + 14 项） |
 | `services/api/AGENT_PROTOCOL.md`、`pyproject.toml`、实现后生成的 `requirements.lock` | 内部协议、真实依赖与测试命令 |
 | `infra/**`、`.env.example`、`.gitignore`、`README.md`、`docs/devlog/M1.md` | 数据库/Compose、网关会话和门禁、部署回滚、环境说明与日志 |
 

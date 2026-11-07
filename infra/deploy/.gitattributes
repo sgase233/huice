@@ -1,0 +1,4 @@
+# 部署脚本在 ECS 上用 bash 直接跑：一律 LF。
+# 仓库所在的 Windows 环境 core.autocrlf=true，不声明就会把工作区写成 CRLF，
+# 打包上传后 shebang 与每行末尾都多一个 \r（`#!/usr/bin/env bash\r` 会直接执行失败）。
+*.sh text eol=lf

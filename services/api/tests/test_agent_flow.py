@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
+from app.errors import ApiProblem
+from app.integrations.llm import LlmResult
 from support import published_draft
 
 YEAR = {"startDate": "2026-01-01", "endDate": "2026-12-31"}
@@ -182,6 +186,133 @@ def test_run_snapshots_trace_steps_and_two_runs_never_share_an_id(client, reposi
     ]
     # 运行里保存的是所用政策版本的内部 ID，供读取时重算有效性。
     assert saved["policy_version_ids"][policy.id] is not None
+
+
+class _CountingLlm:
+    """真实模型分支的最小替身：只回一句改写，用量固定，便于断言轨迹与日志口径。"""
+
+    mode = "deepseek"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        self.calls += 1
+        return LlmResult(
+            text="模型改写后的说明。",
+            model="deepseek-chat",
+            prompt_tokens=11,
+            completion_tokens=22,
+            elapsed_ms=8,
+        )
+
+
+def test_explanation_trace_records_model_tokens_once_per_call(app, client, repository):
+    policy = published_draft(expressions=[INDUSTRY_GATE])
+    repository.drafts.append(policy)
+    llm = _CountingLlm()
+    app.state.llm = llm
+    enterprise = create_enterprise(client)
+
+    create_run(client, enterprise["id"], [str(policy.id)])
+
+    steps = repository.saved_runs[0]["trace_steps"]
+    explanation = [step for step in steps if step.stage == "explanation"][0]
+    assert llm.calls == 1
+    # 用量只进轨迹摘要，不进契约响应：TraceStep 没有 token 字段。
+    assert "模型 tokens 入 11 出 22" in explanation.output_summary
+    assert explanation.output_summary.endswith(f"{policy.id}=deepseek")
+
+
+class _FailingLlm:
+    """解释用模型直接失败：判断照常返回，但这次调用要留一行、用量记未知。"""
+
+    mode = "deepseek"
+    model_name = "deepseek-chat"
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        raise ApiProblem(
+            503, "DEPENDENCY_UNAVAILABLE", "模型服务暂不可用。",
+            retryable=True, usage_unknown=True,
+        )
+
+
+def test_a_failed_explanation_call_is_logged_with_unknown_usage(
+    app, client, repository, caplog
+):
+    caplog.set_level(logging.INFO)
+    policy = published_draft(expressions=[INDUSTRY_GATE])
+    repository.drafts.append(policy)
+    app.state.llm = _FailingLlm()
+    enterprise = create_enterprise(client)
+
+    body = create_run(client, enterprise["id"], [str(policy.id)])
+
+    # 模型失败不影响判断：结论与降级警告照常返回。
+    assert body["assessments"][0]["explanationMode"] == "saved"
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
+    # 失败也要有一行：模型可能已被调用并计费，不能因为降级就从记录里消失。
+    assert "outcome=error" in line and "usage=unknown" in line
+    explanation = [
+        step for step in repository.saved_runs[0]["trace_steps"] if step.stage == "explanation"
+    ][0]
+    # 未知用量单列，不能与已知 tokens 相加。
+    assert "另有 1 次调用用量未知" in explanation.output_summary
+    assert "tokens" not in explanation.output_summary
+
+
+class _NoUsageLlm:
+    """回答拿到了、上游却没给用量：措辞照用，但用量必须按未知记。"""
+
+    mode = "deepseek"
+    model_name = "deepseek-chat"
+
+    def complete(self, *, system: str, user: str, max_tokens: int = 1024) -> LlmResult:
+        return LlmResult(
+            text="模型改写后的说明。",
+            model="deepseek-chat",
+            prompt_tokens=0,
+            completion_tokens=0,
+            elapsed_ms=9,
+            usage_known=False,
+        )
+
+
+def test_a_successful_call_without_usage_is_counted_as_unknown_not_zero(
+    app, client, repository, caplog
+):
+    caplog.set_level(logging.INFO)
+    policy = published_draft(expressions=[INDUSTRY_GATE])
+    repository.drafts.append(policy)
+    app.state.llm = _NoUsageLlm()
+    enterprise = create_enterprise(client)
+
+    body = create_run(client, enterprise["id"], [str(policy.id)])
+
+    assert body["assessments"][0]["explanationMode"] == "deepseek"
+    line = [r.getMessage() for r in caplog.records if r.getMessage().startswith("model_call")][-1]
+    # 成功但缺用量：不能写 usage=known prompt=0，那是把未知当成真实零用量。
+    assert "outcome=ok" in line and "usage=unknown" in line
+    assert "prompt=unknown" in line and "completion=unknown" in line
+    explanation = [
+        step for step in repository.saved_runs[0]["trace_steps"] if step.stage == "explanation"
+    ][0]
+    assert "另有 1 次调用用量未知" in explanation.output_summary
+    assert "tokens" not in explanation.output_summary
+
+
+def test_explanation_trace_has_no_token_note_when_the_model_is_not_used(client, repository):
+    policy = published_draft(expressions=[INDUSTRY_GATE])
+    repository.drafts.append(policy)
+    enterprise = create_enterprise(client)
+
+    create_run(client, enterprise["id"], [str(policy.id)])
+
+    explanation = [
+        step for step in repository.saved_runs[0]["trace_steps"] if step.stage == "explanation"
+    ][0]
+    assert "tokens" not in explanation.output_summary
+    assert explanation.output_summary.endswith(f"{policy.id}=fixture")
 
 
 def test_supersedes_must_match_enterprise_policies_and_period(client, repository):
