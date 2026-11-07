@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from uuid import uuid4
@@ -237,43 +238,70 @@ def test_写库路径不传问题列表时非法布尔直接抛错(importer: Mod
 # （pending_review）、发布后（published）。下面按这三种状态各钉一条。
 
 
-def _plan(*codes: str):
+_URL = "https://www.gov.cn/x"
+
+
+def _plan(*codes: str, text: str = "正文内容", expression: dict | None = None):
     return SimpleNamespace(
-        document="测试文号", criteria=[SimpleNamespace(code=code) for code in codes]
+        code="P",
+        document="测试文号",
+        metadata=SimpleNamespace(document_number="测试文号", version="v1", source_url=_URL),
+        body_name="正文",
+        body_text=text,
+        attachments=[],
+        notes=[],
+        criteria=[
+            SimpleNamespace(
+                code=code,
+                problem=None,
+                expression={"op": "manual_review"} if expression is None else expression,
+                review_finding="none",
+                spans=[SimpleNamespace(source_name="正文", page=None, section="一", quote=text)],
+            )
+            for code in codes
+        ],
     )
 
 
-#: 计划与库里都一致的一组来源链接。
-_URLS = frozenset({("正文", "https://www.gov.cn/x")})
+def _sig(importer: ModuleType, *codes: str, **kwargs):
+    return importer.PlanSignature.of(_plan(*codes, **kwargs))
+
+
+def _passed(signature):
+    """库里那版条款都通过了校验时的摘要。"""
+
+    return tuple(replace(item, status="passed") for item in signature.criteria)
 
 
 def _state(
     importer: ModuleType,
     *,
     status: str,
-    criteria=(),
-    hashes=frozenset({"h"}),
-    urls=_URLS,
+    signature,
+    criteria=None,
+    hashes=None,
+    urls=None,
 ):
     return importer.VersionState(
         policy_id=uuid4(),
         version="v1",
         review_status=status,
         revision=uuid4(),
-        criteria=tuple(criteria),
-        source_hashes=hashes,
-        source_urls=urls,
+        criteria=signature.criteria if criteria is None else tuple(criteria),
+        source_hashes=signature.source_hashes if hashes is None else hashes,
+        source_urls=signature.source_urls if urls is None else urls,
     )
 
 
 def test_库里没有这个文号就新建(importer: ModuleType) -> None:
-    assert importer._decide([], _plan("A"), frozenset({"h"}), _URLS)[0] == "create"
+    assert importer._decide([], _sig(importer, "A"))[0] == "create"
 
 
 def test_已完整发布的版本重跑直接跳过(importer: ModuleType) -> None:
-    state = _state(importer, status="published", criteria=[("A", "passed")])
+    signature = _sig(importer, "A")
+    state = _state(importer, status="published", signature=signature, criteria=_passed(signature))
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)
+    action, reason = importer._decide([state], signature)
 
     assert action == "skip"
     assert "全部 passed" in reason
@@ -282,27 +310,104 @@ def test_已完整发布的版本重跑直接跳过(importer: ModuleType) -> Non
 def test_已发布但缺条件算冲突而不是跳过(importer: ModuleType) -> None:
     """旧写法只按文号 SELECT 1 就跳过，缺了条件也照样算成功——这正是 M2 指出的问题。"""
 
-    state = _state(importer, status="published", criteria=[("A", "passed")])
+    signature = _sig(importer, "A", "B")
+    state = _state(
+        importer, status="published", signature=signature, criteria=_passed(signature)[:1]
+    )
 
-    action, reason = importer._decide([state], _plan("A", "B"), frozenset({"h"}), _URLS)
+    action, reason = importer._decide([state], signature)
 
     assert action == "conflict"
     assert "缺条件 B" in reason
 
 
-def test_已发布但条件没通过算冲突(importer: ModuleType) -> None:
-    state = _state(importer, status="published", criteria=[("A", "failed")])
+def test_已发布但多出一条条款算冲突(importer: ModuleType) -> None:
+    signature = _sig(importer, "A")
+    extra = importer.CriterionState(
+        code="B", status="passed", expression="{}", review_finding="none", spans=()
+    )
+    state = _state(
+        importer, status="published", signature=signature, criteria=_passed(signature) + (extra,)
+    )
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)
+    action, reason = importer._decide([state], signature)
+
+    assert action == "conflict"
+    assert "多出条件 B" in reason
+
+
+def test_重复条款算冲突(importer: ModuleType) -> None:
+    signature = _sig(importer, "A")
+    state = _state(
+        importer,
+        status="published",
+        signature=signature,
+        criteria=_passed(signature) * 2,
+    )
+
+    action, reason = importer._decide([state], signature)
+
+    assert action == "conflict"
+    assert "重复条款" in reason
+
+
+def test_已发布但条款没通过算冲突(importer: ModuleType) -> None:
+    signature = _sig(importer, "A")
+    failed = tuple(replace(item, status="failed") for item in signature.criteria)
+    state = _state(importer, status="published", signature=signature, criteria=failed)
+
+    action, reason = importer._decide([state], signature)
 
     assert action == "conflict"
     assert "不是 passed" in reason
 
 
-def test_已发布但正文变过算冲突(importer: ModuleType) -> None:
-    state = _state(importer, status="published", criteria=[("A", "passed")])
+def test_已发布但判定表达式被改过算冲突(importer: ModuleType) -> None:
+    signature = _sig(importer, "A")
+    edited = (replace(_passed(signature)[0], expression='{"op":"manual_review","extra":1}'),)
+    state = _state(importer, status="published", signature=signature, criteria=edited)
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"别的正文"}), _URLS)
+    action, reason = importer._decide([state], signature)
+
+    assert action == "conflict"
+    assert "判定表达式" in reason
+
+
+def test_已发布但引文被改过算冲突(importer: ModuleType) -> None:
+    signature = _sig(importer, "A")
+    edited = (replace(_passed(signature)[0], spans=(("正文", "别的引文", None, "一", _URL),)),)
+    state = _state(importer, status="published", signature=signature, criteria=edited)
+
+    action, reason = importer._decide([state], signature)
+
+    assert action == "conflict"
+    assert "引文或出处" in reason
+
+
+def test_已发布但引文指向别的来源算冲突(importer: ModuleType) -> None:
+    """来源表本身没错，但 span 的 sourceId 指到了另一份文件。"""
+
+    signature = _sig(importer, "A")
+    edited = (replace(_passed(signature)[0], spans=(("附件", "正文内容", None, "一", _URL),)),)
+    state = _state(importer, status="published", signature=signature, criteria=edited)
+
+    action, reason = importer._decide([state], signature)
+
+    assert action == "conflict"
+    assert "引文或出处" in reason
+
+
+def test_已发布但正文变过算冲突(importer: ModuleType) -> None:
+    signature = _sig(importer, "A")
+    state = _state(
+        importer,
+        status="published",
+        signature=signature,
+        criteria=_passed(signature),
+        hashes=frozenset({"别的正文的哈希"}),
+    )
+
+    action, reason = importer._decide([state], signature)
 
     assert action == "conflict"
     assert "来源与本轮计划不一致" in reason
@@ -311,50 +416,69 @@ def test_已发布但正文变过算冲突(importer: ModuleType) -> None:
 def test_已发布但附件还指着主政策链接算冲突(importer: ModuleType) -> None:
     """旧导入器写进去的附件链接与正文相同，内容哈希却一样——只比哈希会误判成已导好。"""
 
+    signature = _sig(importer, "A")
     state = _state(
         importer,
         status="published",
-        criteria=[("A", "passed")],
-        urls=frozenset({("正文", "https://www.gov.cn/x"), ("附件", "https://www.gov.cn/x")}),
-    )
-    planned = frozenset(
-        {("正文", "https://www.gov.cn/x"), ("附件", "https://www.chinatax.gov.cn/y")}
+        signature=signature,
+        criteria=_passed(signature),
+        urls=frozenset({("正文", _URL), ("附件", _URL)}),
     )
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}), planned)
+    action, reason = importer._decide([state], signature)
 
     assert action == "conflict"
     assert "来源链接" in reason
 
 
 def test_建版后中断的草稿走续跑(importer: ModuleType) -> None:
-    state = _state(importer, status="pending_parse")
+    signature = _sig(importer, "A")
+    state = _state(importer, status="pending_parse", signature=signature, criteria=())
 
-    assert importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)[0] == "resume"
+    assert importer._decide([state], signature)[0] == "resume"
 
 
 def test_存条款后中断的草稿也走续跑(importer: ModuleType) -> None:
-    state = _state(importer, status="pending_review", criteria=[("A", "failed")])
+    """校验状态是算出来的：草稿里即使记着 failed 也照样续跑，下一轮整版覆盖。"""
 
-    assert importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)[0] == "resume"
+    signature = _sig(importer, "A")
+    failed = tuple(replace(item, status="failed") for item in signature.criteria)
+    state = _state(importer, status="pending_review", signature=signature, criteria=failed)
+
+    assert importer._decide([state], signature)[0] == "resume"
+
+
+def test_草稿里的条款被改过就拒绝续跑(importer: ModuleType) -> None:
+    signature = _sig(importer, "A")
+    edited = (replace(signature.criteria[0], spans=(("正文", "别的引文", None, "一", _URL),)),)
+    state = _state(importer, status="pending_review", signature=signature, criteria=edited)
+
+    action, reason = importer._decide([state], signature)
+
+    assert action == "conflict"
+    assert "草稿的条款" in reason
 
 
 def test_pending_parse_却有条件记录算冲突(importer: ModuleType) -> None:
-    state = _state(importer, status="pending_parse", criteria=[("A", "passed")])
+    signature = _sig(importer, "A")
+    state = _state(
+        importer, status="pending_parse", signature=signature, criteria=_passed(signature)
+    )
 
-    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}), _URLS)
+    action, reason = importer._decide([state], signature)
 
     assert action == "conflict"
     assert "库被改过" in reason
 
 
 def test_同一个文号有多个版本时不去猜该续跑哪一个(importer: ModuleType) -> None:
+    signature = _sig(importer, "A")
     states = [
-        _state(importer, status="pending_parse"),
-        _state(importer, status="published", criteria=[("A", "passed")]),
+        _state(importer, status="pending_parse", signature=signature, criteria=()),
+        _state(importer, status="published", signature=signature, criteria=_passed(signature)),
     ]
 
-    action, reason = importer._decide(states, _plan("A"), frozenset({"h"}), _URLS)
+    action, reason = importer._decide(states, signature)
 
     assert action == "conflict"
     assert "无法判断" in reason
@@ -391,28 +515,7 @@ class _FakeRepository:
 
 
 def _fake_plan(text: str = "正文内容"):
-    return SimpleNamespace(
-        code="P",
-        document="测试文号",
-        metadata=SimpleNamespace(
-            document_number="测试文号", version="v1", source_url="https://www.gov.cn/x"
-        ),
-        body_name="正文",
-        body_text=text,
-        attachments=[],
-        notes=[],
-        criteria=[
-            SimpleNamespace(
-                code="A",
-                problem=None,
-                expression={"op": "manual_review"},
-                review_finding="none",
-                spans=[
-                    SimpleNamespace(source_name="正文", page=None, section="一", quote=text)
-                ],
-            )
-        ],
-    )
+    return _plan("A", text=text)
 
 
 def _wire_apply(importer: ModuleType, monkeypatch, state, text: str = "正文内容"):
@@ -427,13 +530,14 @@ def _wire_apply(importer: ModuleType, monkeypatch, state, text: str = "正文内
             [],
         ),
     )
-    return _FakeRepository([digest]), _fake_plan(text)
+    return _FakeRepository([digest])
 
 
 def test_中断后的草稿会被续跑并发布(importer: ModuleType, monkeypatch) -> None:
-    digest = hashlib.sha256("正文内容".encode()).hexdigest()
-    state = _state(importer, status="pending_parse", hashes=frozenset({digest}))
-    repo, plan = _wire_apply(importer, monkeypatch, state)
+    plan = _fake_plan()
+    signature = importer.PlanSignature.of(plan)
+    state = _state(importer, status="pending_parse", signature=signature, criteria=())
+    repo = _wire_apply(importer, monkeypatch, state)
 
     assert importer._apply([plan], "postgresql://unused/none", repository=repo) == 0
     assert "create" not in repo.calls, "草稿已存在却又建了一个新版本"
@@ -441,32 +545,26 @@ def test_中断后的草稿会被续跑并发布(importer: ModuleType, monkeypat
 
 
 def test_已完整发布的版本重跑一次都不写(importer: ModuleType, monkeypatch) -> None:
-    state = importer.VersionState(
-        policy_id=uuid4(),
-        version="v1",
-        review_status="published",
-        revision=uuid4(),
-        criteria=(("A", "passed"),),
-        source_hashes=frozenset({hashlib.sha256("正文内容".encode()).hexdigest()}),
-        source_urls=frozenset({("正文", "https://www.gov.cn/x")}),
-    )
-    repo, plan = _wire_apply(importer, monkeypatch, state)
+    plan = _fake_plan()
+    signature = importer.PlanSignature.of(plan)
+    state = _state(importer, status="published", signature=signature, criteria=_passed(signature))
+    repo = _wire_apply(importer, monkeypatch, state)
 
     assert importer._apply([plan], "postgresql://unused/none", repository=repo) == 0
     assert repo.calls == []
 
 
 def test_对不上的版本重跑返回非零且不写(importer: ModuleType, monkeypatch) -> None:
-    state = importer.VersionState(
-        policy_id=uuid4(),
-        version="v1",
-        review_status="published",
-        revision=uuid4(),
-        criteria=(("A", "passed"),),
-        source_hashes=frozenset({"另一份正文的哈希"}),
-        source_urls=frozenset({("正文", "https://www.gov.cn/x")}),
+    plan = _fake_plan()
+    signature = importer.PlanSignature.of(plan)
+    state = _state(
+        importer,
+        status="published",
+        signature=signature,
+        criteria=_passed(signature),
+        hashes=frozenset({"另一份正文的哈希"}),
     )
-    repo, plan = _wire_apply(importer, monkeypatch, state)
+    repo = _wire_apply(importer, monkeypatch, state)
 
     assert importer._apply([plan], "postgresql://unused/none", repository=repo) == 1
     assert repo.calls == []

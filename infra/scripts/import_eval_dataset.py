@@ -39,7 +39,7 @@ import hashlib
 import json
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -167,6 +167,67 @@ class PolicyPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class CriterionState:
+    """一条条款的可比摘要：代号、状态、表达式、复核结论、引文与出处。
+
+    「已发布」不能只比条件代号和 passed：别人加了一条、改了 AST、换了引文或把 span
+    指向另一份来源，代号与状态都可能没变。所以这里把计划的关键内容整体拿出来比。
+    """
+
+    code: str
+    status: str
+    #: 规范化 JSON（键排序、紧凑分隔符），避免打包差异造成假不一致。
+    expression: str
+    review_finding: str
+    #: ``(来源名, 引文, 页码, 章节, span 里写的 sourceUrl)``，按写入顺序。
+    spans: tuple[tuple[str | None, str, int | None, str | None, str | None], ...]
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+@dataclass(frozen=True, slots=True)
+class PlanSignature:
+    """计划里「这个版本应该长成什么样」的可比摘要。"""
+
+    document: str
+    source_hashes: frozenset[str]
+    source_urls: frozenset[tuple[str, str | None]]
+    criteria: tuple[CriterionState, ...]
+
+    @classmethod
+    def of(cls, plan: PolicyPlan) -> "PlanSignature":
+        sources = _sources_of(plan)
+        urls = {source.name: (source.url or plan.metadata.source_url) for source in sources}
+        return cls(
+            document=plan.document,
+            source_hashes=frozenset(_digest(source.text) for source in sources),
+            source_urls=frozenset(urls.items()),
+            criteria=tuple(
+                CriterionState(
+                    code=crit.code,
+                    # 计划里还不知道校验结果；比对时状态另行要求。
+                    status="",
+                    expression=_canonical(crit.expression),
+                    review_finding=crit.review_finding,
+                    spans=tuple(
+                        (
+                            span.source_name,
+                            span.quote,
+                            span.page,
+                            span.section,
+                            urls[span.source_name],
+                        )
+                        for span in crit.spans
+                    ),
+                )
+                for crit in plan.criteria
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class VersionState:
     """库里某个文号当前的样子；重跑靠它区分「已完成 / 可续跑 / 对不上」。
 
@@ -177,8 +238,8 @@ class VersionState:
     version: str
     review_status: str
     revision: UUID
-    #: ``(条件代号, validation_status)``，按代号排序。
-    criteria: tuple[tuple[str, str], ...]
+    #: 库里已有的条款摘要，按代号排序。
+    criteria: tuple[CriterionState, ...]
     #: 该版本已落库的全部来源内容哈希。
     source_hashes: frozenset[str]
     #: ``(来源名, 官方链接)``。链接也算「来源是什么」的一部分：旧导入器把附件
@@ -541,17 +602,39 @@ def _version_state(dsn: str, document_number: str) -> list[VersionState]:
         )
         for row in cur.fetchall():
             cur.execute(
-                "SELECT title, validation_status FROM policy_criterion "
-                "WHERE policy_version_id = %s ORDER BY title",
-                (row["id"],),
-            )
-            criteria = tuple((item["title"], item["validation_status"]) for item in cur.fetchall())
-            cur.execute(
-                "SELECT title, file_name, content_hash, source_url FROM policy_source "
+                "SELECT id, title, file_name, content_hash, source_url FROM policy_source "
                 "WHERE policy_version_id = %s",
                 (row["id"],),
             )
             sources = cur.fetchall()
+            by_id = {
+                str(item["id"]): (_source_name(item["title"], item["file_name"]), item["source_url"])
+                for item in sources
+            }
+            cur.execute(
+                "SELECT title, expression, source_spans, review_finding, validation_status "
+                "FROM policy_criterion WHERE policy_version_id = %s ORDER BY title",
+                (row["id"],),
+            )
+            criteria = tuple(
+                CriterionState(
+                    code=item["title"],
+                    status=item["validation_status"] or "",
+                    expression=_canonical(item["expression"]),
+                    review_finding=item["review_finding"] or "none",
+                    spans=tuple(
+                        (
+                            (by_id.get(str(span.get("sourceId"))) or (None, None))[0],
+                            str(span.get("quote") or ""),
+                            span.get("page"),
+                            span.get("section"),
+                            span.get("sourceUrl"),
+                        )
+                        for span in (item["source_spans"] or [])
+                    ),
+                )
+                for item in cur.fetchall()
+            )
             states.append(
                 VersionState(
                     policy_id=row["policy_id"],
@@ -560,26 +643,61 @@ def _version_state(dsn: str, document_number: str) -> list[VersionState]:
                     revision=row["revision"],
                     criteria=criteria,
                     source_hashes=frozenset(item["content_hash"] for item in sources),
-                    source_urls=frozenset(
-                        (_source_name(item["title"], item["file_name"]), item["source_url"])
-                        for item in sources
-                    ),
+                    source_urls=frozenset(by_id.values()),
                 )
             )
     return states
 
 
-def _decide(
-    states: list[VersionState],
-    plan: PolicyPlan,
-    source_hashes: frozenset[str],
-    source_urls: frozenset[tuple[str, str | None]],
-) -> tuple[str, str]:
+def _criteria_mismatch(
+    stored: tuple[CriterionState, ...],
+    expected: tuple[CriterionState, ...],
+    *,
+    require_passed: bool,
+) -> str | None:
+    """逐条比库里与计划的条款；对不上就返回第一条说明，全对返回 ``None``。
+
+    比的是集合（缺失 / 多出 / 重复）加上每条的内容（表达式、复核结论、引文与出处）。
+    只比「代号在不在、状态是不是 passed」会漏掉三种真实故障：别人加了一条、
+    改了 AST 或引文、把 span 指向另一份来源。
+    """
+
+    counts = Counter(item.code for item in stored)
+    duplicated = sorted(code for code, count in counts.items() if count > 1)
+    if duplicated:
+        return f"库里有重复条款 {'、'.join(duplicated)}"
+
+    missing = sorted({item.code for item in expected} - set(counts))
+    if missing:
+        return f"缺条件 {'、'.join(missing)}"
+    extra = sorted(set(counts) - {item.code for item in expected})
+    if extra:
+        return f"多出条件 {'、'.join(extra)}"
+
+    by_code = {item.code: item for item in stored}
+    for want in expected:
+        got = by_code[want.code]
+        if require_passed and got.status != "passed":
+            return f"{want.code} 不是 passed"
+        if got.expression != want.expression:
+            return f"{want.code} 的判定表达式与计划不一致"
+        if got.review_finding != want.review_finding:
+            return f"{want.code} 的复核结论与计划不一致"
+        if got.spans != want.spans:
+            return f"{want.code} 的引文或出处与计划不一致"
+    return None
+
+
+def _decide(states: list[VersionState], plan: PlanSignature) -> tuple[str, str]:
     """重跑该干什么：``create`` 新建、``resume`` 续跑、``skip`` 跳过、``conflict`` 交人工。
 
-    返回 ``(动作, 理由)``。判断只看库里已有的记录，不猜：状态不认识、条件缺了、
-    校验不是 passed、来源（内容或链接）变过，都算 ``conflict``——宁可让运维看一眼，
-    也不能让「进程在中途被杀」或「旧导入器留下的错链接」看起来像「已经导好了」。
+    返回 ``(动作, 理由)``。判断只看库里已有的记录，不猜：状态不认识、条件缺了/多了/
+    重了、不是 passed、AST 或引文变过、来源（内容或链接）变过，都算 ``conflict``——
+    宁可让运维看一眼，也不能让「进程在中途被杀」「别人改过条款」「旧导入器留下错链接」
+    看起来像「已经导好了」。
+
+    草稿（``pending_parse`` / ``pending_review``）比条款内容但不比 ``validation_status``：
+    状态是校验算出来的，续跑会用下一轮的校验结果整版覆盖。
     """
 
     if not states:
@@ -591,27 +709,28 @@ def _decide(
         )
 
     state = states[0]
-    expected = {crit.code for crit in plan.criteria}
-    missing = sorted(expected - {code for code, _ in state.criteria})
-    blocked = sorted(code for code, value in state.criteria if value != "passed")
 
     if state.review_status == "published":
-        if missing:
-            return "conflict", f"已发布，但库里缺条件 {'、'.join(missing)}"
-        if blocked:
-            return "conflict", f"已发布，但有条件不是 passed：{'、'.join(blocked)}"
-        if state.source_hashes != source_hashes:
+        if state.source_hashes != plan.source_hashes:
             return "conflict", "已发布，但来源与本轮计划不一致（正文或附件变过）"
-        if state.source_urls != source_urls:
+        if state.source_urls != plan.source_urls:
             return "conflict", "已发布，但来源链接与本轮计划不一致（如旧导入器把附件指向主政策）"
+        mismatch = _criteria_mismatch(state.criteria, plan.criteria, require_passed=True)
+        if mismatch:
+            return "conflict", f"已发布，但{mismatch}"
         return "skip", f"已发布，{len(state.criteria)} 条条件全部 passed"
 
     if state.review_status in {"pending_parse", "pending_review"}:
         if state.review_status == "pending_parse" and state.criteria:
             return "conflict", "状态是 pending_parse 却已有条件记录，库被改过"
-        if state.source_hashes != source_hashes:
+        if state.review_status == "pending_review":
+            # 建版后中断时本来就没有条款，不能按「缺条件」拒绝；存过条款才逐条比。
+            mismatch = _criteria_mismatch(state.criteria, plan.criteria, require_passed=False)
+            if mismatch:
+                return "conflict", f"草稿的条款与本轮计划不一致：{mismatch}，请人工核对"
+        if state.source_hashes != plan.source_hashes:
             return "conflict", "草稿的来源与本轮计划不一致（正文或附件变过）"
-        if state.source_urls != source_urls:
+        if state.source_urls != plan.source_urls:
             return "conflict", "草稿的来源链接与本轮计划不一致，请人工核对"
         return "resume", f"未发布（{state.review_status}），从中断处续跑"
 
@@ -650,12 +769,7 @@ def _apply(plans: list[PolicyPlan], dsn: str, *, repository: Any | None = None) 
         # 每条引文按它自己那份来源的链接走；主政策链接只属于正文。
         urls = {source.name: (source.url or meta.source_url) for source in source_plans}
         states = _version_state(dsn, meta.document_number)
-        action, reason = _decide(
-            states,
-            plan,
-            frozenset(digests.values()),
-            frozenset(urls.items()),
-        )
+        action, reason = _decide(states, PlanSignature.of(plan))
 
         if action == "skip":
             print(f"跳过 {plan.document}：{reason}")
