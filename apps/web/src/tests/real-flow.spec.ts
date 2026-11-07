@@ -326,13 +326,16 @@ test('人工核查条件保持证据不足并展示后端理由', async ({ page 
 
 test('补问写入事实并重算，跳过不修改事实，报告按版本下载', async ({ page }) => {
   const question = { factRef: { key: 'taxableIncome', period }, prompt: '请填写应纳税所得额', reason: '影响一项政策', rank: 1 };
-  const prep = { type: 'tax', handlingMode: 'tax_self_assessment', officialEntryUrl: 'https://www.gov.cn/', deadline: null, items: [{ title: '留存凭证', description: '核对材料', requiredFactRefs: [question.factRef], missing: true }] };
+  const prep = { type: 'tax', handlingMode: 'tax_self_assessment', officialEntryUrl: 'https://www.gov.cn/', deadline: null, items: [
+    ...(['facts_filled', 'facts_missing', 'manual_check', 'policy_closed'] as const).map((status, i) => ({ materialId: `M-${i}`, title: `材料${i}`, description: '核对材料', requiredFactRefs: [question.factRef], missing: i === 1 || i === 2, status })),
+    { title: '留存凭证', description: '旧版材料', requiredFactRefs: [question.factRef], missing: false },
+  ] };
   const first = { ...run, assessments: [{ ...assessment, result: 'insufficient_evidence', nextQuestion: question, preparation: prep }] };
   const secondId = '44444444-4444-4444-8444-444444444444';
   const second = { ...first, id: secondId, supersedesRunId: rid, assessments: [{ ...first.assessments[0], nextQuestion: { ...question, factRef: { key: 'creditRecord', period }, prompt: '诚信记录是否良好' } }] };
   const thirdId = '55555555-5555-4555-8555-555555555555';
   const third = { ...second, id: thirdId, supersedesRunId: secondId, assessments: [{ ...second.assessments[0], nextQuestion: null }] };
-  let enterprise: any; let creates = 0; let patches = 0; let failReport = false;
+  let enterprise: any; let creates = 0; let patches = 0; let failReport = false; let reportSnapshot: object = third;
   await page.route('**/api/v1/**', async route => {
     const req = route.request(); const url = new URL(req.url());
     if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise, headers: { ETag: '"abc"', 'Access-Control-Expose-Headers': 'ETag' } }); }
@@ -340,7 +343,7 @@ test('补问写入事实并重算，跳过不修改事实，报告按版本下�
     if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
     if (url.pathname.endsWith('/assessment-runs') && req.method() === 'POST') { creates++; const body = req.postDataJSON(); if (creates === 2) expect(body.supersedesRunId).toBe(rid); if (creates === 3) { expect(body.supersedesRunId).toBe(secondId); expect(body.skippedFactRefs).toEqual([{ key: 'creditRecord', period }]); } return route.fulfill({ json: creates === 1 ? first : creates === 2 ? second : third }); }
     if (url.pathname.endsWith(`/assessment-runs/${thirdId}/report.md`)) { expect(req.headers().accept).toBe('text/markdown'); if (failReport) return route.fulfill({ status: 503, json: { error: { message: '报告暂不可用' }, traceId: 'report-trace' } }); return route.fulfill({ body: '# 测试报告', contentType: 'text/markdown' }); }
-    if (url.pathname.endsWith(`/assessment-runs/${thirdId}`)) return route.fulfill({ json: third });
+    if (url.pathname.endsWith(`/assessment-runs/${thirdId}`)) return route.fulfill({ json: reportSnapshot });
     if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: first });
     if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: [{ id, title: '行业条件', sourceSpans: [ref] }] } });
     return route.abort();
@@ -366,6 +369,8 @@ test('补问写入事实并重算，跳过不修改事实，报告按版本下�
   await expect(page.getByRole('heading', { name: '优先补充问题' })).toHaveCount(0);
   await page.getByLabel('本次会话的分析历史').selectOption(thirdId);
   await page.getByRole('button', { name: '清单与报告' }).click(); await expect(page.getByText('留存凭证')).toBeVisible();
+  for (const label of ['所需事实已填写，不代表材料已提交或核验', '所需事实有缺项', '需人工核对', '政策已关闭', '材料状态未确认，请人工核对']) await expect(page.getByText(label, { exact: false })).toBeVisible();
+  await expect(page.getByText('资料已提供', { exact: false })).toHaveCount(0);
   await expect(page.getByText('本次分析没有此类政策。')).toBeVisible();
   for (const width of [375, 768, 1440]) {
     await page.setViewportSize({ width, height: 850 });
@@ -380,6 +385,15 @@ test('补问写入事实并重算，跳过不修改事实，报告按版本下�
   await page.getByRole('button', { name: '下载报告（Markdown 格式）' }).click();
   await expect(page.getByRole('alert')).toContainText('报告暂不可用');
   await expect(page.getByRole('alert')).toContainText('report-trace');
+  for (const invalid of [
+    { ...prep.items[0], status: 'unknown' },
+    { ...prep.items[0], materialId: undefined },
+    { ...prep.items[0], status: undefined },
+  ]) {
+    reportSnapshot = { ...third, assessments: [{ ...third.assessments[0], preparation: { ...prep, items: [invalid] } }] };
+    await page.getByRole('button', { name: '清单与报告' }).click();
+    await expect(page.getByRole('alert')).toContainText('准备清单无效');
+  }
 });
 
 test('补问冲突保留输入并读取当前画像；重算失败只重试分析', async ({ page }) => {
