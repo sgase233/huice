@@ -127,6 +127,8 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 5. **一致性核对**：运行前用上述映射核对运行时输入与签认快照；不一致即停止评测并记录，不得用运行结果反推快照。
 
 > **数据集哈希范围（2026-11-05 补）：** 只覆盖 §3 的三份文件（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）；`data/evaluation` 下的复核表/标注表（`material_review_*.csv`、`*_annotation_sheet.csv`）不属于评测输入，不应进入签认清单。`--dataset-dir` 如只能扫目录，应改为显式文件列表或支持多次指定。
+>
+> **跨文件来源链接（2026-11-08 补）：** 正文用 `source_register.csv` 的 `source_url`；跨文件出处（如 HT-007 引自财税〔2015〕119号）的官方链接由 `data/policies/reference_sources.csv`（列 `document,source_url`）单独维护。缺失该行时，引用它的条件 blocked、附件不写库，不借用主政策链接。`span.sourceVersion` 仍记该引文支持的政策版本，来源文号由来源行的 title/file_name 表达；本次不改变既有契约语义。
 
 **进度（2026-11-07）：** 第 1、2、3、5 项与第 4 项 `freeze-report` 由 #39 实现（已合入，2026-11-06 09:59）；部署文件指纹 `codeFingerprint` 由 #42 补入（已合入，2026-11-07 03:46），复算方式见第 3 项。清单结构以当前 `main` 的 `app.evaluation` 为准，不再引用 #39 的 head 提交。已合入不等于已完成：M1 报告 ECS 已有一份清单，但映射未解决 30 项、`verify` 非零退出；M2 未独立访问 ECS 核实，§5.2 不能算完成。本 PR 修改 `criteria_review.csv` 后必须重出映射/清单；本声明保持草案，直到跑出「未解决 0 项」的清单、`verify` 通过，并把清单、`asOf`、期间、run 输出与复核记录一并归档。
 >
