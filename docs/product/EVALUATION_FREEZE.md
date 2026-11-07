@@ -1,7 +1,7 @@
 # 留出集评测集冻结声明（草案）
 
-> 版本：v0.9-draft｜起草：M3｜日期：2026-11-04
-> **状态：待 M2 复核。** 在 M2 签认前，本文件不得作为「已冻结」的依据引用；仓库内也不得出现「已冻结」的对外表述。
+> 版本：v0.9-draft｜起草：M3｜日期：2026-11-04｜最近修订：2026-11-07
+> **状态：M2 已复审（2026-11-07，head `0e4a54d`），保留草案、未签认；本轮修正后待 M2 再复核。** 在 M2 签认前，本文件不得作为「已冻结」的依据引用；仓库内也不得出现「已冻结」的对外表述。
 > 关联文件：[`LABEL_VERSIONS.md`](./LABEL_VERSIONS.md)、[`ACCEPTANCE.md`](./ACCEPTANCE.md)、[`ANNOTATION_GUIDE.md`](./ANNOTATION_GUIDE.md) §6.1、[`data/evaluation/labels.csv`](../../data/evaluation/labels.csv)。
 
 ## 1. 冻结对象与用途
@@ -28,15 +28,20 @@
 
 ## 3. 不可变指纹
 
-以下指纹在 2026-11-04 于 `main`（`fc5c8e0`）计算：
+以下指纹中，`labels.csv`、`enterprises.csv` 与旧版 `criteria_review.csv` 于 2026-11-04 在 `main`（`fc5c8e0`）计算；`criteria_review.csv` 的新值于 2026-11-07 修正后重算：
 
 | 文件 | SHA-256 |
 | --- | --- |
 | `data/evaluation/labels.csv`（整文件） | `9ea7310ce2f7d90956e26053426fa313185960d9f32047aeac91f361bb66e1c8` |
 | `data/evaluation/labels.csv` 的 holdout 子集（规范化） | `f380ca6d88b7710a27de49bee1f833d5429663bc247dbaff7bd624e165f6177e` |
-| `data/policies/criteria_review.csv` | `767c6b224bad5246b6ea0e5bfa72f8cdc54df211157937a4df99312c5e2ee586` |
+| `data/policies/criteria_review.csv`（2026-11-04，`main` `fc5c8e0`；2026-11-06 试跑使用） | `767c6b224bad5246b6ea0e5bfa72f8cdc54df211157937a4df99312c5e2ee586` |
+| `data/policies/criteria_review.csv`（2026-11-07 修正后，当前） | `998da4c04d7d837bb09d71f69ab790c9278c4641f60268a2d1770f745667203f` |
 | `data/fixtures/enterprises.csv` | `fae2a66a947a010a4fd4b568b1793c2c4b0de85daf78d8d15d40c5b6b6b1be9a` |
 
+> `criteria_review.csv` 的 2026-11-07 修正只改 10 行的 `source_version` 归属并补 RD-001 的 `source_document`（按 `source_span` 8 段对齐）；`labels.csv` 与 `enterprises.csv` 未改。旧哈希 `767c6b…` 对应 2026-11-06 试跑使用的版本；M2 复审 head `0e4a54d` 的中间版本为 `6ece5e0a…`（RD-001 的 `source_document` 尚未按 8 段对齐，已由当前值替代）；当前哈希 `998da4c0…` 对应修正后的输入。**三者不得混用。**
+>
+> 同日把 `data/policies/sources/财税〔2015〕119号.txt` 补入行业负面清单（官方原文：<https://www.chinatax.gov.cn/chinatax/n810341/n810765/n1990035/201601/c2184730/content.html>，LF 字节 SHA-256 `1b4022990a3e4ad1b511b6c90a94eba9a7e5fc113c15df1f56ed4051fbbc79d7`），用于 RD-001 8 段引文的逐字校验；该文件不属于三份评测输入，单独记录。
+>
 > 指纹只识别所列文件，**不证明数据库导入与运行输入一致**；后者见 §5.2 的映射与一致性核对。
 
 ### 复现方法
@@ -75,7 +80,8 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 - v1 的 26 条原样留档，仅作历史记录，**不用于评分**。
 - v2 的改判理由：深科技创新规〔2021〕5号 第三条采用财税〔2015〕119号 的归集范围；国科发火〔2016〕195号 的 20% 仅见第七条（第三方审计/鉴证机构资质），不属本政策归集口径。原 `conflict` 结论作废，改为 `manual_review` → 求值恒 `insufficient_evidence`。
 - **`labels.csv` 自 `df05346` 起未再修改**（`git log df05346..HEAD -- data/evaluation/labels.csv` 为空）。
-- 形成后唯一相关变更：`d2acd9c` 修改了 `criteria_review.csv` 中 **GXJS-V1/V2 的 `adjudication_note` 措辞**（仅说明，不改 AST），且 **GXJS 不在留出集**，不影响 26 条留出标签。`enterprises.csv` 自形成后未修改。
+- 形成后的相关变更：`d2acd9c` 仅修改 `criteria_review.csv` 中 **GXJS-V1/V2 的 `adjudication_note` 措辞**（不改 AST，且 **GXJS 不在留出集**）；2026-11-07 又修正了 `criteria_review.csv` 的归属/出处字段（见下条）。`enterprises.csv` 自形成后未修改。
+- **2026-11-07（`0e4a54d` 及其后的对齐修正）**：`criteria_review.csv` 修正 10 行的 `source_version`（SRDI-001～008、RD-001、HT-007）并补 RD-001 的 `source_document`；`财税〔2015〕119号.txt` 补入行业负面清单。仅改归属/出处字段与校验快照，**不改条件、AST 或任何标签**；`labels.csv` 仍为 v2。**2026-11-06 的试跑使用修改前的 `criteria_review.csv`**，其输出不得归属到当前输入。
 - 上述时间是标签的**形成时间**，不是正式冻结/签认时间；正式签认时间见 §7，由 M2 填写。
 
 ## 5. 评测协议
@@ -122,7 +128,9 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 
 > **数据集哈希范围（2026-11-05 补）：** 只覆盖 §3 的三份文件（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）；`data/evaluation` 下的复核表/标注表（`material_review_*.csv`、`*_annotation_sheet.csv`）不属于评测输入，不应进入签认清单。`--dataset-dir` 如只能扫目录，应改为显式文件列表或支持多次指定。
 
-**进度（2026-11-07）：** 第 1、2、3、5 项与第 4 项 `freeze-report` 由 #39 实现（已合入，2026-11-06 09:59）；部署文件指纹 `codeFingerprint` 由 #42 补入（已合入，2026-11-07 03:46），复算方式见第 3 项。清单结构以当前 `main` 的 `app.evaluation` 为准，不再引用 #39 的 head 提交。已合入不等于已完成：ECS 尚未产出经核对的清单；本声明保持草案，直到跑出「未解决 0 项」的清单、`verify` 通过，并把清单、`asOf`、期间、run 输出与复核记录一并归档。
+**进度（2026-11-07）：** 第 1、2、3、5 项与第 4 项 `freeze-report` 由 #39 实现（已合入，2026-11-06 09:59）；部署文件指纹 `codeFingerprint` 由 #42 补入（已合入，2026-11-07 03:46），复算方式见第 3 项。清单结构以当前 `main` 的 `app.evaluation` 为准，不再引用 #39 的 head 提交。已合入不等于已完成：M1 报告 ECS 已有一份清单，但映射未解决 30 项、`verify` 非零退出；M2 未独立访问 ECS 核实，§5.2 不能算完成。本 PR 修改 `criteria_review.csv` 后必须重出映射/清单；本声明保持草案，直到跑出「未解决 0 项」的清单、`verify` 通过，并把清单、`asOf`、期间、run 输出与复核记录一并归档。
+>
+> 数据修正后，消融/引用可证实性统计中的「不可验证条件」集合可能变化（RD-001 与 HT-007 的位置互换或清空）；相关分母与结论须由 M1 修正加载口径并重跑测试后更新，本声明不沿用旧跑数。
 
 ## 6. 锁定边界声明（避免误读）
 
@@ -131,15 +139,15 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 - 是否在任何相关评测/调参前锁定，尚需各成员确认；本声明不作此推断。
 - 第 2 轮仲裁的理由记录在 `criteria_review.csv` 的 HT-007 `adjudication_note`（政策原文与规则语义）；**「是否参考过引擎输出」尚需实际参与者确认**，本声明不作此推断；不主张标注过程具备统计意义上的盲测条件。
 - 正式冻结以 M2 签认时间为准，**不以历史提交时间代替签认时间**。
-- **留出集试跑历史（M1 自述）：** 2026-11-06 16:08–16:29 以 DeepSeek 跑过一次完整对照（`asOf=2026-11-06`，32 个 case / 146 条标签，dev 120 / holdout 26），输出仅 M1 本人看过。此后未修改 `labels.csv` 与 `criteria_review.csv`（两者最后改动均为 2026-11-02）；据该次结果只修了实现缺陷（抽取提示词算子键名、指标表百分比渲染）与三处口径，未改条件与标注。故该次结果不作为留出集的独立验证；后续若以留出集下结论，须注明「实现曾据该次结果修过缺陷」。
+- **留出集试跑历史（M1 自述）：** 2026-11-06 16:08–16:29 以 DeepSeek 跑过一次完整对照（`asOf=2026-11-06`，32 个 case / 146 条标签，dev 120 / holdout 26），输出仅 M1 本人看过。**该次试跑使用修改前的 `criteria_review.csv`（`767c6b…`）**；此后 `labels.csv` 未改（最后改动 2026-11-02），但 `criteria_review.csv` 于 2026-11-07 修正归属/出处字段（`998da4c0…`，不改条件与标签）。据该次结果只修了实现缺陷（抽取提示词算子键名、指标表百分比渲染）与三处口径，未改条件与标注。故该次结果既不能归属到当前输入，也不作为留出集的独立验证；后续若以留出集下结论，须注明「实现曾据该次结果修过缺陷」，并说明当前输入已在试跑后变更。
 
 ## 7. 签认
 
 | 角色 | 动作 | 状态 | 起草/复核日期 | 正式签认时间 |
 | --- | --- | --- | --- | --- |
-| M3 | 起草本声明、提供指纹与复现方法 | 已起草 | 2026-11-04 | — |
-| M2 | 复核正式表述、评测协议与政策级/输入快照口径 | **待复核** | — | — |
-| M1 | 提供输入映射、运行参数与结果导出方式，确认运行时数据与快照一致 | 部分提供（PR #39），待部署与首份清单 | — | — |
+| M3 | 起草本声明、提供指纹与复现方法 | 已起草；2026-11-07 按复审意见修订 | 2026-11-04 | — |
+| M2 | 复核正式表述、评测协议与政策级/输入快照口径 | 已复审；保留草案、未签认 | 2026-11-07（head `0e4a54d`） | — |
+| M1 | 提供输入映射、运行参数与结果导出方式，确认运行时数据与快照一致 | M1 报告 ECS 有清单（映射未解决 30 项、`verify` 非零）；M2 未独立核实，待数据修正后重出 | — | — |
 
 > 正式冻结以 M2 在本表填写**签认时间**为准；本文件状态改为「已复核」前，不得对外称已冻结。
 
