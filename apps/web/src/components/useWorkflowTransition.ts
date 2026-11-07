@@ -23,8 +23,8 @@ export default function useWorkflowTransition(page: string) {
         observer.unobserve(entry.target);
         if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) continue;
         entry.target.animate(
-          [{ opacity: .4, transform: 'translateY(28px)' }, { opacity: 1, transform: 'translateY(0)' }],
-          { duration: 700, easing: 'cubic-bezier(.16, 1, .3, 1)' },
+          [{ opacity: .2, transform: 'translateY(36px)' }, { opacity: 1, transform: 'translateY(0)' }],
+          { duration: 1200, easing: 'cubic-bezier(.22, .7, .32, 1)' },
         );
       }
     });
