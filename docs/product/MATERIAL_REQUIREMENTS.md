@@ -92,7 +92,7 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
 9. **本轮已同步的文档修正。** §2 必交事实键补 `independentLegalEntity`；§3 删除「信用报告/诚信承诺书 → `creditRecord`」，改为「企业信用报告不映射 `creditRecord`（SRDI-006）」；立项文件注明依据为 2018年第23号留存备查清单；细分市场材料注明不映射 `specificMarketSince`；财务审计报告与纳税申报表的键映射改为与定稿 CSV 一致。GRANT-02 的 `applies_to_policy_ids` 已收窄为 SRDI / RD-SUBSIDY / HIGHTECH，并按三个政策分别写依据。
 10. **第二轮仲裁结果（2026-11-04）。** **13 行「已仲裁」、2 行「待核实（依据未入库）」**（TAX-04 等 2018年第23号原文；GRANT-09 等认定标准附件1）。登记类材料 TAX-01 / GRANT-01 按 §1 例外**通过**——这与 A 最新「4 行均待核实」的归口建议有出入，保留例外待 A 确认；若撤销例外，两行改回「待核实」。GRANT-02 收窄 `applies` 并逐政策写依据；GRANT-03 采用「上年度（2025 申报批次对应 2024 年度）」折中标题；**GRANT-06 保留现名**：2025 专精特新通知及认定标准附件1 均写「企业信用报告（在深圳信用网下载）」，B 所引「企业公共信用信息报告（国家标准版）」出自 2022/2024 创新型中小企业通知，不适用于本行；待 B 提供 2025 专精特新官方出处后再议；GRANT-08 条件补 2023–2024 与单笔≤30%；GRANT-09 定位按 B 修正。**未写「可发布」**。回填后的 A/B/仲裁列见 [`material_review_sheet.csv`](../../data/evaluation/material_review_sheet.csv)。
 11. **M1 复核与回告（2026-11-05）。** M1 逐行核对：15 行 × 10 列、`proves_fact_keys` 全命中 18 键、`applies_to_policy_ids` 均存在、HIGHTECH 已 `closed`；**13 行可导入，TAX-04 / GRANT-09 不导入**（不生成材料清单、不置 `verified=true`）。`required`/`condition_desc` 采用方案 ②；无事实键材料的 `missing=true` 保守处理；期间、季度展开、政策关闭按 §4。TAX-01 / GRANT-01 的 `applies_to_policy_ids` 留空按「同 `policy_type` 下全部政策」处理，M3 已认可。
-12. **M1 最终确认（2026-11-05，head `9ed973d`）。** M1 核对通过，对本 PR 无反对意见；并更正：本轮无事实键、触发 `missing=true` 的是 **GRANT-02 / 05 / 06 三行**，GRANT-09 为「待核实（依据未入库）」、不导入。导入实现断言按集合关系写，不硬编码 13：
+12. **M1 最终确认（2026-11-05，head 原 `9ed973d` / 清理签名后 `a59f4d7`）。** M1 核对通过，对本 PR 无反对意见；并更正：本轮无事实键、触发 `missing=true` 的是 **GRANT-02 / 05 / 06 三行**，GRANT-09 为「待核实（依据未入库）」、不导入。导入实现断言按集合关系写，不硬编码 13：
     - 导入条目集合 == CSV 中 `review_status=已仲裁` 的行集合；
     - TAX-04 / GRANT-09 负向断言：不出现在任何 `policy_type` 的模板中；
     - `proves_fact_keys ⊆ 18 键`；非空 `applies_to_policy_ids ⊆ source_register`，空则按 `policy_type` 展开（TAX-01 / GRANT-01）；GRANT-02 的非空列表原样使用；
@@ -100,3 +100,4 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
     - `requiredFactRefs == []` 的条目运行期 `missing=true`（本轮 GRANT-02 / 05 / 06）；
     - 导入判定只读 `review_status`，不硬编码行号/ID；撤销登记类例外时两行自动不导入，有测试用例锁住。
     - 前端「需人工核对」而非「资料缺失」的文案由 M2 在实现 PR 中落地；`apps/web/**` 不由 M1 修改。
+13. **云端库状态（2026-11-07）。** `material_requirement` / `material_requirement_policy` 两张表仍为空；运行期 `preparation.items` 为空，页面带「待 M3 审核材料导入后补齐」告警。导入命令 `python -m app.materials import` 只收 `review_status=已仲裁` 的行，需等本 PR 的 CSV 定稿后由 M1 在云端执行。四态在此之前只有代码与契约，没有真实清单可看。
