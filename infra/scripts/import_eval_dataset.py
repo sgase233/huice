@@ -494,22 +494,79 @@ def _apply(plans: list[PolicyPlan], dsn: str) -> int:
     return failed
 
 
+def _enterprise_payloads() -> list[tuple[str, dict[str, Any]]]:
+    """labels 用到的企业 → 契约的 ``EnterpriseInput`` 形状（与 ablation 的写法一致）。"""
+
+    labels = _rows(DATA / "evaluation" / "labels.csv")
+    wanted = {row["enterprise_id"] for row in labels}
+    rows = [
+        row
+        for row in _rows(DATA / "fixtures" / "enterprises.csv")
+        if row["enterprise_id"] in wanted
+    ]
+
+    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        grouped[row["enterprise_id"]].append(row)
+
+    payloads: list[tuple[str, dict[str, Any]]] = []
+    for code, facts in sorted(grouped.items()):
+        start, end = facts[0]["period"].split("/")
+        payloads.append(
+            (
+                code,
+                {
+                    "nameSynthetic": facts[0]["name_synthetic"].strip(),
+                    "period": {"startDate": start.strip(), "endDate": end.strip()},
+                    "facts": [
+                        {
+                            "key": fact["fact_key"],
+                            # CSV 里的布尔写成 true/false，契约要真布尔；空值是「未知」，保持 null。
+                            "value": (
+                                fact["fact_value"].strip().lower() == "true"
+                                if fact["unit"] == "boolean"
+                                else fact["fact_value"]
+                            ),
+                            "unit": fact["unit"],
+                            "period": {
+                                "startDate": fact["period"].split("/")[0].strip(),
+                                "endDate": fact["period"].split("/")[1].strip(),
+                            },
+                            "source": fact["source"],
+                        }
+                        for fact in facts
+                    ],
+                },
+            )
+        )
+    return payloads
+
+
+def check_enterprises() -> list[str]:
+    """干跑：企业画像按产品的规范化规则过一遍，不连库。"""
+
+    from app.agents.profile import normalize_profile
+    from app.schemas import EnterpriseInput
+
+    problems: list[str] = []
+    for code, payload in _enterprise_payloads():
+        try:
+            normalize_profile(EnterpriseInput.model_validate(payload))
+        except Exception as exc:  # ValidationError / ApiProblem
+            problems.append(f"{code}：{exc}")
+            continue
+        print(f"  企业 {code}：{payload['nameSynthetic']}，事实 {len(payload['facts'])} 条")
+    return problems
+
+
 def _apply_enterprises(repository: Any, dsn: str) -> None:
     import psycopg
 
     from app.agents.profile import normalize_profile
     from app.schemas import EnterpriseInput
 
-    labels = _rows(DATA / "evaluation" / "labels.csv")
-    wanted = {row["enterprise_id"] for row in labels}
-    rows = [row for row in _rows(DATA / "fixtures" / "enterprises.csv") if row["enterprise_id"] in wanted]
-
-    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for row in rows:
-        grouped[row["enterprise_id"]].append(row)
-
-    for code, facts in sorted(grouped.items()):
-        name = facts[0]["name_synthetic"].strip()
+    for code, payload in _enterprise_payloads():
+        name = payload["nameSynthetic"]
         with psycopg.connect(dsn) as conn:
             exists = conn.execute(
                 "SELECT 1 FROM enterprise WHERE name_synthetic = %s", (name,)
@@ -517,32 +574,11 @@ def _apply_enterprises(repository: Any, dsn: str) -> None:
         if exists:
             print(f"跳过企业 {code}：同名企业已在库中")
             continue
-        start, end = facts[0]["period"].split("/")
-        payload: dict[str, Any] = {
-            "nameSynthetic": name,
-            "period": {"startDate": start.strip(), "endDate": end.strip()},
-            "facts": [
-                {
-                    "key": fact["fact_key"],
-                    "value": (
-                        fact["fact_value"].strip().lower() == "true"
-                        if fact["unit"] == "boolean"
-                        else fact["fact_value"]
-                    ),
-                    "unit": fact["unit"],
-                    "period": {
-                        "startDate": fact["period"].split("/")[0].strip(),
-                        "endDate": fact["period"].split("/")[1].strip(),
-                    },
-                    "source": fact["source"],
-                }
-                for fact in facts
-            ],
-        }
         created = repository.create_enterprise(
-            profile=normalize_profile(EnterpriseInput.model_validate(payload)), trace_id=str(uuid4())
+            profile=normalize_profile(EnterpriseInput.model_validate(payload)),
+            trace_id=str(uuid4()),
         )
-        print(f"已创建企业 {code}：{created.name_synthetic}（{len(facts)} 条事实）")
+        print(f"已创建企业 {code}：{created.name_synthetic}（{len(payload['facts'])} 条事实）")
 
 
 # ------------------------------------------------------------------ 入口
@@ -575,7 +611,17 @@ def main(argv: list[str] | None = None) -> int:
             blocking += 1
 
     print()
-    print(f"政策版本 {len(plans)} 个，可发布 {len(plans) - blocking} 个，有拦截 {blocking} 个；组装失败 {len(problems)} 条")
+    print("企业画像（按产品规范化规则校验）：")
+    enterprise_problems = check_enterprises()
+    for problem in enterprise_problems:
+        print(f"  组装失败：{problem}")
+
+    print()
+    print(
+        f"政策版本 {len(plans)} 个，可发布 {len(plans) - blocking} 个，有拦截 {blocking} 个；"
+        f"组装失败 {len(problems) + len(enterprise_problems)} 条"
+    )
+    problems = problems + enterprise_problems
 
     if not args.apply:
         print("干跑结束：没有连接数据库。加 --apply 才写。")

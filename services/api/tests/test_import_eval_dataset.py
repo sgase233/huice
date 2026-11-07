@@ -67,3 +67,11 @@ def test_跨文件引用的出处被作为附带来源导入(importer: ModuleTyp
     # HT-007 引自《财税〔2015〕119号》，不在深科技创新规〔2021〕5号的正文里。
     attached = [name for name, _ in by_document["深科技创新规〔2021〕5号"].attachments]
     assert attached == ["财税〔2015〕119号"]
+
+
+def test_六个企业与全部事实都能按产品规则规范化(importer: ModuleType) -> None:
+    payloads = importer._enterprise_payloads()
+
+    assert [code for code, _ in payloads] == [f"E-ENT-{i:03d}" for i in range(1, 7)]
+    assert sum(len(payload["facts"]) for _, payload in payloads) == 187
+    assert importer.check_enterprises() == []
