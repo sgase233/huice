@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { EnterpriseInput } from './api/types';
 import { demoNotice, demoPolicies, initialEnterprise } from './demo';
 import EnterprisePage from './pages/EnterprisePage';
@@ -24,9 +24,55 @@ const pageFromHash = (): PageId => {
   const name = location.hash.slice(1);
   return pages.some(page => page.id === name) ? name as PageId : 'enterprise';
 };
+const isWorkbench = (url: URL) => url.searchParams.get('mode') === 'demo' || ['#enterprise', '#opportunities', '#policy', '#report', '#trace', '#admin', '#real-main'].includes(url.hash);
 
 export default function App() {
   const [hash, setHash] = useState(location.hash);
+  const previousSurface = useRef(isWorkbench(new URL(location.href)));
+  const leaving = useRef<Animation | null>(null);
+  useLayoutEffect(() => {
+    const surface = isWorkbench(new URL(location.href));
+    let pending = false;
+    try { pending = sessionStorage.getItem('huice-surface-fade') === '1'; sessionStorage.removeItem('huice-surface-fade'); } catch { /* Navigation still works without session storage. */ }
+    if (pending || surface !== previousSurface.current) {
+      leaving.current?.cancel();
+      leaving.current = null;
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) document.getElementById('root')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 520, easing: 'ease-in-out' });
+    }
+    previousSurface.current = surface;
+  }, [hash]);
+  useEffect(() => {
+    const fadeNavigation = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !(event.target instanceof Element)) return;
+      const link = event.target.closest<HTMLAnchorElement>('a[href]');
+      if (!link || link.target || link.hasAttribute('download')) return;
+      const destination = new URL(link.href, location.href);
+      if (destination.origin !== location.origin || destination.pathname !== '/' || isWorkbench(destination) === isWorkbench(new URL(location.href))) return;
+      const sameDocument = destination.pathname === location.pathname && destination.search === location.search;
+      const navigate = () => {
+        if (!sameDocument) { location.assign(destination.href); return; }
+        history.pushState(history.state, '', destination.href);
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      };
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        if (sameDocument) { event.preventDefault(); navigate(); }
+        return;
+      }
+      event.preventDefault();
+      if (leaving.current) return;
+      const root = document.getElementById('root');
+      if (!root) { navigate(); return; }
+      const animation = root.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 520, easing: 'ease-in-out', fill: 'forwards' });
+      leaving.current = animation;
+      void animation.finished.then(() => {
+        try { sessionStorage.setItem('huice-surface-fade', '1'); } catch { /* The destination remains usable without an entrance animation. */ }
+        navigate();
+      }, () => {});
+    };
+    document.addEventListener('click', fadeNavigation);
+    return () => { document.removeEventListener('click', fadeNavigation); leaving.current?.cancel(); };
+  }, []);
   useEffect(() => {
     const ripple = (event: PointerEvent) => {
       if (event.button !== 0 || !(event.target instanceof Element) || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
