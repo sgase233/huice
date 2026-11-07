@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { EnterpriseInput, FactInput, FactKey } from '../api/types';
 import { factLabels, factUnits, factUnitLabels } from '../demo';
 
@@ -44,8 +44,27 @@ export default function EnterprisePage({ value, onSave, real = false }: Props) {
   const [errors, setErrors] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
   const [pending, setPending] = useState(false);
+  const [enteringFact, setEnteringFact] = useState<number | null>(null);
+  const [removingFact, setRemovingFact] = useState<number | null>(null);
   const errorSummary = useRef<HTMLDivElement>(null);
+  const addFactButton = useRef<HTMLButtonElement>(null);
+  const factsList = useRef<HTMLDivElement>(null);
+  const removeTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(removeTimer.current), []);
   useEffect(() => { if (errors.length) errorSummary.current?.focus(); }, [errors]);
+  const followNewFact = () => {
+    const bottom = addFactButton.current?.parentElement?.getBoundingClientRect().bottom;
+    if (bottom !== undefined && bottom > window.innerHeight - 16) window.scrollBy({ top: bottom - window.innerHeight + 16, behavior: 'instant' });
+  };
+  useLayoutEffect(() => {
+    if (enteringFact === null) return;
+    const card = factsList.current?.children[enteringFact];
+    if (!card) return;
+    followNewFact();
+    const observer = new ResizeObserver(followNewFact);
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [enteringFact]);
   const factErrors = (fact: FactInput) => errors.filter(error => error.includes(factLabels[fact.key]) && !keys.some(key => key !== fact.key && factLabels[key].length > factLabels[fact.key].length && error.includes(factLabels[key])));
   const errorTarget = (error: string) => {
     if (error.includes('名称')) return 'enterprise-name';
@@ -61,15 +80,32 @@ export default function EnterprisePage({ value, onSave, real = false }: Props) {
   }
 
   function addFact() {
+    setEnteringFact(draft.facts.length);
     const key = keys.find(candidate => !draft.facts.some(fact => fact.key === candidate)) ?? 'rdExpense';
     setDraft(current => ({ ...current, facts: [...current.facts, { key, value: null, unit: factUnits[key], period: { ...current.period }, source: 'user_input' }] }));
     setSaved(false);
+  }
+
+  function removeFact(index: number) {
+    if (removingFact !== null) return;
+    setSaved(false);
+    addFactButton.current?.focus();
+    const remove = () => {
+      setDraft(current => ({ ...current, facts: current.facts.filter((_, i) => i !== index) }));
+      setRemovingFact(null);
+      requestAnimationFrame(() => addFactButton.current?.focus());
+    };
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { remove(); return; }
+    setEnteringFact(null);
+    setRemovingFact(index);
+    removeTimer.current = window.setTimeout(remove, 400);
   }
 
   return <section className="page-block" aria-labelledby="enterprise-title">
     <div className="page-heading"><div><span className="eyebrow">01 / 企业画像</span><h1 id="enterprise-title">先把企业情况说清楚</h1><p>{real ? '请填写示例企业的情况，保存后将创建一份新的企业信息。' : '请填写示例企业的情况，保存结果仅在当前页面有效。'}</p></div><span className="phase-tag">{real ? '示例数据 · 连接服务' : '固定样例演示'}</span></div>
     <form className="panel form-panel" onSubmit={async event => {
       event.preventDefault();
+      if (removingFact !== null) return;
       const findings = validateEnterprise(draft);
       setErrors(findings);
       if (!findings.length && !pending) {
@@ -88,8 +124,8 @@ export default function EnterprisePage({ value, onSave, real = false }: Props) {
       </div>
       <h2>企业信息与来源</h2>
       <p className="muted">不清楚时请选择“未知”；未知不等于 0。每项信息可单独填写所属期间，填写来源不代表内容已核实。</p>
-      <div className="facts-list">
-        {draft.facts.map((fact, index) => <fieldset className="fact-card" key={index} aria-describedby={factErrors(fact).length ? `fact-error-${index}` : undefined}>
+      <div className="facts-list" ref={factsList}>
+        {draft.facts.map((fact, index) => <div className={`fact-slot${enteringFact === index ? ' is-entering' : ''}${removingFact === index ? ' is-removing' : ''}`} key={index} onAnimationEnd={event => { if (event.target === event.currentTarget && enteringFact === index) { followNewFact(); setEnteringFact(null); } }}><div><fieldset className="fact-card" inert={removingFact === index} aria-describedby={factErrors(fact).length ? `fact-error-${index}` : undefined}>
           <legend>信息 {index + 1}</legend>
           <div className="form-grid">
             <label>信息类型<select id={`fact-field-${index}`} value={fact.key} onChange={event => {
@@ -106,10 +142,10 @@ export default function EnterprisePage({ value, onSave, real = false }: Props) {
           </div>
           {factErrors(fact).length > 0 && <p id={`fact-error-${index}`} className="form-error">{factErrors(fact).join(' ')}</p>}
           <div className="fact-actions"><label className="inline-check"><input id={`fact-unknown-${index}`} aria-describedby={factErrors(fact).length ? `fact-error-${index}` : undefined} type="checkbox" checked={fact.value === null} onChange={event => editFact(index, { value: event.target.checked ? null : fact.unit === 'boolean' ? false : fact.unit === 'date' ? draft.period.startDate : '' })} />未知</label>
-            {fact.key !== 'region' && fact.key !== 'industry' && <button type="button" className="text-button fact-delete" aria-label="移除此项信息" onClick={() => setDraft(current => ({ ...current, facts: current.facts.filter((_, i) => i !== index) }))}><svg viewBox="0 0 448 512" className="fact-delete-icon" aria-hidden="true"><path d="M135.2 17.7L128 32H32C14.3 32 0 46.3 0 64S14.3 96 32 96H416c17.7 0 32-14.3 32-32s-14.3-32-32-32H320l-7.2-14.3C307.4 6.8 296.3 0 284.2 0H163.8c-12.1 0-23.2 6.8-28.6 17.7zM416 128H32L53.2 467c1.6 25.3 22.6 45 47.9 45H346.9c25.3 0 46.3-19.7 47.9-45L416 128z" /></svg><span className="fact-delete-label" aria-hidden="true">删除</span></button>}</div>
-        </fieldset>)}
+            {fact.key !== 'region' && fact.key !== 'industry' && <button type="button" className="text-button fact-delete" aria-label="移除此项信息" disabled={removingFact !== null} onClick={() => removeFact(index)}><svg viewBox="0 0 448 512" className="fact-delete-icon" aria-hidden="true"><path d="M135.2 17.7L128 32H32C14.3 32 0 46.3 0 64S14.3 96 32 96H416c17.7 0 32-14.3 32-32s-14.3-32-32-32H320l-7.2-14.3C307.4 6.8 296.3 0 284.2 0H163.8c-12.1 0-23.2 6.8-28.6 17.7zM416 128H32L53.2 467c1.6 25.3 22.6 45 47.9 45H346.9c25.3 0 46.3-19.7 47.9-45L416 128z" /></svg><span className="fact-delete-label" aria-hidden="true">删除</span></button>}</div>
+        </fieldset></div></div>)}
       </div>
-      <div className="form-actions"><button type="button" className="button button-secondary" onClick={addFact}>添加一项信息</button><button className="button" type="submit" disabled={pending}>{pending ? '保存中…' : '保存当前样本'}</button></div>
+      <div className="form-actions"><button ref={addFactButton} type="button" className="button button-secondary" disabled={removingFact !== null} onClick={addFact}>添加一项信息</button><button className="button" type="submit" disabled={pending || removingFact !== null}>{pending ? '保存中…' : '保存当前样本'}</button></div>
       </div>
       {saved && <p className="success-message" role="status">已保存当前合成样本。机会列表已恢复为“尚未分析”。</p>}
     </form>

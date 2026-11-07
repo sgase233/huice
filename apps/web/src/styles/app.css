@@ -46,7 +46,16 @@ p { margin-bottom: 1rem; }
 label { display: grid; gap: .38rem; font-weight: 600; font-size: .88rem; color: #484848; }
 input, select { width: 100%; min-height: 44px; border: 1px solid #afafaf; border-radius: .48rem; background: #ffffff; color: var(--ink); padding: .54rem .7rem; }
 input:disabled { background: #f2f2f2; color: #5a5a5a; }
-.facts-list { display: grid; gap: .85rem; margin: 1.15rem 0; }
+.facts-list { margin: 1.15rem 0; }
+.fact-slot { display: grid; grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows .4s ease, opacity .4s ease, margin-top .4s ease; }
+.fact-slot:not(:first-child) { margin-top: .85rem; }
+.fact-slot > div { min-height: 0; overflow: hidden; }
+.fact-slot.is-entering { animation: fact-enter .4s ease both; }
+.fact-slot.is-removing { grid-template-rows: 0fr; opacity: 0; margin-top: 0; }
+@keyframes fact-enter {
+  from { grid-template-rows: 0fr; opacity: 0; margin-top: 0; }
+  to { grid-template-rows: 1fr; opacity: 1; margin-top: .85rem; }
+}
 .fact-card { border: 1px solid var(--line); border-radius: .7rem; margin: 0; padding: 1rem; background: #fcfcfc; }
 .fact-card legend { font-weight: 700; color: var(--brand); padding: 0 .35rem; }
 .fact-actions { display: flex; justify-content: space-between; align-items: center; gap: .6rem; margin-top: .9rem; }
