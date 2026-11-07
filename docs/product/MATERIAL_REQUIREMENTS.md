@@ -70,12 +70,13 @@ policy_type,material_id,title,required,condition_desc,description,proves_fact_ke
 
 ## 4. 与 `preparation.items[]`、`verified=true` 的对接
 
-- `preparation.items[]` 的每一项来自 CSV 一行：`title` → `title`，`description` → `description`，`proves_fact_keys` → `required_fact_refs`：**期间已写死的键配具体起止日期；期间随评估的键不在模板里出现**，由运行期 `preparation.items[]` 按本次评估期间展开成具体日期；季度类键展开为 4 个季度 × 期初/期末（见本节「季度类键」）。契约 `FactRef.period` 必填 `{startDate,endDate}`，不接受字符串 `"assessment"`。
-- `required`/`condition_desc` 的承载：M1 2026-11-05 定案采用**方案 ②，不动契约**——`title` 前置 `【必交】`/`【条件交】`；`condition_desc` 以「适用条件：…；」并入 `description` 开头；CSV 两列原样保留作为数据源与复核依据。若前端要按必交/条件交过滤或着色，后续以可选字段进 1.0.x。
-- **期间**：`FactRef.period` 必填具体起止日期；API-03 的模板 `required_fact_refs` 只放政策条件中已写死期间的键；`assessment` 相对的键在运行期 `preparation.items[]` 按本次评估期间展开。若要让模板本身也表达「期间随评估」，需契约 rc.7 允许 `"period": "assessment"`（待定）。
-- **无事实键的材料**（GRANT-02/05/06；GRANT-09 不入库）：`required_fact_refs: []`，`missing` 按 `true` 处理（无法自动核对时不能显示为「资料已提供」）。这是保守处理，UI 的「资料缺失」措辞会偏；item `description` 必须写明「需人工核对，无法自动判断是否已提供」。三态（已提供/缺失/无法核对）需契约加字段，暂不做。
+- `preparation.items[]` 的每一项来自 CSV 一行：`title` → `title`，`description` → `description`，`proves_fact_keys` → `required_fact_refs`：**期间一律按本次评估期间展开**——期间已写死的键配具体起止日期，期间随评估的键由运行期 `preparation.items[]` 展开成具体日期；季度类键展开为 4 个季度 × 期初/期末（见本节「季度类键」）。契约 `FactRef.period` 必填 `{startDate,endDate}`，不接受字符串 `"assessment"`。
+- `required`/`condition_desc` 的承载：M1 2026-11-05 定案采用**方案 ②，不动契约**——`title` 前缀仍为 `【必交】`/`【条件交】`（`domain/preparation.py` 的 `REQUIRED_PREFIX`/`CONDITIONAL_PREFIX`）；`condition_desc` 由 `_display_description()` 追加在 `description` 末尾，格式为 `（何时需要：<condition_desc>）`；`condition_desc` 为空时不加后缀。CSV 两列原样保留作为数据源与复核依据。若前端要按必交/条件交过滤或着色，后续以可选字段进 1.0.x。
+- **期间**：`FactRef.period` 必填具体起止日期。API-03 的 `preparationTemplate.items` 当前恒为 `[]`（`storage.py::_preparation_template` 写死 `items=[]`）；期间与条件说明只在运行期 `preparation.items[]` 出现，按本次评估期间展开。若将来要让模板本身表达「期间随评估」，需契约变更，届时另记，不与当前行为混写。
+- **无事实键的材料**（GRANT-02/05/06；GRANT-09 不入库）：`required_fact_refs: []`，`missing` 按 `true` 处理（无法自动核对时不能显示为「资料已提供」）。这是保守处理，UI 的「资料缺失」措辞会偏；item `description` 必须写明「需人工核对，无法自动判断是否已提供」。
+- **材料状态四态**：四态以 `PreparationItem.status` 为准：`facts_filled` / `facts_missing` / `manual_check` / `policy_closed`。`facts_filled` 只说明事实有值，不代表材料已提交或已核验。`missing` 保留为兼容字段，语义是「该提醒去准备」——`status ∈ {facts_missing, manual_check}` 时为 `true`，`policy_closed` 不算（政策已关闭，提醒补材料没有意义），因此不等于 `status != facts_filled`。历史响应里没有 `status` 的条目按 `missing` 二态显示并标注「未核对」。
 - **季度类键**：TAX-05 的 `assetsStart/End`、TAX-06 的 `employeeCountStart/End` 按 `quarterly_average` 展开为 4 个季度 × 期初/期末 = 8 个 `FactRef`，期间随运行期评估年度。
-- **政策关闭**：HIGHTECH 的 `status=closed` 在 `PolicyDetail.status` 带出；运行结果 `preparation.items[]` 不含政策状态，页面需从政策详情取，关闭政策不出现「立即申报」。
+- **政策关闭**：政策关闭由 `PreparationItem.status=policy_closed` 表达；`PolicyDetail.status` 仍是政策级状态，两者并存，页面展示以 item 的 `status` 为准。
 - `verified=true` 的触发条件：某条事实键出现在某份「已复核材料」的 `proves_fact_keys` 里，且该材料已按官方来源完成两人独立核对与仲裁，才可把对应事实标 `verified=true`。合成演示材料同样遵守此规则，不得为演示效果把未复核材料标成已核验。
 
 ## 5. 待核实与未决
