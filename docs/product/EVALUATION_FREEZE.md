@@ -109,7 +109,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 
 1. **政策导入映射**：`policy_id / policy_version / criterion_id` → 数据库中的政策/条件 ID、AST 哈希、导入提交与时间。
 2. **企业事实映射**：`enterprise_id + fact_key + period_start/end` → 事实值哈希、事实版本、来源文件。
-3. **运行参数**：数据集版本/哈希、代码 commit、规则版本、`asOf`、分析期间、`MODEL_MODE`、配置哈希。`codeCommit` 在 ECS 无 `.git` 时为 `null`，不得编造；签认前须由部署记录补 commit，或明确标为「代码身份未证明」，不得以双 `null` 当作代码相同。`verify` 在两侧均 `null` 时应打印「代码身份未证明」提示；退出码可为 0（证据缺失≠内容不一致），但**该提示必须进入评测记录**；要证明代码相同，导出与核对都必须带 `--commit`。
+3. **运行参数**：数据集版本/哈希、代码 commit、规则版本、`asOf`、分析期间、`MODEL_MODE`、配置哈希。`codeCommit` 在 ECS 无 `.git` 时为 `null`，不得编造；签认前须由部署记录补 commit，或明确标为「代码身份未证明」，不得以双 `null` 当作代码相同。`verify` 在两侧均 `null` 时应打印「代码身份未证明」提示；退出码可为 0（证据缺失≠内容不一致），但**该提示必须进入评测记录**；代码身份不由 `--commit` 证明：它只是注记，两侧同值也不能说明磁盘或进程上跑的是该提交。清单另记 `codeFingerprint`——范围 `services/api/app`、`contracts/openapi.yaml`、`services/api/requirements.lock`，算原始字节、不做换行归一化，排除 `__pycache__`；复算用 `python -m app.evaluation fingerprint --root <代码根>`，跨系统核对须用 `git -c core.autocrlf=false archive` 导出同一份 LF 内容再算，并写明导出方式。三件事分开证明：磁盘上是不是这份代码（指纹回答）、这份代码对应哪个提交（checkout 后复算回答）、进程里跑的是不是它（指纹答不了，只能拿进程启动时间与代码文件 mtime 交叉核对，`--process-pid` 签认时才留得下）。旧清单没有 `codeFingerprint` 的一律记「磁盘代码身份未证明」，须重新签认。
 4. **结果导出（2026-11-05 定案：方案 A；条件级证据以 report 稳定正文为准）**：
    - `runId`；
    - **`report.md` 稳定正文**：用 `python -m app.evaluation freeze-report report.md --out report.frozen.md` 生成；剔除**四处**按下载时刻现算的内容——① 开头「截至下载时刻的有效性」段；② 头部「- 下载时间」行；③ 判断结论表的「有效性」列；④ 每个政策段的「- 有效性 / - 失效原因 / - 有效期至」行。只删这四处，保留条件级四态、理由、逐字引文/出处、`calculation.formula` 与结果、办理清单；剔除规则由 M1 实现并有测试，**不在评测时临时手工裁剪**；
@@ -122,7 +122,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 
 > **数据集哈希范围（2026-11-05 补）：** 只覆盖 §3 的三份文件（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）；`data/evaluation` 下的复核表/标注表（`material_review_*.csv`、`*_annotation_sheet.csv`）不属于评测输入，不应进入签认清单。`--dataset-dir` 如只能扫目录，应改为显式文件列表或支持多次指定。
 
-**进度（2026-11-05，M1）：** PR #39（`m1/eval-input-snapshot`，基于 `main`，head `fb90690`）已实现第 1、2、3（部分）、4、5 项：`inputs` / `verify` / `freeze-report` 三个命令；`--dataset-file` 显式列表（不设默认）；双 `null` `codeCommit` 提示；report 按四处剔除生成稳定正文。条件级结果仍是 Markdown 项目符号，机器只能半结构化解析——**已知缺口**，JSON 导出/方案 B 本轮不做。工具只读库，配置哈希不含 `ADMIN_TOKEN` / `DEEPSEEK_API_KEY` / `DATABASE_URL` / `REDIS_URL` / OBS AK/SK，清单文本不含这些值（有用例锁住）。**§5.2 仍未完成**：需 PR #39 合并并部署到 ECS、产出首份清单并 `verify` 通过；在此之前本声明保持草案。
+**进度（2026-11-07）：** 第 1、2、3、5 项与第 4 项 `freeze-report` 由 #39 实现（已合入，2026-11-06 09:59）；部署文件指纹 `codeFingerprint` 由 #42 补入（已合入，2026-11-07 03:46），复算方式见第 3 项。清单结构以当前 `main` 的 `app.evaluation` 为准，不再引用 #39 的 head 提交。已合入不等于已完成：ECS 尚未产出经核对的清单；本声明保持草案，直到跑出「未解决 0 项」的清单、`verify` 通过，并把清单、`asOf`、期间、run 输出与复核记录一并归档。
 
 ## 6. 锁定边界声明（避免误读）
 
@@ -131,6 +131,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 - 是否在任何相关评测/调参前锁定，尚需各成员确认；本声明不作此推断。
 - 第 2 轮仲裁的理由记录在 `criteria_review.csv` 的 HT-007 `adjudication_note`（政策原文与规则语义）；**「是否参考过引擎输出」尚需实际参与者确认**，本声明不作此推断；不主张标注过程具备统计意义上的盲测条件。
 - 正式冻结以 M2 签认时间为准，**不以历史提交时间代替签认时间**。
+- **留出集试跑历史（M1 自述）：** 2026-11-06 16:08–16:29 以 DeepSeek 跑过一次完整对照（`asOf=2026-11-06`，32 个 case / 146 条标签，dev 120 / holdout 26），输出仅 M1 本人看过。此后未修改 `labels.csv` 与 `criteria_review.csv`（两者最后改动均为 2026-11-02）；据该次结果只修了实现缺陷（抽取提示词算子键名、指标表百分比渲染）与三处口径，未改条件与标注。故该次结果不作为留出集的独立验证；后续若以留出集下结论，须注明「实现曾据该次结果修过缺陷」。
 
 ## 7. 签认
 
