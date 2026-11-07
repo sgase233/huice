@@ -190,7 +190,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 - **适不适用**：必交材料无条件列出；条件交材料只在本次判断真的引用到它证明的事实键时列出。没有事实键的条件交（申请书一类，条件只有文字）判断不了，按「需人工核对」列出而不是省略——静默消失会让人以为不用交。
 - **要哪些事实**：按本次判断期间展开；季度类键（`assetsStart/assetsEnd`、`employeeCountStart/employeeCountEnd`）展开成四个季度的期初期末共八个引用，与 `rules.referenced_facts` 同一套口径，不另写一份。
-- **四态 `status`（事实口径，rc.9 起）**：`facts_filled`（要的事实都有取值）、`facts_missing`（有事实键但缺值）、`manual_check`（没有事实键，或条件无法由程序判断）、`policy_closed`（政策已到期或窗口已关闭，材料再齐也交不了）。**名字说的是程序查到什么，不是材料交没交**：服务端只读企业事实，从不读材料本身，所以 `facts_filled` 不等于「材料已提交/已核验」。`missing` 是保守口径：`manual_check` 也算 `true`，展示以 `status` 为准。rc.8 里这两个取值叫 `provided` / `missing`，因名字比能证明的多说了一层，在 rc.9 改名（M2 在 #40 的 P1）。标题前缀 `【必交】`/`【条件交】` 承载必交属性（契约没有独立字段，口径见 `docs/product/MATERIAL_REQUIREMENTS.md` §4），条件文案追加在 `description` 末尾的「（何时需要：…）」（`f"{description}（何时需要：{condition_desc}）"`，见 `domain/preparation.py`）。
+- **四态 `status`（事实口径，rc.9 起）**：`facts_filled`（要的事实都有取值）、`facts_missing`（有事实键但缺值）、`manual_check`（没有事实键，或条件无法由程序判断）、`policy_closed`（政策已到期或窗口已关闭，材料再齐也交不了）。**名字说的是程序查到什么，不是材料交没交**：服务端只读企业事实，从不读材料本身，所以 `facts_filled` 不等于「材料已提交/已核验」。`missing` 是保守口径：`manual_check` 也算 `true`，展示以 `status` 为准。rc.8 里这两个取值叫 `provided` / `missing`，因名字比能证明的多说了一层，在 rc.9 改名（M2 在 #40 的 P1）。标题前缀 `【必交】`/`【条件交】` 承载必交属性（契约没有独立字段，口径见 `docs/product/MATERIAL_REQUIREMENTS.md` §4），条件文案由 `domain/preparation.py` 的 `_display_description()` 追加在 `description` 末尾（`f"{material.description}（何时需要：{material.condition_desc}）"`，`condition_desc` 为空时原样返回）。
 - 库里没有材料（政策没挂材料、或清单尚未导入）时 `items` 为空并保留告警「申报材料清单待 M3 审核材料导入后补齐」；有清单时告警消失，报告逐条标出四态。
 - `PolicyDetail.preparationTemplate.items` 仍是 `[]`：模板没有企业与判断上下文，给不出 `status`；带四态的清单只出现在判断运行里。
 
