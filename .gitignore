@@ -15,3 +15,6 @@
 **/test-results/
 **/playwright-report/
 *.log
+
+# 本机代理工作约定（不纳入仓库）
+AGENTS.md
