@@ -43,7 +43,7 @@ export default function HomePage() {
   return <div className="home">
     <a className="skip-link" href="#home-main">跳到主要内容</a>
     <header className="home-header"><div className="home-wrap home-header-inner">
-      <a className="home-brand" href="/" aria-label="惠策协同首页"><span className="home-brand-mark">策</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a>
+      <a className="home-brand" href="/" aria-label="惠策协同首页"><span className="home-brand-mark">惠</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a>
       <div className="header-actions"><nav aria-label="首页导航"><a href="#how-it-works">使用流程</a><a href="#about">使用说明</a><a className="home-nav-action" href="#enterprise">进入工作台 <span aria-hidden="true">→</span></a></nav><ThemeToggle /></div>
     </div></header>
     <main id="home-main">
