@@ -20,7 +20,7 @@
   没有引用原文、也没有列任何企业事实的条数 ÷ 全部确定结论条数。这是「幻觉」
   在判断阶段的等价物：抽取阶段的幻觉条款率只有现方案有（基线没有抽取阶段）。
 * **引用可证实率**：给出的引文能在原文里逐字找到的比例。原文不可用的条件
-  （``Dataset.unverifiable_criteria``，目前是 RD-001）不进分母。
+  （``Dataset.unverifiable_criteria``）不进分母，并会在结果里逐个列出来。
 * **时效识别**：已过适用期的 case 里，方案标出「已过期 / 申报窗口已关闭」的
   比例。分母按运行当天的日期算，报告必须写运行日期。
 * **token**：冷启动（把政策装进方案的那部分）与边际（每个 case）分开报；
@@ -210,7 +210,7 @@ def unsupported_assertions(run: Run, labels: Sequence[Label]) -> dict[str, Any]:
 
 
 def quote_support(dataset: Dataset, run: Run, labels: Sequence[Label]) -> dict[str, Any]:
-    """引文能否逐字落到原文；出处原文不可用的条件（RD-001）不进分母。"""
+    """引文能否逐字落到原文；出处原文不可用的条件不进分母，并在结果里列出。"""
 
     skip = dataset.unverifiable_criteria()
     checked = 0

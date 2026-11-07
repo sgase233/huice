@@ -393,6 +393,14 @@ def _validate(plan: PolicyPlan, draft: PolicyDraft) -> tuple[dict[str, str], dic
 
 
 def _apply(plans: list[PolicyPlan], dsn: str) -> int:
+    """逐版写库。
+
+    调用方（``main``）已保证预检全通过；这里不再跳过带问题的计划，只负责写与报告。
+    中途失败时**前面已写完的版本保留**：每个版本由 ``create_policy_version`` 自己一个
+    事务，失败的那个版本不会留下半条数据；重跑本脚本会按文号跳过已存在的版本，因此
+    恢复方式就是「修好失败的原因再跑一次 --apply」。
+    """
+
     import psycopg
 
     from app.db import Database
@@ -494,8 +502,38 @@ def _apply(plans: list[PolicyPlan], dsn: str) -> int:
     return failed
 
 
-def _enterprise_payloads() -> list[tuple[str, dict[str, Any]]]:
-    """labels 用到的企业 → 契约的 ``EnterpriseInput`` 形状（与 ablation 的写法一致）。"""
+def _fact_value(fact: dict[str, str], where: str, problems: list[str] | None) -> Any:
+    """把 CSV 里的值转成契约要的类型；布尔列的空值是「未知」，不是 false。
+
+    只认 ``true``/``false``（大小写不敏感）。空串以前会被 ``== "true"`` 悄悄转成
+    ``False``，等于把「没填」记成「不符合」，M2 在 #36 复审指出过；其余非法写法也
+    一律报出来，不猜。
+    """
+
+    if fact["unit"] != "boolean":
+        return fact["fact_value"]
+    raw = fact["fact_value"].strip().lower()
+    if not raw:
+        return None
+    if raw == "true":
+        return True
+    if raw == "false":
+        return False
+    message = f"{where}：布尔事实只能写 true/false 或留空，实际是 {fact['fact_value']!r}"
+    if problems is None:
+        raise ValueError(message)
+    problems.append(message)
+    return None
+
+
+def _enterprise_payloads(
+    problems: list[str] | None = None,
+) -> list[tuple[str, dict[str, Any]]]:
+    """labels 用到的企业 → 契约的 ``EnterpriseInput`` 形状（与 ablation 的写法一致）。
+
+    ``problems`` 传列表时把无法转换的事实记进去（由调用方汇总成预检失败）；
+    不传就直接抛 ``ValueError``——写库路径不该带着未报告的问题继续。
+    """
 
     labels = _rows(DATA / "evaluation" / "labels.csv")
     wanted = {row["enterprise_id"] for row in labels}
@@ -521,12 +559,9 @@ def _enterprise_payloads() -> list[tuple[str, dict[str, Any]]]:
                     "facts": [
                         {
                             "key": fact["fact_key"],
-                            # CSV 里的布尔写成 true/false，契约要真布尔；空值是「未知」，保持 null。
-                            "value": (
-                                fact["fact_value"].strip().lower() == "true"
-                                if fact["unit"] == "boolean"
-                                else fact["fact_value"]
-                            ),
+                            # CSV 里的布尔写成 true/false，契约要真布尔；空值是「未知」，
+                            # 保持 null——转成 false 会把「没填」记成「不符合」。
+                            "value": _fact_value(fact, f"{code}/{fact['fact_key']}", problems),
                             "unit": fact["unit"],
                             "period": {
                                 "startDate": fact["period"].split("/")[0].strip(),
@@ -549,7 +584,7 @@ def check_enterprises() -> list[str]:
     from app.schemas import EnterpriseInput
 
     problems: list[str] = []
-    for code, payload in _enterprise_payloads():
+    for code, payload in _enterprise_payloads(problems):
         try:
             normalize_profile(EnterpriseInput.model_validate(payload))
         except Exception as exc:  # ValidationError / ApiProblem
@@ -565,7 +600,12 @@ def _apply_enterprises(repository: Any, dsn: str) -> None:
     from app.agents.profile import normalize_profile
     from app.schemas import EnterpriseInput
 
-    for code, payload in _enterprise_payloads():
+    problems: list[str] = []
+    payloads = _enterprise_payloads(problems)
+    if problems:  # main 已在预检拦下；能走到这里说明调用方绕过了校验
+        raise ValueError("企业事实预检未通过，不应写库：" + "；".join(problems))
+
+    for code, payload in payloads:
         name = payload["nameSynthetic"]
         with psycopg.connect(dsn) as conn:
             exists = conn.execute(
@@ -623,9 +663,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     problems = problems + enterprise_problems
 
+    # 预检不过就一律不写：干跑和 --apply 走同一道门，别让 --apply 绕过校验把
+    # 其余计划发出去。M2 在 #36 复审指出过这一点。
+    if blocking or problems:
+        print("预检未通过：不写库。修好上面的问题再跑 --apply。")
+        return 1
+
     if not args.apply:
         print("干跑结束：没有连接数据库。加 --apply 才写。")
-        return 0 if blocking == 0 and not problems else 1
+        return 0
 
     dsn = (args.dsn or os.environ.get("DATABASE_URL") or "").strip()
     if not dsn:
