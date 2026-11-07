@@ -8,6 +8,9 @@
 这里不执行命令，只对 ``infra/deploy/README.md`` 的代码块做结构检查：临时单元里调用项目
 脚本时用绝对路径、显式给工作目录、不靠 ``cd`` 兜底。命令本身能否跑通仍要在真实 systemd
 上验，本用例只挡住「照抄一定失败」的那类写法。
+
+§6.2 同理：回滚的命令放在 ``infra/deploy/rollback.sh``，行为由
+``test_rollback_script.py`` 真跑 shell 覆盖；这里只检查手册没有又手写一套命令。
 """
 
 from __future__ import annotations
@@ -87,3 +90,41 @@ def test_no_example_relies_on_cd_before_systemd_run():
             "systemd-run 示例里不要靠 cd 兜底：临时单元从 `/` 启动，cd 对它不起作用。\n"
             f"{block}"
         )
+
+# ------------------------------------------------------------- §6.2 回滚契约
+
+
+def _section(text: str, title: str, next_title: str) -> str:
+    assert title in text, f"手册里找不到 {title}"
+    return text.split(title, 1)[1].split(next_title, 1)[0]
+
+
+def _rollback_section() -> str:
+    return _section(DEPLOY_README.read_text(encoding="utf-8"), "### 6.2 ", "\n## ")
+
+
+def test_every_command_in_the_rollback_section_is_the_tested_script():
+    """回滚不再手写「comm 有输出就停下」这类命令：判据得由命令自己返回非零。
+
+    ``comm`` 有差异时退出码仍是 0、``cp -an`` 遇到同名文件会静默跳过——这两条都不是
+    写在文档里就会生效的（M2 在 #44 的复审 P1）。命令改由 ``infra/deploy/rollback.sh``
+    执行，行为由 ``test_rollback_script.py`` 在临时目录里真跑 shell 覆盖。
+    """
+
+    blocks = _FENCE.findall(_rollback_section())
+    assert blocks, "§6.2 里没有可执行的示例"
+    for block in blocks:
+        assert "rollback.sh" in block, f"§6.2 里还有手写命令：\n{block}"
+
+
+def test_the_rollback_section_states_the_exit_codes():
+    section = _rollback_section()
+    assert "退出码" in section
+    for code in ("**0**", "**2**", "**3**", "**4**", "**5**"):
+        assert code in section, f"§6.2 没写退出码 {code} 的含义"
+
+
+def test_the_update_section_points_back_to_the_rollback():
+    update = _section(DEPLOY_README.read_text(encoding="utf-8"), "### 6.1 ", "### 6.2 ")
+    assert "§6.2" in update, "§6.1 没有告诉人回滚按哪一节做"
+    assert "app.old-$X" in update, "§6.1 的旧目录名与 §6.2 的对不上"

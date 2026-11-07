@@ -127,9 +127,9 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 | `HUICE_T_SPACE=a b` | `a b` | 空，且报 `b: command not found` |
 | `HUICE_T_CONT=l1 \`（下一行 `l2`） | `l1 l2` | 空，且报 `l2: command not found` |
 
-也就是说 `source` 既可能读错值（`$`、反引号、空格全按 shell 规则处理），也会把文件内容当命令执行；口令里带这些字符时，两种读法拿到的不是同一个连接串。同一份 `api.env` 上，本脚本的两条取值路径——服务在跑时读 `/proc/<MainPID>/environ`、服务没跑时用 `systemd-run -p EnvironmentFile=`——用假值实测拿到**同一个** `DATABASE_URL`（只比 SHA-256，不打印值）。`EnvironmentFile` 指向不存在的文件时 `systemd-run` 以退出码 1 失败（实测），脚本因此停下，不会退回默认连接参数。
+也就是说 `source` 既可能读错值（`$`、反引号、空格全按 shell 规则处理），也会把文件内容当命令执行；口令里带这些字符时，两种读法拿到的不是同一个连接串。同一份 `api.env` 上，本脚本的两条取值路径——服务在跑时读 `/proc/<MainPID>/environ`、服务没跑时用 `systemd-run -p EnvironmentFile=`——用假值实测拿到**同一个** `DATABASE_URL`（只比 SHA-256，不打印值）。这条对照比的是**读法**（`source` vs systemd 的 `EnvironmentFile` 语义），不等于脚本第 2 条路径自身没问题——后者在 2026-11-05/06 两次真实部署里取到过空值，根因与修复见下段。`EnvironmentFile` 指向不存在的文件时 `systemd-run` 以退出码 1 失败（实测），脚本因此停下，不会退回默认连接参数。
 
-**服务还没启动过时，第 2 条是唯一路径**——首次部署正好落在这里。2026-11-05 有一次真实部署在这一步取 `DATABASE_URL` 得到空值，当时没留下退出码与 stderr，原因至今未定；所以取值失败时脚本会把能定位的信息都打出来（只打变量名与路径，绝不打值）：
+**服务还没启动过时，第 2 条是唯一路径**——首次部署正好落在这里。2026-11-05 与 2026-11-06 两次真实部署都在这一步取 `DATABASE_URL` 得到空值，2026-11-06 定位出根因：脚本把 `${DATABASE_URL-}` 原样交给 `systemd-run`，而 **systemd 在把命令交给 `ExecStart` 之前会先展开 `${...}`**——`DATABASE_URL-` 带减号、不是合法变量名，被当成未知变量换成空串，`/bin/sh` 实际收到的是 `printf '%s' ""`，退出码 0、输出为空，看着就是「这个变量没配」。修复是把 `$` 写成 `$$`（systemd 只还回一个字面 `$`，留给 `/bin/sh` 自己算），云端实测未转义 0 字节、转义后 54 字节。**修复在本分支（PR #44），尚未部署**：云端 `/opt/huice/app/infra/deploy/migrate.sh` 仍是未转义的那一版，按 §6.1 换上本分支之前，停机跑迁移仍会停在「`DATABASE_URL` 为空」。取值失败时脚本会把能定位的信息都打出来（只打变量名与路径，绝不打值）：
 
 - `systemd-run` 的**退出码与 stderr 前 10 行**：「临时单元根本没起来」和「起来了、但这个变量是空的」是两类问题，先分开再查；
 - `systemctl show -p EnvironmentFiles --value huice-api` 的结果：unit 实际读的到底是不是 `/etc/huice/api.env`。对不上就明说脚本读的是另一个文件；unit 改用 `Environment=` 直接声明变量（没有 `EnvironmentFiles`）时也只报这件事，不打印内容；
@@ -145,7 +145,7 @@ grep -nE '^export |[[:space:]]=|=[[:space:]]' /etc/huice/api.env | cut -d= -f1  
 grep -c $'\r' /etc/huice/api.env                             # 非 0 即含 CRLF
 ```
 
-首次部署的留证里要含这三样：`systemd-run` 的退出码、`systemctl show -p EnvironmentFiles huice-api` 的输出、以及取值成功后脚本打印的 `schema_migration` 验收结果。**第 2 条路径目前只在假件（`test_migrate_script.py`）里验证过，还没有真实 systemd 的证据**——首次在空 ECS 上跑 `migrate.sh` 的那次就是这份证据，结果要回填到本段。
+首次部署的留证里要含这三样：`systemd-run` 的退出码、`systemctl show -p EnvironmentFiles huice-api` 的输出、以及取值成功后脚本打印的 `schema_migration` 验收结果。**第 2 条路径已于 2026-11-06 在真实 systemd（255.4）上定位并实测**：未转义写法返回 0 字节，改成 `$$` 后取到 54 字节（只记长度，不记值）；假件 `test_migrate_script.py` 也按同一条规则判——去掉 `$$` 后仍出现 `${` 就判失败。修复随本分支（PR #44）上线；在那之前，ECS 上仍要先 `systemctl start` 再跑迁移。
 
 ```bash
 bash /opt/huice/app/infra/deploy/migrate.sh
@@ -153,9 +153,13 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 要 **root** 执行：读 `/proc/<PID>/environ` 与调用 `systemd-run` 都需要（`huice` 用户读不到别人的进程环境）。
 
-脚本按 001—007 顺序执行（每步 `-v ON_ERROR_STOP=1`）。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对七个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
+脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—007 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对七个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
 
-**「立即停下」保护的是后面的步骤，不是整批的原子性。** 迁移是一条一条提交的：第 N 条失败（或 `infra/sql/` 里缺了某个 `.sql`）时，前面几条**已经写进库**，库就停在这个部分迁移的状态——先跑 001—006、再因 007 缺失停下，和「在任何迁移之前停下」是两回事。每份迁移本身可重复执行（`DROP CONSTRAINT IF EXISTS` / `ADD COLUMN IF NOT EXISTS` / `ON CONFLICT (id) DO NOTHING`），修好原因直接重跑 `migrate.sh` 就会补齐；验收查询只在全部执行完之后才跑，所以部分状态不会被报成「全部应用」。
+**为什么不是「从 001 全量重放」**：迁移文件各自幂等，但**幂等不等于能跳过中间状态**。库已到 `008` 时重放 `005`，事实字典约束会被收回到 16 键，撞上库里已有的 `specificMarketSince` 行而报错（2026-11-06 云端实测）。所以「有新序号就重跑脚本」在旧版里根本推不动，新版按登记表判断。
+
+**「立即停下」保护的是后面的步骤，不是整批的原子性。** 迁移是一条一条提交的：第 N 条失败（或 `infra/sql/` 里缺了某个 `.sql`）时，前面几条**已经写进库**，库就停在这个部分迁移的状态——先跑 001—006、再因 007 缺失停下，和「在任何迁移之前停下」是两回事。已登记的那些下次会被跳过，没登记的继续跑，所以修好原因直接重跑 `migrate.sh` 就会从断点补上；验收查询只在全部执行完之后才跑，所以部分状态不会被报成「全部应用」。
+
+**登记表本身就是验收项**：某份 `.sql` 跑通了却漏了写 `INSERT INTO schema_migration`，`psql` 退出码仍是 0、库里却没有它。这种文件只有收尾那次验收查询能发现（它会报「缺 00X」并非零退出），`test_migrate_script.py` 用一个「跑成功但不登记」的假迁移覆盖了这条路径。
 
 脚本里的清单与 `infra/sql/` 下的文件由 `services/api/tests/test_migrate_script.py` 的一条守卫用例比对：新增迁移只加 SQL 文件、忘了进清单，用例就转红。验收查询也按清单逐项核对，所以清单漏一条时它不会替那条「登记上了」——漏掉的是执行本身。
 
@@ -389,15 +393,160 @@ journalctl -u huice-api --since today | grep model_call
 - 未配置域名与正式证书：大陆地域用域名走 80/443 需要 ICP 备案，当前直接用 EIP 演示，评审期临时走 §3.2 的自签 443；备案后换正式证书并去掉浏览器的自签警告。
 - `infra/deploy/deploy.ps1` 仍是占位文件，本阶段以本文档的手工步骤为准。
 
-## 6. 回滚
+## 6. 更新与回滚（按提交）
+
+### 6.1 更新已有部署：从当前状态换到提交 `X`
+
+§1 讲的是「第一次把代码放上去」，这一节讲**机器上已经在跑、要换到另一个提交**。两条硬要求：**整目录替换**（解包不会删掉新版本里已删除的文件），**换完核对装上去的是哪份代码**（否则「跑的是哪版」只能靠记忆）。
+
+**本机打出该提交的包**（`git archive` 只含已提交内容，天然排除 `.env`、`.venv`、`.local-objects`）：
 
 ```bash
-systemctl stop huice-api          # 停服务
-cp /opt/huice/app.bak/* /opt/huice/app/   # 恢复上一份代码（若事先备份）
-systemctl restart huice-api
+cd "/d/Study/比赛/华为ICT大赛/huice"
+X=$(git rev-parse --short HEAD)            # 换成要部署的提交
+git -c core.autocrlf=false archive --format=tar.gz --prefix=huice/ -o "/tmp/huice-$X.tar.gz" "$X"
+scp "/tmp/huice-$X.tar.gz" root@139.9.33.46:/tmp/
 ```
 
-数据库只增不改：新变更按 `infra/sql/` 现有最大序号顺延（当前最大为 `007_idempotency_usage_semantics.sql`，下一份是 `008_*.sql`），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
+**`-c core.autocrlf=false` 不能省**（Windows 上尤其）：`core.autocrlf=true` 时 `git archive` 会把文本文件转成 CRLF 打进包里，`.sh` 直接坏掉（变量名后面多一个 `\r`，读到的值是空串），`.py` 虽能跑但与提交不再逐字节相同，`sha256sum` 核对全部对不上。2026-11-06 第一次按本节部署就栽在这里：`migrate.sh` 报 `DATABASE_URL 为空`，根因是它自己的 CRLF。
+
+**ECS 上：停服务 → 备份 → 换整棵目录 → 按需装依赖 → 迁移 → 起服务 → 验判断接口**
+
+```bash
+set -e
+X=<刚部署的提交>                            # 与上面一致
+systemctl stop huice-api                    # 先停：别让运行中的进程看着脚底下的目录被移走
+tar -czf "/root/app-before-$X-$(date +%Y%m%d).tar.gz" -C /opt/huice app   # 备份整棵 app（含 .local-objects）
+[ ! -e "/opt/huice/app.old-$X" ] || { echo "app.old-$X 已存在（上一次更新或回滚留下的），先人工确认它是什么再删，别直接覆盖"; exit 1; }
+mv /opt/huice/app "/opt/huice/app.old-$X"
+mkdir -p /opt/huice/app
+tar -xzf "/tmp/huice-$X.tar.gz" -C /opt/huice/app --strip-components=1
+
+# 对象目录就在 app 里面：整目录替换会把它连同旧代码一起挪进 app.old-*，新目录里没有。
+# 必须搬回来再起服务，否则已导入的附件全部找不到；权限也要一并还原，
+# unit 是 ProtectSystem=strict、只对这个路径放行写入，属主/权限不对则新对象写不进去。
+if [ -d "/opt/huice/app.old-$X/.local-objects" ]; then
+    mv "/opt/huice/app.old-$X/.local-objects" /opt/huice/app/.local-objects
+fi
+chown -R huice:huice /opt/huice/app
+chmod 750 /opt/huice/app/.local-objects 2>/dev/null || true   # 没有对象目录时（obs 模式）跳过
+# 搬走之后 app.old-$X 里就没有这个子目录了：回滚必须把它带回去，由 §6.2 的
+# rollback.sh 无条件搬回并逐个校验（同名对象内容不同就停下），别在这里或那边手写分支。
+
+# 依赖只在 requirements.lock 变过时才装：比哈希，别靠印象
+sha256sum /opt/huice/app/services/api/requirements.lock "/opt/huice/app.old-$X/services/api/requirements.lock"
+
+# 换行符自查：应当没有任何输出（CRLF 的 .sh 会坏，见上）
+grep -rlU $'\r' /opt/huice/app --include=*.sh | head
+
+# 迁移在服务停止时跑，且只在 infra/sql/ 出现了库里没有的序号时才需要跑：
+# 新代码要读新列，让老进程对着半新半旧的库接请求只会 500。migrate.sh 自己会跳过已登记的，
+# 库里没有新序号时它一条都不执行（见 §2.1）。
+ls /opt/huice/app/infra/sql/ | tail -3
+bash /opt/huice/app/infra/deploy/migrate.sh
+
+systemctl start huice-api
+systemctl is-active huice-api
+curl -i http://127.0.0.1:8000/api/v1/health
+journalctl -u huice-api -n 30 --no-pager
+```
+
+**换完再验判断接口**（健康检查只证明进程活着、连得上库）：起一条真实判断再读回轨迹，确认新代码读写的是新列，而不是靠「服务起来了」推断。
+
+```bash
+# 1) 取一个真实的企业与政策版本 id（GET /enterprises、GET /policies 都要 §4 的鉴权）
+# 2) 起一条判断（API-11）
+curl -sS -o /tmp/run.json -w '%{http_code}\n' -X POST http://127.0.0.1:8000/api/v1/assessment-runs \
+  --config - <<'EOF'
+header = "Authorization: Bearer <ADMIN_TOKEN>"
+header = "Cookie: huice_demo_session=<§3.1 输出的 value>"
+header = "Content-Type: application/json"
+data = "{\"enterpriseId\":\"<企业UUID>\",\"policyIds\":[\"<政策版本UUID>\"],\"asOf\":\"2026-11-06T12:00:00+08:00\",\"period\":{\"startDate\":\"2026-01-01\",\"endDate\":\"2026-12-31\"}}"
+EOF
+# 3) 读回轨迹（API-14，admin）：走 invalidation_event 的新列与判断记录
+RUN=$(python3 -c 'import json;print(json.load(open("/tmp/run.json"))["id"])')
+curl -sS -o /tmp/trace.json -w '%{http_code}\n' \
+  -H 'Authorization: Bearer <ADMIN_TOKEN>' \
+  "http://127.0.0.1:8000/api/v1/assessment-runs/$RUN/trace"
+```
+
+两次都应是 200 且响应体字段齐全；任一处 500 说明库结构或代码有一边没换到位（迁移没跑完、或目录换了一半），别往「前端问题」上推。
+
+对象目录还要单独验两条，光看目录存在不算（属主对了、权限也可能不对；反过来说，权限对了也可能搬错目录）：
+
+```bash
+# 既有对象可读：拿一个已经存在的对象，用服务身份读一次
+sudo -u huice test -r "/opt/huice/app/.local-objects/<已有对象路径>" && echo "既有对象可读"
+# 新对象可写：同一个身份新建再删掉（unit 的 ProtectSystem=strict 只放行这一个路径）
+sudo -u huice sh -c 'umask 077 && printf probe > /opt/huice/app/.local-objects/.probe' && echo "新对象可写"
+sudo -u huice rm -f /opt/huice/app/.local-objects/.probe
+```
+
+两条都过了才算换完；`ls -ld /opt/huice/app/.local-objects` 显示 `huice:huice`、`750`，与 `provision.sh` 建出来的那份一致。
+
+**取值路径与增量迁移都各测过，但「空库首次部署走完整条链」没有实测过**：`systemd-run` 取 `DATABASE_URL` 在真实 systemd 上单项验过（未转义 0 字节、转义后 54 字节），`migrate.sh` 的「跳过已登记、只跑待应用」用假库覆盖过各种起点；可这两件事从没在同一次空库部署里串起来走一遍（停服务取值 → 增量迁移 → 起服务 → 验判断接口）。11/15 的「从空环境复现部署」才是那条链的第一次实测，在那之前别把单项实测写成「部署已通」。
+
+下面三条都是 2026-11-06 实测踩出来的：
+
+- **服务停止时 `migrate.sh` 曾取不到 `DATABASE_URL`。** 它服务在跑时读 `/proc/<MainPID>/environ`（第 1 条路径），服务停止时改用 `systemd-run -p EnvironmentFile=`（第 2 条路径）；后者当天在 ECS 上返回空值，脚本随即以「`DATABASE_URL` 为空」停下。根因：systemd 在 `ExecStart` 之前会展开 `${...}`，脚本原样的 `${DATABASE_URL-}` 名字带减号、被换成空串。`read_env_var` 里已改成 `$${DATABASE_URL-}`（细节见 §2.1），**修复在本分支（PR #44），尚未部署到云端**——云端当前的 `migrate.sh` 仍是旧版，所以在这次修复上线之前，那台机器上仍然要 `systemctl start` 之后再跑迁移；按本节装上新代码之后，停机迁移才是可取的那条路径。
+- **不要在已推进的库上重放旧迁移。** 「可重复执行」指的是**幂等**，不是**可以跳过中间状态**：云端库已到 `008` 时从 `001` 重放，`005` 会把事实字典约束收回 16 键，被库里已有的 `specificMarketSince` 行顶掉，`ERROR: check constraint "enterprise_fact_key_check" ... is violated by some row`。它失败在 `BEGIN` 里、事务回滚，结构没被改动，但这一趟白跑。本分支的 `migrate.sh` 改为先查 `schema_migration`、只跑未登记的那些（已登记的打印「已登记，跳过」，库里多出来的 id 只点名不影响本次执行），这一步不需要「先看 `ls` 再决定跑不跑」；旧版脚本仍然必须手工判断。
+- **`psql` 直查要用服务的环境**：`PID=$(systemctl show -p MainPID --value huice-api)`、`DB=$(tr '\0' '\n' < /proc/$PID/environ | sed -n 's/^DATABASE_URL=//p')`，查完 `unset DB`。连接串会短暂出现在 `psql` 的参数里（`psql` 不认环境变量），别开着 `watch ps`。
+
+**核对装上去的是哪份代码**：`app/evaluation` 的 `fingerprint` 子命令（PR #42 合入后可用）在**两边各算一次**，值相同才算对上；在那之前只能逐文件 `sha256sum` 比对，且注意别拿分支上的文件去比云端 main 的文件。
+
+它的证明范围只有 `CODE_SCOPE` 那三项——`services/api/app`、`contracts/openapi.yaml`、`services/api/requirements.lock`（`infra/sql` 刻意不在内，库结构由 `schema_migration` 的验收结果证明，见 §2.1）。所以指纹相同只说明**这三处代码字节一致**：它不证明部署树的其余部分（`infra/deploy` 的脚本、`apps/web` 构建产物）、不证明迁移跑过、不证明依赖装对、更不证明进程里跑的就是盘上这份（换完没重启同样对得上）。这四件事各自另有证据，别用一条指纹代替。
+
+```bash
+cd /opt/huice/app/services/api && /opt/huice/venv/bin/python -m app.evaluation fingerprint
+# 本机同提交复算：另开一个 worktree checkout 到该提交后再算（别在工作区里 stash）
+cd services/api && python -m app.evaluation fingerprint
+```
+
+**已经手工打过临时补丁的机器不能「只换改过的文件」**：`/opt/huice/app` 一旦被单文件覆盖过（2026-11-06 的抽取提示词热补丁就是），它就不再等于任何提交，只有整目录替换才能回到「某提交的原样」。替换完把差异处理记进 `infra/README.md` §7，别只写在聊天里。
+
+2026-11-06 已按本节把云端从「rc.6 + 热补丁」换成 `112d0a7`（rc.7），热补丁退役：备份在 `/root/app-hotpatched-20261106.tar.gz` 与 `/opt/huice/app.hotpatched-20261106`，确认稳定后可删。提示词本身的修正走 PR #45 回仓库，合并后云端只需换成 main 的提交，内容不变。
+
+**`fingerprint` 也算工作区字节**：同一提交在 Windows（CRLF 检出）与 Linux（LF 部署）算出的指纹不同。核对时要么两边都按提交内容算（`git -c core.autocrlf=false` 导出后再算），要么就接受「换行符不同」这一条差异，别直接判成「部署的代码不一样」。
+
+### 6.2 回滚到上一个提交
+
+回滚有两件事必须同时成立，缺一条都是「服务起来了、附件却没了」：代码树换回**更新前**那份，持久对象目录跟着一起走。§6.1 已经把 `.local-objects` **搬**进了新目录，所以旧树里通常没有这个子目录；而 `cp -a` 的 `-n` 只保证不覆盖、遇到同名文件会静默跳过，`comm` 有差异时退出码也仍是 0——写在手册里的「有输出就停下」不会自己发生。所以这一段不再手写命令，改由 `infra/deploy/rollback.sh` 执行：判据由命令自己返回非零，行为由 `services/api/tests/test_rollback_script.py` 在临时目录里真跑 shell 覆盖（正常更新→更新窗内新增对象→回滚、同名对象内容不同、对象放不进去、`find` 读不全、obs 模式与 local 模式的对象目录判定、备份包还原，以及停服后 `mv`/`chown`/`systemctl` 每一步失败时的恢复与退出码）。
+
+`X` 用 §6.1 那次**实际部署**的提交号（也就是坏掉的那个），不是「上一个提交」：`app.old-$X` 这个目录名是 §6.1 起的，里面装的是更新前的代码，回滚时别再换一套命名。
+
+```bash
+cd /opt/huice
+bash /opt/huice/app/infra/deploy/rollback.sh <X>                  # X 与 §6.1 一致
+```
+
+它做的事，顺序就是安全边界：
+
+1. **先判对象存储模式再停服务**：`--object-store` 默认 `local`，此时 `app/.local-objects` 必须存在；显式给 `obs` 时它必须不存在。对不上就退出 2，服务都没停——「目录没了」既可能是 obs，也可能是部署事故，脚本不替人猜；
+2. 停服务，然后把旧树摆到 `app.stage-$X`——**`app` 在换目录之前一动不动**；
+3. 把 `app/.local-objects` 里的每个对象并进 stage：缺的复制、同名且**内容相同**的跳过、同名而内容不同的**一律停下**（不覆盖，交给人决定留哪份）；清单用 `find` 落地成文件再读，`find` 读不全（权限、IO 错误）直接算失败，不会被当成「0 个对象」通过；
+4. 逐文件比 sha256 校验：stage 里必须同名同内容，缺一个就非零退出；
+5. 以上都过了才换目录（`app` → `app.bad-$X`，stage → `app`），最后起服务。停服之后的每一步都有明确处置：换目录前失败就把 stage 收回、**服务按原代码重新拉起**；第一次 `mv` 失败什么都没换；第二次 `mv`（stage → app）失败时把 `app` 与旧树都放回去再起服务，恢复动作本身失败会照实打印，不会显示成「已恢复」。
+
+退出码：**0** 成功；**2** 前置条件不满足（没停服务），或停服后在换目录前失败（stage 已收回、服务按原代码重新拉起），或第二次 `mv` 失败后已把 `app` 与旧树放回（**看 stderr 分清是哪种**：前置条件那种连服务都没停）；**3** 同名对象内容不同、对象放不进去或对象清单读不全（目录没换，服务按原代码重新拉起）；**4** 合并后校验不过（同样没换，兜底用，正常路径不该出现）；**5** 已换完但服务没起来（看 `journalctl -u huice-api`，被换下来的那份在 `app.bad-$X`）。
+
+退出码 3/4 时**不要手工接着往下做**：现场仍是原来那棵，按提示把同名对象处理掉再重跑一次即可。退出码 2 里「换目录前失败」那两种也是同样处理——stage 已收回、旧树没动，看 stderr 里那句提示修掉原因再重跑。
+
+**从备份包还原**（`app.old-$X` 已被删或不可用）：包是**更新前**打的、不含更新窗内新导入的对象，脚本先把当前对象并进从包里还原出的树、再校验，所以这批对象不会丢：
+
+```bash
+cd /opt/huice
+bash /opt/huice/app/infra/deploy/rollback.sh <X> --from-backup /root/app-before-<X>-<日期>.tar.gz
+```
+
+**obs 模式**（`OBJECT_STORE_MODE=obs`，app 里本来就没有 `.local-objects`）：**必须显式加 `--object-store obs`**，脚本才跳过对象那一步、照常换目录并打印一行说明——不会因为目录不存在而中断在「app 已挪走」的半路。不加这个参数时脚本按 `local` 判：目录不存在直接退出 2（服务都不停），因为「目录没了」也可能是部署事故。先核对 `/etc/huice/api.env` 里的 `OBJECT_STORE_MODE`，再决定传哪个值，别拿「反正没有目录」去猜；声明 `obs` 而目录还在时同样退出 2，交给人确认。
+
+**脚本之外还要人做的两件事**：回滚后按 §6.1 末尾那两条验一次对象可读可写（换目录会动属主）；`app.bad-$X` **先别删**，确认对象都在、服务正常之后再清。
+
+**演练要连对象一起走**：更新 → 在更新窗内导入一个新附件（库里多一条对象记录、`.local-objects` 里多一个文件）→ 回滚 → 用回滚后的服务把那个附件读出来。只做到「服务起来了」不算，读得到才算。`test_rollback_script.py` 覆盖的是同一组状态在临时目录里的行为，真实 ECS 上的演练仍待做。
+
+**迁移不回退**：库结构只增不改，回滚代码时**不要**删列删表——旧代码在新库结构上照常工作（新列有默认值或可空）。真要回退结构，按 `infra/README.md` §8 的逆序 `DROP` 并同步删 `schema_migration` 对应行。
+
+数据库只增不改：新变更按 `infra/sql/` 里**当前**最大序号顺延（以 `ls infra/sql/` 为准确认，别照这份手册的某一版抄），不 `DROP` 已有表、不改历史脚本。配置回退恢复 `/etc/huice/api.env` 上一版本即可。
 
 ## 7. 安全约束
 
