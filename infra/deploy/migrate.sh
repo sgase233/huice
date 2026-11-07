@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 执行 001—007 迁移与验收查询。取值走 systemd 自己的解析，不复制它的语法：
+# 执行清单里**尚未登记**的迁移，再跑验收查询。已登记的跳过、不重放：库已推进时重放
+# 旧迁移会撞上后来的约束（005 在库到 008 时重跑即报错），「可重复执行」不等于「能跳过
+# 中间状态」。取值走 systemd 自己的解析，不复制它的语法：
 #
 #   1) 服务在跑：读 /proc/<MainPID>/environ——那是 systemd 真正传进进程的那份值，
 #      与它加载 EnvironmentFile 的规则无关，天然一致；
@@ -37,6 +39,7 @@ MIGRATIONS=(
     005_fact_dictionary_extension
     006_fact_dictionary_extension_rc4
     007_idempotency_usage_semantics
+    008_material_requirements
 )
 
 # 只报变量名与原因：连接串里有口令，绝不能回显。
@@ -73,9 +76,15 @@ read_env_var() {
 
     # 2) 服务没跑：让 systemd 按 EnvironmentFile 的规则解析一次。--pipe 把 stdout 交回来，
     #    --wait 传递退出码，--collect 跑完即回收这个临时单元。
+    #
+    #    `$` 必须写成 `$$`：systemd 在把命令交给 ExecStart 之前会展开 `${NAME}`，而
+    #    `${DATABASE_URL-}` 里的名字带减号、不是合法变量名，会被当成未知变量换成空串——
+    #    那时 /bin/sh 收到的是 `printf '%s' ""`，退出码 0、输出为空，看着像「变量没配」。
+    #    `$$` 让 systemd 只还回一个字面 `$`，由 /bin/sh 自己去算 `${NAME-}`。
+    #    （2026-11-06 云端实测：未转义时 0 字节，转义后取到 54 字节。）
     err_file=$(mktemp) || die "内部错误：无法创建临时文件。"
     value=$("$SYSTEMD_RUN" --quiet --pipe --wait --collect \
-        -p "EnvironmentFile=$ENV_FILE" /bin/sh -c "printf '%s' \"\${$name-}\"" 2>"$err_file") &&
+        -p "EnvironmentFile=$ENV_FILE" /bin/sh -c "printf '%s' \"\$\${$name-}\"" 2>"$err_file") &&
         rc=0 || rc=$?
     if [ "$rc" -ne 0 ]; then
         printf 'migrate.sh: systemd-run 退出码 %s（stderr 前 10 行）：\n' "$rc" >&2
@@ -130,11 +139,42 @@ explain_empty_env() {
 DB_URL=$(read_env_var DATABASE_URL) || exit 1
 [ -n "$DB_URL" ] || die "DATABASE_URL 为空。停止：不执行任何迁移（空串会让 psql 退回默认参数）。"
 
+# 只跑库里还没登记的迁移。全量重放是危险的：库已推进时 005 会把事实字典约束收回
+# 16 键，被已有的 specificMarketSince 行顶掉而报错（2026-11-06 云端实测），于是「有新序号
+# 就重跑脚本」根本推不动。先问一次库里已登记了谁，属于幂等的另一面——不重放。
+has_table=$("$PSQL" "$DB_URL" -tAc "SELECT to_regclass('public.schema_migration') IS NOT NULL") ||
+    die "连得上库，但查不到 schema_migration 是否存在。停止：不执行任何迁移。"
+applied=""
+if [ "$has_table" = "t" ]; then
+    applied=$("$PSQL" "$DB_URL" -tAc "SELECT id FROM schema_migration ORDER BY id") ||
+        die "读不到 schema_migration 已登记的迁移。停止：不执行任何迁移。"
+fi
+
+# 库里有本脚本清单之外的 id（比如代码比库旧）：不报错，点名即可——那不是本脚本能处理的事。
+unknown=""
+for id in $applied; do
+    case " ${MIGRATIONS[*]} " in
+        *" $id "*) ;;
+        *) unknown="$unknown $id" ;;
+    esac
+done
+[ -z "$unknown" ] ||
+    printf 'migrate.sh: 注意：库里还有本脚本清单之外的迁移:%s（库比代码新，不影响本次执行）。\n' "$unknown" >&2
+
+pending=0
 for migration in "${MIGRATIONS[@]}"; do
+    case $'\n'"$applied"$'\n' in
+        *$'\n'"$migration"$'\n'*)
+            printf 'migrate.sh: 已登记，跳过 %s\n' "$migration" >&2
+            continue
+            ;;
+    esac
+    pending=$((pending + 1))
     printf 'migrate.sh: 应用 %s\n' "$migration" >&2
     "$PSQL" "$DB_URL" -v ON_ERROR_STOP=1 -f "$SQL_DIR/$migration.sql" ||
         die "迁移 $migration 失败。停止：后续迁移与验收查询都不执行。"
 done
+printf 'migrate.sh: 待应用的迁移 %s 个。\n' "$pending" >&2
 
 printf 'migrate.sh: 验收查询 schema_migration\n' >&2
 applied=$("$PSQL" "$DB_URL" -tAc "SELECT id FROM schema_migration ORDER BY id") ||

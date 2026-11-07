@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 from app.agents.extraction import ExtractionSource, extract_criteria
@@ -205,6 +206,24 @@ def test_model_prompt_lists_every_unit_including_ratio():
     system = captured["system"]
     assert "CNY/person/code/date/boolean/ratio" in system
     assert "rdExpenseRevenueRatio" in system
+
+
+def test_model_prompt_example_passes_the_contract():
+    """提示词里的样例必须自己先过 ``validate_expression``。
+
+    2026-11-06 实测：旧提示词只说「算子只能是 and/or/…」，没写键名与 ``period``/
+    ``comparator``，模型自己起了 ``type`` 和 ``conditions``——6 个政策 41 条全部被
+    判成「算子不在契约词典内」，抽取覆盖率 0。样例跟着契约走，字段名一改用例先红。
+    """
+
+    from app.agents.extraction import EXAMPLE_EXPRESSION, _SYSTEM_PROMPT
+    from app.domain.rules import validate_expression
+
+    assert validate_expression(EXAMPLE_EXPRESSION) == []
+    shown = json.dumps(EXAMPLE_EXPRESSION, ensure_ascii=False, separators=(",", ":"))
+    assert shown in _SYSTEM_PROMPT
+    for key in ('"op"', '"children"', '"period"', '"comparator"'):
+        assert key in _SYSTEM_PROMPT
 
 
 def test_model_prompt_lists_every_fact_key():

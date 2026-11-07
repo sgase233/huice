@@ -2,6 +2,18 @@ import { test, expect } from '@playwright/test';
 const testSource = { id: 'test-source', title: '合成来源', text: '合成引文', sourceUrl: 'https://www.gov.cn/' };
 const testSpan = { sourceId: 'test-source', sourceUrl: 'https://www.gov.cn/', sourceVersion: 'v1', page: 1, section: null, quote: '合成引文', textHash: 'hash' };
 
+test('审核页返回首页时取消离开保留未保存的输入', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => { location.hash = 'admin'; });
+  await page.getByLabel('管理令牌').fill('test-token');
+  await page.getByRole('button', { name: '使用令牌' }).click();
+  await page.getByLabel('标题', { exact: true }).fill('尚未保存');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.goBack();
+  await expect(page).toHaveURL(/#admin$/);
+  await expect(page.getByLabel('标题', { exact: true })).toHaveValue('尚未保存', { timeout: 3000 });
+});
+
 test('轨迹页展示未选择、加载、空结果和不存在状态', async ({ page }) => {
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -13,17 +25,17 @@ test('轨迹页展示未选择、加载、空结果和不存在状态', async ({
   await page.goto('/#trace');
   await page.getByLabel('管理令牌').fill('test');
   await page.getByRole('button', { name: '使用令牌' }).click();
-  await expect(page.getByText(/尚未选择分析运行/)).toBeVisible();
-  await page.getByLabel('分析运行 UUID').fill('11111111-1111-4111-8111-111111111111');
+  await expect(page.getByText(/尚未选择分析记录/)).toBeVisible();
+  await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   await expect(page.getByRole('button', { name: '正在加载…' })).toBeDisabled();
   release();
-  await expect(page.getByText('该运行没有轨迹步骤。')).toBeVisible();
+  await expect(page.getByText('这条分析记录没有处理步骤。')).toBeVisible();
   await page.getByRole('button', { name: '读取轨迹' }).click();
   await expect(page.getByRole('alert')).toContainText('没有找到对应的判断运行');
-  await page.getByLabel('分析运行 UUID').clear();
+  await page.getByLabel('分析记录编号').clear();
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await expect(page.getByText(/尚未选择分析运行/)).toBeVisible();
+  await expect(page.getByText(/尚未选择分析记录/)).toBeVisible();
 });
 
 test('受限轨迹携带内存令牌，退出后不再显示数据', async ({ page }) => {
@@ -35,7 +47,7 @@ test('受限轨迹携带内存令牌，退出后不再显示数据', async ({ pa
   await page.goto('/#trace');
   await page.getByLabel('管理令牌').fill('test-token');
   await page.getByRole('button', { name: '使用令牌' }).click();
-  await page.getByLabel('分析运行 UUID').fill('11111111-1111-4111-8111-111111111111');
+  await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   await expect(page.getByText('输出：合成输出')).toBeVisible();
   await expect(page.getByRole('heading', { name: '1. 规则判断 · 完成' })).toBeVisible();
@@ -56,7 +68,7 @@ test('轨迹按序展示降级、失败、版本和人工动作', async ({ page 
   ] } }));
   await page.goto('/#trace');
   await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
-  await page.getByLabel('分析运行 UUID').fill('11111111-1111-4111-8111-111111111111');
+  await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   const steps = page.locator('.trace-steps > li');
   await expect(steps).toHaveCount(3);
@@ -66,7 +78,7 @@ test('轨迹按序展示降级、失败、版本和人工动作', async ({ page 
   await expect(steps.nth(1)).toContainText('DEPENDENCY_UNAVAILABLE');
   await expect(steps.nth(1)).toContainText('人工复核');
   await expect(steps.nth(1)).toContainText('rule-v2');
-  await expect(steps.nth(1)).toContainText('18 ms');
+  await expect(steps.nth(1)).toContainText('18 毫秒');
   await expect(steps.nth(2).getByRole('heading')).toHaveText('3. 条款抽取 · 处理失败');
 });
 
@@ -81,7 +93,7 @@ for (const status of [200, 401]) {
     });
     await page.goto('/#trace');
     await page.getByLabel('管理令牌').fill('old-token'); await page.getByRole('button', { name: '使用令牌' }).click();
-    await page.getByLabel('分析运行 UUID').fill('11111111-1111-4111-8111-111111111111');
+    await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
     const response = page.waitForResponse(result => result.url().includes('/trace'));
     await page.getByRole('button', { name: '读取轨迹' }).click();
     await expect(page.getByRole('button', { name: '正在加载…' })).toBeDisabled();
@@ -279,8 +291,8 @@ test('抽取结果不确定时显式重试复用请求键和版本', async ({ pa
   await page.getByRole('button', { name: /合成草稿/ }).click();
   await page.getByRole('button', { name: '抽取条款' }).click();
   await expect(page.getByText(/抽取结果不确定/)).toBeVisible();
-  await page.getByRole('button', { name: '用原幂等键重试抽取' }).click();
-  await expect(page.getByText('演示 · v1 · pending_review')).toBeVisible();
+  await page.getByRole('button', { name: '按原请求重试抽取' }).click();
+  await expect(page.getByText('演示 · v1 · 待审核')).toBeVisible();
   await expect(page.getByText(/用量未知/)).toBeVisible();
   await expect(page.getByText('输入 120 tokens', { exact: false })).toHaveCount(0);
   expect(keys).toHaveLength(2); expect(keys[0]).toBeTruthy(); expect(keys[1]).toBe(keys[0]); expect(matches).toEqual(['"old"', '"old"']);
@@ -312,7 +324,7 @@ for (const status of [401, 403]) {
     await page.goto('/#trace');
     await page.getByLabel('管理令牌').fill('secret');
     await page.getByRole('button', { name: '使用令牌' }).click();
-    await page.getByLabel('分析运行 UUID').fill('11111111-1111-4111-8111-111111111111');
+    await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
     await page.getByRole('button', { name: '读取轨迹' }).click();
     await expect(page.getByText('输出：受限输出')).toBeVisible();
     await page.getByRole('button', { name: '读取轨迹' }).click();
@@ -340,7 +352,7 @@ test('草稿弱 ETag 不允许写入', async ({ page }) => {
   await page.getByRole('button', { name: '读取草稿' }).click(); await page.getByRole('button', { name: /弱版本草稿/ }).click();
   await expect(page.getByRole('button', { name: '抽取条款' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '读取最新版本以对照' })).toBeVisible();
-  await expect(page.getByText('缺少有效的强 ETag，无法进行写操作。')).toBeVisible();
+  await expect(page.getByText('无法确认草稿的有效版本，暂时不能修改；请读取最新版本。')).toBeVisible();
 });
 
 test('编辑多来源引用时保留来源与版本并按原文计算哈希', async ({ page }) => {
@@ -382,7 +394,7 @@ test('切换运行时迟到的轨迹响应不能覆盖新结果', async ({ page 
     return route.fulfill({ json: makeStep('新运行') });
   });
   await page.goto('/#trace'); await page.getByLabel('管理令牌').fill('token'); await page.getByRole('button', { name: '使用令牌' }).click();
-  const input = page.getByLabel('分析运行 UUID');
+  const input = page.getByLabel('分析记录编号');
   await input.fill('11111111-1111-4111-8111-111111111111'); await page.getByRole('button', { name: '读取轨迹' }).click();
   await input.fill('22222222-2222-4222-8222-222222222222'); await page.getByRole('button', { name: '读取轨迹' }).click();
   await expect(page.getByText('输出：新运行')).toBeVisible();

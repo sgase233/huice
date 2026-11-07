@@ -287,16 +287,59 @@ def _body_source(sources: Sequence[ExtractionSource]) -> ExtractionSource | None
 # ---------------------------------------------------------------- 模型抽取
 
 
+#: 提示词里给模型看的样例。存成结构再序列化，不写成字符串：契约改了字段名这里会跟着
+#: 报错，测试也直接拿它过 ``validate_expression``，提示词与契约不会悄悄分家。
+EXAMPLE_EXPRESSION = {
+    "op": "and",
+    "children": [
+        {
+            "op": "compare",
+            "factKey": "taxableIncome",
+            "period": "assessment",
+            "comparator": "lte",
+            "value": "3000000",
+            "unit": "CNY",
+        },
+        {
+            "op": "industry_exclusion",
+            "factKey": "industry",
+            "period": "assessment",
+            "excluded": ["国家限制和禁止行业"],
+        },
+    ],
+}
+
+#: 每个算子的键集合。契约里 ``additionalProperties: false``，多写一个键整条就被丢弃，
+#: 所以这里逐字写出键名——只说「算子只能是 and/or/…」还不够：模型会自己起名 ``type``
+#: 和 ``conditions``，于是每一条都判成「算子不在契约词典内」（2026-11-06 实测：6 个
+#: 政策 41 条全部被丢弃，覆盖率 0）。
+_OP_FIELDS = (
+    '{"op":"and"|"or","children":[表达式,…（至少两个）]}；'
+    '{"op":"not","child":表达式}；'
+    '{"op":"compare","factKey":…,"period":…,"comparator":…,"value":…,"unit":…}；'
+    '{"op":"date","factKey":"establishedDate"|"specificMarketSince","period":…,'
+    '"comparator":…,"value":"YYYY-MM-DD"}；'
+    '{"op":"industry_exclusion","factKey":"industry","period":…,"excluded":["…"]}；'
+    '{"op":"quarterly_average","metric":"employeeCount"|"assets","period":…,'
+    '"comparator":…,"value":…,"unit":"person"|"CNY"}'
+)
+
 _SYSTEM_PROMPT = (
     "你是政策条款结构化助手。只输出 JSON 数组，不要解释。"
     "每项形如 {\"title\":string,\"expression\":object,\"quote\":string,\"section\":string}。"
-    "expression 只能是 and/or/not/compare/date/industry_exclusion/quarterly_average 之一，"
+    "expression 是一个对象，算子写在 \"op\" 键上，且只能出现该算子规定的键（多一个键整条作废）："
+    + _OP_FIELDS
+    + "。period 写字符串 \"assessment\"（按申报期取数），"
+    "或写 {\"startDate\":\"YYYY-MM-DD\",\"endDate\":\"YYYY-MM-DD\"}；"
+    "comparator 只能取 lt/lte/eq/gte/gt/ne。"
+    "示例：" + json.dumps(EXAMPLE_EXPRESSION, ensure_ascii=False, separators=(",", ":")) + "。"
     "factKey 只能取 region/industry/establishedDate/taxableIncome/rdExpense/"
     "assetsStart/assetsEnd/employeeCountStart/employeeCountEnd/rdActivity/"
     "revenue/equityFinancing/rdExpenseIncrease/rdExpenseRevenueRatio/"
     "rdAddDeductionClaimed/creditRecord/specificMarketSince/independentLegalEntity；"
     "数值用十进制字符串，unit 用 CNY/person/code/date/boolean/ratio"
     "（rdExpenseRevenueRatio 只能用 ratio，取值是小数，3% 写 0.03）。"
+    "只抽取能用上述算子表达的数值型、日期型条件，口号式、指向名录的条款不要输出。"
     "quote 必须是原文中一字不差的片段，找不到原文就不要输出该项。"
 )
 

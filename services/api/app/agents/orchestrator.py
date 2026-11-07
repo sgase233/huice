@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Sequence
 from uuid import UUID, uuid4
 
-from ..domain import questioning, rules, versioning
+from ..domain import preparation, questioning, rules, versioning
 from ..errors import ApiProblem
 from ..integrations.cache import EvaluationCache, NullCache, evaluation_key
 from ..integrations.llm import LlmClient, LlmResult
@@ -36,6 +36,7 @@ from ..schemas import (
     Period,
     PolicyAssessment,
     Preparation,
+    PreparationItem,
 )
 from .contracts import AgentContext, PolicySnapshot
 from .explanation import CriterionLine, Explanation, explain
@@ -128,6 +129,7 @@ def assess(
     assessments: list[PolicyAssessment] = []
     model_usages: list[LlmResult] = []
     unknown_usages = 0
+    known_refs = {fact.ref for fact in facts.values() if fact.known}
     for snapshot, evaluation in zip(snapshots, evaluations):
         assessment, usage, failure = _policy_assessment(
             snapshot=snapshot,
@@ -139,6 +141,8 @@ def assess(
                 effective_to=snapshot.effective_to,
                 window_closes_at=snapshot.window_closes_at,
             ),
+            period=period,
+            known_refs=known_refs,
             now=created_at,
         )
         assessments.append(assessment)
@@ -304,6 +308,8 @@ def _policy_assessment(
     question: questioning.Question | None,
     llm: LlmClient | None,
     boundary: versioning.PolicyBoundary,
+    period: tuple[date, date],
+    known_refs: set[tuple[str, date, date]],
     now: datetime,
 ) -> tuple[PolicyAssessment, LlmResult | None, Explanation | None]:
     """返回契约里的单政策判断、解释阶段的模型用量（未调模型为 ``None``），
@@ -337,6 +343,10 @@ def _policy_assessment(
         llm=llm,
     )
 
+    items = _material_items(
+        snapshot=snapshot, period=period, known_refs=known_refs
+    )
+
     assessment = PolicyAssessment(
         policy_id=snapshot.id,
         result=evaluation.result,
@@ -351,13 +361,49 @@ def _policy_assessment(
             handling_mode=handling_mode,
             official_entry_url=snapshot.official_entry_url,
             deadline=snapshot.window_closes_at,
-            items=[],
+            items=items,
         ),
         explanation=explanation.text,
         explanation_mode=explanation.mode,
-        warnings=[*explanation.warnings, MATERIAL_LIST_WARNING],
+        # 「待补齐」只在真的一条材料都没有时说；有清单还挂这句话会让人以为清单是空的
+        warnings=[*explanation.warnings, *([] if items else [MATERIAL_LIST_WARNING])],
     )
     return assessment, explanation.usage, (explanation if explanation.call_failed else None)
+
+
+def _material_items(
+    *,
+    snapshot: PolicySnapshot,
+    period: tuple[date, date],
+    known_refs: set[tuple[str, date, date]],
+) -> list[PreparationItem]:
+    """这次判断要交的材料；政策条件实际用到哪些事实，就从条件里读，不另写一份。"""
+
+    referenced: list[tuple[str, date, date]] = []
+    for criterion in snapshot.criteria:
+        referenced.extend(
+            rules.referenced_facts(criterion.rule.expression, period=period)
+        )
+    items = preparation.build_items(
+        materials=snapshot.materials,
+        referenced=referenced,
+        known=known_refs,
+        period=period,
+        policy_closed=snapshot.closed,
+    )
+    return [
+        PreparationItem(
+            material_id=item.material_id,
+            title=item.title,
+            description=item.description,
+            required_fact_refs=[
+                FactRef(key=ref[0], period=_period(ref)) for ref in item.fact_refs
+            ],
+            missing=item.missing,
+            status=item.status,
+        )
+        for item in items
+    ]
 
 
 def _explanation_summary(
