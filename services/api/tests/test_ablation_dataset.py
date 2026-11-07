@@ -47,17 +47,14 @@ def test_excluded_case_is_the_expired_version(dataset):
 
 
 def test_only_one_criterion_has_no_usable_source_text(dataset):
-    """现状：只有 RD-001 的引文在本仓可用原文里找不到。
+    """归属修正后：没有不可验证的条件（函数名沿用历史名称）。
 
-    它目前仍带着 ``source_version = 财税〔2015〕119号``，而那一份在 sources/ 下只有
-    220 字节的节选（只含「其他相关费用 10%」），负面清单不在里面。
-
-    归属改成 2023 年第7号之后（``source_document`` 保持空，引文在
-    ``CN-TAX-RD-2023-007.txt`` 第四条里逐字可查），这个集合会变成空集。改数据的那次
-    提交必须同步改本节与下面两条 metrics 的分母（140 → 146），不能只改 CSV。
+    RD-001 的 ``source_version`` 已改为 2023 年第 7 号、``source_document`` 保持空，
+    其 8 段负面清单在 ``CN-TAX-RD-2023-007.txt`` 第四条里逐字可查；HT-007 的引文在
+    119 号节选里可查。因此 ``unverifiable_criteria()`` 为空集，引用可证实率分母为 146。
     """
 
-    assert dataset.unverifiable_criteria() == frozenset({("CN-TAX-RD-2023-007", "RD-001")})
+    assert dataset.unverifiable_criteria() == frozenset()
 
 
 def test_出处列必须与引文段数逐段对齐():
