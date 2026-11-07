@@ -262,6 +262,43 @@ python -m app.evaluation verify snapshot.json
 - **映射的边界**：只对 `labels.csv`、`criteria_review.csv`、`enterprises.csv` 三份做逐条对齐（三份都必须给），其余文件仍只算哈希；缺列、CSV 不是 UTF-8、表达式不是合法 JSON、取值与 `unit` 对不上都直接停下报错，不猜列名、不猜类型。企业靠 `name_synthetic` 对齐，合成名称重复即报歧义。映射证明的是「这批 CSV 的内容都在库里」，不证明库里没有别的来源——那由逐字段比较与事实覆盖检查兜住。
 - **已知缺口**：冻结正文里的条件级结果仍是 Markdown 项目符号（四态 + 理由 + 逐字引文 + 计算），人能读、机器只能半结构化解析；`trace` 按契约只有阶段级摘要，不作条件级证据。要机器可解析的条件级导出，需评估 JSON 导出或方案 B（均不新增表），本轮不做，记录在此。
 
+### 2.10 消融对照：单智能体基线 vs 现方案
+
+代码在 `services/api/app/ablation/`（不连库的纯文件模块 + 一条临时库链路），与 `data/` 的评测数据、`infra/sql` 的迁移一起构成一次可复现的对照实验。目的：证明「多阶段 + 规则求值 + 引用校验」比「一个大模型一次判完」强，并且**同一批输入、同一套标注、同一套指标**。2026-11-06 的跑数结果、失败样例与局限见 `docs/devlog/M1-11-12-评测报告.md`。
+
+五个子命令各自产出文件，任何一步失败都不影响前一步：
+
+```bash
+cd services/api
+python -m app.ablation extraction  --out runs/extraction.jsonl   # 现方案的冷启动抽取
+python -m app.ablation baseline    --out runs/baseline.jsonl     # 单智能体基线
+python -m app.ablation pipeline    --out runs/pipeline.jsonl     # 现方案（临时库 + assess()）
+python -m app.ablation metrics --baseline runs/baseline.jsonl --pipeline runs/pipeline.jsonl
+python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline runs/pipeline.jsonl --out runs/review.csv
+```
+
+`pipeline` 的库地址只认 `HUICE_EVAL_DATABASE_URL`（或 `--dsn`），**不读 `DATABASE_URL`**：脚本会在其中建临时 schema、跑完全部迁移两遍、结束时删掉，因此必须指向可建 schema 的空闲库；与 `DATABASE_URL` 相同的地址会被拒绝。`asOf` 默认取运行当天的北京时间正午，命令行 `--as-of` 可覆盖，两个方案必须用同一个值。
+
+指标口径（`app/ablation/metrics.py` 的模块文档为准，这里只列结论）：
+
+- **分母 146 条**：`labels.csv` 148 条去掉 `国科发火〔2008〕172号` 那 2 条（C031/C033）——接口按 `asOf` 只解析到 2016 版，判不了的不算方案错。dev 120 / holdout 26 分列。
+- **四态一致率**：与已仲裁结果相同的条数 ÷ 分母；标注只有三值，方案给 `conflict` 一律算不一致并单列条数。
+- **硬门槛误判**：标注「不满足」却判「满足」的条数 ÷ 11 条，附 Wilson 95% 区间。11 条样本下 0 例只能说「实测 0 例」，报告不得写成「零风险」。
+- **无依据断言率**：给出确定结论（`satisfied`/`not_satisfied`）却既无引文也无事实引用的比例。这是基线也能算的「幻觉等价物」；**幻觉条款率只对现方案算**（基线没有抽取阶段），分母是模型实际给出的条款数（收下的 + 因引文不实/表达式不合法被丢弃的）。
+- **引用可证实率**：引文能在出处原文里逐字找到（NFKC + 去空白后比较）的比例。`RD-001` 的出处只有节选，**不进分母**——本仓没有原文不能算模型幻觉。
+- **时效识别**：已过适用期（`effectiveTo` 早于运行日）的 case 里，方案是否告知「已过期 / 申报窗口已关闭」。现方案的标记取自 `get_run` 的**读取时**有效性视图（`versioning.resolve_validity`，用户页面上看到的那一版），不是 `assess` 写入时的 `staleReasons`（按设计只看记录之后发生的事件，永远不含过期）。
+- **token**：冷启动（政策入库抽取）与边际（每个 case）分开报；用量未知的调用不补 0，单列条数。基线每个 case 最多 1 次重试，重试次数与 `max_tokens` 写进 JSONL 表头。
+- **人工复核**：每方案按方案结论四态分层抽 30 条（每个非空类别至少 1 条，`not_satisfied` 至少 5 条——硬门槛误判只有人工看得见），种子固定，写入 CSV；引文是否可证实由程序先判一次，复核人只判「结论对不对」并计时。
+- **抽取覆盖率是下限**：只有抽取结果的引文包含标注原文片段才算命中，抽到同一条件但引文取短了也记未命中。模型单次抽样波动明显（2026-11-06 同一提示词三轮：32% / 36% / 40%），报告要写多轮的区间，不能报单轮精确值。
+- **费用**：单价取自 `infra/README.md` §4.3（2026-11-06 取数，`deepseek-flash` 高峰价：输入未命中 2 元/百万 tokens、输出 8 元/百万）。客户端不解析响应里的缓存命中 token 数，一律按未命中价折算，故金额是**上限**；分母、分子都从 JSONL 的 `usage_prompt`/`usage_completion` 直接相加，不估算。
+
+已知取舍，写进评测报告的「局限」段而不是藏起来：
+
+1. 基线拿得到条件清单（代号 + 原文片段），否则对不上 `criterionId`，这是**对基线有利**的取舍。
+2. 灌库时把三个「先执行、后发文」版本的发布日压到生效日，只为满足 `policy_version_dates` 的 `effective_from >= published_at`；改的是临时库，不是 CSV。
+3. `applicable_entities` 登记表没有这一列，灌库时统一填「企业」占位；它只进政策详情与准备清单模板，不参与条件求值。
+4. 同一政策只灌一个版本；进指标的 case 若横跨同一政策的多个版本，`pipeline.seed` 直接报错而不是按发布时间戳抢答。
+
 ## 3. HTTP 共同约束
 
 - 前缀 `/api/v1`；JSON camelCase；实体/请求/追踪 ID 为 UUID。政策 version 为人工版本字符串，事实哈希和规则版本不强制 UUID。日期 `YYYY-MM-DD`，时间带时区 ISO 8601；数据库 UTC。
