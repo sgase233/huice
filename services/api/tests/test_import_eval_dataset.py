@@ -1,13 +1,15 @@
 """``infra/scripts/import_eval_dataset.py`` 的干跑口径（不连库、不写库）。
 
 这份脚本把 ``data/`` 里已仲裁的数据灌进服务库，写库之前必须先证明「这些条款按产品
-自己的引用校验规则都过得了」——否则线上会留下一个发布不了的政策版本。这里锁住四件事：
+自己的引用校验规则都过得了」——否则线上会留下一个发布不了的政策版本。这里锁住六件事：
 
 * 数据集能被拆成 7 个政策版本、26 条条件，且每条引文都能在某个来源正文里逐字定位；
-* 每个版本整版 ``passed``（一条 failed 就挡住发布，这是 ``publish`` 的硬闸门）；
+* 出处链接齐备时，每个版本整版 ``passed``（一条 failed 就挡住发布，这是 ``publish`` 的硬闸门）；
 * 同一政策的两个版本（国科发火 2008/2016）各自带走自己的条件，互不串台；
 * 预检不过时 ``--apply`` 也一行都不写；布尔事实的空值是未知，不是 ``false``；
-* 重跑按库里状态分流：完整发布跳过、中断留下的草稿续跑、对不上的一律非零退出。
+* 重跑按库里状态分流：完整发布跳过、中断留下的草稿续跑、对不上的一律非零退出；
+* 每条引文按**它自己那份来源**的官方链接写入；出处的链接没核实就不写这份附件，
+  引用它的条件被判 ``blocked``——绝不借用主政策链接（#36 复审）。
 """
 
 from __future__ import annotations
@@ -38,7 +40,23 @@ def importer() -> ModuleType:
     return module
 
 
-def test_每个政策版本都能整版发布(importer: ModuleType) -> None:
+#: 跨文件出处的官方链接映射。数据侧落在 ``data/policies/reference_sources.csv``；
+#: 这里用临时文件顶替，免得测试依赖 M3 那份还没建的文件。
+REFERENCE_CSV = (
+    "document,source_url\n"
+    "财税〔2015〕119号,https://www.chinatax.gov.cn/cs149.html\n"
+)
+
+
+def _with_reference(importer: ModuleType, monkeypatch, tmp_path) -> str:
+    path = tmp_path / "reference_sources.csv"
+    path.write_text(REFERENCE_CSV, encoding="utf-8")
+    monkeypatch.setattr(importer, "REFERENCE_SOURCES", path)
+    return "https://www.chinatax.gov.cn/cs149.html"
+
+
+def test_每个政策版本都能整版发布(importer: ModuleType, monkeypatch, tmp_path) -> None:
+    _with_reference(importer, monkeypatch, tmp_path)
     plans, problems = importer.build_plans()
 
     assert problems == []
@@ -64,13 +82,59 @@ def test_同一政策的两个版本各带各的条件(importer: ModuleType) -> 
     assert [crit.code for crit in by_document["国科发火〔2016〕32号"].criteria] == ["GXJS-V2-001"]
 
 
-def test_跨文件引用的出处被作为附带来源导入(importer: ModuleType) -> None:
-    plans, _ = importer.build_plans()
+def test_跨文件引用的出处被作为附带来源导入(importer: ModuleType, monkeypatch, tmp_path) -> None:
+    """出处必须带**它自己**的官方链接；没有链接就不写这一份，也不能借用主政策链接。"""
+
+    url = _with_reference(importer, monkeypatch, tmp_path)
+    plans, problems = importer.build_plans()
     by_document = {plan.document: plan for plan in plans}
+    plan = by_document["深科技创新规〔2021〕5号"]
 
     # HT-007 引自《财税〔2015〕119号》，不在深科技创新规〔2021〕5号的正文里。
-    attached = [name for name, _ in by_document["深科技创新规〔2021〕5号"].attachments]
-    assert attached == ["财税〔2015〕119号"]
+    assert problems == []
+    assert [(source.name, source.url) for source in plan.attachments] == [
+        ("财税〔2015〕119号", url)
+    ]
+    assert [crit.problem for crit in plan.criteria if crit.code == "HT-007"] == [None]
+
+    ht007 = next(crit for crit in plan.criteria if crit.code == "HT-007")
+    spans = importer._spans_for(plan, ht007)
+    assert {str(span.source_url) for span in spans} == {url}
+
+
+def test_出处没有官方链接时拦截引用它的条件而不是借用主政策链接(
+    importer: ModuleType, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(importer, "REFERENCE_SOURCES", tmp_path / "不存在的映射.csv")
+
+    plans, _ = importer.build_plans()
+    plan = {item.document: item for item in plans}["深科技创新规〔2021〕5号"]
+
+    assert plan.attachments == [], "链接核实不了的附件不该写进库"
+    blocked = {crit.code: crit.problem for crit in plan.criteria if crit.problem}
+    assert set(blocked) == {"HT-007"}
+    assert "待补" in blocked["HT-007"]
+    assert any("财税〔2015〕119号" in note and "待补" in note for note in plan.notes)
+
+
+def test_引文落在待补出处上时该条件被判_blocked(importer: ModuleType) -> None:
+    """判定发生在拼 span 之前：不为待补的出处生成任何 span，也就不会带走主政策链接。"""
+
+    crit = {
+        "criterion_id": "X-001",
+        "adjudicated_expression": '{"op": "manual_review"}',
+        "source_span": "某句只在别的文件里出现的话",
+        "source_page_or_section": "第一条",
+    }
+    sources = [
+        ("正文", "正文里没有这句话", "https://www.gov.cn/a"),
+        ("财税〔2015〕119号", "某句只在别的文件里出现的话", None),
+    ]
+
+    plan = importer._criterion_plan(crit, sources)
+
+    assert plan.spans == []
+    assert plan.problem is not None and "待补" in plan.problem
 
 
 def test_六个企业与全部事实都能按产品规则规范化(importer: ModuleType) -> None:

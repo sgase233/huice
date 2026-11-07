@@ -23,6 +23,12 @@ schema，而且把 ``validation_status`` 直接写成 ``passed``（条件被视�
 写入前按 ``document_number`` 读库里的状态再决定：已完整发布且内容一致的整版跳过；
 中断留下的草稿（``pending_parse`` / ``pending_review``）从中断处续跑；状态或内容对不上
 的一律非零退出，交人工核对。企业按合成名称判重。
+
+**跨文件出处**：条件引用的句子如果落在另一份文件里（如《财税〔2015〕119号》），
+那份文件会作为附带来源一起写库，但它的官方链接必须来自
+``data/policies/reference_sources.csv``（列：``document,source_url``）。缺这一行时
+**不写这份附件**，引用它的条件判 ``blocked``、整轮预检非零退出——绝不借用主政策的
+链接（M2 在 #36 复审里点名的那条）。
 """
 
 from __future__ import annotations
@@ -59,6 +65,11 @@ APPLICABLE_ENTITIES = ["企业"]
 #: 引文分段的分隔符：``criteria_review.csv`` 的 source_span 用 ``|`` 连多段原文。
 SPAN_SEPARATOR = "|"
 
+#: 跨文件出处的官方链接映射（``document,source_url``），由数据侧维护。
+#: 没有这份文件或缺少某一行，该出处就是「待补」——引用它的条件不允许发布，
+#: 绝不退回去借用主政策的链接（M2 在 #36 复审里点名的那条）。
+REFERENCE_SOURCES = DATA / "policies" / "reference_sources.csv"
+
 
 # ------------------------------------------------------------------ 读数据
 
@@ -84,7 +95,46 @@ def _norm(text: str) -> str:
     return "".join(text.split())
 
 
+def _reference_urls(problems: list[str]) -> dict[str, str]:
+    """读跨文件出处的官方链接映射：``document,source_url``。
+
+    文件不存在就返回空表——此时附件一律按「待补」处理，而不是借用主政策链接。
+    值必须是可核实的官方链接（与登记表同一道 :func:`validate_official_url`）。
+    """
+
+    if not REFERENCE_SOURCES.is_file():
+        return {}
+    urls: dict[str, str] = {}
+    for row in _rows(REFERENCE_SOURCES):
+        document = (row.get("document") or "").strip()
+        url = (row.get("source_url") or "").strip()
+        if not document or not url:
+            problems.append(f"reference_sources.csv 有空行：document={document!r}")
+            continue
+        try:
+            validate_official_url(url, f"{document} 的 sourceUrl")
+        except Exception as exc:  # ApiProblem
+            problems.append(f"reference_sources.csv 的 {document}：{exc}")
+            continue
+        urls[document] = url
+    return urls
+
+
 # ------------------------------------------------------------------ 计划结构
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePlan:
+    """一份要写进库的来源。
+
+    ``url`` 是**这一份文件自己**的官方链接：正文取登记表的 ``source_url``，
+    附件取 ``reference_sources.csv`` 里的那一行。``None`` 表示无法核实（待补）。
+    """
+
+    name: str
+    text: str
+    kind: str
+    url: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +161,7 @@ class PolicyPlan:
     metadata: PolicyImportMetadata
     body_name: str
     body_text: str
-    attachments: list[tuple[str, str]] = field(default_factory=list)
+    attachments: list[SourcePlan] = field(default_factory=list)
     criteria: list[CriterionPlan] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -222,6 +272,7 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
     reg_index = {(row["policy_id"], row["version"]): row for row in register}
     plans: list[PolicyPlan] = []
     problems: list[str] = []
+    reference_urls = _reference_urls(problems)
 
     for code, document in sorted(set(wanted)):
         row = reg_index[(code, document)]
@@ -248,7 +299,7 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
             notes=notes,
         )
         versions = {r["version"] for r in by_code[code]}
-        sources = [(body_name, body_text)]
+        sources = [(body_name, body_text, metadata.source_url)]
 
         for crit in crit_by_code.get(code, []):
             # 一行有两列在说到处：``source_version`` 是政策版本（对齐用），
@@ -269,9 +320,21 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
                     plan.notes.append(
                         f"{crit['criterion_id']} 的出处 {cited} 无独立文件，按本版正文校验"
                     )
-                elif all(name != cited for name, _ in sources):
-                    sources.append((cited, extra))
-                    plan.attachments.append((cited, extra))
+                elif all(name != cited for name, *_ in sources):
+                    url = reference_urls.get(cited)
+                    sources.append((cited, extra, url))
+                    if url is None:
+                        # 链接核实不了就不写这一份：写进库只能借用主政策链接，用户点开
+                        # 看到的是另一份文件。引用它的条件各自被判 blocked（见
+                        # ``_criterion_plan``），没有条件引用的则不受影响。
+                        plan.notes.append(
+                            f"{cited} 的官方原文链接待补：不导入这份附件，"
+                            "引用它的条件不能发布；请在 reference_sources.csv 补一行"
+                        )
+                    else:
+                        plan.attachments.append(
+                            SourcePlan(name=cited, text=extra, kind="attachment", url=url)
+                        )
             plan.criteria.append(_criterion_plan(crit, sources))
 
         plans.append(plan)
@@ -279,7 +342,7 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
     return plans, problems
 
 
-def _criterion_plan(crit: dict[str, str], sources: list[tuple[str, str]]) -> CriterionPlan:
+def _criterion_plan(crit: dict[str, str], sources: list[tuple[str, str, str | None]]) -> CriterionPlan:
     code = crit["criterion_id"]
     try:
         expression = json.loads(crit["adjudicated_expression"])
@@ -294,11 +357,19 @@ def _criterion_plan(crit: dict[str, str], sources: list[tuple[str, str]]) -> Cri
 
     for quote in _split_spans(crit.get("source_span", "")):
         wanted = _norm(quote)
-        chosen = next((name for name, text in sources if wanted in _norm(text)), None)
+        chosen = next(
+            ((name, url) for name, text, url in sources if wanted in _norm(text)), None
+        )
         if chosen is None:
             plan.problem = f"引文在可用正文里找不到：「{quote[:40]}」"
             break
-        plan.spans.append(SpanPlan(source_name=chosen, quote=quote, page=page, section=section))
+        name, url = chosen
+        if url is None:
+            # 出处自己的官方链接没核实过：这一条不能发布。借用主政策链接会让
+            # 用户点开看到另一份文件，正是 M2 指出的问题。
+            plan.problem = f"引文出处 {name} 没有可核实的官方原文链接（待补），不得借用主政策链接"
+            break
+        plan.spans.append(SpanPlan(source_name=name, quote=quote, page=page, section=section))
     if not plan.spans and plan.problem is None:
         plan.problem = "没有可用的引文"
     return plan
@@ -311,24 +382,27 @@ def _source_id(document: str, name: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"huice-eval/{document}/{name}")
 
 
-def _sources_of(plan: PolicyPlan) -> list[tuple[str, str, str]]:
-    body = (plan.body_name, plan.body_text, "body")
-    return [body] + [(name, text, "attachment") for name, text in plan.attachments]
+def _sources_of(plan: PolicyPlan) -> list[SourcePlan]:
+    body = SourcePlan(
+        name=plan.body_name, text=plan.body_text, kind="body", url=plan.metadata.source_url
+    )
+    return [body] + list(plan.attachments)
 
 
 def _draft_for(plan: PolicyPlan) -> PolicyDraft:
     meta = plan.metadata
     docs = [
         {
-            "id": _source_id(plan.document, name),
-            "kind": kind,
-            "source_url": meta.source_url,
-            "title": name,
+            "id": _source_id(plan.document, source.name),
+            "kind": source.kind,
+            # 正文与附件都带各自核实过的链接；回退只兜手工构造的计划，正规路径不走到。
+            "source_url": source.url or meta.source_url,
+            "title": source.name,
             "fetched_at": datetime.now(timezone.utc),
-            "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            "text": text,
+            "content_hash": hashlib.sha256(source.text.encode("utf-8")).hexdigest(),
+            "text": source.text,
         }
-        for name, text, kind in _sources_of(plan)
+        for source in _sources_of(plan)
     ]
     return PolicyDraft.model_validate(
         {
@@ -356,16 +430,21 @@ def _draft_for(plan: PolicyPlan) -> PolicyDraft:
 
 
 def _spans_for(plan: PolicyPlan, crit: CriterionPlan) -> list[SourceSpan]:
-    known = {name for name, _, _ in _sources_of(plan)}
+    known = {source.name: source for source in _sources_of(plan)}
     spans = []
     for span in crit.spans:
-        if span.source_name not in known:
+        source = known.get(span.source_name)
+        if source is None:
             raise SystemExit(f"{crit.code} 的引文出处 {span.source_name} 不在本版来源里")
+        if source.url is None:
+            # 走到这里说明 _criterion_plan 的拦截漏了这一份；宁可炸掉也不要拿主政策
+            # 链接顶替，那正是 M2 在 #36 指出的问题。
+            raise SystemExit(f"{crit.code} 的引文出处 {source.name} 没有可核实的官方原文链接")
         spans.append(
             SourceSpan.model_validate(
                 {
                     "source_id": _source_id(plan.document, span.source_name),
-                    "source_url": plan.metadata.source_url,
+                    "source_url": source.url,
                     "source_version": plan.metadata.version,
                     "page": span.page,
                     "section": span.section,
@@ -419,19 +498,20 @@ def _digest(text: str) -> str:
 def _prepared(plan: PolicyPlan) -> list[PreparedSource]:
     return [
         PreparedSource(
-            kind=kind,
-            file_name=f"{name}.txt",
+            kind=source.kind,
+            file_name=f"{source.name}.txt",
             mime_type="text/plain",
-            text=text,
-            content_hash=_digest(text),
-            byte_size=len(text.encode("utf-8")),
+            text=source.text,
+            content_hash=_digest(source.text),
+            byte_size=len(source.text.encode("utf-8")),
+            source_url=source.url,
         )
-        for name, text, kind in _sources_of(plan)
+        for source in _sources_of(plan)
     ]
 
 
 def _storage_keys(plan: PolicyPlan) -> list[str]:
-    return [f"evaluation/{plan.document}/{name}.txt" for name, _, _ in _sources_of(plan)]
+    return [f"evaluation/{plan.document}/{source.name}.txt" for source in _sources_of(plan)]
 
 
 def _version_state(dsn: str, document_number: str) -> list[VersionState]:
@@ -540,7 +620,10 @@ def _apply(plans: list[PolicyPlan], dsn: str, *, repository: Any | None = None) 
 
     for plan in plans:
         meta = plan.metadata
-        digests = {name: _digest(text) for name, text, _ in _sources_of(plan)}
+        source_plans = _sources_of(plan)
+        digests = {source.name: _digest(source.text) for source in source_plans}
+        # 每条引文按它自己那份来源的链接走；主政策链接只属于正文。
+        urls = {source.name: (source.url or meta.source_url) for source in source_plans}
         states = _version_state(dsn, meta.document_number)
         action, reason = _decide(states, plan, frozenset(digests.values()))
 
@@ -591,7 +674,7 @@ def _apply(plans: list[PolicyPlan], dsn: str, *, repository: Any | None = None) 
                     SourceSpan.model_validate(
                         {
                             "source_id": ids[digest],
-                            "source_url": meta.source_url,
+                            "source_url": urls[span.source_name],
                             "source_version": meta.version,
                             "page": span.page,
                             "section": span.section,
