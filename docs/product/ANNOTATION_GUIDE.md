@@ -22,7 +22,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 | --- | --- | --- |
 | `policy_id` | 所属政策 | 与 `source_register.csv` 的 `policy_id` 一致 |
 | `criterion_id` | 条件唯一标识 | 建议 `政策短名-序号`，如 `SME-001`、`RD-001`；同一政策内不重复 |
-| `source_version` | 来源版本/文号 | 如「财政部 税务总局公告2023年第12号」；引用文未登记时写「文号（待登记来源）」 |
+| `source_version` | 条件所属政策版本的文号 | 与 `source_register.csv` 的 `version` 对齐，供导入映射；**不是引文出处**——引文实际所在文档写 `source_document`。如「财政部 税务总局公告2023年第12号」；引用文未登记时写「文号（待登记来源）」 |
 | `source_page_or_section` | 页码或条款 | 如「第五条」「第一条」「附件申报指南第3页」；页码与段落至少一个非空 |
 | `source_span` | 原文片段 | 逐字摘录，能回查数字、比较方向、否定词和期间 |
 | `field` | 事实 key / 指标 | 见 §4 事实字典及 §4.1 扩展键（共 18 键） |
@@ -177,7 +177,7 @@ policy_id,criterion_id,source_version,source_page_or_section,source_span,field,o
 
 **标注人提出的内容质量问题（已记录，待处理）**：
 
-1. **RD-001 出处**：负面清单出自财税〔2015〕119号，非 2023 年第 7 号公告。`criteria_review.csv` 的 `source_version` 已标 119 号；`labels.csv` 的 `policy_version` 记政策版本（7 号），两者不矛盾。
+1. **RD-001 出处**：负面清单出自财税〔2015〕119号，非 2023 年第 7 号公告。`criteria_review.csv` 的 `source_version` 与 `labels.csv` 的 `policy_version` 均记政策版本（7 号）；`source_document` 留空表示引文出自政策本体，负面清单 8 段在 `data/policies/sources/CN-TAX-RD-2023-007.txt` 中逐字可查。
 2. **RD-002 与 RD-003 的 `source_span` 相同**（同句派生）。语义上分别对应"有研发活动"与"研发费用>0"，可接受；如需更强的引文区分，待与 M1 商定后调整并重跑闸门。
 3. **HT-007 引文归属（2026-11-02 复核后改判）**：10% 出自财税〔2015〕119号，20% 出自国科发火〔2016〕195号。复核确认深科技创新规〔2021〕5号 **第三条** 明文采用 119号 的研发费用归集范围，而 195号 的 20% 在本政策中仅见于**第七条**（第三方研发费用审计/鉴证机构资质要求），不适用于归集口径——两者不是同一条件的冲突，原 `review_finding=conflict` 作废，改为单引 119号 的 `manual_review`（其他相关费用占比无事实键）。
 4. **SRDI-001 年限版本**：两位标注人均提示 2026 新办法改为"3 年"；本项目 2025 申报适用 2022 暂行办法"2 年"，见 §9 备忘。
