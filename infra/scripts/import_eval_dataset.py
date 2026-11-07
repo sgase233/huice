@@ -20,7 +20,9 @@ schema，而且把 ``validation_status`` 直接写成 ``passed``（条件被视�
     # 确认输出无误后再：
     ... import_eval_dataset.py --apply
 
-写入前会按 ``document_number`` 判重，已存在的政策版本整版跳过；企业按合成名称判重。
+写入前按 ``document_number`` 读库里的状态再决定：已完整发布且内容一致的整版跳过；
+中断留下的草稿（``pending_parse`` / ``pending_review``）从中断处续跑；状态或内容对不上
+的一律非零退出，交人工核对。企业按合成名称判重。
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "api"))
 
 from app.agents.ingestion import PreparedSource, validate_official_url  # noqa: E402
+from app.errors import ApiProblem  # noqa: E402
 from app.schemas import PolicyDraft, PolicyImportMetadata, SourceSpan  # noqa: E402
 from app.routes.admin_policies import _collect_validation, _domain_criterion  # noqa: E402
 
@@ -111,6 +114,23 @@ class PolicyPlan:
     attachments: list[tuple[str, str]] = field(default_factory=list)
     criteria: list[CriterionPlan] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class VersionState:
+    """库里某个文号当前的样子；重跑靠它区分「已完成 / 可续跑 / 对不上」。
+
+    只取判断需要的字段，不拉正文：正文可能有上百 KB，而这里只比哈希。
+    """
+
+    policy_id: UUID
+    version: str
+    review_status: str
+    revision: UUID
+    #: ``(条件代号, validation_status)``，按代号排序。
+    criteria: tuple[tuple[str, str], ...]
+    #: 该版本已落库的全部来源内容哈希。
+    source_hashes: frozenset[str]
 
 
 # ------------------------------------------------------------------ 组装计划
@@ -392,31 +412,144 @@ def _validate(plan: PolicyPlan, draft: PolicyDraft) -> tuple[dict[str, str], dic
 # ------------------------------------------------------------------ 写库
 
 
-def _apply(plans: list[PolicyPlan], dsn: str) -> int:
-    """逐版写库。
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    调用方（``main``）已保证预检全通过；这里不再跳过带问题的计划，只负责写与报告。
-    中途失败时**前面已写完的版本保留**：每个版本由 ``create_policy_version`` 自己一个
-    事务，失败的那个版本不会留下半条数据；重跑本脚本会按文号跳过已存在的版本，因此
-    恢复方式就是「修好失败的原因再跑一次 --apply」。
-    """
+
+def _prepared(plan: PolicyPlan) -> list[PreparedSource]:
+    return [
+        PreparedSource(
+            kind=kind,
+            file_name=f"{name}.txt",
+            mime_type="text/plain",
+            text=text,
+            content_hash=_digest(text),
+            byte_size=len(text.encode("utf-8")),
+        )
+        for name, text, kind in _sources_of(plan)
+    ]
+
+
+def _storage_keys(plan: PolicyPlan) -> list[str]:
+    return [f"evaluation/{plan.document}/{name}.txt" for name, _, _ in _sources_of(plan)]
+
+
+def _version_state(dsn: str, document_number: str) -> list[VersionState]:
+    """读库：这个文号现在有几个版本、各自停在哪一步。"""
 
     import psycopg
+    from psycopg.rows import dict_row
 
-    from app.db import Database
-    from app.integrations.storage import PolicyRepository
+    states: list[VersionState] = []
+    with psycopg.connect(dsn) as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT id, policy_id, version, review_status, revision FROM policy_version "
+            "WHERE document_number = %s ORDER BY imported_at, id",
+            (document_number,),
+        )
+        for row in cur.fetchall():
+            cur.execute(
+                "SELECT title, validation_status FROM policy_criterion "
+                "WHERE policy_version_id = %s ORDER BY title",
+                (row["id"],),
+            )
+            criteria = tuple((item["title"], item["validation_status"]) for item in cur.fetchall())
+            cur.execute(
+                "SELECT content_hash FROM policy_source WHERE policy_version_id = %s",
+                (row["id"],),
+            )
+            states.append(
+                VersionState(
+                    policy_id=row["policy_id"],
+                    version=row["version"],
+                    review_status=row["review_status"] or "",
+                    revision=row["revision"],
+                    criteria=criteria,
+                    source_hashes=frozenset(item["content_hash"] for item in cur.fetchall()),
+                )
+            )
+    return states
 
-    repository = PolicyRepository(Database(dsn), cursor_secret="eval-import")
+
+def _decide(
+    states: list[VersionState], plan: PolicyPlan, source_hashes: frozenset[str]
+) -> tuple[str, str]:
+    """重跑该干什么：``create`` 新建、``resume`` 续跑、``skip`` 跳过、``conflict`` 交人工。
+
+    返回 ``(动作, 理由)``。判断只看库里已有的记录，不猜：状态不认识、条件缺了、
+    校验不是 passed、来源变过，都算 ``conflict``——宁可让运维看一眼，也不能让
+    「进程在中途被杀」看起来像「已经导好了」。
+    """
+
+    if not states:
+        return "create", "库里没有这个文号"
+    if len(states) > 1:
+        return (
+            "conflict",
+            f"库里有 {len(states)} 个版本共用文号 {plan.document}，无法判断该续跑哪一个",
+        )
+
+    state = states[0]
+    expected = {crit.code for crit in plan.criteria}
+    missing = sorted(expected - {code for code, _ in state.criteria})
+    blocked = sorted(code for code, value in state.criteria if value != "passed")
+
+    if state.review_status == "published":
+        if missing:
+            return "conflict", f"已发布，但库里缺条件 {'、'.join(missing)}"
+        if blocked:
+            return "conflict", f"已发布，但有条件不是 passed：{'、'.join(blocked)}"
+        if state.source_hashes != source_hashes:
+            return "conflict", "已发布，但来源与本轮计划不一致（正文或附件变过）"
+        return "skip", f"已发布，{len(state.criteria)} 条条件全部 passed"
+
+    if state.review_status in {"pending_parse", "pending_review"}:
+        if state.review_status == "pending_parse" and state.criteria:
+            return "conflict", "状态是 pending_parse 却已有条件记录，库被改过"
+        if state.source_hashes != source_hashes:
+            return "conflict", "草稿的来源与本轮计划不一致（正文或附件变过）"
+        return "resume", f"未发布（{state.review_status}），从中断处续跑"
+
+    return "conflict", f"未识别的状态 {state.review_status!r}"
+
+
+def _apply(plans: list[PolicyPlan], dsn: str, *, repository: Any | None = None) -> int:
+    """逐版写库：先读状态，再决定新建、续跑还是拒绝。
+
+    写库分三步，每步各自一个事务，因此中断点只有三个，也正好是库里能看到的三种状态：
+
+    1. ``create_policy_version``：版本 + 来源 + 轨迹同一个事务。中断 → 版本在、
+       没有条件（``pending_parse``）。
+    2. ``save_criteria``：整版替换条件与校验发现（按 revision 做 CAS）。中断 →
+       条件在、未发布（``pending_review``）。
+    3. ``publish``：翻状态并写失效事件。中断 → 已发布（``published``）。
+
+    重跑据此分流：已完整发布的跳过；前两种续跑（``save_criteria`` 是整版替换，重写
+    不会叠加）；状态或内容对不上的一律非零退出。**不会出现「跳过即成功」**——
+    这正是 M2 在 #36 复审里指出、旧写法按文号 ``SELECT 1`` 就跳过的问题。
+
+    企业画像最后统一写，按合成名称判重。
+    """
+
+    if repository is None:
+        from app.db import Database
+        from app.integrations.storage import PolicyRepository
+
+        repository = PolicyRepository(Database(dsn), cursor_secret="eval-import")
     failed = 0
 
     for plan in plans:
         meta = plan.metadata
-        with psycopg.connect(dsn) as conn:
-            exists = conn.execute(
-                "SELECT 1 FROM policy_version WHERE document_number = %s", (meta.document_number,)
-            ).fetchone()
-        if exists:
-            print(f"跳过 {plan.document}：库中已有该文号的政策版本")
+        digests = {name: _digest(text) for name, text, _ in _sources_of(plan)}
+        states = _version_state(dsn, meta.document_number)
+        action, reason = _decide(states, plan, frozenset(digests.values()))
+
+        if action == "skip":
+            print(f"跳过 {plan.document}：{reason}")
+            continue
+        if action == "conflict":
+            print(f"拒绝 {plan.document}：{reason}。请人工核对后再跑 --apply。")
+            failed += 1
             continue
         if any(crit.problem for crit in plan.criteria):
             for crit in plan.criteria:
@@ -425,34 +558,35 @@ def _apply(plans: list[PolicyPlan], dsn: str) -> int:
             failed += 1
             continue
 
-        prepared = [
-            PreparedSource(
-                kind=kind,
-                file_name=f"{name}.txt",
-                mime_type="text/plain",
-                text=text,
-                content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                byte_size=len(text.encode("utf-8")),
-            )
-            for name, text, kind in _sources_of(plan)
-        ]
-        draft = repository.create_policy_version(
-            metadata=meta,
-            sources=prepared,
-            storage_keys=[f"evaluation/{plan.document}/{name}.txt" for name, _, _ in _sources_of(plan)],
-            trace_id=str(uuid4()),
-        )
+        try:
+            if action == "create":
+                draft = repository.create_policy_version(
+                    metadata=meta,
+                    sources=_prepared(plan),
+                    storage_keys=_storage_keys(plan),
+                    trace_id=str(uuid4()),
+                )
+                print(f"已建草稿 {plan.document}（{len(draft.sources)} 个来源）")
+            else:
+                draft = repository.get_version_for_edit(states[0].policy_id, states[0].version)
+                print(f"续跑 {plan.document}：{reason}")
+        except ApiProblem as exc:
+            print(f"拒绝 {plan.document}：{exc.code} {exc.message}")
+            failed += 1
+            continue
+
         ids = {source.content_hash: source.id for source in draft.sources}
-        digest_of = {
-            name: hashlib.sha256(text.encode("utf-8")).hexdigest()
-            for name, text, _ in _sources_of(plan)
-        }
+        absent = [name for name, digest in digests.items() if digest not in ids]
+        if absent:
+            print(f"拒绝 {plan.document}：库里缺来源 {'、'.join(absent)}，请人工核对。")
+            failed += 1
+            continue
 
         criteria = []
         for crit in plan.criteria:
             spans = []
             for span in crit.spans:
-                digest = digest_of[span.source_name]
+                digest = digests[span.source_name]
                 spans.append(
                     SourceSpan.model_validate(
                         {
@@ -462,7 +596,7 @@ def _apply(plans: list[PolicyPlan], dsn: str) -> int:
                             "page": span.page,
                             "section": span.section,
                             "quote": span.quote,
-                            "text_hash": hashlib.sha256(span.quote.encode("utf-8")).hexdigest(),
+                            "text_hash": _digest(span.quote),
                         }
                     )
                 )

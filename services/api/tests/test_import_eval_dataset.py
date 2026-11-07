@@ -6,15 +6,18 @@
 * 数据集能被拆成 7 个政策版本、26 条条件，且每条引文都能在某个来源正文里逐字定位；
 * 每个版本整版 ``passed``（一条 failed 就挡住发布，这是 ``publish`` 的硬闸门）；
 * 同一政策的两个版本（国科发火 2008/2016）各自带走自己的条件，互不串台；
-* 预检不过时 ``--apply`` 也一行都不写；布尔事实的空值是未知，不是 ``false``。
+* 预检不过时 ``--apply`` 也一行都不写；布尔事实的空值是未知，不是 ``false``；
+* 重跑按库里状态分流：完整发布跳过、中断留下的草稿续跑、对不上的一律非零退出。
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -137,3 +140,211 @@ def test_写库路径不传问题列表时非法布尔直接抛错(importer: Mod
         importer._fact_value(
             {"unit": "boolean", "fact_value": "1"}, "E-ENT-001/highTech", None
         )
+
+
+# --------------------------------------------------------------- 重跑的状态机
+#
+# 写库分三步三个事务，中断点因此只有三个：建版后（pending_parse）、存条款后
+# （pending_review）、发布后（published）。下面按这三种状态各钉一条。
+
+
+def _plan(*codes: str):
+    return SimpleNamespace(
+        document="测试文号", criteria=[SimpleNamespace(code=code) for code in codes]
+    )
+
+
+def _state(importer: ModuleType, *, status: str, criteria=(), hashes=frozenset({"h"})):
+    return importer.VersionState(
+        policy_id=uuid4(),
+        version="v1",
+        review_status=status,
+        revision=uuid4(),
+        criteria=tuple(criteria),
+        source_hashes=hashes,
+    )
+
+
+def test_库里没有这个文号就新建(importer: ModuleType) -> None:
+    assert importer._decide([], _plan("A"), frozenset({"h"}))[0] == "create"
+
+
+def test_已完整发布的版本重跑直接跳过(importer: ModuleType) -> None:
+    state = _state(importer, status="published", criteria=[("A", "passed")])
+
+    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}))
+
+    assert action == "skip"
+    assert "全部 passed" in reason
+
+
+def test_已发布但缺条件算冲突而不是跳过(importer: ModuleType) -> None:
+    """旧写法只按文号 SELECT 1 就跳过，缺了条件也照样算成功——这正是 M2 指出的问题。"""
+
+    state = _state(importer, status="published", criteria=[("A", "passed")])
+
+    action, reason = importer._decide([state], _plan("A", "B"), frozenset({"h"}))
+
+    assert action == "conflict"
+    assert "缺条件 B" in reason
+
+
+def test_已发布但条件没通过算冲突(importer: ModuleType) -> None:
+    state = _state(importer, status="published", criteria=[("A", "failed")])
+
+    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}))
+
+    assert action == "conflict"
+    assert "不是 passed" in reason
+
+
+def test_已发布但正文变过算冲突(importer: ModuleType) -> None:
+    state = _state(importer, status="published", criteria=[("A", "passed")])
+
+    action, reason = importer._decide([state], _plan("A"), frozenset({"别的正文"}))
+
+    assert action == "conflict"
+    assert "来源与本轮计划不一致" in reason
+
+
+def test_建版后中断的草稿走续跑(importer: ModuleType) -> None:
+    state = _state(importer, status="pending_parse")
+
+    assert importer._decide([state], _plan("A"), frozenset({"h"}))[0] == "resume"
+
+
+def test_存条款后中断的草稿也走续跑(importer: ModuleType) -> None:
+    state = _state(importer, status="pending_review", criteria=[("A", "failed")])
+
+    assert importer._decide([state], _plan("A"), frozenset({"h"}))[0] == "resume"
+
+
+def test_pending_parse_却有条件记录算冲突(importer: ModuleType) -> None:
+    state = _state(importer, status="pending_parse", criteria=[("A", "passed")])
+
+    action, reason = importer._decide([state], _plan("A"), frozenset({"h"}))
+
+    assert action == "conflict"
+    assert "库被改过" in reason
+
+
+def test_同一个文号有多个版本时不去猜该续跑哪一个(importer: ModuleType) -> None:
+    states = [
+        _state(importer, status="pending_parse"),
+        _state(importer, status="published", criteria=[("A", "passed")]),
+    ]
+
+    action, reason = importer._decide(states, _plan("A"), frozenset({"h"}))
+
+    assert action == "conflict"
+    assert "无法判断" in reason
+
+
+class _FakeRepository:
+    """只记调用顺序：这里要证明的是「走了哪条路」，不是「写了什么」。"""
+
+    def __init__(self, content_hashes: list[str]) -> None:
+        self.calls: list[str] = []
+        self.draft = SimpleNamespace(
+            id=uuid4(),
+            version="v1",
+            revision=uuid4(),
+            sources=[
+                SimpleNamespace(id=uuid4(), content_hash=digest) for digest in content_hashes
+            ],
+        )
+
+    def create_policy_version(self, **kwargs):
+        self.calls.append("create")
+        return self.draft
+
+    def get_version_for_edit(self, policy_id, version):
+        self.calls.append("get_version_for_edit")
+        return self.draft
+
+    def save_criteria(self, **kwargs):
+        self.calls.append("save_criteria")
+        return SimpleNamespace(revision=uuid4())
+
+    def publish(self, **kwargs):
+        self.calls.append("publish")
+
+
+def _fake_plan(text: str = "正文内容"):
+    return SimpleNamespace(
+        code="P",
+        document="测试文号",
+        metadata=SimpleNamespace(
+            document_number="测试文号", version="v1", source_url="https://www.gov.cn/x"
+        ),
+        body_name="正文",
+        body_text=text,
+        attachments=[],
+        notes=[],
+        criteria=[
+            SimpleNamespace(
+                code="A",
+                problem=None,
+                expression={"op": "manual_review"},
+                review_finding="none",
+                spans=[
+                    SimpleNamespace(source_name="正文", page=None, section="一", quote=text)
+                ],
+            )
+        ],
+    )
+
+
+def _wire_apply(importer: ModuleType, monkeypatch, state, text: str = "正文内容"):
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    monkeypatch.setattr(importer, "_version_state", lambda dsn, document: [state])
+    monkeypatch.setattr(importer, "_apply_enterprises", lambda repository, dsn: None)
+    monkeypatch.setattr(
+        importer,
+        "_collect_validation",
+        lambda draft, criteria: (
+            [SimpleNamespace(title=item.title, validation_status="passed") for item in criteria],
+            [],
+        ),
+    )
+    return _FakeRepository([digest]), _fake_plan(text)
+
+
+def test_中断后的草稿会被续跑并发布(importer: ModuleType, monkeypatch) -> None:
+    digest = hashlib.sha256("正文内容".encode()).hexdigest()
+    state = _state(importer, status="pending_parse", hashes=frozenset({digest}))
+    repo, plan = _wire_apply(importer, monkeypatch, state)
+
+    assert importer._apply([plan], "postgresql://unused/none", repository=repo) == 0
+    assert "create" not in repo.calls, "草稿已存在却又建了一个新版本"
+    assert repo.calls == ["get_version_for_edit", "save_criteria", "publish"]
+
+
+def test_已完整发布的版本重跑一次都不写(importer: ModuleType, monkeypatch) -> None:
+    state = importer.VersionState(
+        policy_id=uuid4(),
+        version="v1",
+        review_status="published",
+        revision=uuid4(),
+        criteria=(("A", "passed"),),
+        source_hashes=frozenset({hashlib.sha256("正文内容".encode()).hexdigest()}),
+    )
+    repo, plan = _wire_apply(importer, monkeypatch, state)
+
+    assert importer._apply([plan], "postgresql://unused/none", repository=repo) == 0
+    assert repo.calls == []
+
+
+def test_对不上的版本重跑返回非零且不写(importer: ModuleType, monkeypatch) -> None:
+    state = importer.VersionState(
+        policy_id=uuid4(),
+        version="v1",
+        review_status="published",
+        revision=uuid4(),
+        criteria=(("A", "passed"),),
+        source_hashes=frozenset({"另一份正文的哈希"}),
+    )
+    repo, plan = _wire_apply(importer, monkeypatch, state)
+
+    assert importer._apply([plan], "postgresql://unused/none", repository=repo) == 1
+    assert repo.calls == []
