@@ -47,14 +47,27 @@ esac
 if [ -f mainpid ]; then cat mainpid; else printf '0\\n'; fi
 """
 
+#: 假的 ``systemd-run``。它不能只回放 ``env_value``：真 systemd 在把命令交给 ``ExecStart``
+#: 之前会展开 ``${NAME}``，脚本里那个 ``$`` 有没有转义成 ``$$`` 直接决定取不取得到值。
+#: 假件按同一条规则判：``$$`` 还原成字面 ``$`` 后交给 shell；出现未转义的 ``${...}`` 就
+#: 当作被 systemd 展开掉，直接返回失败。
 _FAKE_SYSTEMD_RUN = """#!/bin/sh
 printf '%s\\n' "$*" >> systemd_run_log
 if [ -f env_exit ]; then
     printf 'Failed to start transient service unit\\n' >&2
     exit "$(cat env_exit)"
 fi
-if [ -f env_value ]; then printf '%s' "$(cat env_value)"; fi
-exit 0
+cmd=''
+for arg in "$@"; do cmd=$arg; done
+unescaped=$(printf '%s' "$cmd" | sed 's/\\$\\$//g')
+case $unescaped in
+    *'${'*)
+        printf 'fake systemd-run: ExecStart 里出现未转义的 ${...}，systemd 会先把它展开\\n' >&2
+        exit 97
+        ;;
+esac
+cmd=$(printf '%s' "$cmd" | sed 's/\\$\\$/$/g')
+exec env "DATABASE_URL=$(cat env_value 2>/dev/null)" /bin/sh -c "$cmd"
 """
 
 _FAKE_PSQL = """#!/bin/sh
@@ -63,12 +76,32 @@ _FAKE_PSQL = """#!/bin/sh
     printf '::END\\n'
 } >> psql_log
 case " $* " in
-    *" SELECT "*)
+    *" to_regclass"*)
+        if [ -f has_table ]; then cat has_table; else printf 'f\\n'; fi
+        exit 0
+        ;;
+    *" FROM schema_migration"*)
         if [ -f schema_rows ]; then cat schema_rows; fi
         exit 0
         ;;
 esac
 if [ -f fail_on ] && printf '%s' "$*" | grep -q -- "$(cat fail_on)"; then exit 1; fi
+# 跑通一份迁移就把它的 id 登记进 schema_migration——真库是这样，假库也得是这样，
+# 否则「空库跑完 7 份、验收查询却查不到」会被当成脚本的 bug。
+prev=''
+id=''
+for arg in "$@"; do
+    if [ "$prev" = "-f" ]; then id=$(basename "$arg" .sql); fi
+    prev=$arg
+done
+if [ -n "$id" ]; then
+    # silent_ids：演「迁移跑完却没登记自己」的文件（漏了 INSERT INTO schema_migration）。
+    # 它照样退出 0，但库里查不到——验收查询就是为这种文件准备的。
+    if [ -f silent_ids ] && grep -qx -- "$id" silent_ids; then exit 0; fi
+    { cat schema_rows 2>/dev/null; printf '%s\\n' "$id"; } > schema_rows.new
+    mv schema_rows.new schema_rows
+    printf 't\\n' > has_table
+fi
 exit 0
 """
 
@@ -90,9 +123,10 @@ class Sandbox:
         # 假的 psql 不读文件内容，但路径要像真的
         for name in MIGRATION_IDS:
             (root / "sql" / f"{name}.sql").write_bytes(b"-- fixture\n")
-        # 默认「库里每个 id 都在」；要演缺 id 的用例自己覆盖这个文件。
-        # 这里必须给默认值：漏写的用例会让验收查询返回空、每一项都报缺失。
-        self.file("schema_rows", "\n".join(MIGRATION_IDS) + "\n")
+        # 默认演「空库」：还没有 schema_migration 表，清单里的迁移一条都没登记。
+        # 要演「已推进的库」自己写 has_table/schema_rows，见下面的用例。
+        self.file("has_table", "f\n")
+        self.file("schema_rows", "")
         subprocess.run(
             [BASH, "-c", "chmod +x bin/systemctl bin/systemd-run bin/psql"],
             cwd=root,
@@ -157,11 +191,29 @@ def sandbox(tmp_path: Path) -> Sandbox:
 
 
 def _applied_migrations(sandbox: Sandbox) -> list[list[str]]:
+    """读 ``schema_migration`` 的那些调用：脚本开头读一次已登记、收尾再读一次做验收。
+
+    不能按「参数里含 schema_migration」来筛：开头用 ``to_regclass`` 探表是否存在，
+    那条也算 psql 调用，但它是探测不是读表。
+    """
+
     return [
         call
         for call in sandbox.psql_calls()
-        if any("schema_migration" in arg for arg in call)
+        if any("FROM schema_migration" in arg for arg in call)
     ]
+
+
+def _migration_calls(sandbox: Sandbox) -> list[list[str]]:
+    """真正执行 ``.sql`` 的那些调用，按发生顺序。"""
+
+    return [call for call in sandbox.psql_calls() if any(arg.endswith(".sql") for arg in call)]
+
+
+def _applied_ids(*applied: str) -> dict[str, str]:
+    """演一个「已推进到某些迁移」的库。"""
+
+    return {"has_table": "t\n", "schema_rows": "\n".join(applied) + "\n" if applied else ""}
 
 
 def _script_migrations() -> list[str]:
@@ -265,22 +317,90 @@ def test_an_empty_value_when_the_unit_uses_inline_environment(sandbox: Sandbox) 
 
 
 def test_every_migration_runs_then_the_verification_query(sandbox: Sandbox) -> None:
+    # 空库：没有 schema_migration 表，所以清单里的迁移要按顺序全部执行
     sandbox.file("env_value", TRICKY_URL)
-    sandbox.file("schema_rows", "\n".join(MIGRATION_IDS) + "\n")
 
     result = sandbox.run()
 
     assert result.returncode == 0, result.stderr
-    calls = sandbox.psql_calls()
-    assert len(calls) == len(MIGRATION_IDS) + 1
+    calls = _migration_calls(sandbox)
+    assert len(calls) == len(MIGRATION_IDS)
     for call, expected in zip(calls, MIGRATION_IDS):
         # 值一律作为一个完整参数交给 psql，不被空格或 $ 拆开
         assert call[0] == TRICKY_URL
         assert "-v" in call and "ON_ERROR_STOP=1" in call
         assert f"sql/{expected}.sql" in call
-    assert "schema_migration" in " ".join(calls[-1])
+    applied = _applied_migrations(sandbox)
+    assert len(applied) == 1 and "schema_migration" in " ".join(applied[0])
     # 顺序也重要：验收查询必须在最后一次迁移之后
-    assert "sql/" in " ".join(calls[0])
+    assert calls[-1][-1].endswith(f"{MIGRATION_IDS[-1]}.sql")
+
+
+def test_an_advanced_database_is_not_replayed_from_001(sandbox: Sandbox) -> None:
+    """库已到最新：一条都不重放，只跑验收查询。
+
+    这是 2026-11-06 云端那次失败的回归：库在 008 时从 001 重放，005 会把事实字典约束
+    收回 16 键、被已有行顶掉而报错，于是「有新序号就跑脚本」推不动任何东西。
+    """
+
+    sandbox.file("env_value", TRICKY_URL)
+    for name, content in _applied_ids(*MIGRATION_IDS).items():
+        sandbox.file(name, content)
+
+    result = sandbox.run()
+
+    assert result.returncode == 0, result.stderr
+    assert _migration_calls(sandbox) == []
+    # 开头读一次已登记（用来跳过）、收尾读一次做验收；没有别的读表
+    assert len(_applied_migrations(sandbox)) == 2
+    assert "已登记，跳过 001_init" in result.stderr
+
+
+def test_a_partially_applied_database_runs_only_the_rest(sandbox: Sandbox) -> None:
+    sandbox.file("env_value", TRICKY_URL)
+    applied = MIGRATION_IDS[:3]
+    for name, content in _applied_ids(*applied).items():
+        sandbox.file(name, content)
+
+    result = sandbox.run()
+
+    assert result.returncode == 0, result.stderr
+    calls = _migration_calls(sandbox)
+    assert [call[-1].rsplit("/", 1)[-1] for call in calls] == [
+        f"{name}.sql" for name in MIGRATION_IDS[3:]
+    ]
+
+
+def test_a_database_ahead_of_the_code_is_reported_but_does_not_stop(sandbox: Sandbox) -> None:
+    # 库里有本脚本清单之外的迁移（云端 008 早于代码就是这种情况）：点名即可，不算失败
+    sandbox.file("env_value", TRICKY_URL)
+    ahead = (*MIGRATION_IDS, "008_material_requirements")
+    for name, content in _applied_ids(*ahead).items():
+        sandbox.file(name, content)
+
+    result = sandbox.run()
+
+    assert result.returncode == 0, result.stderr
+    assert "008_material_requirements" in result.stderr
+    assert _migration_calls(sandbox) == []
+
+
+def test_the_value_is_read_by_the_shell_not_by_systemd(sandbox: Sandbox) -> None:
+    """`${DATABASE_URL-}` 要先用 `$$` 转义再交给 systemd。
+
+    systemd 在把命令交给 `ExecStart` 之前会展开 `${NAME}`；`DATABASE_URL-` 带减号、
+    不是合法变量名，会被当成未知变量换成空串，于是 `/bin/sh` 收到的是
+    `printf '%s' ""`——退出码 0、输出为空，看着像「变量没配」。2026-11-06 云端实测：
+    未转义 0 字节，写成 `$$` 后 54 字节。
+    """
+
+    sandbox.file("env_value", TRICKY_URL)
+
+    result = sandbox.run()
+
+    assert result.returncode == 0, result.stderr
+    logged = " ".join(sandbox.lines("systemd_run_log"))
+    assert "$${DATABASE_URL-}" in logged
 
 
 def test_a_failed_migration_stops_the_rest_and_the_verification(sandbox: Sandbox) -> None:
@@ -291,7 +411,7 @@ def test_a_failed_migration_stops_the_rest_and_the_verification(sandbox: Sandbox
 
     assert result.returncode != 0
     assert "003_trace_step_details" in result.stderr
-    calls = sandbox.psql_calls()
+    calls = _migration_calls(sandbox)
     assert len(calls) == 3  # 001、002 与失败的那次；004 起一次都没跑
     assert _applied_migrations(sandbox) == []
 
@@ -300,12 +420,15 @@ def test_a_failed_migration_stops_the_rest_and_the_verification(sandbox: Sandbox
 def test_the_verification_fails_when_a_migration_is_not_recorded(
     sandbox: Sandbox, missing: str
 ) -> None:
-    # psql 全部成功，但库里少了一条（比如那一份在执行时被跳过）：验收查询必须自己发现。
+    # 那一条的文件漏了 INSERT INTO schema_migration：psql 退出 0，库里却没有它。
+    # 脚本会去跑它（因为开头读不到），跑完仍查不到——验收查询必须自己发现。
     # 对每个 id 都演一遍，避免只盯住最后一条、新增迁移后验收却没人测。
     sandbox.file("env_value", TRICKY_URL)
+    sandbox.file("has_table", "t\n")
     sandbox.file(
         "schema_rows", "\n".join(mid for mid in MIGRATION_IDS if mid != missing) + "\n"
     )
+    sandbox.file("silent_ids", f"{missing}\n")
 
     result = sandbox.run()
 
@@ -331,8 +454,8 @@ def test_a_running_service_is_read_from_its_own_environment(sandbox: Sandbox, tm
 
         assert result.returncode == 0, result.stderr
         assert sandbox.lines("systemd_run_log") == []
-        calls = sandbox.psql_calls()
-        assert len(calls) == len(MIGRATION_IDS) + 1
+        calls = _migration_calls(sandbox)
+        assert len(calls) == len(MIGRATION_IDS)
         assert calls[0][0] == TRICKY_URL
     finally:
         child.terminate()
