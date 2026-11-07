@@ -35,12 +35,12 @@
 | `data/evaluation/labels.csv`（整文件） | `9ea7310ce2f7d90956e26053426fa313185960d9f32047aeac91f361bb66e1c8` |
 | `data/evaluation/labels.csv` 的 holdout 子集（规范化） | `f380ca6d88b7710a27de49bee1f833d5429663bc247dbaff7bd624e165f6177e` |
 | `data/policies/criteria_review.csv`（2026-11-04，`main` `fc5c8e0`；2026-11-06 试跑使用） | `767c6b224bad5246b6ea0e5bfa72f8cdc54df211157937a4df99312c5e2ee586` |
-| `data/policies/criteria_review.csv`（2026-11-07 修正后，当前） | `f7db3424f0fa3297ebd0a388c7943de1743791a3e189eb6ef8b249f60451a2f8` |
+| `data/policies/criteria_review.csv`（2026-11-08 修正后，当前） | `01c8821c7ee5a50750acdbf3a65cc7f8b7fe65d51367ca59ab23fd8a20234627` |
 | `data/fixtures/enterprises.csv` | `fae2a66a947a010a4fd4b568b1793c2c4b0de85daf78d8d15d40c5b6b6b1be9a` |
 
 > `criteria_review.csv` 的 2026-11-07 修正只改 10 行的 `source_version` 归属（SRDI-001～008、RD-001、HT-007）；**RD-001 的 `source_document` 保持空**，表示引文出自政策本体，负面清单 8 段在 `data/policies/sources/CN-TAX-RD-2023-007.txt` 中逐字可查。`labels.csv`、`enterprises.csv` 与 `sources/财税〔2015〕119号.txt` 均未改。
 >
-> 哈希对应：`767c6b…` = 2026-11-06 试跑使用；`6ece5e0a…` = M2 复审 head（原 `0e4a54d`，清理签名后 `8c975dd`；RD-001 单值，未按 8 段对齐）；`998da4c0…` = 原 `689f1ae`（清理签名后 `61939bd`；曾按 8 段填 119 号，属错误改法，已回退）；`f7db3424…` = 当前（`source_document` 保持空）。**四者不得混用。**
+> 哈希对应：`767c6b…` = 2026-11-06 试跑使用；`6ece5e0a…` = M2 复审 head（原 `0e4a54d`，清理签名后 `8c975dd`；RD-001 单值，未按 8 段对齐）；`998da4c0…` = 原 `689f1ae`（清理签名后 `61939bd`；曾按 8 段填 119 号，属错误改法，已回退）；`f7db3424…` = 2026-11-07 归属修正后（`source_document` 保持空）；`01c8821c…` = 2026-11-08 将 HT-007 的 `source_span` 改为官方逐字句后（当前）。**五者不得混用。**
 >
 > 指纹只识别所列文件，**不证明数据库导入与运行输入一致**；后者见 §5.2 的映射与一致性核对。
 
@@ -82,6 +82,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 - **`labels.csv` 自 `df05346` 起未再修改**（`git log df05346..HEAD -- data/evaluation/labels.csv` 为空）。
 - 形成后的相关变更：`d2acd9c` 仅修改 `criteria_review.csv` 中 **GXJS-V1/V2 的 `adjudication_note` 措辞**（不改 AST，且 **GXJS 不在留出集**）；2026-11-07 又修正了 `criteria_review.csv` 的归属字段（见下条）。`enterprises.csv` 自形成后未修改。
 - **2026-11-07（本 PR 的归属修正）**：`criteria_review.csv` 只修正 10 行的 `source_version`（SRDI-001～008、RD-001、HT-007）；**RD-001 的 `source_document` 保持空**（引文出自政策本体，负面清单 8 段在 `CN-TAX-RD-2023-007.txt` 中逐字可查）。**不改条件、AST、标签或 119 号节选**；`labels.csv` 仍为 v2。**2026-11-06 的试跑使用修改前的 `criteria_review.csv`（分母 140）**；修正后引用可证实率分母为 146，旧跑数不得套用新分母。
+- **2026-11-08（HT-007 引文逐字修正）**：`source_span` 从「与研发活动直接相关的其他相关费用总额不得超过…」改为官方原句「此项费用总额不得超过可加计扣除研发费用总额的10%」；`sources/财税〔2015〕119号.txt` 换成官方原文句（附原文 URL），不再用自己的节选给 span 做逐字校验。**不改条件、AST 或标签**；`labels.csv` 仍为 v2（其 `source_span` 是标签快照，未随本次逐字修正改写，评测引用以 criteria 的逐字 span 为准）。
 - 上述时间是标签的**形成时间**，不是正式冻结/签认时间；正式签认时间见 §7，由 M2 填写。
 
 ## 5. 评测协议
@@ -129,6 +130,8 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 > **数据集哈希范围（2026-11-05 补）：** 只覆盖 §3 的三份文件（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）；`data/evaluation` 下的复核表/标注表（`material_review_*.csv`、`*_annotation_sheet.csv`）不属于评测输入，不应进入签认清单。`--dataset-dir` 如只能扫目录，应改为显式文件列表或支持多次指定。
 >
 > **跨文件来源链接（2026-11-08 补）：** 正文用 `source_register.csv` 的 `source_url`；跨文件出处（如 HT-007 引自财税〔2015〕119号）的官方链接由 `data/policies/reference_sources.csv`（列 `document,source_url`）单独维护。缺失该行时，引用它的条件 blocked、附件不写库，不借用主政策链接。`span.sourceVersion` 仍记该引文支持的政策版本，来源文号由来源行的 title/file_name 表达；本次不改变既有契约语义。
+>
+> **注意：** 当前 PR 的导入器尚未读取 `reference_sources.csv`（需 M1 的 `ae63efe` 进入后生效）；数据侧先填好不影响现有行为。HT-007 的 `source_span` 已改为官方逐字句「此项费用总额不得超过可加计扣除研发费用总额的10%」，119 号节选同步换成官方原文句。
 
 **进度（2026-11-07）：** 第 1、2、3、5 项与第 4 项 `freeze-report` 由 #39 实现（已合入，2026-11-06 09:59）；部署文件指纹 `codeFingerprint` 由 #42 补入（已合入，2026-11-07 03:46），复算方式见第 3 项。清单结构以当前 `main` 的 `app.evaluation` 为准，不再引用 #39 的 head 提交。已合入不等于已完成：M1 报告 ECS 已有一份清单，但映射未解决 30 项、`verify` 非零退出；M2 未独立访问 ECS 核实，§5.2 不能算完成。本 PR 修改 `criteria_review.csv` 后必须重出映射/清单；本声明保持草案，直到跑出「未解决 0 项」的清单、`verify` 通过，并把清单、`asOf`、期间、run 输出与复核记录一并归档。
 >
@@ -141,7 +144,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 - 是否在任何相关评测/调参前锁定，尚需各成员确认；本声明不作此推断。
 - 第 2 轮仲裁的理由记录在 `criteria_review.csv` 的 HT-007 `adjudication_note`（政策原文与规则语义）；**「是否参考过引擎输出」尚需实际参与者确认**，本声明不作此推断；不主张标注过程具备统计意义上的盲测条件。
 - 正式冻结以 M2 签认时间为准，**不以历史提交时间代替签认时间**。
-- **留出集试跑历史（M1 自述）：** 2026-11-06 16:08–16:29 以 DeepSeek 跑过一次完整对照（`asOf=2026-11-06`，32 个 case / 146 条标签，dev 120 / holdout 26），输出仅 M1 本人看过。**该次试跑使用修改前的 `criteria_review.csv`（`767c6b…`），引用可证实率分母为 140（RD-001 的 6 个 case 被排除）**；此后 `labels.csv` 未改（最后改动 2026-11-02），`criteria_review.csv` 于 2026-11-07 只修正 `source_version` 归属（`f7db3424…`），`source_document` 保持空，不改条件与标签。修正后不可验证集合为空、分母为 **146**；**旧跑数 140 只能与旧哈希/旧数据一起报告，不得把新分母套到旧跑数**。据该次结果只修了实现缺陷（抽取提示词算子键名、指标表百分比渲染）与三处口径，未改条件与标注。故该次结果既不能归属到当前输入，也不作为留出集的独立验证；后续若以留出集下结论，须注明「实现曾据该次结果修过缺陷」，并说明当前输入已在试跑后变更。
+- **留出集试跑历史（M1 自述）：** 2026-11-06 16:08–16:29 以 DeepSeek 跑过一次完整对照（`asOf=2026-11-06`，32 个 case / 146 条标签，dev 120 / holdout 26），输出仅 M1 本人看过。**该次试跑使用修改前的 `criteria_review.csv`（`767c6b…`），引用可证实率分母为 140（RD-001 的 6 个 case 被排除）**；此后 `labels.csv` 未改（最后改动 2026-11-02），`criteria_review.csv` 于 2026-11-07 修正 `source_version` 归属（`f7db3424…`），2026-11-08 将 HT-007 的 `source_span` 改为官方逐字句（`01c8821c…`），`source_document` 保持空，不改条件与标签。修正后不可验证集合为空、分母为 **146**；**旧跑数 140 只能与旧哈希/旧数据一起报告，不得把新分母套到旧跑数**。据该次结果只修了实现缺陷（抽取提示词算子键名、指标表百分比渲染）与三处口径，未改条件与标注。故该次结果既不能归属到当前输入，也不作为留出集的独立验证；后续若以留出集下结论，须注明「实现曾据该次结果修过缺陷」，并说明当前输入已在试跑后变更。
 
 ## 7. 签认
 
