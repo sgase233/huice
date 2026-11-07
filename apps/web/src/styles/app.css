@@ -240,6 +240,38 @@ dd { margin: 0; overflow-wrap: anywhere; }
   scale: .96;
   transition-duration: .18s, .18s, .18s, .08s;
 }
+.app-shell .main-content .fact-delete {
+  width: 50px;
+  height: 50px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(20, 20, 20);
+  color: white;
+  text-decoration: none;
+  box-shadow: 0 4px 16px rgb(0 0 0 / .16);
+  transition: width .3s ease, border-radius .3s ease, background-color .3s ease, scale .38s cubic-bezier(.2, 1.7, .4, 1);
+}
+.fact-delete-icon { width: 12px; height: 14px; fill: currentColor; transition: width .3s ease, height .3s ease, transform .3s ease; }
+.fact-delete-label { position: absolute; top: 10px; font-size: 13px; font-weight: 600; opacity: 0; transform: translateY(-12px); transition: opacity .3s ease, transform .3s ease; }
+.app-shell .main-content .fact-delete:focus-visible { outline: 2px solid #171717; outline-offset: 3px; }
+@media (hover: hover) {
+  .app-shell .main-content .fact-delete:hover { width: 140px; border-radius: 50px; background: rgb(220, 45, 45); }
+  .fact-delete:hover .fact-delete-icon { width: 44px; height: 50px; transform: translateY(60%); }
+  .fact-delete:hover .fact-delete-label { opacity: 1; transform: translateY(0); }
+}
+.app-shell .main-content .fact-delete:focus-visible { width: 140px; border-radius: 50px; background: rgb(220, 45, 45); }
+.fact-delete:focus-visible .fact-delete-icon { width: 44px; height: 50px; transform: translateY(60%); }
+.fact-delete:focus-visible .fact-delete-label { opacity: 1; transform: translateY(0); }
+@media (hover: none) {
+  .app-shell .main-content .fact-delete { width: 96px; border-radius: 50px; gap: .45rem; }
+  .fact-delete-label { position: static; opacity: 1; transform: none; }
+  .fact-delete:focus-visible .fact-delete-icon { width: 12px; height: 14px; transform: none; }
+}
 .app-shell .is-rippling::after {
   content: '';
   position: absolute;
