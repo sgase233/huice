@@ -11,6 +11,7 @@ import HomePage from './pages/HomePage';
 import WorkflowIcon from './components/WorkflowIcon';
 import MagnifyingDock from './components/MagnifyingDock';
 import useWorkflowTransition from './components/useWorkflowTransition';
+import ThemeToggle from './components/ThemeToggle';
 import './styles/home.css';
 
 const pages = [
@@ -68,7 +69,7 @@ function DemoApp() {
   const selected = demoPolicies.find(policy => policy.id === selectedId) || null;
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">跳到主要内容</a>
-    <header className="site-header"><div className="header-inner"><a className="brand" href="#enterprise"><span className="brand-mark" aria-hidden="true">策</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a><div className="header-caption">阶段一 · 界面验证版 <a href="?#enterprise">切换真实接口</a></div></div></header>
+    <header className="site-header"><div className="header-inner"><a className="brand" href="#enterprise"><span className="brand-mark" aria-hidden="true">策</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a><div className="header-actions"><div className="header-caption">阶段一 · 界面验证版 <a href="?#enterprise">切换真实接口</a></div><ThemeToggle /></div></div></header>
     <div className="shell-layout"><MagnifyingDock page={page}>{pages.map(item => <a className="dock-item" aria-label={item.label} key={item.id} href={`#${item.id}`} aria-current={page === item.id ? 'page' : undefined}><WorkflowIcon name={item.id} /><span className="dock-label">{item.label}</span></a>)}<div className="nav-foot">所有政策与结论均为合成演示内容。</div></MagnifyingDock>
       <main id="main-content" ref={mainContent} className="main-content"><div className="demo-banner" role="status"><span className="banner-dot" aria-hidden="true" />{demoNotice}<span className="banner-detail">固定示例不会随画像自动计算</span></div>
         {page === 'enterprise' && <EnterprisePage value={enterprise} onSave={value => { setEnterprise(value); setSelectedId(null); }} />}

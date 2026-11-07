@@ -1,3 +1,5 @@
+import ThemeToggle from '../components/ThemeToggle';
+
 const steps = [
   { title: '填写企业画像', text: '记录企业基本情况与相关事实，区分已填写与尚不清楚的信息。', icon: 'profile' },
   { title: '查看政策机会', text: '浏览政策候选，按类型和窗口状态筛选需要关注的事项。', icon: 'search' },
@@ -42,7 +44,7 @@ export default function HomePage() {
     <a className="skip-link" href="#home-main">跳到主要内容</a>
     <header className="home-header"><div className="home-wrap home-header-inner">
       <a className="home-brand" href="/" aria-label="惠策协同首页"><span className="home-brand-mark">策</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a>
-      <nav aria-label="首页导航"><a href="#how-it-works">使用流程</a><a href="#about">使用说明</a><a className="home-nav-action" href="#enterprise">进入工作台 <span aria-hidden="true">→</span></a></nav>
+      <div className="header-actions"><nav aria-label="首页导航"><a href="#how-it-works">使用流程</a><a href="#about">使用说明</a><a className="home-nav-action" href="#enterprise">进入工作台 <span aria-hidden="true">→</span></a></nav><ThemeToggle /></div>
     </div></header>
     <main id="home-main">
       <section className="home-hero"><div className="home-wrap home-hero-grid">

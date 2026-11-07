@@ -68,6 +68,7 @@ input:disabled { background: #f2f2f2; color: #5a5a5a; }
   width: 18px;
   height: 18px;
   min-height: 0;
+  padding: 0;
   border: 1px solid #777;
   border-radius: 3px;
   background: #fff;

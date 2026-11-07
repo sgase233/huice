@@ -1,6 +1,7 @@
 import WorkflowIcon from './components/WorkflowIcon';
 import MagnifyingDock from './components/MagnifyingDock';
 import useWorkflowTransition from './components/useWorkflowTransition';
+import ThemeToggle from './components/ThemeToggle';
 import { useEffect, useRef, useState } from 'react';
 import { api, ApiRequestError, setAdminToken } from './api/client';
 import TracePage from './pages/TracePage';
@@ -205,7 +206,7 @@ export default function RealApp() {
   }
   const assessment = runFresh ? run?.assessments.find(item => item.policyId === detail?.id) : undefined;
   const question = runFresh && run?.id === runIds[runIds.length - 1] ? run.assessments.find(item => item.nextQuestion)?.nextQuestion : null;
-  return <div className="app-shell"><a className="skip-link" href="#real-main">跳到主要内容</a><header className="site-header"><div className="header-inner"><strong>惠策协同 · 企业工作台</strong><a href="?mode=demo#enterprise">切换固定样例演示</a></div></header>
+  return <div className="app-shell"><a className="skip-link" href="#real-main">跳到主要内容</a><header className="site-header"><div className="header-inner"><strong>惠策协同 · 企业工作台</strong><div className="header-actions"><a href="?mode=demo#enterprise">切换固定样例演示</a><ThemeToggle /></div></div></header>
     <div className="shell-layout"><MagnifyingDock page={page} real><button className="dock-item" aria-label="企业画像" aria-current={page === 'enterprise' ? 'page' : undefined} disabled={busy} onClick={() => navigate('enterprise')}><WorkflowIcon name="enterprise" /><span className="dock-label">企业画像</span></button><button className="dock-item" aria-label="机会列表" aria-current={page === 'opportunities' ? 'page' : undefined} disabled={busy} onClick={() => { if (location.hash === '#opportunities') void loadPolicies(); else navigate('opportunities'); }}><WorkflowIcon name="opportunities" /><span className="dock-label">机会列表</span></button><button className="dock-item" aria-label="政策详情" aria-current={page === 'policy' ? 'page' : undefined} disabled={busy} onClick={() => { if (lastPolicyId.current) void openPolicy(lastPolicyId.current); else navigate('policy'); }}><WorkflowIcon name="policy" /><span className="dock-label">政策详情</span></button><button className="dock-item" aria-label="清单与报告" aria-current={page === 'report' ? 'page' : undefined} disabled={busy} onClick={() => void openReport()}><WorkflowIcon name="report" /><span className="dock-label">清单与报告</span></button><button className="dock-item" aria-label="处理轨迹" aria-current={page === 'trace' ? 'page' : undefined} disabled={busy} onClick={() => navigate('trace')}><WorkflowIcon name="trace" /><span className="dock-label">处理轨迹</span></button><button className="dock-item" aria-label="政策审核" aria-current={page === 'admin' ? 'page' : undefined} disabled={busy} onClick={() => navigate('admin')}><WorkflowIcon name="admin" /><span className="dock-label">政策审核</span></button></MagnifyingDock>
     <main id="real-main" ref={mainContent} className="main-content"><div className="demo-banner">当前使用示例企业数据，分析结果需结合政策原文复核</div>
       {error && <p role="alert" className="notice warning">{error}</p>}
