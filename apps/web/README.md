@@ -102,3 +102,7 @@ npm run test:e2e -- src/tests/live-admin.spec.ts
 ## 抽取用量的兼容显示
 
 审核页支持 rc.7 的 `tokensUnknown`：为 true 时显示用量未知。DeepSeek 响应缺少该字段时可能来自 rc.6、回滚或历史重放，也可能是 rc.7 省略的已知值；页面保守显示用量状态未确认，不把数字作为已知用量。只有显式 false 才显示已知的 DeepSeek token 数；fixture/saved 无未知标记可展示零。当前没有用量合计。前端先部署、后端迁移 007 并部署 rc.7；回滚重放限制见 `contracts/README.md` 第 11 条。
+
+## 准备清单的事实状态
+
+真实报告按 rc.9 的 `status` 显示事实已填写、事实有缺项、需人工核对或政策已关闭；事实已填写不代表材料已提交或核验。旧响应若同时没有 `materialId` 和 `status`，显示材料状态未确认；仅缺其中一项或状态未知时拒绝该报告数据。类型由当前 OpenAPI 生成，后端部署及迁移 008 后仍需在隔离环境联合验证。

@@ -47,6 +47,8 @@ docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exe
   psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/006_fact_dictionary_extension_rc4.sql
 docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exec db `
   psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/007_idempotency_usage_semantics.sql
+docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exec db `
+  psql -U huice -d huice_dev -v ON_ERROR_STOP=1 -f /sql/008_material_requirements.sql
 
 # 云 RDS 或本机 PG
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/001_init.sql
@@ -56,6 +58,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/004_invalidation_event_period
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/005_fact_dictionary_extension.sql
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/006_fact_dictionary_extension_rc4.sql
 psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/007_idempotency_usage_semantics.sql
+psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/008_material_requirements.sql
 ```
 
 `infra/sql/001_init.sql` 建 13 张表（policy、policy_version、policy_source、policy_criterion、policy_validation_finding、enterprise、enterprise_fact、assessment_run、assessment、assessment_dependency、invalidation_event、trace_step、schema_migration）、启用 `vector` 扩展、创建 updated_at / 已发布版本保护 / 只追加表三类触发器，并在末尾写入 `schema_migration('001_init', ...)`。脚本开 `BEGIN/COMMIT`、全部使用 `IF NOT EXISTS`/`CREATE OR REPLACE`，可重复执行。
@@ -110,9 +113,20 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/007_idempotency_usage_semanti
 
 执行 007 后基础表仍为 14 张（只加列）。已执行过 001—006 的库补执行 007 即可；`schema_migration` 应增至七行。
 
+`infra/sql/008_material_requirements.sql` 建材料要求两张表（契约 `1.0.0-rc.8`）：
+
+- `material_requirement`：一行一份材料，主键是业务代号 `material_id`（`^(TAX|GRANT)-[0-9]{2}$`），带 `title`、`is_required`、`condition_desc`、`description`、`proves_fact_keys jsonb`、`applies_to_policy_codes jsonb`、`source_basis`、`review_status`、`imported_at`。约束 `material_requirement_condition` 固定必交/条件交的互斥关系：必交不写 `condition_desc`，条件交必须写。
+- `material_requirement_policy(material_id, policy_id)`：材料 → 库里政策的绑定，两个外键都 `ON DELETE CASCADE`；`applies_to_policy_codes` 为空表示该 `policy_type` 下全部政策适用，此时代码列留空、绑定表无行。
+- **事实键白名单不在 SQL 里再抄一份**：18 键的第四份副本必然会漂，导入器按 `rules.FACT_UNITS` 校验，库里只存 `jsonb`。同理，材料表里存的是业务代号，导入时借 `source_register.csv` 的文号解析成 `policy_id`。
+- 表由 `python -m app.materials import` 写入（见 `docs/IMPLEMENTATION_AND_INTERFACE.md` §2.9），判断链路只读不写。
+
+执行 008 后基础表由 14 张增至 **16 张**。已执行过 001—007 的库补执行 008 即可；`schema_migration` 应增至八行。缺 008 时服务照常启动、`/api/v1/health` 仍是 200（表是按下即查，不参与启动），但**判断运行会因 `material_requirement` 不存在而失败**，导入器同样失败——与漏执行 007 的表现同类，都必须靠迁移验收查询发现。
+
+> **核对表数时按清单比对，别按总数**：2026-11-04 清理草稿政策前，项目负责人在云 RDS 上手工建过备份表 `zz_backup_drafts_20261104`（见 §4.3 对象存储行），它不由任何迁移创建。所以云端执行 008 后的 `public` 基础表是 **17 张**（迁移建的 16 张 + 这张备份表），本地库是 16 张——两个数都对，`material_requirement`、`material_requirement_policy` 两张在不在才是判据。
+
 > **2026-10-26 修正**：002 早期版本第 4 节用 `ALTER TABLE trace_step DROP TRIGGER IF EXISTS ...` 删触发器，这不是合法语法（`DROP TRIGGER` 是独立语句；`ALTER TABLE` 下也没有 `DROP TRIGGER IF EXISTS` 形式），执行会在该行报 `syntax error at or near "IF"`。已改为独立语句 `DROP TRIGGER IF EXISTS trace_step_no_update_delete ON trace_step;`，并在修正后连续执行两遍验证（退出码 0，`trace_step_status_check` 为 `ok/needs_review/retryable_error/fatal_error`）。由于脚本整体在一个事务里，旧的报错不会留下半成品结构；若 `schema_migration` 里已有 002 行但结构未变，先按 [local/README.md](local/README.md) 的「002 迁移」一节核对触发器与约束，再重跑 002。
 
-迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `007_idempotency_usage_semantics.sql`，下一份是 `008_*.sql`），不改历史脚本；每条迁移同样登记 `schema_migration`。
+迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `008_material_requirements.sql`，下一份是 `009_*.sql`），不改历史脚本；每条迁移同样登记 `schema_migration`。
 
 ## 4. 云端资源状态（截至 2026-11-06）
 
@@ -126,7 +140,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/007_idempotency_usage_semanti
 | 登录方式 | 密码（用户 `root`） | 密码不入文档；建议后续换成密钥对 |
 | CodeArts / Skills | 本人 2026-10-23 告知已开通（未在控制台复核） | **本项目不接入**：队长 2026-10-23 决定，开发过程记录以实际使用的编码工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
 | Redis（DCS） | **已购买并实测连通（2026-10-23）**：`huice-redis`，Redis 7.0（`INFO server` 报 `redis_version:7.x`），**主备**，1 GB，内网 `192.168.0.38:6379` | 在 ECS `huice-api-01` 上 `AUTH` 返回 `OK`、`PING` 返回 `PONG`；密码只进服务器 `.env`，不入库不入文档。**2026-10-26 复测**：`/dev/tcp/192.168.0.38/6379` 可连、`redis-cli --askpass PING` → `PONG`，控制台显示小版本 `7.2.11.5`，白名单已含 ECS 内网 `192.168.0.86`（2026-10-24 的「连接被拒」不复现）。2026-10-26 起判断链路有版本化求值缓存（键前缀 `huice:eval:v1:`，TTL 300 秒），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；Redis 不可达时自动按「未命中重算」执行 |
-| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 按序执行**（`schema_migration` 六行、`fact_period_start/fact_period_end` 两列与 18 键约束均已核对）；**`007_idempotency_usage_semantics.sql` 已于 2026-11-05（UTC 15:11 前后验收）在云端补跑**（项目负责人在 ECS 上执行 `/tmp` 里的副本，文件由分支 blob 导出、`sha256 c3bbc5db…4ce25` 核对一致后才跑；输出 `BEGIN`→四条 DDL→`NOTICE: constraint ... does not exist, skipping`（首跑时 `DROP CONSTRAINT IF EXISTS` 的正常提示）→`INSERT 0 1`→`COMMIT`）。验收：`schema_migration` **七行**；`usage_semantics` 列 `NOT NULL DEFAULT 'legacy'`；`idempotency_record_usage_semantics_check` 就位；表内既有 **1 条**记录落 `legacy`；`/api/v1/health` 仍 200（当时代码仍是 rc.6，先迁移后升级代码是安全方向）。**`008_material_requirements` 在云端已应用，但本文件没有它的执行记录**：2026-11-06 换代码时复核 `schema_migration` 是**八行**（`001`—`008`），008 来自 PR #37 分支的 `351c037`，只建 `material_requirement` / `material_requirement_policy` 两张表并加一行登记、不改既有结构；而当时部署的树只含 001—007，即**库比代码领先一份**（rc.7 不引用这两张表，良性）。同次复核：18 键约束 `enterprise_fact_key_check` 含 `specificMarketSince`/`independentLegalEntity`，`idempotency_record.usage_semantics` 列在位 |
+| RDS for PostgreSQL | **已购买、实测连通并完成建表（2026-10-23）**：PostgreSQL **16.13**，VPC `huice-vpc` / 子网 `huice-subnet`，端口 5432，内网 `192.168.0.80`，库名 `huice` | ECS 上 `psql` 连接成功；`pg_available_extensions` 有 `vector`（`default_version 0.8.0`，本地 0.8.7，同为 0.8 系列）；`001_init.sql` 以 `-v ON_ERROR_STOP=1` 执行，`BEGIN`→37 条 DDL→`INSERT 0 1`→`COMMIT` 无报错，建出 **13 张表、13 个业务触发器**（脚本内 `CREATE OR REPLACE TRIGGER` 13 条；**2026-10-24 已用 `WHERE NOT tgisinternal` 复核：`public` 下业务触发器 13 个，`pg_trigger` 全量 61 行，其余 48 行为外键内部触发器**；早期记的「24 个」为未注明的旧口径，已作废），`schema_migration` 记 `001_init`，`pg_extension.extversion = 0.8.0`；**2026-10-26 23:47 补齐 `002_evaluation_and_idempotency.sql` 与 `003_trace_step_details.sql`**（`schema_migration` 三行齐全，`trace_step` 六列与两个 CHECK 约束、`trace_step_no_update_delete` 触发器已核对）；**`004_invalidation_event_period.sql`、`005_fact_dictionary_extension.sql` 与 `006_fact_dictionary_extension_rc4.sql` 已于 2026-11-02 按序执行**（`schema_migration` 六行、`fact_period_start/fact_period_end` 两列与 18 键约束均已核对）；**`007_idempotency_usage_semantics.sql` 已于 2026-11-05（UTC 15:11 前后验收）在云端补跑**（项目负责人在 ECS 上执行 `/tmp` 里的副本，文件由分支 blob 导出、`sha256 c3bbc5db…4ce25` 核对一致后才跑；输出 `BEGIN`→四条 DDL→`NOTICE: constraint ... does not exist, skipping`（首跑时 `DROP CONSTRAINT IF EXISTS` 的正常提示）→`INSERT 0 1`→`COMMIT`）。验收：`schema_migration` **七行**；`usage_semantics` 列 `NOT NULL DEFAULT 'legacy'`；`idempotency_record_usage_semantics_check` 就位；表内既有 **1 条**记录落 `legacy`；`/api/v1/health` 仍 200（当时代码仍是 rc.6，先迁移后升级代码是安全方向）；**`008_material_requirements.sql` 已于 2026-11-06 在云端执行**（项目负责人把分支里的 `infra/sql/008_material_requirements.sql` scp 到 ECS 的 `/tmp`，复制进 `/opt/huice/app/infra/sql/` 后 `. /etc/huice/api.env` 取连接串再执行，`-v ON_ERROR_STOP=1`）。验收：输出 `BEGIN`→两张 `CREATE TABLE`→两个 `CREATE INDEX`→`INSERT 0 1`→`COMMIT`；`schema_migration` **八行**，末行 `008_material_requirements`；`material_requirement_id` 与 `material_requirement_condition` 两条约束的文字与 `008` 定义逐字一致；`material_requirement` **0 行**（迁移只建表，材料由导入器灌）；`public` 基础表 **17 张**——16 张迁移建的 + 手工备份表 `zz_backup_drafts_20261104`。跑完**未重启服务**，当时代码仍是 rc.6，不读这两张表；008 只建 `material_requirement` / `material_requirement_policy` 两张表并登记一行、不改既有结构（来自本分支 `351c037`）；2026-11-06 换 rc.7 时部署树只含 001—007，即库比代码领先一份，rc.7 不引用这两张表，良性；rc.8 部署时 `migrate.sh` 会看到 008 已登记而跳过（不重放） |
 | OBS（对象存储） | **已购买并建桶（2026-10-23）**：桶 `huice-policies`，**私有**，区域 `cn-south-1`（华南-广州），endpoint `obs.cn-south-1.myhuaweicloud.com` | 区域级服务，不进 VPC；`ObsObjectStore` 已用 `esdk-obs-python` 3.26.6 实现（`obs/<uuid>` 命名空间、失败映射 503），**2026-10-27 已在真实桶上实测通过**（`-m obs` 5 项：写入→独立客户端读回字节、删除后 404、两次写入键不冲突、导入正文真正落桶、不可写桶 503 且不泄露凭证，见 §4.3）；**云端已于 2026-11-04 填入四项并实测通过**：`OBJECT_STORE_MODE=obs` 下导入返回 201，库里新来源的 `storage_key` 为 `obs/<uuid>.txt`，用同凭据的 SDK `getObjectMetadata` 查桶内对象返回 200。AK/SK 只存在 ECS 的 `/etc/huice/api.env`（600、仅 root/huice 可读），经 `read -s` 读入，不进命令行与 shell 历史（本地联调用过的一对因失败输出误打印已作废重建） |
 | Docker Desktop + WSL2（本地） | WSL 3.0.3.0 + Docker Desktop 4.96.3 | 已解除，本地 compose 可用 |
 
@@ -375,7 +389,7 @@ curl.exe -i http://127.0.0.1:8000/api/v1/health          # 503 {"error":{"code":
 
 `infra/deploy/deploy.ps1` 未删除，仍是占位文件；本阶段以 `deploy/README.md` 的手工步骤为准。
 
-**执行前提（均已完成，留作复现口径）**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **008**（`schema_migration` 八行：004—006 于 2026-11-02 补齐、007 于 2026-11-05 补跑、008 见 §4.1 那条说明）；**代码是 rc.7**，2026-11-06 按 `deploy/README.md` §6.1 整目录换成 `112d0a7`（此前是「rc.6 + 抽取提示词单文件热补丁」的漂移状态）。代码侧 2026-11-02 首版部署、2026-11-03 重新部署到 `1.0.0-rc.6` 并启用 443 同源站点（勾选项见 §5.2，过程见 `docs/devlog/M1.md`），此后只需按提交更新代码。MaaS 已不在范围内；云端 `MODEL_MODE` 现为 `deepseek`（2026-11-04 验证成功路径，见 §4.3 与 §4.2），`OBJECT_STORE_MODE` 现为 `obs`（2026-11-04 实测通过，见 §4.1）。仍未闭合的是**从空环境按本文件与部署脚本从零复现**（11/15 要求，§5.2 尚未勾选）。
+**执行前提（均已完成，留作复现口径）**：RDS 与 Redis 已实测（本页 §4.1），云端库迁移已到 **008**（`schema_migration` 八行：004—006 于 2026-11-02 补齐、007 于 2026-11-05 补跑、008 于 2026-11-06 执行，见 §4.1；执行后基表 17 张，含手工备份表 `zz_backup_drafts_20261104`）；**代码是 rc.7**，2026-11-06 按 `deploy/README.md` §6.1 整目录换成 `112d0a7`（此前是「rc.6 + 抽取提示词单文件热补丁」的漂移状态）。rc.8（PR #40）部署时 `migrate.sh` 会看到 008 已登记而跳过（不重放），只需换代码并重启。代码侧 2026-11-02 首版部署、2026-11-03 重新部署到 `1.0.0-rc.6` 并启用 443 同源站点（勾选项见 §5.2，过程见 `docs/devlog/M1.md`），此后只需按提交更新代码。MaaS 已不在范围内；云端 `MODEL_MODE` 现为 `deepseek`（2026-11-04 验证成功路径，见 §4.3 与 §4.2），`OBJECT_STORE_MODE` 现为 `obs`（2026-11-04 实测通过，见 §4.1）。仍未闭合的是**从空环境按本文件与部署脚本从零复现**（11/15 要求，§5.2 尚未勾选）。
 
 上云前的准备项、环境变量对照与目标时间表见第 5 节；计划的云端节点是 11/08，实际已于 2026-11-02 提前完成部署，剩下的是 11/15 的空环境复现。
 

@@ -22,7 +22,7 @@ from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from ..agents.contracts import PolicySnapshot, SnapshotCriterion
+from ..agents.contracts import MaterialRequirement, PolicySnapshot, SnapshotCriterion
 from ..agents.ingestion import PreparedSource
 from ..agents.profile import (
     NormalizedFact,
@@ -35,6 +35,7 @@ from ..domain import versioning
 from ..domain.rules import CriterionRule
 from ..domain.versioning import ChangedEvent, PolicyBoundary
 from ..errors import ApiProblem
+from ..materials.catalog import MaterialError, MaterialRow
 from ..schemas import (
     ApplicationWindow,
     AssessmentRun,
@@ -186,6 +187,49 @@ WHERE a.policy_id = %(policy_id)s AND a.policy_version_id <> %(version_id)s
 _VERSION_QUERY = f"""
 SELECT pv.*, {_STATUS_EXPR} AS status
 FROM policy_version pv
+"""
+
+#: 一次判断要用的材料要求：显式挂在这几项政策上的，加同类型「全部适用」的
+#: （`applies_to_policy_codes` 为空 = 该 policy_type 下全部政策，见 MATERIAL_REQUIREMENTS §1）。
+#: `bound_policy_id` 为空表示后者，由 :meth:`PolicyRepository._load_materials` 按类型摊到每项政策。
+_MATERIALS_QUERY = """
+SELECT mr.material_id, mr.policy_type, mr.title, mr.is_required, mr.condition_desc,
+       mr.description, mr.proves_fact_keys, mp.policy_id AS bound_policy_id
+FROM material_requirement mr
+LEFT JOIN material_requirement_policy mp ON mp.material_id = mr.material_id
+WHERE mp.policy_id = ANY(%s) OR mr.applies_to_policy_codes = '[]'::jsonb
+ORDER BY mr.material_id, mp.policy_id
+"""
+
+#: 业务代号 → 政策：材料表的 `applies_to_policy_ids` 是 `source_register.csv` 的代号，
+#: 库里只有 UUID，所以按文号在**已发布**版本里找。同一文号对应多项政策时算歧义，不猜。
+_POLICY_BY_DOCUMENT_NUMBER = """
+SELECT document_number, policy_id, policy_type, version
+FROM policy_version
+WHERE document_number = ANY(%s) AND review_status = 'published'
+ORDER BY imported_at DESC, id DESC
+"""
+
+_INSERT_MATERIAL = """
+INSERT INTO material_requirement (
+    material_id, policy_type, title, is_required, condition_desc, description,
+    proves_fact_keys, applies_to_policy_codes, source_basis, review_status, imported_at
+) VALUES (
+    %(material_id)s, %(policy_type)s, %(title)s, %(is_required)s, %(condition_desc)s,
+    %(description)s, %(proves_fact_keys)s, %(applies_to_policy_codes)s, %(source_basis)s,
+    %(review_status)s, %(imported_at)s
+)
+ON CONFLICT (material_id) DO UPDATE SET
+    policy_type             = EXCLUDED.policy_type,
+    title                   = EXCLUDED.title,
+    is_required             = EXCLUDED.is_required,
+    condition_desc          = EXCLUDED.condition_desc,
+    description             = EXCLUDED.description,
+    proves_fact_keys        = EXCLUDED.proves_fact_keys,
+    applies_to_policy_codes = EXCLUDED.applies_to_policy_codes,
+    source_basis            = EXCLUDED.source_basis,
+    review_status           = EXCLUDED.review_status,
+    imported_at             = EXCLUDED.imported_at
 """
 
 
@@ -999,6 +1043,10 @@ class PolicyRepository:
                     {"policyIds": missing},
                 )
             children = self._load_children(cur, [row["id"] for row in latest.values()])
+            materials = self._load_materials(
+                cur,
+                [(policy_id, latest[policy_id]["policy_type"]) for policy_id in policy_ids],
+            )
 
         snapshots: list[PolicySnapshot] = []
         for policy_id in policy_ids:
@@ -1042,9 +1090,179 @@ class PolicyRepository:
                         )
                         for item in criteria
                     ),
+                    materials=materials.get(policy_id, ()),
+                    closed=row["status"] == "closed",
                 )
             )
         return snapshots
+
+    def _load_materials(
+        self,
+        cur,
+        targets: Sequence[tuple[UUID, str]],
+    ) -> dict[UUID, tuple[MaterialRequirement, ...]]:
+        """按政策取回已仲裁的材料要求：显式挂在这项政策上的，加同类型「全部适用」的。
+
+        只读已导入的表；CSV 不参与判断链路。行的顺序按材料代号，接口输出因此稳定。
+        """
+
+        if not targets:
+            return {}
+        cur.execute(_MATERIALS_QUERY, ([item[0] for item in targets],))
+        rows = cur.fetchall()
+        wanted = {policy_id: policy_type for policy_id, policy_type in targets}
+        by_policy: dict[UUID, list[MaterialRequirement]] = {item[0]: [] for item in targets}
+        for row in rows:
+            material = MaterialRequirement(
+                material_id=row["material_id"],
+                policy_type=row["policy_type"],
+                title=row["title"],
+                is_required=row["is_required"],
+                condition_desc=row["condition_desc"],
+                description=row["description"],
+                proves_fact_keys=tuple(str(key) for key in row["proves_fact_keys"]),
+            )
+            for policy_id, policy_type in wanted.items():
+                # 挂错类型是导入侧的错，不该在判断时悄悄混进清单
+                if material.policy_type != policy_type:
+                    continue
+                bound = row["bound_policy_id"]
+                if bound is None or bound == policy_id:
+                    by_policy[policy_id].append(material)
+        return {
+            policy_id: tuple(sorted(items, key=lambda item: item.material_id))
+            for policy_id, items in by_policy.items()
+        }
+
+    # ------------------------------------------------------------ 材料要求导入
+
+    def import_material_requirements(
+        self,
+        rows: Sequence[MaterialRow],
+        *,
+        document_numbers: Mapping[str, Sequence[str]],
+    ) -> dict[str, Any]:
+        """把已仲裁的材料要求整体换成这一份（幂等）：本次没有的行会被删掉。
+
+        ``document_numbers`` 是 ``source_register.csv`` 的「业务代号 → 登记过的文号」；材料表
+        里的 ``applies_to_policy_ids`` 只能借它落到库里的政策上。任何一处解析不出来都整体
+        失败——宁可导入不成功，也不要把一份「少了几个政策」的清单写进库。
+        """
+
+        if not rows:
+            raise MaterialError("没有可导入的材料要求：CSV 里没有复核状态为「已仲裁」的行")
+
+        wanted = sorted({code for row in rows for code in row.applies_to_policy_codes})
+        unknown = [code for code in wanted if code not in document_numbers]
+        if unknown:
+            raise MaterialError(
+                f"source_register.csv 里没有这些政策代号，无法解析成库里的政策：{', '.join(unknown)}"
+            )
+
+        imported_at = datetime.now(timezone.utc)
+        with self._db.connection() as conn, conn.transaction():
+            resolved = self._resolve_material_policies(
+                conn, {code: document_numbers[code] for code in wanted}
+            )
+            for row in rows:
+                for code in row.applies_to_policy_codes:
+                    policy_type = resolved[code][1]
+                    if policy_type != row.policy_type:
+                        raise MaterialError(
+                            f"{row.material_id} 的 policy_type 是 {row.policy_type}，"
+                            f"但政策 {code} 是 {policy_type}：材料与政策的类型必须一致"
+                        )
+                self._execute(conn, _INSERT_MATERIAL, self._material_params(row, imported_at))
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        "DELETE FROM material_requirement_policy WHERE material_id = %s",
+                        (row.material_id,),
+                    )
+                    for code in row.applies_to_policy_codes:
+                        cur.execute(
+                            "INSERT INTO material_requirement_policy (material_id, policy_id) "
+                            "VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            (row.material_id, resolved[code][0]),
+                        )
+
+            kept = [row.material_id for row in rows]
+            stale = [
+                item["material_id"]
+                for item in self._fetchall(
+                    conn,
+                    "SELECT material_id FROM material_requirement WHERE NOT (material_id = ANY(%s))"
+                    " ORDER BY material_id",
+                    (kept,),
+                )
+            ]
+            if stale:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM material_requirement WHERE NOT (material_id = ANY(%s))",
+                        (kept,),
+                    )
+
+        return {
+            "imported": sorted(row.material_id for row in rows),
+            "removed": stale,
+            "policies": {code: str(resolved[code][0]) for code in wanted},
+        }
+
+    @staticmethod
+    def _material_params(row: MaterialRow, imported_at: datetime) -> dict[str, Any]:
+        return {
+            "material_id": row.material_id,
+            "policy_type": row.policy_type,
+            "title": row.title,
+            "is_required": row.is_required,
+            "condition_desc": row.condition_desc,
+            "description": row.description,
+            "proves_fact_keys": Jsonb(list(row.proves_fact_keys)),
+            "applies_to_policy_codes": Jsonb(list(row.applies_to_policy_codes)),
+            "source_basis": row.source_basis,
+            "review_status": row.review_status,
+            "imported_at": imported_at,
+        }
+
+    @staticmethod
+    def _resolve_material_policies(
+        conn: Connection, codes: Mapping[str, Sequence[str]]
+    ) -> dict[str, tuple[UUID, str]]:
+        """业务代号 → (policy_id, policy_type)；按文号找已发布版本，最新的一版为准。
+
+        一个代号可以登记多份文号（同一目录的新旧两版）。只有当这些文号在库里指向
+        **不同**政策时才算歧义——同一项政策的多份文号照常解析。
+        """
+
+        if not codes:
+            return {}
+        documents = sorted({document for docs in codes.values() for document in docs})
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_POLICY_BY_DOCUMENT_NUMBER, (documents,))
+            rows = cur.fetchall()
+
+        by_document: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for row in rows:
+            by_document[row["document_number"]].append(row)
+
+        resolved: dict[str, tuple[UUID, str]] = {}
+        for code, code_documents in codes.items():
+            found = [row for document in code_documents for row in by_document.get(document, [])]
+            if not found:
+                listed = "、".join(code_documents)
+                raise MaterialError(
+                    f"政策 {code} 的文号「{listed}」在库里没有已发布的政策版本："
+                    "请先导入并发布该政策，再导入材料要求"
+                )
+            policy_ids = {row["policy_id"] for row in found}
+            if len(policy_ids) > 1:
+                listed = "、".join(code_documents)
+                raise MaterialError(
+                    f"政策 {code} 登记了多个文号（{listed}），在库里对应了多个政策，"
+                    "无法判定材料挂在哪一项"
+                )
+            resolved[code] = (found[0]["policy_id"], found[0]["policy_type"])
+        return resolved
 
     # --------------------------------------------------------------- 判断运行
 
