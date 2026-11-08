@@ -124,21 +124,36 @@ class Policy:
 class Criterion:
     """一条已仲裁条件：标注代号、原文片段与仲裁后的 AST。
 
-    ``document`` 是 **条件原文所在的文件**，不一定是政策版本的文号：10 条条件的
-    出处是另一份文件（``财税〔2015〕119号``、深圳市 2025 年专精特新申报通知），
-    所以按 (政策, 条件代号) 建键，不拿它当版本号用。
+    ``documents`` 与 ``spans`` **逐段对齐**，每段写明该段引文出自哪份文件；空串表示
+    该段出自政策本体。出处不一定是政策版本的文号：10 条条件的出处是另一份文件
+    （``财税〔2015〕119号``、深圳市 2025 年专精特新申报通知），所以按
+    (政策, 条件代号) 建键，不拿出处当版本号用。
+
+    这一列以前读的是 ``source_version``——那时 ``source_version`` 写的就是「引文出自
+    哪份文件」。它改为「条件归属哪个政策版本」之后，两者不再是一回事，再拿它当出处
+    会让校验去错误的正文里找引文（M2 在 #36 复审指出）。
     """
 
     code: str
     policy_code: str
-    document: str
     source_span: str
     section: str
     expression: dict[str, Any]
+    #: 与 ``spans`` 逐段对齐的出处文件；整列留空时退回 ``version_document``。
+    documents: tuple[str, ...] = ()
+    #: ``source_version``：这条条件归属的政策版本文号。``source_document`` 没写时拿它当出处
+    #: ——旧数据里这一列写的正是「引文出自哪份文件」，两者恰好一致。
+    version_document: str = ""
 
     @property
     def spans(self) -> tuple[str, ...]:
         return tuple(part.strip() for part in self.source_span.split("|") if part.strip())
+
+    @property
+    def document(self) -> str:
+        """主出处：第一段的文件名。都为空时返回空串，表示按政策本体处理。"""
+
+        return next((name for name in self.documents if name), self.version_document)
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,66 +239,117 @@ class Dataset:
                 return path.read_text(encoding="utf-8").strip()
         return None
 
-    def source_text(self, policy: Policy) -> str:
-        """政策正文。文件按文号命名，五项政策没有同名文件时退回按政策代号命名。"""
+    def _body_path(self, policy: Policy) -> Path:
+        """政策正文文件：先按文号找，没有同名文件再按政策代号找。"""
 
         for name in (policy.document, policy.code):
             path = self.data_dir / "policies" / "sources" / f"{name}.txt"
             if path.is_file():
-                text = path.read_text(encoding="utf-8").strip()
-                if len(text) < 200:
-                    raise DatasetError(
-                        f"{path.name} 只有 {len(text)} 字，是节选文件，不能当政策正文"
-                    )
-                return text
+                return path
         raise DatasetError(
             f"政策 {policy.code}（{policy.document}）在 sources/ 下找不到正文："
             f"既不叫 {policy.document}.txt，也不叫 {policy.code}.txt"
         )
 
-    def verification_text(self, criterion: Criterion) -> str:
-        """校验这条条件引用用的原文：优先它的出处文件，没有再用政策正文。
+    def source_text(self, policy: Policy) -> str:
+        """政策正文。文件按文号命名，五项政策没有同名文件时退回按政策代号命名。"""
 
-        出处可能是另一份文件（申报通知、上位法规），也可能是 sources/ 下的节选
-        （``…（节选，供引文逐字校验，非全文）``）。两者都能用来做逐字比对。
+        path = self._body_path(policy)
+        text = path.read_text(encoding="utf-8").strip()
+        if len(text) < 200:
+            raise DatasetError(f"{path.name} 只有 {len(text)} 字，是节选文件，不能当政策正文")
+        return text
+
+    def _policy_body(self, criterion: Criterion) -> str:
+        """政策正文。条件没写出处时用它做逐字比对。
+
+        出处是申报通知、上位法规这类**没有单独文件**的文本时也退回这里：
+        专精特新 8 条引自 2025 年申报通知，而通知的条件与规程正文逐字一致。
         """
 
-        text = self._text_for(criterion.document)
-        if text is not None:
-            return text
-        # 出处是申报通知、上位法规这类**没有单独文件**的文本时，退回政策本身的正文：
-        # 专精特新 8 条引自 2025 年申报通知，而通知的条件与规程正文逐字一致。
         for (code, _), policy in self.policies.items():
             if code == criterion.policy_code:
                 return self.source_text(policy)
         raise DatasetError(
-            f"条件 {criterion.code} 的出处 {criterion.document} 在 sources/ 下没有文件，"
-            "无法校验它的引用"
+            f"条件 {criterion.code} 的政策 {criterion.policy_code} 不在 source_register.csv 里"
         )
+
+    def span_source(self, criterion: Criterion, index: int) -> str:
+        """第 ``index`` 段引文的出处原文。
+
+        出处可能是另一份文件（申报通知、上位法规），也可能是 sources/ 下的节选
+        （``…（节选，供引文逐字校验，非全文）``）。两者都能用来做逐字比对。
+
+        绑定是**逐段显式**的：``source_document`` 段数必须与引文段数一致，声明的出处
+        没有原文就报错，不拿政策正文顶替——否则「这句到底出自哪份文件」又变成了猜。
+        整列为空时才按本版正文校验（旧数据里 ``source_version`` 指向没有独立文件的
+        申报通知，条件与规程正文逐字一致）。
+        """
+
+        spans = criterion.spans
+        if criterion.documents and len(criterion.documents) != len(spans):
+            raise DatasetError(
+                f"条件 {criterion.code} 的 source_document 有 {len(criterion.documents)} 段、"
+                f"引文有 {len(spans)} 段，无法逐段对应"
+            )
+        if criterion.documents:
+            # 显式声明了出处：只用这一份，没有原文就是缺口，不拿正文顶替。
+            name = criterion.documents[index]
+            if not name:
+                return self._policy_body(criterion)
+            text = self._text_for(name)
+            if text is None:
+                raise DatasetError(f"条件 {criterion.code} 的出处 {name} 在 sources/ 下没有原文")
+            return text
+        # 整列留空：旧数据的 ``source_version`` 写的才是出处；指向没有独立文件的
+        # 申报通知时退回本版正文（条件与规程正文逐字一致）。
+        text = self._text_for(criterion.version_document) if criterion.version_document else None
+        return text if text is not None else self._policy_body(criterion)
+
+    def verification_text(self, criterion: Criterion) -> str:
+        """这条条件可用的全部出处原文（多段出处取并集）。
+
+        用来回答「这句话有没有出处」这类整体问题；逐段校验走 ``span_source``。
+        """
+
+        texts: list[str] = []
+        for index in range(len(criterion.spans)):
+            text = self.span_source(criterion, index)
+            if text not in texts:
+                texts.append(text)
+        return "\n".join(texts) if texts else self._policy_body(criterion)
 
     def unverifiable_criteria(self) -> frozenset[tuple[str, str]]:
         """引用在本仓可用原文里找不到的条件——这些条件的引用不进幻觉率分母。
 
-        目前只有 ``RD-001``（不适用行业负面清单）：它引自 ``财税〔2015〕119号``
-        第四条，而 sources/ 下那份是只含「其他相关费用 10%」一句的节选。
         把「本仓没有原文」算成模型幻觉，等于把资料缺口记到方案头上。
+
+        逐段比对：多段引文各自对各自的出处，不能拿其中一份文件的正文糊弄另一段。
+        归属改对之后本仓没有缺口（``RD-001`` 的八段引文在 2023 年第7号第四条里逐字
+        可查，``HT-007`` 的引文出自 119号 节选），这个集合为空；它仍是分母的判据，
+        数据再改动时会自己变。
         """
 
         bad: set[tuple[str, str]] = set()
         for criterion in self.criteria.values():
-            try:
-                text = normalize_for_match(self.verification_text(criterion))
-            except DatasetError:
-                bad.add((criterion.policy_code, criterion.code))
-                continue
-            if not all(normalize_for_match(span) in text for span in criterion.spans):
-                bad.add((criterion.policy_code, criterion.code))
+            for index, span in enumerate(criterion.spans):
+                try:
+                    text = normalize_for_match(self.span_source(criterion, index))
+                except DatasetError:
+                    bad.add((criterion.policy_code, criterion.code))
+                    break
+                if normalize_for_match(span) not in text:
+                    bad.add((criterion.policy_code, criterion.code))
+                    break
         return frozenset(bad)
 
-    def manifest(self) -> dict[str, str]:
-        """输入文件的 sha256，用来证明两个方案跑的是同一份数据。"""
+    def input_files(self) -> list[Path]:
+        """这套数据集实际读取的文件：四份 CSV、政策正文与逐段声明的出处原文。
 
-        import hashlib
+        ``source_document`` 为空时，``span_source`` 会先按 ``version_document`` 找一份
+        ``sources/`` 下的原文、找不到才退回本版正文；那份文件存在时就要进签名，否则
+        改它会让引文核对结果变化而清单不变（M2 在 #51 复审指出）。
+        """
 
         files = [
             self.data_dir / "evaluation" / "labels.csv",
@@ -291,9 +357,44 @@ class Dataset:
             self.data_dir / "fixtures" / "enterprises.csv",
             self.data_dir / "policies" / "source_register.csv",
         ]
-        return {path.relative_to(self.data_dir).as_posix(): hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest() for path in files}
+        used = {criterion.policy_code for criterion in self.criteria.values()}
+        files += [
+            self._body_path(policy) for policy in self.policies.values() if policy.code in used
+        ]
+        for criterion in self.criteria.values():
+            if criterion.documents:
+                files += [
+                    self.data_dir / "policies" / "sources" / f"{name}.txt"
+                    for name in criterion.documents
+                    if name
+                ]
+                continue
+            if criterion.version_document:
+                fallback = (
+                    self.data_dir / "policies" / "sources" / f"{criterion.version_document}.txt"
+                )
+                if fallback.is_file():
+                    files.append(fallback)
+        return list(dict.fromkeys(files))
+
+    def manifest(self) -> dict[str, str]:
+        """输入文件的 sha256，用来证明两个方案跑的是同一份数据。
+
+        覆盖**实际读取**的全部文件：四份 CSV 加上 ``sources/`` 下的正文与逐段出处原文。
+        只改正文一个字、或删掉一份出处文件，清单就会不同（缺失直接失败）——只算 CSV
+        时「改正文而两轮跑数头一致」是个假签名（M2 在 #36 复审指出）。
+        """
+
+        import hashlib
+
+        manifest: dict[str, str] = {}
+        for path in self.input_files():
+            if not path.is_file():
+                raise DatasetError(f"缺少输入文件：{path}")
+            manifest[path.relative_to(self.data_dir).as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+        return manifest
 
 
 # ------------------------------------------------------------------ 读文件
@@ -358,6 +459,26 @@ def load_policies(data_dir: Path) -> dict[tuple[str, str], Policy]:
     return policies
 
 
+def _aligned_documents(row: dict[str, str], where: str) -> tuple[str, ...]:
+    """``source_document`` 按 ``|`` 与 ``source_span`` 逐段对齐。
+
+    整列留空表示每一段都出自政策本体；写了就必须段数相等——段数对不上时宁可报错，
+    也不能猜哪一段属于哪份文件，否则校验会拿错正文比对，结论看起来还正常。
+    """
+
+    raw = (row.get("source_document") or "").strip()
+    if not raw:
+        return ()
+    parts = tuple(part.strip() for part in raw.split("|"))
+    count = len(tuple(part.strip() for part in row["source_span"].split("|") if part.strip()))
+    if len(parts) != count:
+        raise DatasetError(
+            f"{where} 的 source_document 有 {len(parts)} 段，source_span 有 {count} 段，"
+            "无法逐段对齐"
+        )
+    return parts
+
+
 def load_criteria(
     data_dir: Path, policies: Mapping[tuple[str, str], Policy]
 ) -> dict[tuple[str, str], Criterion]:
@@ -382,10 +503,11 @@ def load_criteria(
         criteria[key] = Criterion(
             code=row["criterion_id"],
             policy_code=row["policy_id"],
-            document=row["source_version"],
             source_span=row["source_span"],
             section=row["source_page_or_section"],
             expression=expression,
+            documents=_aligned_documents(row, where),
+            version_document=row["source_version"].strip(),
         )
     if not criteria:
         raise DatasetError("criteria_review.csv 里没有已仲裁的条件")

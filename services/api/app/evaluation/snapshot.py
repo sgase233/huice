@@ -1,6 +1,6 @@
 """评测输入快照：让「签认的那份数据」与「库里真正跑的那份数据」能对上。
 
-``docs/product/EVALUATION_FREEZE.md`` §5.2 要求执行前给出可核对的输入映射。三份 CSV
+``docs/product/EVALUATION_FREEZE.md`` §5.2 要求执行前给出可核对的输入映射。四份 CSV
 的哈希只能识别文件，说明不了这些文件是否就是导入进库的那一份——所以这里从**数据库
 本身**导出映射，再让核对命令拿同一份清单回查。
 
@@ -372,7 +372,7 @@ def _collect_in_transaction(
         "codeScope": None if code is None else list(code["codeScope"]),
         # 只记录，不参与比对：重启是正常操作，比它会让每次核对都失败
         "processStartedAt": process_started_at,
-        # 每份输入连路径一起记：只留文件名，三份分散在不同目录时 verify 无处可取
+        # 每份输入连路径一起记：只留文件名，四份分散在不同目录时 verify 无处可取
         "dataset": None
         if dataset is None
         else [
@@ -513,7 +513,7 @@ def _diff_dataset_mapping(
         if not isinstance(mapping, Mapping):
             continue
         # files 记的是签认路径；必需文件按**文件名**认（目录不同也算同一份输入）。
-        # 三份缺一份，映射就证明不了整体对应——手写或旧版清单在这一步被拦下。
+        # 四份缺一份，映射就证明不了整体对应——手写或旧版清单在这一步被拦下。
         listed = {PurePosixPath(str(item)).name for item in (mapping.get("files") or [])}
         missing = [name for name in REQUIRED_FILES if name not in listed]
         if missing:

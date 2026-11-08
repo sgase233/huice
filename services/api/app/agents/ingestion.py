@@ -36,6 +36,10 @@ class PreparedSource:
     text: str
     content_hash: str
     byte_size: int
+    #: 这一份文件自己的官方链接。``None`` 表示落库时沿用整份政策的 ``source_url``
+    #: （上传路径下附件与正文出自同一入口，天然一致）；离线导入跨文件引用时必须
+    #: 显式给出，否则引文的出处会指向另一份文件。
+    source_url: str | None = None
 
 
 def sha256_hex(data: bytes) -> str:
