@@ -673,7 +673,7 @@ def test_cli_hashes_only_the_dataset_files_it_is_given(
     _write_dataset(data, title="某某扶持计划")
     (data / "material_review_sheet.csv").write_bytes(b"row,reviewer\n1,m3\n")
     (data / "notes.txt").write_bytes(b"not a csv")
-    listed = ["labels.csv", "criteria_review.csv", "enterprises.csv"]
+    listed = ["labels.csv", "criteria_review.csv", "enterprises.csv", "source_register.csv"]
     args: list[str] = []
     for name in listed:
         args += ["--dataset-file", name]
@@ -1117,9 +1117,11 @@ def test_the_repository_layout_survives_verifying_from_another_directory(
     monkeypatch.chdir(elsewhere)
     assert cli.main(["verify", str(sealed), "--no-config"]) == 0
 
-    # 签认的那份文件改了：报的是签认路径
+    # 签认的那份文件改了：报的是签认路径。列要齐——缺列会先在读文件那一步停下，
+    # 这条用例要验的是「按签认路径读到了被改的那份」，不是缺列报错
     (root / "data" / "evaluation" / "labels.csv").write_text(
-        "case_id,enterprise_id,policy_version,criterion_id\nC999,E1,别的计划,G1\n",
+        "case_id,enterprise_id,policy_id,policy_version,criterion_id\n"
+        "C999,E1,DEMO,别的计划,G1\n",
         encoding="utf-8",
     )
     assert cli.main(["verify", str(sealed), "--no-config"]) == 1
