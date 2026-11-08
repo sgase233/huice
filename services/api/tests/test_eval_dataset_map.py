@@ -313,6 +313,54 @@ def test_an_unknown_value_is_not_the_same_as_zero() -> None:
     assert any("taxableIncome" in item for item in problems)
 
 
+def test_a_citation_from_another_document_maps_by_content() -> None:
+    """``source_version`` 记的是引文所在文件（如《财税〔2015〕119号》），照样能对上。
+
+    数据侧用它表达「这条引文引自哪份文件」，不总是本政策的文号；映射按表达式指纹
+    认归属，键落回库里的文号，``labels.csv`` 才找得到这条条件。
+    """
+
+    criteria = _datasets()["criteria_review.csv"]
+    criteria[0]["source_version"] = "财税〔2015〕119号"
+
+    mapping = align_dataset(_datasets(criteria=criteria), _manifest())
+
+    assert mapping["problems"] == []
+    assert mapping["policies"] == [
+        {
+            "identifier": DOCUMENT,
+            "policyVersionId": "v1",
+            "criteria": [{"criterionCode": "SME-002", "criterionId": "c1"}],
+        }
+    ]
+    # 标注用例按文号找条件，键若停在「财税〔2015〕119号」这里就对不上了
+    assert mapping["caseCount"] == 1
+
+
+def test_a_cited_document_in_two_versions_is_ambiguous() -> None:
+    """同一表达式在两个政策版本里都有：不按内容猜，报歧义。"""
+
+    manifest = _manifest()
+    twin = json.loads(json.dumps(manifest["policies"][0]))
+    twin.update(
+        {
+            "policyId": "p2",
+            "policyVersionId": "v2",
+            "version": "v2.0",
+            "documentNumber": "另一份文号",
+            "title": "另一份政策",
+        }
+    )
+    manifest["policies"].append(twin)
+    criteria = _datasets()["criteria_review.csv"]
+    criteria[0]["source_version"] = "财税〔2015〕119号"
+
+    mapping = align_dataset(_datasets(criteria=criteria), manifest)
+
+    assert any("无法判定对应哪一条" in item for item in mapping["problems"])
+    assert mapping["policies"] == []
+
+
 def test_every_required_file_must_be_loaded() -> None:
     datasets = _datasets()
     del datasets["labels.csv"]
