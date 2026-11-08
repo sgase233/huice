@@ -29,6 +29,13 @@ schema，而且把 ``validation_status`` 直接写成 ``passed``（条件被视�
 ``data/policies/reference_sources.csv``（列：``document,source_url``）。缺这一行时
 **不写这份附件**，引用它的条件判 ``blocked``、整轮预检非零退出——绝不借用主政策的
 链接（M2 在 #36 复审里点名的那条）。
+
+**逐段出处**：``criteria_review.csv`` 的 ``source_document`` 按 ``|`` 分段，与
+``source_span`` 逐段一一对应；声明出处没有独立正文、原文不含该句、段数不符都拒绝，
+不再按「哪份文本先包含这句」顶替（M2 在 #51 复审里点名的那条）。
+
+**冻结证据**：``--manifest`` 只打印本轮实际读取的每个输入文件的 sha256（四份 CSV、
+``reference_sources.csv`` 与 ``sources/`` 下被引用到的正文），不连库、不写库。
 """
 
 from __future__ import annotations
@@ -118,6 +125,55 @@ def _reference_urls(problems: list[str]) -> dict[str, str]:
             continue
         urls[document] = url
     return urls
+
+
+def input_manifest() -> dict[str, str]:
+    """本轮导入实际读取的输入文件及其 sha256（按仓库相对路径）。
+
+    覆盖：四份 CSV（登记表、条件表、标签、企业画像）、``reference_sources.csv``（存在时）、
+    以及 ``sources/`` 下被正文或出处引用到、且确实存在的每个 ``.txt``。只改其中任何一个
+    文件，清单就不同——这是 M2 在 #36 指出的「只改正文时两轮跑数头一致」的修法。四份 CSV
+    缺失直接失败；出处正文不存在时本来就会被导入报告点名（blocked），不进清单。
+    """
+
+    policies = DATA / "policies"
+    files = [
+        policies / "source_register.csv",
+        policies / "criteria_review.csv",
+        DATA / "evaluation" / "labels.csv",
+        DATA / "fixtures" / "enterprises.csv",
+    ]
+    if REFERENCE_SOURCES.is_file():
+        files.append(REFERENCE_SOURCES)
+
+    names: set[str] = set()
+    for row in _rows(policies / "source_register.csv"):
+        names.add((row.get("document") or "").strip())
+        names.add((row.get("policy_id") or "").strip())
+    for row in _rows(policies / "criteria_review.csv"):
+        names.update(_split_spans(row.get("source_document") or ""))
+        names.add((row.get("source_version") or "").strip())
+    for name in sorted(filter(None, names)):
+        path = SOURCES / f"{name}.txt"
+        if path.is_file():
+            files.append(path)
+
+    missing = [path for path in files if not path.is_file()]
+    if missing:
+        raise SystemExit("缺少输入文件：" + "、".join(_relative(path) for path in missing))
+    return {
+        _relative(path): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in dict.fromkeys(files)
+    }
+
+
+def _relative(path: Path) -> str:
+    """清单里的路径：仓库内用相对路径，测试替换到仓库外时退回绝对路径。"""
+
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 # ------------------------------------------------------------------ 计划结构
@@ -366,16 +422,15 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
         sources = [(body_name, body_text, metadata.source_url)]
 
         for crit in crit_by_code.get(code, []):
-            # 一行有两列在说到处：``source_version`` 是政策版本（对齐用），
-            # ``source_document`` 是这句话实际引自哪份文件（可能另属一份法规或申报通知）。
-            # 后者是空的就退回前者。
+            # 一行有两列在说到处：``source_version`` 是该条归属的政策版本文号（对齐用），
+            # ``source_document`` 是每段引文实际引自哪份文件（可能另属一份法规或申报通知）。
+            # 只有后者能让一段引文离开本版正文；它为空的条目不导入任何附件。
             version_cited = (crit.get("source_version") or "").strip()
             if version_cited and version_cited != document and version_cited in versions:
                 continue  # 属于同一政策的另一个版本，归那一版处理
+            declared = [name for name in _split_spans(crit.get("source_document") or "") if name]
             cited_docs = [
-                name
-                for name in _split_spans(crit.get("source_document") or "") + [version_cited]
-                if name and name != document
+                name for name in declared + [version_cited] if name and name != document
             ]
             for cited in dict.fromkeys(cited_docs):
                 extra = _source_text(cited)
@@ -384,29 +439,50 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
                     plan.notes.append(
                         f"{crit['criterion_id']} 的出处 {cited} 无独立文件，按本版正文校验"
                     )
-                elif all(name != cited for name, *_ in sources):
-                    url = reference_urls.get(cited)
+                    continue
+                if cited not in declared:
+                    # 只在 source_version 里出现：那一列表达的是归属，不是逐段出处。
+                    # 引文仍按本版正文校验，所以不导入这份附件。
+                    continue
+                url = reference_urls.get(cited)
+                if all(name != cited for name, *_ in sources):
                     sources.append((cited, extra, url))
-                    if url is None:
-                        # 链接核实不了就不写这一份：写进库只能借用主政策链接，用户点开
-                        # 看到的是另一份文件。引用它的条件各自被判 blocked（见
-                        # ``_criterion_plan``），没有条件引用的则不受影响。
-                        plan.notes.append(
-                            f"{cited} 的官方原文链接待补：不导入这份附件，"
-                            "引用它的条件不能发布；请在 reference_sources.csv 补一行"
-                        )
-                    else:
-                        plan.attachments.append(
-                            SourcePlan(name=cited, text=extra, kind="attachment", url=url)
-                        )
-            plan.criteria.append(_criterion_plan(crit, sources))
+                if url is None:
+                    # 链接核实不了就不写这一份：写进库只能借用主政策链接，用户点开
+                    # 看到的是另一份文件。引用它的条件各自被判 blocked（见
+                    # ``_criterion_plan``），没有条件引用的则不受影响。
+                    plan.notes.append(
+                        f"{cited} 的官方原文链接待补：不导入这份附件，"
+                        "引用它的条件不能发布；请在 reference_sources.csv 补一行"
+                    )
+                elif all(item.name != cited for item in plan.attachments):
+                    plan.attachments.append(
+                        SourcePlan(name=cited, text=extra, kind="attachment", url=url)
+                    )
+            plan.criteria.append(_criterion_plan(crit, sources, document=document))
 
         plans.append(plan)
 
     return plans, problems
 
 
-def _criterion_plan(crit: dict[str, str], sources: list[tuple[str, str, str | None]]) -> CriterionPlan:
+def _criterion_plan(
+    crit: dict[str, str],
+    sources: list[tuple[str, str, str | None]],
+    *,
+    document: str = "",
+) -> CriterionPlan:
+    """把一条已仲裁条件转成计划；每段引文按 ``source_document`` 逐段绑定出处。
+
+    ``sources[0]`` 是政策正文，其余是这条条件引到的别的文件。绑定规则（M2 在 #51
+    复审里要求，不能再「哪份文本先包含这句就用哪份」）：
+
+    - ``source_document`` 按 ``|`` 分段，与 ``source_span`` 逐段一一对应；
+    - 整列为空时，该段只在本版正文里找（旧数据里 ``source_version`` 指向申报通知这类
+      没有独立文件的通知，仍按本版正文逐字校验，见 ``app.ablation.dataset`` 同一口径）；
+    - 段数不一致、声明出处没有独立正文、声明出处原文不含该句，都拒绝；不跨来源搜索。
+    """
+
     code = crit["criterion_id"]
     try:
         expression = json.loads(crit["adjudicated_expression"])
@@ -419,19 +495,33 @@ def _criterion_plan(crit: dict[str, str], sources: list[tuple[str, str, str | No
     finding = (crit.get("review_finding") or "").strip() or "none"
     plan = CriterionPlan(code=code, expression=expression, review_finding=finding)
 
-    for quote in _split_spans(crit.get("source_span", "")):
-        wanted = _norm(quote)
-        chosen = next(
-            ((name, url) for name, text, url in sources if wanted in _norm(text)), None
+    quotes = _split_spans(crit.get("source_span", ""))
+    declared = _split_spans(crit.get("source_document") or "")
+    if declared and len(declared) != len(quotes):
+        plan.problem = (
+            f"source_document 有 {len(declared)} 段、引文有 {len(quotes)} 段，无法逐段对应"
         )
-        if chosen is None:
-            plan.problem = f"引文在可用正文里找不到：「{quote[:40]}」"
+        return plan
+
+    body_name = sources[0][0]
+    by_name = {name: (text, url) for name, text, url in sources}
+
+    for index, quote in enumerate(quotes):
+        target = declared[index] if declared else ""
+        # 政策自己的文号与正文名都指向正文；其余必须逐段命中声明的出处。
+        name = body_name if target in {"", document, body_name} else target
+        entry = by_name.get(name)
+        if entry is None:
+            plan.problem = f"引文出处 {name} 在本版没有独立正文（source_document 是否写错？）"
             break
-        name, url = chosen
+        text, url = entry
         if url is None:
             # 出处自己的官方链接没核实过：这一条不能发布。借用主政策链接会让
             # 用户点开看到另一份文件，正是 M2 指出的问题。
             plan.problem = f"引文出处 {name} 没有可核实的官方原文链接（待补），不得借用主政策链接"
+            break
+        if _norm(quote) not in _norm(text):
+            plan.problem = f"引文不在出处 {name} 的原文里：「{quote[:40]}」"
             break
         plan.spans.append(SpanPlan(source_name=name, quote=quote, page=page, section=section))
     if not plan.spans and plan.problem is None:
@@ -989,7 +1079,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="import_eval_dataset.py", description=__doc__)
     parser.add_argument("--apply", action="store_true", help="真正写库；默认只干跑")
     parser.add_argument("--dsn", help="库连接串；默认读 DATABASE_URL")
+    parser.add_argument(
+        "--manifest",
+        action="store_true",
+        help="只打印本轮实际读取的输入文件哈希（冻结证据），不连库、不写库",
+    )
     args = parser.parse_args(argv)
+
+    if args.manifest:
+        for name, digest in sorted(input_manifest().items()):
+            print(f"{digest}  {name}")
+        return 0
 
     plans, problems = build_plans()
     for problem in problems:

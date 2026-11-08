@@ -83,6 +83,27 @@ def test_同一政策的两个版本各带各的条件(importer: ModuleType) -> 
     assert [crit.code for crit in by_document["国科发火〔2016〕32号"].criteria] == ["GXJS-V2-001"]
 
 
+def test_导入清单覆盖实际读取的文件(importer: ModuleType, monkeypatch, tmp_path) -> None:
+    """只算 CSV 会给输入签假名：正文与出处映射变了，清单也必须变。"""
+
+    _with_reference(importer, monkeypatch, tmp_path)
+    manifest = importer.input_manifest()
+
+    assert "data/policies/criteria_review.csv" in manifest
+    assert any(key.endswith("sources/财税〔2015〕119号.txt") for key in manifest)
+    assert any(key.endswith("reference_sources.csv") for key in manifest)
+    assert {len(value) for value in manifest.values()} == {64}
+
+
+def test_清单模式不连接数据库(importer: ModuleType, monkeypatch, capsys) -> None:
+    def refuse(*args, **kwargs):
+        raise AssertionError("--manifest 不该建库连接")
+
+    monkeypatch.setattr(importer, "_apply", refuse)
+    assert importer.main(["--manifest"]) == 0
+    assert "data/policies/source_register.csv" in capsys.readouterr().out
+
+
 def test_跨文件引用的出处被作为附带来源导入(importer: ModuleType, monkeypatch, tmp_path) -> None:
     """出处必须带**它自己**的官方链接；没有链接就不写这一份，也不能借用主政策链接。"""
 
@@ -101,6 +122,23 @@ def test_跨文件引用的出处被作为附带来源导入(importer: ModuleTyp
     ht007 = next(crit for crit in plan.criteria if crit.code == "HT-007")
     spans = importer._spans_for(plan, ht007)
     assert {str(span.source_url) for span in spans} == {url}
+
+
+def test_只在_source_version_里出现的出处不导入附件(
+    importer: ModuleType, monkeypatch, tmp_path
+) -> None:
+    """RD-001 的 ``source_version`` 写的是 119号（旧口径），``source_document`` 为空。
+
+    那一列表达「归属哪个版本」，不是「这段引文出自哪份文件」：引文按本版正文校验，
+    不能凭空多导入一份没人引用的附件。
+    """
+
+    _with_reference(importer, monkeypatch, tmp_path)
+    plans, _ = importer.build_plans()
+    plan = {item.document: item for item in plans}["财政部 税务总局公告2023年第7号"]
+
+    assert plan.attachments == []
+    assert next(crit for crit in plan.criteria if crit.code == "RD-001").problem is None
 
 
 def test_出处没有官方链接时拦截引用它的条件而不是借用主政策链接(
@@ -150,6 +188,7 @@ def test_引文落在待补出处上时该条件被判_blocked(importer: ModuleT
         "criterion_id": "X-001",
         "adjudicated_expression": '{"op": "manual_review"}',
         "source_span": "某句只在别的文件里出现的话",
+        "source_document": "财税〔2015〕119号",
         "source_page_or_section": "第一条",
     }
     sources = [
@@ -161,6 +200,122 @@ def test_引文落在待补出处上时该条件被判_blocked(importer: ModuleT
 
     assert plan.spans == []
     assert plan.problem is not None and "待补" in plan.problem
+
+
+def test_同一句同时出现在正文与附件时按_source_document_绑定(importer: ModuleType) -> None:
+    """M2 在 #51 指出的：不能按「哪份文本先包含这句」猜出处。
+
+    正文在 ``sources`` 里排第一，旧写法对同句必然绑到正文并给出主政策链接。
+    """
+
+    crit = {
+        "criterion_id": "X-002",
+        "adjudicated_expression": '{"op": "manual_review"}',
+        "source_span": "两边都有的一句话",
+        "source_document": "财税〔2015〕119号",
+        "source_page_or_section": "第一条",
+    }
+    sources = [
+        ("正文", "正文里也有：两边都有的一句话", "https://www.gov.cn/a"),
+        ("财税〔2015〕119号", "附件里写着两边都有的一句话", "https://www.chinatax.gov.cn/b"),
+    ]
+
+    plan = importer._criterion_plan(crit, sources)
+
+    assert plan.problem is None
+    assert [span.source_name for span in plan.spans] == ["财税〔2015〕119号"]
+
+
+def test_声明的出处不含该句时不跨来源搜索(importer: ModuleType) -> None:
+    crit = {
+        "criterion_id": "X-003",
+        "adjudicated_expression": '{"op": "manual_review"}',
+        "source_span": "这句话只在本版正文里",
+        "source_document": "财税〔2015〕119号",
+        "source_page_or_section": "第一条",
+    }
+    sources = [
+        ("正文", "这句话只在本版正文里", "https://www.gov.cn/a"),
+        ("财税〔2015〕119号", "附件里没有那句话", "https://www.chinatax.gov.cn/b"),
+    ]
+
+    plan = importer._criterion_plan(crit, sources)
+
+    assert plan.spans == []
+    assert plan.problem is not None and "财税〔2015〕119号" in plan.problem
+
+
+def test_声明的出处没有独立正文时拒绝而不是退回正文(importer: ModuleType) -> None:
+    crit = {
+        "criterion_id": "X-004",
+        "adjudicated_expression": '{"op": "manual_review"}',
+        "source_span": "申报通知里的一句话",
+        "source_document": "2025年专精特新申报通知",
+        "source_page_or_section": "第一条",
+    }
+    sources = [("正文", "正文里没有这句话", "https://www.gov.cn/a")]
+
+    plan = importer._criterion_plan(crit, sources)
+
+    assert plan.spans == []
+    assert plan.problem is not None and "没有独立正文" in plan.problem
+
+
+def test_source_document_段数与引文段数不一致就拒绝(importer: ModuleType) -> None:
+    crit = {
+        "criterion_id": "X-005",
+        "adjudicated_expression": '{"op": "manual_review"}',
+        "source_span": "第一句|第二句",
+        "source_document": "财税〔2015〕119号",
+        "source_page_or_section": "第一条",
+    }
+    sources = [
+        ("正文", "第一句 第二句", "https://www.gov.cn/a"),
+        ("财税〔2015〕119号", "第一句 第二句", "https://www.chinatax.gov.cn/b"),
+    ]
+
+    plan = importer._criterion_plan(crit, sources)
+
+    assert plan.spans == []
+    assert plan.problem is not None and "无法逐段对应" in plan.problem
+
+
+def test_整列留空时只在本版正文里找(importer: ModuleType) -> None:
+    """``source_document`` 为空 → 只认正文；附件里有也不算找到。"""
+
+    crit = {
+        "criterion_id": "X-006",
+        "adjudicated_expression": '{"op": "manual_review"}',
+        "source_span": "只在附件里的一句话",
+        "source_page_or_section": "第一条",
+    }
+    sources = [
+        ("正文", "正文里没有这句话", "https://www.gov.cn/a"),
+        ("财税〔2015〕119号", "只在附件里的一句话", "https://www.chinatax.gov.cn/b"),
+    ]
+
+    plan = importer._criterion_plan(crit, sources)
+
+    assert plan.spans == []
+    assert plan.problem is not None and "正文" in plan.problem
+
+
+def test_出处写政策自己的文号时绑定正文(importer: ModuleType) -> None:
+    crit = {
+        "criterion_id": "X-007",
+        "adjudicated_expression": '{"op": "manual_review"}',
+        "source_span": "本版正文里的句子",
+        "source_document": "国科发火〔2008〕172号",
+        "source_page_or_section": "第一条",
+    }
+    sources = [("国科发火〔2008〕172号", "本版正文里的句子", "https://www.gov.cn/a")]
+
+    plan = importer._criterion_plan(
+        crit, sources, document="国科发火〔2008〕172号"
+    )
+
+    assert plan.problem is None
+    assert [span.source_name for span in plan.spans] == ["国科发火〔2008〕172号"]
 
 
 def test_六个企业与全部事实都能按产品规则规范化(importer: ModuleType) -> None:

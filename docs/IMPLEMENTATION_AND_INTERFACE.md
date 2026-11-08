@@ -302,6 +302,11 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
 - **抽取覆盖率是下限**：只有抽取结果的引文包含标注原文片段才算命中，抽到同一条件但引文取短了也记未命中。模型单次抽样波动明显（2026-11-06 同一提示词三轮：32% / 36% / 40%），报告要写多轮的区间，不能报单轮精确值。
 - **费用**：单价取自 `infra/README.md` §4.3（2026-11-06 取数，`deepseek-flash` 高峰价：输入未命中 2 元/百万 tokens、输出 8 元/百万）。客户端不解析响应里的缓存命中 token 数，一律按未命中价折算，故金额是**上限**；分母、分子都从 JSONL 的 `usage_prompt`/`usage_completion` 直接相加，不估算。
 
+**逐段出处与输入签名（2026-11-08，M2 在 #51 / #36 复审的 P1）**：
+
+- `criteria_review.csv` 的 `source_document` 按 `|` 分段，与 `source_span` **逐段一一对应**；声明了出处就只用那一份正文校验，不再按「哪份文本先包含这句」顶替。段数对不上、声明的那份没有独立正文、或原文里找不到该句，该条判不可验证（导入器记 blocked），**不跨来源搜索**。`source_document` 整列为空时才退回本版正文；只在 `source_version` 里出现、`source_document` 没声明的出处不导入附件。导入器与消融加载器（`app/ablation/dataset.py` 的 `span_source`）用同一套规则，同一份数据在两边得到同一结论。
+- 输入签名覆盖**实际读到的文件**，不是固定四份 CSV。`Dataset.manifest()` 与 `import_eval_dataset.py --manifest` 都含四份 CSV、政策正文（`policies/sources/<文号或代号>.txt`）与每条 `source_document` 声明的出处原文；`Dataset.manifest()` 在任一文件缺失时直接报错，导入器只列本轮实际读到的文件（不存在的出处本来就会被判 blocked 并在导入报告里点名）。`--manifest` 只读文件、打印相对路径与 SHA-256，不连库、不写库。
+
 已知取舍，写进评测报告的「局限」段而不是藏起来：
 
 1. 基线拿得到条件清单（代号 + 原文片段），否则对不上 `criterionId`，这是**对基线有利**的取舍。
