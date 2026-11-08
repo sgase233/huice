@@ -3,27 +3,30 @@
     python -m app.evaluation inputs --out snapshot.json \
         --dataset-dir data/evaluation \
         --dataset-file labels.csv --dataset-file criteria_review.csv \
-        --dataset-file enterprises.csv
+        --dataset-file enterprises.csv --dataset-file source_register.csv
     python -m app.evaluation verify snapshot.json --dataset-dir data/evaluation
 
 ``inputs`` 从库里导出政策/条件与企业/事实的映射，写入一份 JSON；``verify`` 拿那份
 JSON 对当前库重算一遍，逐项列出差异，非零退出即「与签认时不一致，停止评测」。
 
 清单里还有一份 ``datasetMapping``：把 ``--dataset-file`` 那几份 CSV 的行与库里的行
-**逐条**对上（文号/标题 → 政策版本、表达式 → 条件、合成名称 → 企业、键+期间+来源+
-值 → 事实），存对照表与未解决的问题。整文件哈希只证明文件没变，这份映射才证明
-「文件就是导入进库的那一份」；有未解决项时 ``verify`` 一律非零退出。
+**逐条**对上（政策代号 + 文号/标题 → 政策版本、表达式 → 条件、合成名称 → 企业、
+键+期间+来源+值 → 事实），存对照表与未解决的问题。整文件哈希只证明文件没变，这份映射
+才证明「文件就是导入进库的那一份」；有未解决项时 ``verify`` 一律非零退出。
+条件归属只认 ``source_register.csv`` 的 ``policy_id → 版本`` 登记，表达式相同不足以
+判定归属；同一条库条件被两个 CSV 条件代号认领也算未解决。
 
 清单里每份输入都连**路径**一起记（``dataset: [{"path": …, "sha256": …}]``）：项目内的
 文件记相对项目根的 POSIX 路径（``data/evaluation/labels.csv``），项目外才记绝对路径。
-三份评测输入本来就分散在 ``data/evaluation``、``data/policies``、``data/fixtures``，
+四份评测输入本来就分散在 ``data/evaluation``、``data/policies``、``data/fixtures``，
 只记文件名的话 ``verify`` 只能拿同名文件去顶替，换个目录就全错。同一个文件签认两次、
 或两个不同目录的同名文件一起签，都直接拒绝（后者会让映射按文件名互相覆盖）。
 
 数据集只认 ``--dataset-file`` 显式列出的文件（可重复），不按目录扫全部 CSV：
 材料复核表、标注表也在同一个目录里，但它们不是评测输入，扫进来会让 ``verify``
-在复核改动后误报。正式评测核对**要求三份齐全**（``labels.csv``、``criteria_review.csv``、
-``enterprises.csv``），少一份直接非零退出——只对上两份证明不了整体对应。
+在复核改动后误报。正式评测核对**要求四份齐全**（``labels.csv``、``criteria_review.csv``、
+``enterprises.csv``、``source_register.csv``），少一份直接非零退出——只对上三份
+证明不了整体对应。
 真要只核对数据库，单独加 ``--no-dataset``：这样写出的清单 ``datasetMapping`` 为
 ``null``，``verify`` 也必须带同一个开关，成功时明说「仅数据库」，不能被当成数据集已签认。
 ``verify`` 核对的文件由签认清单**记下的路径**决定：``verify`` 不接受 ``--dataset-file``
@@ -129,7 +132,7 @@ def _dataset_entries(
 
     两种歧义直接拒（M2 复审 P1）：
     * 同一个文件被列两次——第二次会悄悄覆盖第一次的哈希；
-    * 两个**不同目录的同名文件**一起签——映射按文件名区分三份输入，后一个会顶替前一个。
+    * 两个**不同目录的同名文件**一起签——映射按文件名区分四份输入，后一个会顶替前一个。
     """
 
     base = Path(directory) if directory else Path.cwd()
@@ -154,7 +157,7 @@ def _dataset_entries(
         if path.name in seen_name:
             raise SystemExit(
                 f"{PROGRAM}：两个不同的文件同名 {path.name}：{seen_name[path.name]} 与 "
-                f"{signed}——三份评测输入按文件名区分，同名会互相覆盖；请只签认其中一份"
+                f"{signed}——四份评测输入按文件名区分，同名会互相覆盖；请只签认其中一份"
             )
         seen_name[path.name] = signed
         entries.append((signed, path))
@@ -175,14 +178,14 @@ def _config_from_env(use_config: bool) -> dict[str, str] | None:
 
 
 def _require_required_files(names: Sequence[str]) -> None:
-    """正式评测核对要三份输入齐全；缺哪份就点名哪份，不退回「只比数据库」。
+    """正式评测核对要四份输入齐全；缺哪份就点名哪份，不退回「只比数据库」。
 
-    ``names`` 是签认路径，按**文件名**认三份输入（目录不同也算同一份）。
+    ``names`` 是签认路径，按**文件名**认四份输入（目录不同也算同一份）。
     """
 
     if not names:
         raise SystemExit(
-            f"{PROGRAM}：正式评测核对要求三份评测输入（{'、'.join(REQUIRED_FILES)}），"
+            f"{PROGRAM}：正式评测核对要求四份评测输入（{'、'.join(REQUIRED_FILES)}），"
             "请用可重复的 --dataset-file 给出（只给 --dataset-dir 会按目录扫全部 CSV，"
             "把材料复核表这类非评测输入也算进去）；只核对数据库请显式加 --no-dataset"
         )
@@ -190,7 +193,7 @@ def _require_required_files(names: Sequence[str]) -> None:
     missing = [name for name in REQUIRED_FILES if name not in provided]
     if missing:
         raise SystemExit(
-            f"{PROGRAM}：缺少评测输入 {('、'.join(missing))}——三份都要给，"
+            f"{PROGRAM}：缺少评测输入 {('、'.join(missing))}——四份都要给，"
             "少一份就只能证明部分对应关系"
         )
 
@@ -274,7 +277,7 @@ def _build_manifest(
         except SnapshotError as exc:
             raise SystemExit(f"{PROGRAM}：{exc}") from None
     else:
-        # 先报「目录不存在 / 点名的文件不存在」（路径写错要立刻看出来），再要求三份齐全
+        # 先报「目录不存在 / 点名的文件不存在」（路径写错要立刻看出来），再要求四份齐全
         entries = _dataset_entries(args.dataset_dir, selected)
         _require_required_files([signed for signed, _ in entries])
         dataset = _dataset_file_hash(entries)
@@ -565,7 +568,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help=(
             "只核对数据库、不核对评测输入 CSV（清单的 datasetMapping 为 null，verify 也要带这个开关）；"
-            "正式评测冻结必须给三份 CSV，不能用它替代"
+            "正式评测冻结必须给四份 CSV，不能用它替代"
         ),
     )
     parser.add_argument(

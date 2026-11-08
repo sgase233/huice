@@ -239,22 +239,26 @@ class Dataset:
                 return path.read_text(encoding="utf-8").strip()
         return None
 
-    def source_text(self, policy: Policy) -> str:
-        """政策正文。文件按文号命名，五项政策没有同名文件时退回按政策代号命名。"""
+    def _body_path(self, policy: Policy) -> Path:
+        """政策正文文件：先按文号找，没有同名文件再按政策代号找。"""
 
         for name in (policy.document, policy.code):
             path = self.data_dir / "policies" / "sources" / f"{name}.txt"
             if path.is_file():
-                text = path.read_text(encoding="utf-8").strip()
-                if len(text) < 200:
-                    raise DatasetError(
-                        f"{path.name} 只有 {len(text)} 字，是节选文件，不能当政策正文"
-                    )
-                return text
+                return path
         raise DatasetError(
             f"政策 {policy.code}（{policy.document}）在 sources/ 下找不到正文："
             f"既不叫 {policy.document}.txt，也不叫 {policy.code}.txt"
         )
+
+    def source_text(self, policy: Policy) -> str:
+        """政策正文。文件按文号命名，五项政策没有同名文件时退回按政策代号命名。"""
+
+        path = self._body_path(policy)
+        text = path.read_text(encoding="utf-8").strip()
+        if len(text) < 200:
+            raise DatasetError(f"{path.name} 只有 {len(text)} 字，是节选文件，不能当政策正文")
+        return text
 
     def _policy_body(self, criterion: Criterion) -> str:
         """政策正文。条件没写出处时用它做逐字比对。
@@ -275,18 +279,32 @@ class Dataset:
 
         出处可能是另一份文件（申报通知、上位法规），也可能是 sources/ 下的节选
         （``…（节选，供引文逐字校验，非全文）``）。两者都能用来做逐字比对。
+
+        绑定是**逐段显式**的：``source_document`` 段数必须与引文段数一致，声明的出处
+        没有原文就报错，不拿政策正文顶替——否则「这句到底出自哪份文件」又变成了猜。
+        整列为空时才按本版正文校验（旧数据里 ``source_version`` 指向没有独立文件的
+        申报通知，条件与规程正文逐字一致）。
         """
 
-        name = (
-            criterion.documents[index]
-            if index < len(criterion.documents)
-            else criterion.version_document
-        )
-        if name:
+        spans = criterion.spans
+        if criterion.documents and len(criterion.documents) != len(spans):
+            raise DatasetError(
+                f"条件 {criterion.code} 的 source_document 有 {len(criterion.documents)} 段、"
+                f"引文有 {len(spans)} 段，无法逐段对应"
+            )
+        if criterion.documents:
+            # 显式声明了出处：只用这一份，没有原文就是缺口，不拿正文顶替。
+            name = criterion.documents[index]
+            if not name:
+                return self._policy_body(criterion)
             text = self._text_for(name)
-            if text is not None:
-                return text
-        return self._policy_body(criterion)
+            if text is None:
+                raise DatasetError(f"条件 {criterion.code} 的出处 {name} 在 sources/ 下没有原文")
+            return text
+        # 整列留空：旧数据的 ``source_version`` 写的才是出处；指向没有独立文件的
+        # 申报通知时退回本版正文（条件与规程正文逐字一致）。
+        text = self._text_for(criterion.version_document) if criterion.version_document else None
+        return text if text is not None else self._policy_body(criterion)
 
     def verification_text(self, criterion: Criterion) -> str:
         """这条条件可用的全部出处原文（多段出处取并集）。
@@ -325,10 +343,13 @@ class Dataset:
                     break
         return frozenset(bad)
 
-    def manifest(self) -> dict[str, str]:
-        """输入文件的 sha256，用来证明两个方案跑的是同一份数据。"""
+    def input_files(self) -> list[Path]:
+        """这套数据集实际读取的文件：四份 CSV、政策正文与逐段声明的出处原文。
 
-        import hashlib
+        ``source_document`` 为空时，``span_source`` 会先按 ``version_document`` 找一份
+        ``sources/`` 下的原文、找不到才退回本版正文；那份文件存在时就要进签名，否则
+        改它会让引文核对结果变化而清单不变（M2 在 #51 复审指出）。
+        """
 
         files = [
             self.data_dir / "evaluation" / "labels.csv",
@@ -336,9 +357,44 @@ class Dataset:
             self.data_dir / "fixtures" / "enterprises.csv",
             self.data_dir / "policies" / "source_register.csv",
         ]
-        return {path.relative_to(self.data_dir).as_posix(): hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest() for path in files}
+        used = {criterion.policy_code for criterion in self.criteria.values()}
+        files += [
+            self._body_path(policy) for policy in self.policies.values() if policy.code in used
+        ]
+        for criterion in self.criteria.values():
+            if criterion.documents:
+                files += [
+                    self.data_dir / "policies" / "sources" / f"{name}.txt"
+                    for name in criterion.documents
+                    if name
+                ]
+                continue
+            if criterion.version_document:
+                fallback = (
+                    self.data_dir / "policies" / "sources" / f"{criterion.version_document}.txt"
+                )
+                if fallback.is_file():
+                    files.append(fallback)
+        return list(dict.fromkeys(files))
+
+    def manifest(self) -> dict[str, str]:
+        """输入文件的 sha256，用来证明两个方案跑的是同一份数据。
+
+        覆盖**实际读取**的全部文件：四份 CSV 加上 ``sources/`` 下的正文与逐段出处原文。
+        只改正文一个字、或删掉一份出处文件，清单就会不同（缺失直接失败）——只算 CSV
+        时「改正文而两轮跑数头一致」是个假签名（M2 在 #36 复审指出）。
+        """
+
+        import hashlib
+
+        manifest: dict[str, str] = {}
+        for path in self.input_files():
+            if not path.is_file():
+                raise DatasetError(f"缺少输入文件：{path}")
+            manifest[path.relative_to(self.data_dir).as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+        return manifest
 
 
 # ------------------------------------------------------------------ 读文件

@@ -388,7 +388,9 @@ class PolicyRepository:
                         "policy_version_id": version_id,
                         "kind": source.kind,
                         "ordinal": ordinal,
-                        "source_url": metadata.source_url,
+                        # 每份来源优先用它自己的链接；上传路径下为 None，沿用整份
+                        # 政策登记的入口，行为与之前一致。
+                        "source_url": source.source_url or metadata.source_url,
                         "title": source.file_name,
                         "file_name": source.file_name,
                         "mime_type": source.mime_type,

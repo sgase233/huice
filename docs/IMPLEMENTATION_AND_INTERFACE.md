@@ -190,7 +190,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 - **适不适用**：必交材料无条件列出；条件交材料只在本次判断真的引用到它证明的事实键时列出。没有事实键的条件交（申请书一类，条件只有文字）判断不了，按「需人工核对」列出而不是省略——静默消失会让人以为不用交。
 - **要哪些事实**：按本次判断期间展开；季度类键（`assetsStart/assetsEnd`、`employeeCountStart/employeeCountEnd`）展开成四个季度的期初期末共八个引用，与 `rules.referenced_facts` 同一套口径，不另写一份。
-- **四态 `status`（事实口径，rc.9 起）**：`facts_filled`（要的事实都有取值）、`facts_missing`（有事实键但缺值）、`manual_check`（没有事实键，或条件无法由程序判断）、`policy_closed`（政策已到期或窗口已关闭，材料再齐也交不了）。**名字说的是程序查到什么，不是材料交没交**：服务端只读企业事实，从不读材料本身，所以 `facts_filled` 不等于「材料已提交/已核验」。`missing` 是保守口径：`manual_check` 也算 `true`，展示以 `status` 为准。rc.8 里这两个取值叫 `provided` / `missing`，因名字比能证明的多说了一层，在 rc.9 改名（M2 在 #40 的 P1）。标题前缀 `【必交】`/`【条件交】` 承载必交属性（契约没有独立字段，口径见 `docs/product/MATERIAL_REQUIREMENTS.md` §4），条件文案并入 `description` 的「（何时需要：…）」。
+- **四态 `status`（事实口径，rc.9 起）**：`facts_filled`（要的事实都有取值）、`facts_missing`（有事实键但缺值）、`manual_check`（没有事实键，或条件无法由程序判断）、`policy_closed`（政策已到期或窗口已关闭，材料再齐也交不了）。**名字说的是程序查到什么，不是材料交没交**：服务端只读企业事实，从不读材料本身，所以 `facts_filled` 不等于「材料已提交/已核验」。`missing` 是保守口径：`manual_check` 也算 `true`，展示以 `status` 为准。rc.8 里这两个取值叫 `provided` / `missing`，因名字比能证明的多说了一层，在 rc.9 改名（M2 在 #40 的 P1）。标题前缀 `【必交】`/`【条件交】` 承载必交属性（契约没有独立字段，口径见 `docs/product/MATERIAL_REQUIREMENTS.md` §4），条件文案由 `domain/preparation.py` 的 `_display_description()` 追加在 `description` 末尾（`f"{material.description}（何时需要：{material.condition_desc}）"`，`condition_desc` 为空时原样返回）。
 - 库里没有材料（政策没挂材料、或清单尚未导入）时 `items` 为空并保留告警「申报材料清单待 M3 审核材料导入后补齐」；有清单时告警消失，报告逐条标出四态。
 - `PolicyDetail.preparationTemplate.items` 仍是 `[]`：模板没有企业与判断上下文，给不出 `status`；带四态的清单只出现在判断运行里。
 
@@ -224,13 +224,14 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 ### 2.9 评测输入快照（`EVALUATION_FREEZE` §5.2）
 
-`app/evaluation/` 只做「把库里的东西说清楚」，不产出任何评测指标。三份 CSV 的哈希只能识别文件，证明不了它们就是导入进库的那一份，所以映射从**数据库本身**导出：
+`app/evaluation/` 只做「把库里的东西说清楚」，不产出任何评测指标。四份 CSV 的哈希只能识别文件，证明不了它们就是导入进库的那一份，所以映射从**数据库本身**导出：
 
 ```bash
-# 三份输入本来就不在一个目录：标注在 data/evaluation、条件在 data/policies、企业在 data/fixtures
+# 四份输入本来就不在一个目录：标注在 data/evaluation、条件与登记表在 data/policies、企业在 data/fixtures
 python -m app.evaluation inputs --out snapshot.json \
     --dataset-file data/evaluation/labels.csv \
     --dataset-file data/policies/criteria_review.csv \
+    --dataset-file data/policies/source_register.csv \
     --dataset-file data/fixtures/enterprises.csv
 # 核对时不再点名文件：签认清单记着路径，自己会去读那一份
 python -m app.evaluation verify snapshot.json
@@ -238,7 +239,7 @@ python -m app.evaluation verify snapshot.json
 
 数据集只认真实要冻结的那几份：`--dataset-file` 可重复、相对路径按当前工作目录（或 `--dataset-dir`）解析，**不按目录扫全部 CSV**（M3 复核）——`material_review_sheet.csv`、`*_annotation_sheet.csv` 与评测输入同目录，但材料复核一改就会让 `verify` 误报。`codeCommit` 仍在清单里，但它只是**注记**：云端没有 `.git`，那个值只能手打，既不能证明那台机器上跑的就是那个提交，两侧都 `null` 时更是什么都没证明。代码身份改由下面的部署文件指纹回答。
 
-**清单记签认路径，`verify` 按签认路径读（M2 在 #39 三审的 P1）**：原先每份输入只记文件名的哈希，`verify` 再拿文件名去拼 `--dataset-dir`——三份输入分散在三个目录时，「从仓库根用三个相对路径签认、在别处核对」会去找根目录下的 `labels.csv`，某处存在同名文件还会把它顶替成签认对象。现在 `dataset` 记的是 `[{"path": …, "sha256": …}]`：项目内的文件记**相对项目根的 POSIX 路径**（`data/evaluation/labels.csv`），项目外才记绝对路径；`verify` 一律按这些路径读，**不接受** `--dataset-file`/`--dataset-dir`（传了就报错：「核对哪些文件由签认清单决定……后传的文件不能顶替签认的对象」）。两种歧义直接拒：同一个文件被签认两次；两个不同目录的同名文件一起签（映射按文件名区分三份输入，后者会覆盖前者）。
+**清单记签认路径，`verify` 按签认路径读（M2 在 #39 三审的 P1）**：原先每份输入只记文件名的哈希，`verify` 再拿文件名去拼 `--dataset-dir`——三份输入分散在三个目录时，「从仓库根用三个相对路径签认、在别处核对」会去找根目录下的 `labels.csv`，某处存在同名文件还会把它顶替成签认对象。现在 `dataset` 记的是 `[{"path": …, "sha256": …}]`：项目内的文件记**相对项目根的 POSIX 路径**（`data/evaluation/labels.csv`），项目外才记绝对路径；`verify` 一律按这些路径读，**不接受** `--dataset-file`/`--dataset-dir`（传了就报错：「核对哪些文件由签认清单决定……后传的文件不能顶替签认的对象」）。两种歧义直接拒：同一个文件被签认两次；两个不同目录的同名文件一起签（映射按文件名区分四份输入，后者会覆盖前者）。
 
 **部署文件指纹（`codeFingerprint`，M2 在 #39 同意、要求单独 PR 落地）**：清单顶层记 `codeFingerprint`/`codeFiles`/`codeScope`——对**部署机上实际存在的代码文件**算一遍规范化哈希（`app/evaluation/code_fingerprint.py`）。范围固定为 `services/api/app/**/*.py`、`contracts/openapi.yaml`、`services/api/requirements.lock`，排除 `__pycache__` 与 `*.pyc`；每项取 `(相对项目根的 POSIX 路径, 文件字节 sha256)`，按路径排序后用与清单其他哈希相同的 `canonical_json`/`sha256_hex` 再取一次 SHA-256。**缺文件、空集合一律报错**，不允许「扫到 0 个文件」算出一个稳定值——那等于什么都没证明，却长得像证明过。`python -m app.evaluation fingerprint`（`--json` 出逐文件明细，`--root` 指定另一棵树）不连库，任何人把某个提交 checkout 出来复算就能把「提交 ↔ 指纹」对上。
 
@@ -250,9 +251,16 @@ python -m app.evaluation verify snapshot.json
 
 `verify` 对代码身份只说到这里：指纹一致时打印「磁盘代码与签认一致（指纹 …，N 个文件）；但『这份代码对应哪个提交』与『进程里跑的是不是它』仍未证明」，签认时没记启动时间的再加一句「两者之间没有交叉证据」。**不会**因为指纹一致就说成「运行代码身份已证明」（M2 在 #39 的原话：`codeCommit=null` 不应只因磁盘指纹一致就笼统改成已证明）。清单没有 `codeFingerprint`（2026-11-06 之前签认的）时仍可核对库与数据集，但要明说「磁盘代码身份未证明」，并提示用当前版本重新签认；`manifestVersion` 仍是 `3`，这四个字段是可选增补，旧清单不因缺它而报「版本不同」。
 
-**正式核对要求三份齐全**（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）：少给一份直接非零退出并点名缺的那份，不许「对上一份就算过」。确实只想核对数据库时单独加 `--no-dataset`——这样写出的清单 `datasetMapping` 为 `null`，`verify` 必须带同一个开关，成功时明写「一致（仅数据库）……此结果不能当作数据集已签认」；反方向也拦：带数据集映射的清单加 `--no-dataset` 核对会被拒，两个模式不能互相冒充。`--no-dataset` 与 `--dataset-file`/`--dataset-dir` 同时给也直接报错。
+**正式核对要求四份齐全**（`labels.csv`、`criteria_review.csv`、`enterprises.csv`、`source_register.csv`）：少给一份直接非零退出并点名缺的那份，不许「对上三份就算过」。确实只想核对数据库时单独加 `--no-dataset`——这样写出的清单 `datasetMapping` 为 `null`，`verify` 必须带同一个开关，成功时明写「一致（仅数据库）……此结果不能当作数据集已签认」；反方向也拦：带数据集映射的清单加 `--no-dataset` 核对会被拒，两个模式不能互相冒充。`--no-dataset` 与 `--dataset-file`/`--dataset-dir` 同时给也直接报错。
 
-**内容对齐映射（`datasetMapping`，M2 在 #39 复核）**：整文件哈希只证明「文件没变」，证明不了「这些文件就是导入进库的那一份」——两套互不相关、但各自稳定的 CSV 照样能过。所以 `inputs` 还把 CSV 的行与库行**逐条**对上，结果写进清单的 `datasetMapping`（实现在 `app/evaluation/dataset_map.py`）：政策版本按文号（`labels.csv` 的 `policy_version`、`criteria_review.csv` 的 `source_version` ↔ `policy_version.document_number`），没有文号时按标题；条件是政策版本内表达式规范化 JSON 哈希，要求一对一（CSV 匹配到多条、或库里有条件没被任何 CSV 行认领，都报）；企业按 `name_synthetic`；事实按 (key, 期间, unit, source, verified, 值哈希)，值按 `unit` 解析成与库同一类型（CNY/person/ratio → `Decimal`，date → ISO 日期，boolean → true/false，code → 原串）再算同一个哈希；`labels.csv` 每行的 (企业代号, 文号, 条件代号) 必须都能经前面三条落到库里的具体行。库里没有业务代号列——`policy_criterion.criterion_id`、`enterprise.id` 都是导入时生成的 UUID，CSV 的 `CN-TAX-SME-2023-012`/`E-ENT-001` 在库里查不到——所以映射产物是一份**可核对的对照表**（代号 → UUID），`verify` 重算一遍再比对。对齐口径带版本号 `content-alignment@1`：规则一改，旧清单在 `verify` 里报「映射不同（可能是数据集换了、库被改过，或对齐规则版本变了）」，而不是含混的「数据变了」。有未解决项时 `verify` 一律非零退出；`inputs` 只把逐条问题打到 stderr（不改退出码），便于先看清再改数据。**「未解决」包括**：三份文件缺一份（没加载到行内容）、某份文件只有表头没有行（没有任何条件/企业/用例对齐出来）、双向覆盖缺口、值与核验状态对不上——空映射不能当成核对通过。值本身也要口径一致：CSV 的空 `fact_value` 与库里的 `NULL` 同为「未知」，都记 `valueHash: null`；未知不等于 `0`，有用例锁住这两点。
+**内容对齐映射（`datasetMapping`，M2 在 #39 复核；#51 复审后收紧为 `content-alignment@3`）**：整文件哈希只证明「文件没变」，证明不了「这些文件就是导入进库的那一份」——两套互不相关、但各自稳定的 CSV 照样能过。所以 `inputs` 还把 CSV 的行与库行**逐条**对上，结果写进清单的 `datasetMapping`（实现在 `app/evaluation/dataset_map.py`）：
+
+- **政策归属只认登记表**：`source_register.csv` 的 `policy_id → 版本` 是唯一依据。`criteria_review.csv` 每行先按 `policy_id` 找登记行，再用 `source_version` 在**同一代号**的多个版本里挑（`CN-TAX-GXJS` 的 2008/2016 两版）；`source_version` 记的若是登记表之外的文件（《财税〔2015〕119号》、申报通知），归属仍由 `policy_id` 决定，但条件必须在那一版里逐条对上。登记行再与库做三方核对：登记表的 `version`/`title` 必须分别等于库里的 `document_number`/`title`，对不上即「库里那份不是按这份登记表导入的」。**表达式相同不再能单独证明归属**——另一份政策恰好有唯一相同的表达式时，那条只会被记为未解决并点名它出现在哪个版本，不会判给它；`source_version` 恰好是另一份已登记政策的文号，直接报「来源文号与政策代号不一致」。
+- **条件是政策版本内表达式规范化 JSON 哈希，要求一对一**：同一条库条件被两个 CSV 条件代号认领、一条 CSV 行在同一版里匹配到多条、或库里有条件没被任何 CSV 行认领，都报。
+- **企业**按 `name_synthetic`；**事实**按 (key, 期间, unit, source, verified, 值哈希)，值按 `unit` 解析成与库同一类型（CNY/person/ratio → `Decimal`，date → ISO 日期，boolean → true/false，code → 原串）再算同一个哈希。
+- **`labels.csv` 逐行三方一致**：`policy_id` 经登记表指向的版本，必须就是同一行写的 `policy_version`；(企业代号, 条件代号) 还要在该版本下落到库里的具体行。只比文号一列，标签挂到另一份政策的同代号条件上也会「对得上」。
+
+库里没有业务代号列——`policy_criterion.criterion_id`、`enterprise.id` 都是导入时生成的 UUID，CSV 的 `CN-TAX-SME-2023-012`/`E-ENT-001` 在库里查不到——所以映射产物是一份**可核对的对照表**（代号 → UUID），`verify` 重算一遍再比对。对齐口径带版本号 `content-alignment@3`：规则一改，旧清单在 `verify` 里报「映射不同（可能是数据集换了、库被改过，或对齐规则版本变了）」，而不是含混的「数据变了」。有未解决项时 `verify` 一律非零退出；`inputs` 只把逐条问题打到 stderr（不改退出码），便于先看清再改数据。**「未解决」包括**：四份文件缺一份（没加载到行内容）、某份文件只有表头没有行（没有任何条件/企业/用例对齐出来）、政策代号没登记或登记版本在库里找不到、登记表与库的文号/标题不一致、双向覆盖缺口、值与核验状态对不上——空映射不能当成核对通过。值本身也要口径一致：CSV 的空 `fact_value` 与库里的 `NULL` 同为「未知」，都记 `valueHash: null`；未知不等于 `0`，有用例锁住这两点。
 
 `inputs` 写出（`manifestVersion` 为 `3`：`2` 加 `documentNumber` 与 `datasetMapping`，`3` 把 `dataset` 从「文件名 → 哈希」改成「路径 + 哈希」的列表；更早版本的清单在 `verify` 里报「清单版本不同」，`dataset` 不是列表的则直接要求重新签认）：政策版本 → 条件的 `criterionId`/AST 哈希/审核状态、企业 → 事实值的哈希与**事实版本**（直接调 `agents/profile.fact_version_of`，与 `assessment_run.fact_version` 同一算法）、`appVersion`/`ruleVersion`、数据集每份文件的签认路径与 SHA-256、以及非敏感配置的哈希。`verify` 拿已签认的清单对当前库重算并逐项列差异，非零退出即「不一致」，**停止评测，不得用运行结果反推快照**。
 
@@ -269,7 +277,7 @@ python -m app.evaluation verify snapshot.json
   ```
 
   按下载时刻现算的内容一并删干净：`- 下载时间：…` 行、整个有效性段、判断结论表的「有效性」列，以及每个政策段的「有效性 / 失效原因 / 有效期至」。剔除只按固定标记整行/整段删除，**不做语义猜测**：输入缺标题、缺有效性段（已裁过或手工改过）、表格列数对不上都直接报错，不生成产物。审计信息（`sourceSha256`、`frozenSha256`、`downloadedAt`、`droppedLines`）以一行 JSON 打到 stderr，`--out -` 时 stdout 只有冻结正文。
-- **映射的边界**：只对 `labels.csv`、`criteria_review.csv`、`enterprises.csv` 三份做逐条对齐（三份都必须给），其余文件仍只算哈希；缺列、CSV 不是 UTF-8、表达式不是合法 JSON、取值与 `unit` 对不上都直接停下报错，不猜列名、不猜类型。企业靠 `name_synthetic` 对齐，合成名称重复即报歧义。映射证明的是「这批 CSV 的内容都在库里」，不证明库里没有别的来源——那由逐字段比较与事实覆盖检查兜住。
+- **映射的边界**：只对 `labels.csv`、`criteria_review.csv`、`enterprises.csv`、`source_register.csv` 四份做逐条对齐（四份都必须给），其余文件仍只算哈希；缺列、CSV 不是 UTF-8、表达式不是合法 JSON、取值与 `unit` 对不上都直接停下报错，不猜列名、不猜类型。企业靠 `name_synthetic` 对齐，合成名称重复即报歧义。映射证明的是「这批 CSV 的内容都在库里」，不证明库里没有别的来源——那由逐字段比较与事实覆盖检查兜住。
 - **已知缺口**：冻结正文里的条件级结果仍是 Markdown 项目符号（四态 + 理由 + 逐字引文 + 计算），人能读、机器只能半结构化解析；`trace` 按契约只有阶段级摘要，不作条件级证据。要机器可解析的条件级导出，需评估 JSON 导出或方案 B（均不新增表），本轮不做，记录在此。
 
 ### 2.10 消融对照：单智能体基线 vs 现方案
@@ -301,6 +309,11 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
 - **人工复核**：每方案按方案结论四态分层抽 30 条（每个非空类别至少 1 条，`not_satisfied` 至少 5 条——硬门槛误判只有人工看得见），种子固定，写入 CSV；引文是否可证实由程序先判一次，复核人只判「结论对不对」并计时。
 - **抽取覆盖率是下限**：只有抽取结果的引文包含标注原文片段才算命中，抽到同一条件但引文取短了也记未命中。模型单次抽样波动明显（2026-11-06 同一提示词三轮：32% / 36% / 40%），报告要写多轮的区间，不能报单轮精确值。
 - **费用**：单价取自 `infra/README.md` §4.3（2026-11-06 取数，`deepseek-flash` 高峰价：输入未命中 2 元/百万 tokens、输出 8 元/百万）。客户端不解析响应里的缓存命中 token 数，一律按未命中价折算，故金额是**上限**；分母、分子都从 JSONL 的 `usage_prompt`/`usage_completion` 直接相加，不估算。
+
+**逐段出处与输入签名（2026-11-08，M2 在 #51 / #36 复审的 P1）**：
+
+- `criteria_review.csv` 的 `source_document` 按 `|` 分段，与 `source_span` **逐段一一对应**；声明了出处就只用那一份正文校验，不再按「哪份文本先包含这句」顶替。段数对不上、声明的那份没有独立正文、或原文里找不到该句，该条判不可验证（导入器记 blocked），**不跨来源搜索**。`source_document` 整列为空时才退回本版正文；只在 `source_version` 里出现、`source_document` 没声明的出处不导入附件。导入器与消融加载器（`app/ablation/dataset.py` 的 `span_source`）用同一套规则，同一份数据在两边得到同一结论。
+- 输入签名覆盖**实际读到的文件**，不是固定四份 CSV。`Dataset.manifest()` 含四份 CSV、被条件引用到的政策正文（`policies/sources/<文号或代号>.txt`）、每条 `source_document` 声明的出处原文，以及 `source_document` 为空时实际回退读取的 `version_document` 原文；列出的文件缺失即报错。导入器 `--manifest` 按 `build_plans` 同一口径确定必需项（要灌版本的正文、逐段声明的出处原文、这些出处要求的 `reference_sources.csv` 映射行），缺任何一项非零退出、**不输出缩短的清单**；没有被任何条件引用的来源不凭空要求。`--manifest` 只读文件、打印相对路径与 SHA-256，不连库、不写库。
 
 已知取舍，写进评测报告的「局限」段而不是藏起来：
 
@@ -618,6 +631,8 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 **M2 第三轮复审的一项（2026-11-06 改，P1）**：清单只记文件名的哈希，`verify` 再按文件名拼 `--dataset-dir`——三份输入分散在 `data/evaluation`、`data/policies`、`data/fixtures`，从仓库根用三个相对路径签认、换个目录核对就会去找错地方，同名文件还会互相顶替。现在清单记**签认路径**（项目内相对项目根，项目外绝对），`verify` 只按这些路径读、拒收 `--dataset-file`/`--dataset-dir`；同一文件签认两次、两个不同目录的同名文件一起签，都直接拒绝。新增用例：仓库三目录布局下签认后**换工作目录**核对、签认文件被改/被删、命令行重新点名被拒、同一个文件签两次、两个同名文件。验证（本机 Docker）：全量 **782 passed / 11 skipped / 77 subtests**；`tests/test_eval_snapshot.py` 与 `tests/test_eval_dataset_map.py` 合跑 **70 passed**。另外用真实 `data/` 三份文件在本机临时库实跑过 `inputs → verify`：清单记的是 `data/evaluation/labels.csv`、`data/fixtures/enterprises.csv`、`data/policies/criteria_review.csv` 三条相对路径，换到仓库根核对仍读得到，传 `--dataset-file` 被拒。
 
 **部署文件指纹（2026-11-06，按 M2 在 #39 的「单独 PR 跟进」落地）**：`codeCommit` 人工传入或两侧皆空都证明不了部署物身份（M2 在 #36 的判断），而云端没有 `.git`、服务也不暴露 commit，清单里「代码身份」这一项此前没有可复算的证据。新增 `app/evaluation/code_fingerprint.py`：对 `services/api/app/**/*.py`、`contracts/openapi.yaml`、`services/api/requirements.lock`（排除 `__pycache__`、`*.pyc`）逐个取文件字节 sha256，按相对项目根的 POSIX 路径排序后规范化序列化再取 sha256，记进清单的 `codeFingerprint`/`codeFiles`/`codeScope`；新增不连库的 `python -m app.evaluation fingerprint`（`--json` 逐文件明细、`--root` 复算另一棵树）。M2 点的四条边界逐一落实：**文件范围**记进清单且参与比对（只算 3 个文件与算全量必须能区分）、**缺文件/空集合报错**（`services/api/requirements.lock` 缺失、目录扫到 0 个文件都停下）、**规范化**与其他哈希共用 `canonical_json`/`sha256_hex` 且不含大小与时间（`cp`、`git checkout` 内容不变则指纹不变）、**旧清单兼容**（缺这四个字段不报「版本不同」，只提示磁盘身份未证明）。「运行进程 ↔ 磁盘版本」按 M2 的提醒单独处理：`--process-pid` 读 `/proc` 的启动时间并列出写于其后的代码文件，有就停下要求先重启；`processStartedAt` 只记录不比对（重启是正常操作）。`verify` 措辞相应改成「磁盘代码与签认一致；但对应哪个提交、进程里跑的是不是它仍未证明」，不再因指纹一致就宣称运行代码身份已证明。`tests/test_eval_code_fingerprint.py` 20 项（同树两次一致、创建顺序无关、单字节变异、排除字节码、缺文件点名、空集合报错、范围入清单、`stale_code_files` 三例、Linux 才跑的 `/proc` 两例、CLI 三例、比对五例），`test_eval_snapshot.py` 原「两侧 `codeCommit` 皆 null」用例改写为「指纹一致但未证明什么」并新增「旧清单仍可核对且明说未证明」。验证（本机 Docker 库）：全量 **873 passed / 13 skipped / 77 subtests**（新增 20 项、改写 1 项）；`tests/test_eval_snapshot.py` + `test_eval_code_fingerprint.py` + `test_eval_dataset_map.py` 合跑 **90 passed / 1 skipped**。**未执行**：云端实跑（`--process-pid` 依赖 Linux `/proc`，需在 ECS 上验一次）。
+
+**M2 第四轮复审的两项（2026-11-08 改，#51，P1）**：`content-alignment@2` 靠「表达式在库里唯一」认归属，两个前提都不成立——另一份政策恰好有唯一相同表达式时会把条件判错，同一条库条件被两个 CSV 条件代号认领时也不报。现改为 `content-alignment@3`：① `source_register.csv` 升为第四份必需输入，`policy_id → 版本` 是归属的唯一依据，`source_version` 只在**同一代号**的多个版本间消歧；登记行再与库的文号/标题逐项核对，`labels.csv` 的 `policy_id` 与 `policy_version` 也必须一致（只比一列会放过挂错政策的标签）；② 条件映射要求一对一，按 `(versionId, criterionId)` 记认领它的 CSV 代号，多于一个即未解决。新增反例：错误政策恰好有唯一相同表达式、`source_version` 登记在另一政策名下、标签代号与文号不匹配、一条库条件被两个代号认领；另加登记缺失、登记版本不在库、同代号两版本需 `source_version` 消歧各一条。`tests/test_eval_dataset_map.py` 现 29 项；全量（本机，无库门控照常跳过）**982 passed / 99 skipped / 77 subtests**。**未执行**：云端按四份 `--dataset-file` 重跑 `inputs`/`verify`（需在 ECS 上做）。
 
 验证（2026-11-06，本机 Docker `pgvector/pgvector:pg16` + `redis:7.4-alpine`；M2 三轮复审改完后重跑）：`HUICE_TEST_DATABASE_URL` 指向本地库时全量 **782 passed / 11 skipped**（余 11 项为 OBS 5、DeepSeek 3、Redis 3 门控）；`pytest tests/test_eval_snapshot.py -m db` **14 passed**，`tests/test_eval_snapshot.py`（50 项）与 `tests/test_eval_dataset_map.py`（20 项）合跑 **70 passed**；无库全量 **731 passed / 62 skipped**。**未执行**：云端实跑（本工具尚未部署）；冻结正文的条件级结果是 Markdown 项目符号，机器只能半结构化解析——已知缺口，见 2.9。
 

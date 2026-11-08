@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.ablation.dataset import (
@@ -157,15 +159,152 @@ def test_source_text_rejects_excerpt_files(tmp_path):
         broken.source_text(policies[("P1", "V1")])
 
 
-def test_manifest_covers_the_four_input_files(dataset):
+def test_manifest_covers_the_files_actually_read(dataset):
+    """四份 CSV 之外还要覆盖正文与逐段出处——只算 CSV 等于给输入签了个假名。"""
+
     manifest = dataset.manifest()
-    assert set(manifest) == {
+
+    assert {
         "evaluation/labels.csv",
         "policies/criteria_review.csv",
         "fixtures/enterprises.csv",
         "policies/source_register.csv",
-    }
+    } <= set(manifest)
+
+    # 正文按政策代号或文号命名；HT-007 引用的 119号 是逐段声明的出处原文。
+    assert "policies/sources/SZ-GRANT-SRDI-2025.txt" in manifest
+    assert "policies/sources/财税〔2015〕119号.txt" in manifest
     assert all(len(value) == 64 for value in manifest.values())
+
+
+def _mini_dataset(root: Path, body: str = "正文" * 120) -> Dataset:
+    """一份最小的 data/：一份政策、一条条件，用来验证清单覆盖哪些文件。"""
+
+    from app.ablation.dataset import load_policies
+
+    _write(root, "policies/sources/P1.txt", body)
+    _write(
+        root,
+        "policies/source_register.csv",
+        "policy_id,title,type,issuer,region,source_url,version,published_at,"
+        "effective_from,effective_to,application_open,application_close,status\n"
+        "P1,标题,其他,某局,CN,https://www.gov.cn/a,D1,2024-01-01,2024-01-01,,,,\n",
+    )
+    _write(root, "policies/criteria_review.csv",
+           "policy_id,criterion_id,source_span,source_page_or_section,"
+           "adjudicated_expression,source_version,source_document,review_status\n")
+    _write(root, "evaluation/labels.csv",
+           "case_id,enterprise_id,policy_id,policy_version,criterion_id,"
+           "adjudicated_result,split\n")
+    _write(root, "fixtures/enterprises.csv",
+           "enterprise_id,name_synthetic,region,industry,fact_key,fact_value,unit,period,"
+           "source,verified\n")
+    criterion = Criterion(
+        code="X1",
+        policy_code="P1",
+        source_span="正文",
+        section="第一条",
+        expression={"op": "manual_review"},
+        version_document="D1",
+    )
+    return Dataset(
+        data_dir=root,
+        policies=load_policies(root),
+        criteria={("P1", "X1"): criterion},
+        enterprises={},
+        cases=(),
+        excluded=(),
+    )
+
+
+def test_manifest_detects_a_single_changed_body_character(tmp_path):
+    root = tmp_path / "data"
+    before = _mini_dataset(root).manifest()
+    after = _mini_dataset(root, body="正文" * 120 + "。").manifest()
+
+    assert before["policies/sources/P1.txt"] != after["policies/sources/P1.txt"]
+    assert [key for key in before if key != "policies/sources/P1.txt"] == [
+        key for key in after if key != "policies/sources/P1.txt"
+    ]
+
+
+def test_span_source_refuses_a_declared_document_without_file(tmp_path):
+    """声明了出处就必须用那一份；找不到原文是缺口，不拿政策正文顶替。"""
+
+    root = tmp_path / "data"
+    _write(root, "policies/sources/P1.txt", "正文" * 120)
+    criterion = Criterion(
+        code="X1",
+        policy_code="P1",
+        source_span="某句引文",
+        section="第一条",
+        expression={},
+        documents=("不存在〔2020〕1号",),
+        version_document="D1",
+    )
+    dataset = Dataset(
+        data_dir=root,
+        policies={},
+        criteria={("P1", "X1"): criterion},
+        enterprises={},
+        cases=(),
+        excluded=(),
+    )
+
+    with pytest.raises(DatasetError, match="没有原文"):
+        dataset.span_source(criterion, 0)
+
+
+def test_span_source_refuses_misaligned_documents(tmp_path):
+    root = tmp_path / "data"
+    _write(root, "policies/sources/P1.txt", "正文" * 120)
+    criterion = Criterion(
+        code="X2",
+        policy_code="P1",
+        source_span="第一句|第二句",
+        section="第一条",
+        expression={},
+        documents=("甲〔2020〕1号",),
+        version_document="D1",
+    )
+    dataset = Dataset(
+        data_dir=root,
+        policies={},
+        criteria={("P1", "X2"): criterion},
+        enterprises={},
+        cases=(),
+        excluded=(),
+    )
+
+    with pytest.raises(DatasetError, match="无法逐段对应"):
+        dataset.span_source(criterion, 0)
+
+
+def test_manifest_covers_the_version_document_fallback(tmp_path):
+    """``source_document`` 为空时，引文核对实际读的是 ``version_document`` 那份原文。"""
+
+    root = tmp_path / "data"
+    _write(root, "policies/sources/D1.txt", "另一份出处" * 60)
+    before = _mini_dataset(root).manifest()
+    assert "policies/sources/D1.txt" in before
+
+    _write(root, "policies/sources/D1.txt", "改过的出处" * 60)
+    changed = _mini_dataset(root).manifest()
+    assert changed["policies/sources/D1.txt"] != before["policies/sources/D1.txt"]
+
+    (root / "policies" / "sources" / "D1.txt").unlink()
+    removed = _mini_dataset(root).manifest()
+    assert "policies/sources/D1.txt" not in removed
+    assert removed != changed
+
+
+def test_manifest_fails_when_a_source_file_is_missing(tmp_path):
+    root = tmp_path / "data"
+    dataset = _mini_dataset(root)
+    (root / "policies" / "sources" / "P1.txt").unlink()
+
+    with pytest.raises(DatasetError, match="找不到正文"):
+        dataset.manifest()
 
 
 def test_normalize_for_match_handles_fullwidth_and_spaces():

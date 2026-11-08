@@ -20,7 +20,24 @@ schema，而且把 ``validation_status`` 直接写成 ``passed``（条件被视�
     # 确认输出无误后再：
     ... import_eval_dataset.py --apply
 
-写入前会按 ``document_number`` 判重，已存在的政策版本整版跳过；企业按合成名称判重。
+写入前按 ``document_number`` 读库里的状态再决定：已完整发布且内容一致的整版跳过；
+中断留下的草稿（``pending_parse`` / ``pending_review``）从中断处续跑；状态或内容对不上
+的一律非零退出，交人工核对。企业按合成名称判重。
+
+**跨文件出处**：条件引用的句子如果落在另一份文件里（如《财税〔2015〕119号》），
+那份文件会作为附带来源一起写库，但它的官方链接必须来自
+``data/policies/reference_sources.csv``（列：``document,source_url``）。缺这一行时
+**不写这份附件**，引用它的条件判 ``blocked``、整轮预检非零退出——绝不借用主政策的
+链接（M2 在 #36 复审里点名的那条）。
+
+**逐段出处**：``criteria_review.csv`` 的 ``source_document`` 按 ``|`` 分段，与
+``source_span`` 逐段一一对应；声明出处没有独立正文、原文不含该句、段数不符都拒绝，
+不再按「哪份文本先包含这句」顶替（M2 在 #51 复审里点名的那条）。
+
+**冻结证据**：``--manifest`` 只打印本轮实际读取的每个输入文件的 sha256（四份 CSV、
+``reference_sources.csv`` 与 ``sources/`` 下被引用到的正文），不连库、不写库。必需项
+（要灌版本的正文、逐段声明的出处、这些出处要求的映射行）缺任何一项都非零退出，
+不输出缩短的清单。
 """
 
 from __future__ import annotations
@@ -31,7 +48,7 @@ import hashlib
 import json
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -42,6 +59,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "services" / "api"))
 
 from app.agents.ingestion import PreparedSource, validate_official_url  # noqa: E402
+from app.errors import ApiProblem  # noqa: E402
 from app.schemas import PolicyDraft, PolicyImportMetadata, SourceSpan  # noqa: E402
 from app.routes.admin_policies import _collect_validation, _domain_criterion  # noqa: E402
 
@@ -55,6 +73,11 @@ APPLICABLE_ENTITIES = ["企业"]
 
 #: 引文分段的分隔符：``criteria_review.csv`` 的 source_span 用 ``|`` 连多段原文。
 SPAN_SEPARATOR = "|"
+
+#: 跨文件出处的官方链接映射（``document,source_url``），由数据侧维护。
+#: 没有这份文件或缺少某一行，该出处就是「待补」——引用它的条件不允许发布，
+#: 绝不退回去借用主政策的链接（M2 在 #36 复审里点名的那条）。
+REFERENCE_SOURCES = DATA / "policies" / "reference_sources.csv"
 
 
 # ------------------------------------------------------------------ 读数据
@@ -81,7 +104,160 @@ def _norm(text: str) -> str:
     return "".join(text.split())
 
 
+def _reference_urls(problems: list[str]) -> dict[str, str]:
+    """读跨文件出处的官方链接映射：``document,source_url``。
+
+    文件不存在就返回空表——此时附件一律按「待补」处理，而不是借用主政策链接。
+    值必须是可核实的官方链接（与登记表同一道 :func:`validate_official_url`）。
+    """
+
+    if not REFERENCE_SOURCES.is_file():
+        return {}
+    urls: dict[str, str] = {}
+    for row in _rows(REFERENCE_SOURCES):
+        document = (row.get("document") or "").strip()
+        url = (row.get("source_url") or "").strip()
+        if not document or not url:
+            problems.append(f"reference_sources.csv 有空行：document={document!r}")
+            continue
+        try:
+            validate_official_url(url, f"{document} 的 sourceUrl")
+        except Exception as exc:  # ApiProblem
+            problems.append(f"reference_sources.csv 的 {document}：{exc}")
+            continue
+        urls[document] = url
+    return urls
+
+
+def _criteria_by_code(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    """已仲裁条件按政策代号分组；未仲裁的行不参与导入，也不参与签名。"""
+
+    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if (row.get("review_status") or "").strip() != "已仲裁":
+            continue
+        grouped[row["policy_id"]].append(row)
+    return grouped
+
+
+def _wanted_versions(
+    register: list[dict[str, str]],
+    criteria_rows: list[dict[str, str]],
+    labels: list[dict[str, str]],
+) -> list[tuple[str, str]]:
+    """要灌的版本：有已仲裁条件的政策 + labels 引用的文号（与 ``build_plans`` 同一口径）。"""
+
+    crit_by_code = _criteria_by_code(criteria_rows)
+    wanted = [
+        (row["policy_id"], row["version"])
+        for row in register
+        if crit_by_code.get(row["policy_id"])
+    ]
+    known = set(wanted)
+    registered = {(row["policy_id"], row["version"]) for row in register}
+    for row in labels:
+        key = (row["policy_id"], row["policy_version"])
+        if key not in known and key in registered:
+            wanted.append(key)
+            known.add(key)
+    return sorted(set(wanted))
+
+
+def input_manifest() -> dict[str, str]:
+    """本轮导入必需且实际读取的输入文件及其 sha256（按仓库相对路径）。
+
+    用与 ``build_plans`` 相同的解析结果确定必需项：四份 CSV、每个要灌版本的政策正文、
+    每条 ``source_document`` 声明的出处原文，以及这些出处必需的 ``reference_sources.csv``
+    映射行。缺任何一项都非零退出，**不打印缩短的清单**——删掉一份附件或映射后仍返回 0
+    的清单，不能当作「这批输入完整」的签认证据（M2 在 #51 复审指出）。没有任何条件引用
+    的来源属于可选文件，不凭空要求。
+    """
+
+    policies = DATA / "policies"
+    register_path = policies / "source_register.csv"
+    criteria_path = policies / "criteria_review.csv"
+    labels_path = DATA / "evaluation" / "labels.csv"
+    enterprises_path = DATA / "fixtures" / "enterprises.csv"
+    base = [register_path, criteria_path, labels_path, enterprises_path]
+    missing = [_relative(path) for path in base if not path.is_file()]
+    if missing:
+        raise SystemExit("缺少输入文件：" + "、".join(missing))
+
+    register = _rows(register_path)
+    criteria_rows = _rows(criteria_path)
+    labels = _rows(labels_path)
+    crit_by_code = _criteria_by_code(criteria_rows)
+    versions: dict[str, set[str]] = defaultdict(set)
+    for row in register:
+        versions[row["policy_id"]].add(row["version"])
+
+    urls = _reference_urls([])
+    files = list(base)
+    if REFERENCE_SOURCES.is_file():
+        files.append(REFERENCE_SOURCES)
+
+    required: list[Path] = []
+    problems: list[str] = []
+    for code, document in _wanted_versions(register, criteria_rows, labels):
+        # 正文选择与 build_plans 同一顺序：先文号、再政策代号。
+        if _source_text(document) is not None:
+            body_name = document
+        elif _source_text(code) is not None:
+            body_name = code
+        else:
+            problems.append(f"{code} @ {document}：sources/ 下没有正文")
+            continue
+        required.append(SOURCES / f"{body_name}.txt")
+        for crit in crit_by_code.get(code, []):
+            version_cited = (crit.get("source_version") or "").strip()
+            if version_cited and version_cited != document and version_cited in versions[code]:
+                continue  # 归同一政策的另一个版本处理，与 build_plans 一致
+            for name in _split_spans(crit.get("source_document") or ""):
+                if not name or name in {document, body_name}:
+                    continue
+                required.append(SOURCES / f"{name}.txt")
+                if name not in urls:
+                    problems.append(f"{name} 缺少 reference_sources.csv 中可核实的官方链接")
+
+    for path in required:
+        if not path.is_file():
+            problems.append(f"缺少出处正文：{_relative(path)}")
+    if problems:
+        raise SystemExit(
+            "输入不完整，不能作为签认清单：" + "；".join(dict.fromkeys(problems))
+        )
+
+    files += required
+    return {
+        _relative(path): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in dict.fromkeys(files)
+    }
+
+
+def _relative(path: Path) -> str:
+    """清单里的路径：仓库内用相对路径，测试替换到仓库外时退回绝对路径。"""
+
+    try:
+        return path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 # ------------------------------------------------------------------ 计划结构
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePlan:
+    """一份要写进库的来源。
+
+    ``url`` 是**这一份文件自己**的官方链接：正文取登记表的 ``source_url``，
+    附件取 ``reference_sources.csv`` 里的那一行。``None`` 表示无法核实（待补）。
+    """
+
+    name: str
+    text: str
+    kind: str
+    url: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,9 +284,90 @@ class PolicyPlan:
     metadata: PolicyImportMetadata
     body_name: str
     body_text: str
-    attachments: list[tuple[str, str]] = field(default_factory=list)
+    attachments: list[SourcePlan] = field(default_factory=list)
     criteria: list[CriterionPlan] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class CriterionState:
+    """一条条款的可比摘要：代号、状态、表达式、复核结论、引文与出处。
+
+    「已发布」不能只比条件代号和 passed：别人加了一条、改了 AST、换了引文或把 span
+    指向另一份来源，代号与状态都可能没变。所以这里把计划的关键内容整体拿出来比。
+    """
+
+    code: str
+    status: str
+    #: 规范化 JSON（键排序、紧凑分隔符），避免打包差异造成假不一致。
+    expression: str
+    review_finding: str
+    #: ``(来源名, 引文, 页码, 章节, span 里写的 sourceUrl)``，按写入顺序。
+    spans: tuple[tuple[str | None, str, int | None, str | None, str | None], ...]
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+@dataclass(frozen=True, slots=True)
+class PlanSignature:
+    """计划里「这个版本应该长成什么样」的可比摘要。"""
+
+    document: str
+    source_hashes: frozenset[str]
+    source_urls: frozenset[tuple[str, str | None]]
+    criteria: tuple[CriterionState, ...]
+
+    @classmethod
+    def of(cls, plan: PolicyPlan) -> "PlanSignature":
+        sources = _sources_of(plan)
+        urls = {source.name: (source.url or plan.metadata.source_url) for source in sources}
+        return cls(
+            document=plan.document,
+            source_hashes=frozenset(_digest(source.text) for source in sources),
+            source_urls=frozenset(urls.items()),
+            criteria=tuple(
+                CriterionState(
+                    code=crit.code,
+                    # 计划里还不知道校验结果；比对时状态另行要求。
+                    status="",
+                    expression=_canonical(crit.expression),
+                    review_finding=crit.review_finding,
+                    spans=tuple(
+                        (
+                            span.source_name,
+                            span.quote,
+                            span.page,
+                            span.section,
+                            urls[span.source_name],
+                        )
+                        for span in crit.spans
+                    ),
+                )
+                for crit in plan.criteria
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VersionState:
+    """库里某个文号当前的样子；重跑靠它区分「已完成 / 可续跑 / 对不上」。
+
+    只取判断需要的字段，不拉正文：正文可能有上百 KB，而这里只比哈希。
+    """
+
+    policy_id: UUID
+    version: str
+    review_status: str
+    revision: UUID
+    #: 库里已有的条款摘要，按代号排序。
+    criteria: tuple[CriterionState, ...]
+    #: 该版本已落库的全部来源内容哈希。
+    source_hashes: frozenset[str]
+    #: ``(来源名, 官方链接)``。链接也算「来源是什么」的一部分：旧导入器把附件
+    #: 指向主政策链接，内容哈希一模一样，只比哈希会把它当成导好了。
+    source_urls: frozenset[tuple[str, str | None]]
 
 
 # ------------------------------------------------------------------ 组装计划
@@ -179,31 +436,15 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
     for row in register:
         by_code[row["policy_id"]].append(row)
 
-    crit_by_code: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for row in criteria_rows:
-        if (row.get("review_status") or "").strip() != "已仲裁":
-            continue
-        crit_by_code[row["policy_id"]].append(row)
-
-    # 要灌的版本：有已仲裁条件的政策 + labels 引用的文号
-    wanted: list[tuple[str, str]] = []
-    for row in register:
-        code = row["policy_id"]
-        if not crit_by_code.get(code):
-            continue
-        wanted.append((code, row["version"]))
-    known = set(wanted)
-    for row in labels:
-        key = (row["policy_id"], row["policy_version"])
-        if key not in known and key in {(r["policy_id"], r["version"]) for r in register}:
-            wanted.append(key)
-            known.add(key)
+    crit_by_code = _criteria_by_code(criteria_rows)
+    wanted = _wanted_versions(register, criteria_rows, labels)
 
     reg_index = {(row["policy_id"], row["version"]): row for row in register}
     plans: list[PolicyPlan] = []
     problems: list[str] = []
+    reference_urls = _reference_urls(problems)
 
-    for code, document in sorted(set(wanted)):
+    for code, document in wanted:
         row = reg_index[(code, document)]
         metadata, notes = _metadata(row)
         try:
@@ -228,19 +469,18 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
             notes=notes,
         )
         versions = {r["version"] for r in by_code[code]}
-        sources = [(body_name, body_text)]
+        sources = [(body_name, body_text, metadata.source_url)]
 
         for crit in crit_by_code.get(code, []):
-            # 一行有两列在说到处：``source_version`` 是政策版本（对齐用），
-            # ``source_document`` 是这句话实际引自哪份文件（可能另属一份法规或申报通知）。
-            # 后者是空的就退回前者。
+            # 一行有两列在说到处：``source_version`` 是该条归属的政策版本文号（对齐用），
+            # ``source_document`` 是每段引文实际引自哪份文件（可能另属一份法规或申报通知）。
+            # 只有后者能让一段引文离开本版正文；它为空的条目不导入任何附件。
             version_cited = (crit.get("source_version") or "").strip()
             if version_cited and version_cited != document and version_cited in versions:
                 continue  # 属于同一政策的另一个版本，归那一版处理
+            declared = [name for name in _split_spans(crit.get("source_document") or "") if name]
             cited_docs = [
-                name
-                for name in _split_spans(crit.get("source_document") or "") + [version_cited]
-                if name and name != document
+                name for name in declared + [version_cited] if name and name != document
             ]
             for cited in dict.fromkeys(cited_docs):
                 extra = _source_text(cited)
@@ -249,17 +489,50 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
                     plan.notes.append(
                         f"{crit['criterion_id']} 的出处 {cited} 无独立文件，按本版正文校验"
                     )
-                elif all(name != cited for name, _ in sources):
-                    sources.append((cited, extra))
-                    plan.attachments.append((cited, extra))
-            plan.criteria.append(_criterion_plan(crit, sources))
+                    continue
+                if cited not in declared:
+                    # 只在 source_version 里出现：那一列表达的是归属，不是逐段出处。
+                    # 引文仍按本版正文校验，所以不导入这份附件。
+                    continue
+                url = reference_urls.get(cited)
+                if all(name != cited for name, *_ in sources):
+                    sources.append((cited, extra, url))
+                if url is None:
+                    # 链接核实不了就不写这一份：写进库只能借用主政策链接，用户点开
+                    # 看到的是另一份文件。引用它的条件各自被判 blocked（见
+                    # ``_criterion_plan``），没有条件引用的则不受影响。
+                    plan.notes.append(
+                        f"{cited} 的官方原文链接待补：不导入这份附件，"
+                        "引用它的条件不能发布；请在 reference_sources.csv 补一行"
+                    )
+                elif all(item.name != cited for item in plan.attachments):
+                    plan.attachments.append(
+                        SourcePlan(name=cited, text=extra, kind="attachment", url=url)
+                    )
+            plan.criteria.append(_criterion_plan(crit, sources, document=document))
 
         plans.append(plan)
 
     return plans, problems
 
 
-def _criterion_plan(crit: dict[str, str], sources: list[tuple[str, str]]) -> CriterionPlan:
+def _criterion_plan(
+    crit: dict[str, str],
+    sources: list[tuple[str, str, str | None]],
+    *,
+    document: str = "",
+) -> CriterionPlan:
+    """把一条已仲裁条件转成计划；每段引文按 ``source_document`` 逐段绑定出处。
+
+    ``sources[0]`` 是政策正文，其余是这条条件引到的别的文件。绑定规则（M2 在 #51
+    复审里要求，不能再「哪份文本先包含这句就用哪份」）：
+
+    - ``source_document`` 按 ``|`` 分段，与 ``source_span`` 逐段一一对应；
+    - 整列为空时，该段只在本版正文里找（旧数据里 ``source_version`` 指向申报通知这类
+      没有独立文件的通知，仍按本版正文逐字校验，见 ``app.ablation.dataset`` 同一口径）；
+    - 段数不一致、声明出处没有独立正文、声明出处原文不含该句，都拒绝；不跨来源搜索。
+    """
+
     code = crit["criterion_id"]
     try:
         expression = json.loads(crit["adjudicated_expression"])
@@ -272,13 +545,35 @@ def _criterion_plan(crit: dict[str, str], sources: list[tuple[str, str]]) -> Cri
     finding = (crit.get("review_finding") or "").strip() or "none"
     plan = CriterionPlan(code=code, expression=expression, review_finding=finding)
 
-    for quote in _split_spans(crit.get("source_span", "")):
-        wanted = _norm(quote)
-        chosen = next((name for name, text in sources if wanted in _norm(text)), None)
-        if chosen is None:
-            plan.problem = f"引文在可用正文里找不到：「{quote[:40]}」"
+    quotes = _split_spans(crit.get("source_span", ""))
+    declared = _split_spans(crit.get("source_document") or "")
+    if declared and len(declared) != len(quotes):
+        plan.problem = (
+            f"source_document 有 {len(declared)} 段、引文有 {len(quotes)} 段，无法逐段对应"
+        )
+        return plan
+
+    body_name = sources[0][0]
+    by_name = {name: (text, url) for name, text, url in sources}
+
+    for index, quote in enumerate(quotes):
+        target = declared[index] if declared else ""
+        # 政策自己的文号与正文名都指向正文；其余必须逐段命中声明的出处。
+        name = body_name if target in {"", document, body_name} else target
+        entry = by_name.get(name)
+        if entry is None:
+            plan.problem = f"引文出处 {name} 在本版没有独立正文（source_document 是否写错？）"
             break
-        plan.spans.append(SpanPlan(source_name=chosen, quote=quote, page=page, section=section))
+        text, url = entry
+        if url is None:
+            # 出处自己的官方链接没核实过：这一条不能发布。借用主政策链接会让
+            # 用户点开看到另一份文件，正是 M2 指出的问题。
+            plan.problem = f"引文出处 {name} 没有可核实的官方原文链接（待补），不得借用主政策链接"
+            break
+        if _norm(quote) not in _norm(text):
+            plan.problem = f"引文不在出处 {name} 的原文里：「{quote[:40]}」"
+            break
+        plan.spans.append(SpanPlan(source_name=name, quote=quote, page=page, section=section))
     if not plan.spans and plan.problem is None:
         plan.problem = "没有可用的引文"
     return plan
@@ -291,24 +586,27 @@ def _source_id(document: str, name: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"huice-eval/{document}/{name}")
 
 
-def _sources_of(plan: PolicyPlan) -> list[tuple[str, str, str]]:
-    body = (plan.body_name, plan.body_text, "body")
-    return [body] + [(name, text, "attachment") for name, text in plan.attachments]
+def _sources_of(plan: PolicyPlan) -> list[SourcePlan]:
+    body = SourcePlan(
+        name=plan.body_name, text=plan.body_text, kind="body", url=plan.metadata.source_url
+    )
+    return [body] + list(plan.attachments)
 
 
 def _draft_for(plan: PolicyPlan) -> PolicyDraft:
     meta = plan.metadata
     docs = [
         {
-            "id": _source_id(plan.document, name),
-            "kind": kind,
-            "source_url": meta.source_url,
-            "title": name,
+            "id": _source_id(plan.document, source.name),
+            "kind": source.kind,
+            # 正文与附件都带各自核实过的链接；回退只兜手工构造的计划，正规路径不走到。
+            "source_url": source.url or meta.source_url,
+            "title": source.name,
             "fetched_at": datetime.now(timezone.utc),
-            "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            "text": text,
+            "content_hash": hashlib.sha256(source.text.encode("utf-8")).hexdigest(),
+            "text": source.text,
         }
-        for name, text, kind in _sources_of(plan)
+        for source in _sources_of(plan)
     ]
     return PolicyDraft.model_validate(
         {
@@ -336,16 +634,21 @@ def _draft_for(plan: PolicyPlan) -> PolicyDraft:
 
 
 def _spans_for(plan: PolicyPlan, crit: CriterionPlan) -> list[SourceSpan]:
-    known = {name for name, _, _ in _sources_of(plan)}
+    known = {source.name: source for source in _sources_of(plan)}
     spans = []
     for span in crit.spans:
-        if span.source_name not in known:
+        source = known.get(span.source_name)
+        if source is None:
             raise SystemExit(f"{crit.code} 的引文出处 {span.source_name} 不在本版来源里")
+        if source.url is None:
+            # 走到这里说明 _criterion_plan 的拦截漏了这一份；宁可炸掉也不要拿主政策
+            # 链接顶替，那正是 M2 在 #36 指出的问题。
+            raise SystemExit(f"{crit.code} 的引文出处 {source.name} 没有可核实的官方原文链接")
         spans.append(
             SourceSpan.model_validate(
                 {
                     "source_id": _source_id(plan.document, span.source_name),
-                    "source_url": plan.metadata.source_url,
+                    "source_url": source.url,
                     "source_version": plan.metadata.version,
                     "page": span.page,
                     "section": span.section,
@@ -392,31 +695,228 @@ def _validate(plan: PolicyPlan, draft: PolicyDraft) -> tuple[dict[str, str], dic
 # ------------------------------------------------------------------ 写库
 
 
-def _apply(plans: list[PolicyPlan], dsn: str) -> int:
-    """逐版写库。
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    调用方（``main``）已保证预检全通过；这里不再跳过带问题的计划，只负责写与报告。
-    中途失败时**前面已写完的版本保留**：每个版本由 ``create_policy_version`` 自己一个
-    事务，失败的那个版本不会留下半条数据；重跑本脚本会按文号跳过已存在的版本，因此
-    恢复方式就是「修好失败的原因再跑一次 --apply」。
-    """
+
+def _prepared(plan: PolicyPlan) -> list[PreparedSource]:
+    return [
+        PreparedSource(
+            kind=source.kind,
+            file_name=f"{source.name}.txt",
+            mime_type="text/plain",
+            text=source.text,
+            content_hash=_digest(source.text),
+            byte_size=len(source.text.encode("utf-8")),
+            source_url=source.url,
+        )
+        for source in _sources_of(plan)
+    ]
+
+
+def _storage_keys(plan: PolicyPlan) -> list[str]:
+    return [f"evaluation/{plan.document}/{source.name}.txt" for source in _sources_of(plan)]
+
+
+def _source_name(title: str, file_name: str) -> str:
+    """库里的来源名带 ``.txt``，计划里的不带；比较时取带后缀之前的写法。"""
+
+    for value in (title or "", file_name or ""):
+        if value.endswith(".txt"):
+            return value[: -len(".txt")]
+    return title or file_name
+
+
+def _version_state(dsn: str, document_number: str) -> list[VersionState]:
+    """读库：这个文号现在有几个版本、各自停在哪一步。"""
 
     import psycopg
+    from psycopg.rows import dict_row
 
-    from app.db import Database
-    from app.integrations.storage import PolicyRepository
+    states: list[VersionState] = []
+    with psycopg.connect(dsn) as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT id, policy_id, version, review_status, revision FROM policy_version "
+            "WHERE document_number = %s ORDER BY imported_at, id",
+            (document_number,),
+        )
+        for row in cur.fetchall():
+            cur.execute(
+                "SELECT id, title, file_name, content_hash, source_url FROM policy_source "
+                "WHERE policy_version_id = %s",
+                (row["id"],),
+            )
+            sources = cur.fetchall()
+            by_id = {
+                str(item["id"]): (_source_name(item["title"], item["file_name"]), item["source_url"])
+                for item in sources
+            }
+            cur.execute(
+                "SELECT title, expression, source_spans, review_finding, validation_status "
+                "FROM policy_criterion WHERE policy_version_id = %s ORDER BY title",
+                (row["id"],),
+            )
+            criteria = tuple(
+                CriterionState(
+                    code=item["title"],
+                    status=item["validation_status"] or "",
+                    expression=_canonical(item["expression"]),
+                    review_finding=item["review_finding"] or "none",
+                    spans=tuple(
+                        (
+                            (by_id.get(str(span.get("sourceId"))) or (None, None))[0],
+                            str(span.get("quote") or ""),
+                            span.get("page"),
+                            span.get("section"),
+                            span.get("sourceUrl"),
+                        )
+                        for span in (item["source_spans"] or [])
+                    ),
+                )
+                for item in cur.fetchall()
+            )
+            states.append(
+                VersionState(
+                    policy_id=row["policy_id"],
+                    version=row["version"],
+                    review_status=row["review_status"] or "",
+                    revision=row["revision"],
+                    criteria=criteria,
+                    source_hashes=frozenset(item["content_hash"] for item in sources),
+                    source_urls=frozenset(by_id.values()),
+                )
+            )
+    return states
 
-    repository = PolicyRepository(Database(dsn), cursor_secret="eval-import")
+
+def _criteria_mismatch(
+    stored: tuple[CriterionState, ...],
+    expected: tuple[CriterionState, ...],
+    *,
+    require_passed: bool,
+) -> str | None:
+    """逐条比库里与计划的条款；对不上就返回第一条说明，全对返回 ``None``。
+
+    比的是集合（缺失 / 多出 / 重复）加上每条的内容（表达式、复核结论、引文与出处）。
+    只比「代号在不在、状态是不是 passed」会漏掉三种真实故障：别人加了一条、
+    改了 AST 或引文、把 span 指向另一份来源。
+    """
+
+    counts = Counter(item.code for item in stored)
+    duplicated = sorted(code for code, count in counts.items() if count > 1)
+    if duplicated:
+        return f"库里有重复条款 {'、'.join(duplicated)}"
+
+    missing = sorted({item.code for item in expected} - set(counts))
+    if missing:
+        return f"缺条件 {'、'.join(missing)}"
+    extra = sorted(set(counts) - {item.code for item in expected})
+    if extra:
+        return f"多出条件 {'、'.join(extra)}"
+
+    by_code = {item.code: item for item in stored}
+    for want in expected:
+        got = by_code[want.code]
+        if require_passed and got.status != "passed":
+            return f"{want.code} 不是 passed"
+        if got.expression != want.expression:
+            return f"{want.code} 的判定表达式与计划不一致"
+        if got.review_finding != want.review_finding:
+            return f"{want.code} 的复核结论与计划不一致"
+        if got.spans != want.spans:
+            return f"{want.code} 的引文或出处与计划不一致"
+    return None
+
+
+def _decide(states: list[VersionState], plan: PlanSignature) -> tuple[str, str]:
+    """重跑该干什么：``create`` 新建、``resume`` 续跑、``skip`` 跳过、``conflict`` 交人工。
+
+    返回 ``(动作, 理由)``。判断只看库里已有的记录，不猜：状态不认识、条件缺了/多了/
+    重了、不是 passed、AST 或引文变过、来源（内容或链接）变过，都算 ``conflict``——
+    宁可让运维看一眼，也不能让「进程在中途被杀」「别人改过条款」「旧导入器留下错链接」
+    看起来像「已经导好了」。
+
+    草稿（``pending_parse`` / ``pending_review``）比条款内容但不比 ``validation_status``：
+    状态是校验算出来的，续跑会用下一轮的校验结果整版覆盖。
+    """
+
+    if not states:
+        return "create", "库里没有这个文号"
+    if len(states) > 1:
+        return (
+            "conflict",
+            f"库里有 {len(states)} 个版本共用文号 {plan.document}，无法判断该续跑哪一个",
+        )
+
+    state = states[0]
+
+    if state.review_status == "published":
+        if state.source_hashes != plan.source_hashes:
+            return "conflict", "已发布，但来源与本轮计划不一致（正文或附件变过）"
+        if state.source_urls != plan.source_urls:
+            return "conflict", "已发布，但来源链接与本轮计划不一致（如旧导入器把附件指向主政策）"
+        mismatch = _criteria_mismatch(state.criteria, plan.criteria, require_passed=True)
+        if mismatch:
+            return "conflict", f"已发布，但{mismatch}"
+        return "skip", f"已发布，{len(state.criteria)} 条条件全部 passed"
+
+    if state.review_status in {"pending_parse", "pending_review"}:
+        if state.review_status == "pending_parse" and state.criteria:
+            return "conflict", "状态是 pending_parse 却已有条件记录，库被改过"
+        if state.review_status == "pending_review":
+            # 建版后中断时本来就没有条款，不能按「缺条件」拒绝；存过条款才逐条比。
+            mismatch = _criteria_mismatch(state.criteria, plan.criteria, require_passed=False)
+            if mismatch:
+                return "conflict", f"草稿的条款与本轮计划不一致：{mismatch}，请人工核对"
+        if state.source_hashes != plan.source_hashes:
+            return "conflict", "草稿的来源与本轮计划不一致（正文或附件变过）"
+        if state.source_urls != plan.source_urls:
+            return "conflict", "草稿的来源链接与本轮计划不一致，请人工核对"
+        return "resume", f"未发布（{state.review_status}），从中断处续跑"
+
+    return "conflict", f"未识别的状态 {state.review_status!r}"
+
+
+def _apply(plans: list[PolicyPlan], dsn: str, *, repository: Any | None = None) -> int:
+    """逐版写库：先读状态，再决定新建、续跑还是拒绝。
+
+    写库分三步，每步各自一个事务，因此中断点只有三个，也正好是库里能看到的三种状态：
+
+    1. ``create_policy_version``：版本 + 来源 + 轨迹同一个事务。中断 → 版本在、
+       没有条件（``pending_parse``）。
+    2. ``save_criteria``：整版替换条件与校验发现（按 revision 做 CAS）。中断 →
+       条件在、未发布（``pending_review``）。
+    3. ``publish``：翻状态并写失效事件。中断 → 已发布（``published``）。
+
+    重跑据此分流：已完整发布的跳过；前两种续跑（``save_criteria`` 是整版替换，重写
+    不会叠加）；状态或内容对不上的一律非零退出。**不会出现「跳过即成功」**——
+    这正是 M2 在 #36 复审里指出、旧写法按文号 ``SELECT 1`` 就跳过的问题。
+
+    企业画像最后统一写，按合成名称判重。
+    """
+
+    if repository is None:
+        from app.db import Database
+        from app.integrations.storage import PolicyRepository
+
+        repository = PolicyRepository(Database(dsn), cursor_secret="eval-import")
     failed = 0
 
     for plan in plans:
         meta = plan.metadata
-        with psycopg.connect(dsn) as conn:
-            exists = conn.execute(
-                "SELECT 1 FROM policy_version WHERE document_number = %s", (meta.document_number,)
-            ).fetchone()
-        if exists:
-            print(f"跳过 {plan.document}：库中已有该文号的政策版本")
+        source_plans = _sources_of(plan)
+        digests = {source.name: _digest(source.text) for source in source_plans}
+        # 每条引文按它自己那份来源的链接走；主政策链接只属于正文。
+        urls = {source.name: (source.url or meta.source_url) for source in source_plans}
+        states = _version_state(dsn, meta.document_number)
+        action, reason = _decide(states, PlanSignature.of(plan))
+
+        if action == "skip":
+            print(f"跳过 {plan.document}：{reason}")
+            continue
+        if action == "conflict":
+            print(f"拒绝 {plan.document}：{reason}。请人工核对后再跑 --apply。")
+            failed += 1
             continue
         if any(crit.problem for crit in plan.criteria):
             for crit in plan.criteria:
@@ -425,44 +925,45 @@ def _apply(plans: list[PolicyPlan], dsn: str) -> int:
             failed += 1
             continue
 
-        prepared = [
-            PreparedSource(
-                kind=kind,
-                file_name=f"{name}.txt",
-                mime_type="text/plain",
-                text=text,
-                content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                byte_size=len(text.encode("utf-8")),
-            )
-            for name, text, kind in _sources_of(plan)
-        ]
-        draft = repository.create_policy_version(
-            metadata=meta,
-            sources=prepared,
-            storage_keys=[f"evaluation/{plan.document}/{name}.txt" for name, _, _ in _sources_of(plan)],
-            trace_id=str(uuid4()),
-        )
+        try:
+            if action == "create":
+                draft = repository.create_policy_version(
+                    metadata=meta,
+                    sources=_prepared(plan),
+                    storage_keys=_storage_keys(plan),
+                    trace_id=str(uuid4()),
+                )
+                print(f"已建草稿 {plan.document}（{len(draft.sources)} 个来源）")
+            else:
+                draft = repository.get_version_for_edit(states[0].policy_id, states[0].version)
+                print(f"续跑 {plan.document}：{reason}")
+        except ApiProblem as exc:
+            print(f"拒绝 {plan.document}：{exc.code} {exc.message}")
+            failed += 1
+            continue
+
         ids = {source.content_hash: source.id for source in draft.sources}
-        digest_of = {
-            name: hashlib.sha256(text.encode("utf-8")).hexdigest()
-            for name, text, _ in _sources_of(plan)
-        }
+        absent = [name for name, digest in digests.items() if digest not in ids]
+        if absent:
+            print(f"拒绝 {plan.document}：库里缺来源 {'、'.join(absent)}，请人工核对。")
+            failed += 1
+            continue
 
         criteria = []
         for crit in plan.criteria:
             spans = []
             for span in crit.spans:
-                digest = digest_of[span.source_name]
+                digest = digests[span.source_name]
                 spans.append(
                     SourceSpan.model_validate(
                         {
                             "source_id": ids[digest],
-                            "source_url": meta.source_url,
+                            "source_url": urls[span.source_name],
                             "source_version": meta.version,
                             "page": span.page,
                             "section": span.section,
                             "quote": span.quote,
-                            "text_hash": hashlib.sha256(span.quote.encode("utf-8")).hexdigest(),
+                            "text_hash": _digest(span.quote),
                         }
                     )
                 )
@@ -628,7 +1129,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="import_eval_dataset.py", description=__doc__)
     parser.add_argument("--apply", action="store_true", help="真正写库；默认只干跑")
     parser.add_argument("--dsn", help="库连接串；默认读 DATABASE_URL")
+    parser.add_argument(
+        "--manifest",
+        action="store_true",
+        help="只打印本轮实际读取的输入文件哈希（冻结证据），不连库、不写库",
+    )
     args = parser.parse_args(argv)
+
+    if args.manifest:
+        for name, digest in sorted(input_manifest().items()):
+            print(f"{digest}  {name}")
+        return 0
 
     plans, problems = build_plans()
     for problem in problems:
