@@ -28,7 +28,7 @@
 
 ## 3. 不可变指纹
 
-以下指纹中，`labels.csv`、`enterprises.csv` 与旧版 `criteria_review.csv` 于 2026-11-04 在 `main`（`fc5c8e0`）计算；`criteria_review.csv` 的新值于 2026-11-07 修正后重算：
+以下指纹中，`labels.csv`、`enterprises.csv` 与旧版 `criteria_review.csv` 于 2026-11-04 在 `main`（`fc5c8e0`）计算；`criteria_review.csv` 的新值于 2026-11-08 修正后重算：
 
 | 文件 | SHA-256 |
 | --- | --- |
@@ -38,7 +38,7 @@
 | `data/policies/criteria_review.csv`（2026-11-08 修正后，当前） | `01c8821c7ee5a50750acdbf3a65cc7f8b7fe65d51367ca59ab23fd8a20234627` |
 | `data/fixtures/enterprises.csv` | `fae2a66a947a010a4fd4b568b1793c2c4b0de85daf78d8d15d40c5b6b6b1be9a` |
 
-> `criteria_review.csv` 的 2026-11-07 修正只改 10 行的 `source_version` 归属（SRDI-001～008、RD-001、HT-007）；**RD-001 的 `source_document` 保持空**，表示引文出自政策本体，负面清单 8 段在 `data/policies/sources/CN-TAX-RD-2023-007.txt` 中逐字可查。`labels.csv`、`enterprises.csv` 与 `sources/财税〔2015〕119号.txt` 均未改。
+> `criteria_review.csv` 的 2026-11-07 修正只改 10 行的 `source_version` 归属（SRDI-001～008、RD-001、HT-007）；**RD-001 的 `source_document` 保持空**，表示引文出自政策本体，负面清单 8 段在 `data/policies/sources/CN-TAX-RD-2023-007.txt` 中逐字可查。**在 2026-11-07 当时**，`labels.csv`、`enterprises.csv` 与 `sources/财税〔2015〕119号.txt` 均未改；11-08 修改 119 号节选见 §4。
 >
 > 哈希对应：`767c6b…` = 2026-11-06 试跑使用；`6ece5e0a…` = M2 复审 head（原 `0e4a54d`，清理签名后 `8c975dd`；RD-001 单值，未按 8 段对齐）；`998da4c0…` = 原 `689f1ae`（清理签名后 `61939bd`；曾按 8 段填 119 号，属错误改法，已回退）；`f7db3424…` = 2026-11-07 归属修正后（`source_document` 保持空）；`01c8821c…` = 2026-11-08 将 HT-007 的 `source_span` 改为官方逐字句后（当前）。**五者不得混用。**
 >
@@ -81,7 +81,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 - v2 的改判理由：深科技创新规〔2021〕5号 第三条采用财税〔2015〕119号 的归集范围；国科发火〔2016〕195号 的 20% 仅见第七条（第三方审计/鉴证机构资质），不属本政策归集口径。原 `conflict` 结论作废，改为 `manual_review` → 求值恒 `insufficient_evidence`。
 - **`labels.csv` 自 `df05346` 起未再修改**（`git log df05346..HEAD -- data/evaluation/labels.csv` 为空）。
 - 形成后的相关变更：`d2acd9c` 仅修改 `criteria_review.csv` 中 **GXJS-V1/V2 的 `adjudication_note` 措辞**（不改 AST，且 **GXJS 不在留出集**）；2026-11-07 又修正了 `criteria_review.csv` 的归属字段（见下条）。`enterprises.csv` 自形成后未修改。
-- **2026-11-07（本 PR 的归属修正）**：`criteria_review.csv` 只修正 10 行的 `source_version`（SRDI-001～008、RD-001、HT-007）；**RD-001 的 `source_document` 保持空**（引文出自政策本体，负面清单 8 段在 `CN-TAX-RD-2023-007.txt` 中逐字可查）。**不改条件、AST、标签或 119 号节选**；`labels.csv` 仍为 v2。**2026-11-06 的试跑使用修改前的 `criteria_review.csv`（分母 140）**；修正后引用可证实率分母为 146，旧跑数不得套用新分母。
+- **2026-11-07（本 PR 的归属修正）**：`criteria_review.csv` 只修正 10 行的 `source_version`（SRDI-001～008、RD-001、HT-007）；**RD-001 的 `source_document` 保持空**（引文出自政策本体，负面清单 8 段在 `CN-TAX-RD-2023-007.txt` 中逐字可查）。**11-07 当时不改条件、AST、标签或 119 号节选**；11-08 已修改 119 号节选，见下条。`labels.csv` 仍为 v2。**2026-11-06 的试跑使用修改前的 `criteria_review.csv`（分母 140）**；修正后引用可证实率分母为 146，旧跑数不得套用新分母。
 - **2026-11-08（HT-007 引文逐字修正）**：`source_span` 从「与研发活动直接相关的其他相关费用总额不得超过…」改为官方原句「此项费用总额不得超过可加计扣除研发费用总额的10%」；`sources/财税〔2015〕119号.txt` 换成官方原文句（附原文 URL），不再用自己的节选给 span 做逐字校验。**不改条件、AST 或标签**；`labels.csv` 仍为 v2（其 `source_span` 是标签快照，未随本次逐字修正改写，评测引用以 criteria 的逐字 span 为准）。
 - 上述时间是标签的**形成时间**，不是正式冻结/签认时间；正式签认时间见 §7，由 M2 填写。
 
@@ -127,15 +127,25 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
    - 条件级对账以 `labels.csv` 的条件级标签为准，结果从 report 稳定正文导出。
 5. **一致性核对**：运行前用上述映射核对运行时输入与签认快照；不一致即停止评测并记录，不得用运行结果反推快照。
 
-> **数据集哈希范围（2026-11-05 补）：** 只覆盖 §3 的三份文件（`labels.csv`、`criteria_review.csv`、`enterprises.csv`）；`data/evaluation` 下的复核表/标注表（`material_review_*.csv`、`*_annotation_sheet.csv`）不属于评测输入，不应进入签认清单。`--dataset-dir` 如只能扫目录，应改为显式文件列表或支持多次指定。
+> **输入签名范围（2026-11-08 补，替代 2026-11-05 的「三份文件」口径）：** 冻结声明按阶段分别签认实际读取的文件，不能用一份固定文件名清单代替：
+>
+> | 阶段 | 实际读取 | 签名与失败条件 |
+> | --- | --- | --- |
+> | 数据集（消融输入） | 四份 CSV（`labels.csv`、`criteria_review.csv`、`enterprises.csv`、`source_register.csv`）+ 被 case 引用到的政策正文 + 每条 `source_document` 的出处原文 | `Dataset.manifest()`；任一文件缺失即 `DatasetError`，不得判为同一输入；正文改一字，对应条目必须变化 |
+> | 导入映射 | 导入器实际读取的四份 CSV、政策正文、文号命名的出处原文、`reference_sources.csv` | `import_eval_dataset.py --manifest`；缺失即失败/blocked，不借用主政策链接 |
+> | 消融跑数 | 该次运行实际读取的文件集合 | JSONL 头 `manifest` 字段，按实际文件逐项比对 |
+>
+> 三类签名不可互相替代。旧试跑（2026-11-06）保留当时的旧范围，不回溯套用新清单；`data/evaluation` 下的复核表/标注表不属于评测输入。当前 PR head `6b17146` 的导入器仍是旧实现；`--manifest` 与 `reference_sources.csv` 的签名待 #51 合入 main、本分支同步后再核对，在此之前不声称三类签名已闭合。
 >
 > **跨文件来源链接（2026-11-08 补）：** 正文用 `source_register.csv` 的 `source_url`；跨文件出处（如 HT-007 引自财税〔2015〕119号）的官方链接由 `data/policies/reference_sources.csv`（列 `document,source_url`）单独维护。缺失该行时，引用它的条件 blocked、附件不写库，不借用主政策链接。`span.sourceVersion` 仍记该引文支持的政策版本，来源文号由来源行的 title/file_name 表达；本次不改变既有契约语义。
 >
-> **注意：** 当前 PR 的导入器尚未读取 `reference_sources.csv`（需 M1 的 `ae63efe` 进入后生效）；数据侧先填好不影响现有行为。HT-007 的 `source_span` 已改为官方逐字句「此项费用总额不得超过可加计扣除研发费用总额的10%」，119 号节选同步换成官方原文句。
+> **注意：** 当前 PR 的导入器尚未读取 `reference_sources.csv`（需 #51（head `1ef0bc6`）合入 main 并同步后生效）；数据侧先填好不影响现有行为。HT-007 的 `source_span` 已改为官方逐字句「此项费用总额不得超过可加计扣除研发费用总额的10%」，119 号节选同步换成官方原文句。
 
 **进度（2026-11-07）：** 第 1、2、3、5 项与第 4 项 `freeze-report` 由 #39 实现（已合入，2026-11-06 09:59）；部署文件指纹 `codeFingerprint` 由 #42 补入（已合入，2026-11-07 03:46），复算方式见第 3 项。清单结构以当前 `main` 的 `app.evaluation` 为准，不再引用 #39 的 head 提交。已合入不等于已完成：M1 报告 ECS 已有一份清单，但映射未解决 30 项、`verify` 非零退出；M2 未独立访问 ECS 核实，§5.2 不能算完成。本 PR 修改 `criteria_review.csv` 后必须重出映射/清单；本声明保持草案，直到跑出「未解决 0 项」的清单、`verify` 通过，并把清单、`asOf`、期间、run 输出与复核记录一并归档。
 >
 > M1 已把消融加载口径改为读 `source_document`（按 `|` 与段数对齐，空时退回政策正文；提交 `200b7fe`（cherry-pick 为 `e7a25b4`，已带入本分支）。归属修正后 RD-001 的 8 段引文在第 7 号正文逐字可查、HT-007 的引文在 119 号节选可查，`unverifiable_criteria()` 为空；引用可证实率分母由 **140 → 146**。这是语义修正的必然结果，不是调数：**11-06 旧跑数的 140 必须与旧哈希 `767c6b…` 一起报告，不得套用 146。**
+
+> **2026-11-08 状态：** M1 的 #51（head `47a4eac` → `1ef0bc6`）已加入消融实际文件签名与导入器 `--manifest`，但 #51 仍 OPEN；本 PR 的导入器仍是旧实现。待 #51 合入 main、本分支再合 main 后，才验证整条链；M2 对 `--manifest` 缺来源的疑点需 #51 先解决。ECS 云端映射/verify 仍未独立核验，本声明保持草案。
 
 ## 6. 锁定边界声明（避免误读）
 
@@ -152,7 +162,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 | --- | --- | --- | --- | --- |
 | M3 | 起草本声明、提供指纹与复现方法 | 已起草；2026-11-07 按复审意见修订 | 2026-11-04 | — |
 | M2 | 复核正式表述、评测协议与政策级/输入快照口径 | 已复审；保留草案、未签认 | 2026-11-07（head 原 `0e4a54d` / 现 `8c975dd`） | — |
-| M1 | 提供输入映射、运行参数与结果导出方式，确认运行时数据与快照一致 | 已提供 #39 与 `200b7fe`（cherry-pick `e7a25b4`；消融/导入器修复，已带入本分支）；ECS 清单映射未解决 30 项、`verify` 非零，M2 未独立核实，待重出 | — | — |
+| M1 | 提供输入映射、运行参数与结果导出方式，确认运行时数据与快照一致 | 已提供 #39、`200b7fe`（cherry-pick `e7a25b4`）与 #51（head `1ef0bc6`，仍 OPEN；消融实际文件签名、导入器 `--manifest`）；ECS 清单映射未解决 30 项、`verify` 非零，M2 未独立核实，待重出 | — | — |
 
 > 正式冻结以 M2 在本表填写**签认时间**为准；本文件状态改为「已复核」前，不得对外称已冻结。
 
