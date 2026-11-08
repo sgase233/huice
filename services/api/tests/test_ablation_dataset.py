@@ -283,6 +283,24 @@ def test_span_source_refuses_misaligned_documents(tmp_path):
         dataset.span_source(criterion, 0)
 
 
+def test_manifest_covers_the_version_document_fallback(tmp_path):
+    """``source_document`` 为空时，引文核对实际读的是 ``version_document`` 那份原文。"""
+
+    root = tmp_path / "data"
+    _write(root, "policies/sources/D1.txt", "另一份出处" * 60)
+    before = _mini_dataset(root).manifest()
+    assert "policies/sources/D1.txt" in before
+
+    _write(root, "policies/sources/D1.txt", "改过的出处" * 60)
+    changed = _mini_dataset(root).manifest()
+    assert changed["policies/sources/D1.txt"] != before["policies/sources/D1.txt"]
+
+    (root / "policies" / "sources" / "D1.txt").unlink()
+    removed = _mini_dataset(root).manifest()
+    assert "policies/sources/D1.txt" not in removed
+    assert removed != changed
+
+
 def test_manifest_fails_when_a_source_file_is_missing(tmp_path):
     root = tmp_path / "data"
     dataset = _mini_dataset(root)

@@ -35,7 +35,9 @@ schema，而且把 ``validation_status`` 直接写成 ``passed``（条件被视�
 不再按「哪份文本先包含这句」顶替（M2 在 #51 复审里点名的那条）。
 
 **冻结证据**：``--manifest`` 只打印本轮实际读取的每个输入文件的 sha256（四份 CSV、
-``reference_sources.csv`` 与 ``sources/`` 下被引用到的正文），不连库、不写库。
+``reference_sources.csv`` 与 ``sources/`` 下被引用到的正文），不连库、不写库。必需项
+（要灌版本的正文、逐段声明的出处、这些出处要求的映射行）缺任何一项都非零退出，
+不输出缩短的清单。
 """
 
 from __future__ import annotations
@@ -127,40 +129,105 @@ def _reference_urls(problems: list[str]) -> dict[str, str]:
     return urls
 
 
-def input_manifest() -> dict[str, str]:
-    """本轮导入实际读取的输入文件及其 sha256（按仓库相对路径）。
+def _criteria_by_code(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    """已仲裁条件按政策代号分组；未仲裁的行不参与导入，也不参与签名。"""
 
-    覆盖：四份 CSV（登记表、条件表、标签、企业画像）、``reference_sources.csv``（存在时）、
-    以及 ``sources/`` 下被正文或出处引用到、且确实存在的每个 ``.txt``。只改其中任何一个
-    文件，清单就不同——这是 M2 在 #36 指出的「只改正文时两轮跑数头一致」的修法。四份 CSV
-    缺失直接失败；出处正文不存在时本来就会被导入报告点名（blocked），不进清单。
+    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if (row.get("review_status") or "").strip() != "已仲裁":
+            continue
+        grouped[row["policy_id"]].append(row)
+    return grouped
+
+
+def _wanted_versions(
+    register: list[dict[str, str]],
+    criteria_rows: list[dict[str, str]],
+    labels: list[dict[str, str]],
+) -> list[tuple[str, str]]:
+    """要灌的版本：有已仲裁条件的政策 + labels 引用的文号（与 ``build_plans`` 同一口径）。"""
+
+    crit_by_code = _criteria_by_code(criteria_rows)
+    wanted = [
+        (row["policy_id"], row["version"])
+        for row in register
+        if crit_by_code.get(row["policy_id"])
+    ]
+    known = set(wanted)
+    registered = {(row["policy_id"], row["version"]) for row in register}
+    for row in labels:
+        key = (row["policy_id"], row["policy_version"])
+        if key not in known and key in registered:
+            wanted.append(key)
+            known.add(key)
+    return sorted(set(wanted))
+
+
+def input_manifest() -> dict[str, str]:
+    """本轮导入必需且实际读取的输入文件及其 sha256（按仓库相对路径）。
+
+    用与 ``build_plans`` 相同的解析结果确定必需项：四份 CSV、每个要灌版本的政策正文、
+    每条 ``source_document`` 声明的出处原文，以及这些出处必需的 ``reference_sources.csv``
+    映射行。缺任何一项都非零退出，**不打印缩短的清单**——删掉一份附件或映射后仍返回 0
+    的清单，不能当作「这批输入完整」的签认证据（M2 在 #51 复审指出）。没有任何条件引用
+    的来源属于可选文件，不凭空要求。
     """
 
     policies = DATA / "policies"
-    files = [
-        policies / "source_register.csv",
-        policies / "criteria_review.csv",
-        DATA / "evaluation" / "labels.csv",
-        DATA / "fixtures" / "enterprises.csv",
-    ]
+    register_path = policies / "source_register.csv"
+    criteria_path = policies / "criteria_review.csv"
+    labels_path = DATA / "evaluation" / "labels.csv"
+    enterprises_path = DATA / "fixtures" / "enterprises.csv"
+    base = [register_path, criteria_path, labels_path, enterprises_path]
+    missing = [_relative(path) for path in base if not path.is_file()]
+    if missing:
+        raise SystemExit("缺少输入文件：" + "、".join(missing))
+
+    register = _rows(register_path)
+    criteria_rows = _rows(criteria_path)
+    labels = _rows(labels_path)
+    crit_by_code = _criteria_by_code(criteria_rows)
+    versions: dict[str, set[str]] = defaultdict(set)
+    for row in register:
+        versions[row["policy_id"]].add(row["version"])
+
+    urls = _reference_urls([])
+    files = list(base)
     if REFERENCE_SOURCES.is_file():
         files.append(REFERENCE_SOURCES)
 
-    names: set[str] = set()
-    for row in _rows(policies / "source_register.csv"):
-        names.add((row.get("document") or "").strip())
-        names.add((row.get("policy_id") or "").strip())
-    for row in _rows(policies / "criteria_review.csv"):
-        names.update(_split_spans(row.get("source_document") or ""))
-        names.add((row.get("source_version") or "").strip())
-    for name in sorted(filter(None, names)):
-        path = SOURCES / f"{name}.txt"
-        if path.is_file():
-            files.append(path)
+    required: list[Path] = []
+    problems: list[str] = []
+    for code, document in _wanted_versions(register, criteria_rows, labels):
+        # 正文选择与 build_plans 同一顺序：先文号、再政策代号。
+        if _source_text(document) is not None:
+            body_name = document
+        elif _source_text(code) is not None:
+            body_name = code
+        else:
+            problems.append(f"{code} @ {document}：sources/ 下没有正文")
+            continue
+        required.append(SOURCES / f"{body_name}.txt")
+        for crit in crit_by_code.get(code, []):
+            version_cited = (crit.get("source_version") or "").strip()
+            if version_cited and version_cited != document and version_cited in versions[code]:
+                continue  # 归同一政策的另一个版本处理，与 build_plans 一致
+            for name in _split_spans(crit.get("source_document") or ""):
+                if not name or name in {document, body_name}:
+                    continue
+                required.append(SOURCES / f"{name}.txt")
+                if name not in urls:
+                    problems.append(f"{name} 缺少 reference_sources.csv 中可核实的官方链接")
 
-    missing = [path for path in files if not path.is_file()]
-    if missing:
-        raise SystemExit("缺少输入文件：" + "、".join(_relative(path) for path in missing))
+    for path in required:
+        if not path.is_file():
+            problems.append(f"缺少出处正文：{_relative(path)}")
+    if problems:
+        raise SystemExit(
+            "输入不完整，不能作为签认清单：" + "；".join(dict.fromkeys(problems))
+        )
+
+    files += required
     return {
         _relative(path): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in dict.fromkeys(files)
@@ -369,32 +436,15 @@ def build_plans() -> tuple[list[PolicyPlan], list[str]]:
     for row in register:
         by_code[row["policy_id"]].append(row)
 
-    crit_by_code: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for row in criteria_rows:
-        if (row.get("review_status") or "").strip() != "已仲裁":
-            continue
-        crit_by_code[row["policy_id"]].append(row)
-
-    # 要灌的版本：有已仲裁条件的政策 + labels 引用的文号
-    wanted: list[tuple[str, str]] = []
-    for row in register:
-        code = row["policy_id"]
-        if not crit_by_code.get(code):
-            continue
-        wanted.append((code, row["version"]))
-    known = set(wanted)
-    for row in labels:
-        key = (row["policy_id"], row["policy_version"])
-        if key not in known and key in {(r["policy_id"], r["version"]) for r in register}:
-            wanted.append(key)
-            known.add(key)
+    crit_by_code = _criteria_by_code(criteria_rows)
+    wanted = _wanted_versions(register, criteria_rows, labels)
 
     reg_index = {(row["policy_id"], row["version"]): row for row in register}
     plans: list[PolicyPlan] = []
     problems: list[str] = []
     reference_urls = _reference_urls(problems)
 
-    for code, document in sorted(set(wanted)):
+    for code, document in wanted:
         row = reg_index[(code, document)]
         metadata, notes = _metadata(row)
         try:

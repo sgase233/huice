@@ -45,6 +45,24 @@ def plan(importer):
     return next(item for item in plans if item.code == "CN-TAX-SME-2023-012")
 
 
+@pytest.fixture()
+def cross_file_plan(importer, monkeypatch, tmp_path):
+    """带跨文件出处的一版（HT-007 引自《财税〔2015〕119号》）。
+
+    映射文件用临时文件顶替：数据侧那份由 M3 维护，测试不依赖它是否已提交。
+    """
+
+    reference = tmp_path / "reference_sources.csv"
+    reference.write_text(
+        "document,source_url\n财税〔2015〕119号,https://www.chinatax.gov.cn/cs149.html\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(importer, "REFERENCE_SOURCES", reference)
+    plans, problems = importer.build_plans()
+    assert problems == []
+    return next(item for item in plans if item.code == "SZ-GRANT-HIGHTECH-2021")
+
+
 @pytest.fixture(autouse=True)
 def no_enterprises(importer, monkeypatch):
     """企业画像是另一条路径，这里只验政策版本的重跑。"""
@@ -158,3 +176,45 @@ def test_已发布但少了条件时重跑返回非零(importer, repo, database_
 
     # 拒绝时一行都不写：库里还是那一条。
     assert query_one(database_url_schema, "SELECT count(*) FROM policy_criterion")[0] == 1
+
+
+def test_跨文件出处入库后的链接与引文指向该出处(
+    importer, repo, database_url_schema, cross_file_plan
+):
+    """入库后 span 的 sourceId/URL/quote 必须是附件自己的，不能挂到主政策上。
+
+    API 与报告展示的就是这两个表里的字段：``policy_source.source_url`` 与
+    ``policy_criterion.source_spans`` 里的 ``source_id``/``source_url``/``quote``。
+    """
+
+    assert _import(importer, repo, database_url_schema, cross_file_plan) == 0
+
+    attachment_id, attachment_url = query_one(
+        database_url_schema,
+        "SELECT id, source_url FROM policy_source WHERE kind = 'attachment'",
+    )
+    body_id = query_one(
+        database_url_schema, "SELECT id FROM policy_source WHERE kind = 'body'"
+    )[0]
+    assert attachment_id != body_id
+    assert attachment_url == "https://www.chinatax.gov.cn/cs149.html"
+
+    criterion = next(
+        item
+        for item in cross_file_plan.criteria
+        if any(span.source_name == "财税〔2015〕119号" for span in item.spans)
+    )
+    expected_quote = next(
+        span.quote for span in criterion.spans if span.source_name == "财税〔2015〕119号"
+    )
+    source_id, source_url, quote = query_one(
+        database_url_schema,
+        "SELECT span->>'source_id', span->>'source_url', span->>'quote' "
+        "FROM policy_criterion, jsonb_array_elements(source_spans) AS span "
+        "WHERE span->>'source_id' = %s",
+        (str(attachment_id),),
+    )
+
+    assert source_id == str(attachment_id)
+    assert source_url == attachment_url
+    assert quote == expected_quote

@@ -95,13 +95,93 @@ def test_导入清单覆盖实际读取的文件(importer: ModuleType, monkeypat
     assert {len(value) for value in manifest.values()} == {64}
 
 
-def test_清单模式不连接数据库(importer: ModuleType, monkeypatch, capsys) -> None:
+def test_清单模式不连接数据库(importer: ModuleType, monkeypatch, tmp_path, capsys) -> None:
     def refuse(*args, **kwargs):
         raise AssertionError("--manifest 不该建库连接")
 
+    _with_reference(importer, monkeypatch, tmp_path)
     monkeypatch.setattr(importer, "_apply", refuse)
     assert importer.main(["--manifest"]) == 0
     assert "data/policies/source_register.csv" in capsys.readouterr().out
+
+
+def _mini_import_tree(
+    importer: ModuleType,
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    body: bool = True,
+    attachment: bool = True,
+    mapping: bool = True,
+) -> Path:
+    """一份最小的 ``data/``：一个政策版本、一条跨文件引用的已仲裁条件。"""
+
+    data = tmp_path / "data"
+    sources = data / "policies" / "sources"
+    sources.mkdir(parents=True)
+    (data / "evaluation").mkdir()
+    (data / "fixtures").mkdir()
+    if body:
+        (sources / "P1.txt").write_text("正文" * 120, encoding="utf-8")
+    if attachment:
+        (sources / "附件〔2020〕1号.txt").write_text("另一份正文" * 60, encoding="utf-8")
+    (data / "policies" / "source_register.csv").write_text(
+        "policy_id,version\nP1,V1\n", encoding="utf-8"
+    )
+    (data / "policies" / "criteria_review.csv").write_text(
+        "policy_id,criterion_id,review_status,source_version,source_document\n"
+        "P1,X-001,已仲裁,V1,附件〔2020〕1号\n",
+        encoding="utf-8",
+    )
+    (data / "evaluation" / "labels.csv").write_text(
+        "policy_id,policy_version\n", encoding="utf-8"
+    )
+    (data / "fixtures" / "enterprises.csv").write_text(
+        "enterprise_id\n", encoding="utf-8"
+    )
+    reference = data / "policies" / "reference_sources.csv"
+    if mapping:
+        reference.write_text(
+            "document,source_url\n附件〔2020〕1号,https://www.chinatax.gov.cn/cs149.html\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(importer, "DATA", data)
+    monkeypatch.setattr(importer, "SOURCES", sources)
+    monkeypatch.setattr(importer, "REFERENCE_SOURCES", reference)
+    return data
+
+
+def test_清单拒绝缺少声明的出处正文(importer: ModuleType, monkeypatch, tmp_path) -> None:
+    """删掉附件后清单不能缩短了事：--manifest 必须非零，不能当作完整签认证据。"""
+
+    _mini_import_tree(importer, monkeypatch, tmp_path, attachment=False)
+
+    with pytest.raises(SystemExit, match="缺少出处正文"):
+        importer.main(["--manifest"])
+
+
+def test_清单拒绝缺少必需映射(importer: ModuleType, monkeypatch, tmp_path) -> None:
+    _mini_import_tree(importer, monkeypatch, tmp_path, mapping=False)
+
+    with pytest.raises(SystemExit, match="reference_sources.csv"):
+        importer.input_manifest()
+
+
+def test_清单拒绝缺少政策正文(importer: ModuleType, monkeypatch, tmp_path) -> None:
+    _mini_import_tree(importer, monkeypatch, tmp_path, body=False)
+
+    with pytest.raises(SystemExit, match="没有正文"):
+        importer.input_manifest()
+
+
+def test_清单收录必需的正文出处与映射(importer: ModuleType, monkeypatch, tmp_path) -> None:
+    _mini_import_tree(importer, monkeypatch, tmp_path)
+
+    manifest = importer.input_manifest()
+
+    assert any(key.endswith("data/policies/sources/P1.txt") for key in manifest)
+    assert any(key.endswith("data/policies/sources/附件〔2020〕1号.txt") for key in manifest)
+    assert any(key.endswith("data/policies/reference_sources.csv") for key in manifest)
 
 
 def test_跨文件引用的出处被作为附带来源导入(importer: ModuleType, monkeypatch, tmp_path) -> None:

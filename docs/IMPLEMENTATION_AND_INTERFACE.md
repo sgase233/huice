@@ -305,7 +305,7 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
 **逐段出处与输入签名（2026-11-08，M2 在 #51 / #36 复审的 P1）**：
 
 - `criteria_review.csv` 的 `source_document` 按 `|` 分段，与 `source_span` **逐段一一对应**；声明了出处就只用那一份正文校验，不再按「哪份文本先包含这句」顶替。段数对不上、声明的那份没有独立正文、或原文里找不到该句，该条判不可验证（导入器记 blocked），**不跨来源搜索**。`source_document` 整列为空时才退回本版正文；只在 `source_version` 里出现、`source_document` 没声明的出处不导入附件。导入器与消融加载器（`app/ablation/dataset.py` 的 `span_source`）用同一套规则，同一份数据在两边得到同一结论。
-- 输入签名覆盖**实际读到的文件**，不是固定四份 CSV。`Dataset.manifest()` 与 `import_eval_dataset.py --manifest` 都含四份 CSV、政策正文（`policies/sources/<文号或代号>.txt`）与每条 `source_document` 声明的出处原文；`Dataset.manifest()` 在任一文件缺失时直接报错，导入器只列本轮实际读到的文件（不存在的出处本来就会被判 blocked 并在导入报告里点名）。`--manifest` 只读文件、打印相对路径与 SHA-256，不连库、不写库。
+- 输入签名覆盖**实际读到的文件**，不是固定四份 CSV。`Dataset.manifest()` 含四份 CSV、被条件引用到的政策正文（`policies/sources/<文号或代号>.txt`）、每条 `source_document` 声明的出处原文，以及 `source_document` 为空时实际回退读取的 `version_document` 原文；列出的文件缺失即报错。导入器 `--manifest` 按 `build_plans` 同一口径确定必需项（要灌版本的正文、逐段声明的出处原文、这些出处要求的 `reference_sources.csv` 映射行），缺任何一项非零退出、**不输出缩短的清单**；没有被任何条件引用的来源不凭空要求。`--manifest` 只读文件、打印相对路径与 SHA-256，不连库、不写库。
 
 已知取舍，写进评测报告的「局限」段而不是藏起来：
 

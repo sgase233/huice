@@ -344,7 +344,12 @@ class Dataset:
         return frozenset(bad)
 
     def input_files(self) -> list[Path]:
-        """这套数据集实际读取的文件：四份 CSV、每份政策正文与逐段声明的出处原文。"""
+        """这套数据集实际读取的文件：四份 CSV、政策正文与逐段声明的出处原文。
+
+        ``source_document`` 为空时，``span_source`` 会先按 ``version_document`` 找一份
+        ``sources/`` 下的原文、找不到才退回本版正文；那份文件存在时就要进签名，否则
+        改它会让引文核对结果变化而清单不变（M2 在 #51 复审指出）。
+        """
 
         files = [
             self.data_dir / "evaluation" / "labels.csv",
@@ -357,11 +362,19 @@ class Dataset:
             self._body_path(policy) for policy in self.policies.values() if policy.code in used
         ]
         for criterion in self.criteria.values():
-            files += [
-                self.data_dir / "policies" / "sources" / f"{name}.txt"
-                for name in criterion.documents
-                if name
-            ]
+            if criterion.documents:
+                files += [
+                    self.data_dir / "policies" / "sources" / f"{name}.txt"
+                    for name in criterion.documents
+                    if name
+                ]
+                continue
+            if criterion.version_document:
+                fallback = (
+                    self.data_dir / "policies" / "sources" / f"{criterion.version_document}.txt"
+                )
+                if fallback.is_file():
+                    files.append(fallback)
         return list(dict.fromkeys(files))
 
     def manifest(self) -> dict[str, str]:
