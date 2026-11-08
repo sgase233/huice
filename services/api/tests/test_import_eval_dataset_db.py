@@ -209,9 +209,9 @@ def test_跨文件出处入库后的链接与引文指向该出处(
     )
     source_id, source_url, quote = query_one(
         database_url_schema,
-        "SELECT span->>'source_id', span->>'source_url', span->>'quote' "
+        "SELECT span->>'sourceId', span->>'sourceUrl', span->>'quote' "
         "FROM policy_criterion, jsonb_array_elements(source_spans) AS span "
-        "WHERE span->>'source_id' = %s",
+        "WHERE span->>'sourceId' = %s",
         (str(attachment_id),),
     )
 
