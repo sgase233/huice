@@ -79,8 +79,18 @@ def _manifest(**overrides):
     return manifest
 
 
-def _datasets(criteria=None, enterprises=None, labels=None):
+def _register(**overrides):
     return {
+        "policy_id": "CN-TAX-SME-2023-012",
+        "version": DOCUMENT,
+        "title": "小型微利企业所得税优惠",
+        **overrides,
+    }
+
+
+def _datasets(criteria=None, enterprises=None, labels=None, register=None):
+    return {
+        "source_register.csv": register if register is not None else [_register()],
         "criteria_review.csv": criteria
         if criteria is not None
         else [
@@ -111,6 +121,7 @@ def _datasets(criteria=None, enterprises=None, labels=None):
             {
                 "case_id": "C001",
                 "enterprise_id": "E-ENT-001",
+                "policy_id": "CN-TAX-SME-2023-012",
                 "policy_version": DOCUMENT,
                 "criterion_id": "SME-002",
             }
@@ -276,7 +287,8 @@ def test_reading_a_csv_reports_missing_columns(tmp_path) -> None:
 
 def test_only_known_files_are_loaded(tmp_path) -> None:
     (tmp_path / "labels.csv").write_text(
-        "case_id,enterprise_id,policy_version,criterion_id\nC001,E-ENT-001,文号,SME-002\n",
+        "case_id,enterprise_id,policy_id,policy_version,criterion_id\n"
+        "C001,E-ENT-001,CN-CODE,文号,SME-002\n",
         encoding="utf-8",
     )
     (tmp_path / "material_review_sheet.csv").write_text("row_no\n1\n", encoding="utf-8")
@@ -313,11 +325,12 @@ def test_an_unknown_value_is_not_the_same_as_zero() -> None:
     assert any("taxableIncome" in item for item in problems)
 
 
-def test_a_citation_from_another_document_maps_by_content() -> None:
+def test_a_citation_from_another_document_maps_by_the_register() -> None:
     """``source_version`` 记的是引文所在文件（如《财税〔2015〕119号》），照样能对上。
 
-    数据侧用它表达「这条引文引自哪份文件」，不总是本政策的文号；映射按表达式指纹
-    认归属，键落回库里的文号，``labels.csv`` 才找得到这条条件。
+    数据侧用它表达「这条引文引自哪份文件」，不总是本政策的文号；归属由
+    ``source_register.csv`` 的 ``policy_id`` 决定，内容只在该版本里逐条比对，
+    键落回库里的文号，``labels.csv`` 才找得到这条条件。
     """
 
     criteria = _datasets()["criteria_review.csv"]
@@ -337,8 +350,44 @@ def test_a_citation_from_another_document_maps_by_content() -> None:
     assert mapping["caseCount"] == 1
 
 
-def test_a_cited_document_in_two_versions_is_ambiguous() -> None:
-    """同一表达式在两个政策版本里都有：不按内容猜，报歧义。"""
+def test_a_wrong_policy_with_a_unique_identical_expression_is_reported() -> None:
+    """另一份政策恰好有唯一相同表达式，也不能把这条条件判给它。
+
+    归属只由登记表的 ``policy_id`` 决定；表达式相同不等于同一条条件。
+    """
+
+    manifest = _manifest()
+    manifest["policies"][0]["criteria"] = []
+    twin = {
+        "policyId": "p2",
+        "policyVersionId": "v2",
+        "version": "v2.0",
+        "title": "另一份政策",
+        "documentNumber": "另一份文号",
+        "criteria": [
+            {
+                "criterionId": "c9",
+                "title": "年度应纳税所得额不超过 300 万元",
+                "expressionFingerprint": expression_fingerprint(ENTRY_GATE),
+                "reviewFinding": "none",
+                "validationStatus": "passed",
+            }
+        ],
+    }
+    manifest["policies"].append(twin)
+    register = [_register(), _register(policy_id="CN-OTHER-2024-001", version="另一份文号")]
+    criteria = _datasets()["criteria_review.csv"]
+    criteria[0]["source_version"] = "财税〔2015〕119号"
+
+    mapping = align_dataset(_datasets(criteria=criteria, register=register), manifest)
+
+    assert any("SME-002" in item and "找不到相同表达式" in item for item in mapping["problems"])
+    assert any("没有登记给 CN-TAX-SME-2023-012" in item for item in mapping["problems"])
+    assert mapping["policies"] == []
+
+
+def test_a_source_version_registered_to_another_policy_is_reported() -> None:
+    """``source_version`` 碰巧是另一份已登记政策的文号：不能借内容判归属。"""
 
     manifest = _manifest()
     twin = json.loads(json.dumps(manifest["policies"][0]))
@@ -353,12 +402,116 @@ def test_a_cited_document_in_two_versions_is_ambiguous() -> None:
     )
     manifest["policies"].append(twin)
     criteria = _datasets()["criteria_review.csv"]
-    criteria[0]["source_version"] = "财税〔2015〕119号"
+    criteria[0]["source_version"] = "另一份文号"
+    register = [_register(), _register(policy_id="CN-OTHER-2024-001", version="另一份文号")]
 
-    mapping = align_dataset(_datasets(criteria=criteria), manifest)
+    mapping = align_dataset(_datasets(criteria=criteria, register=register), manifest)
 
-    assert any("无法判定对应哪一条" in item for item in mapping["problems"])
+    assert any("登记在另一份政策" in item and "CN-OTHER-2024-001" in item for item in mapping["problems"])
     assert mapping["policies"] == []
+
+
+def test_a_label_policy_id_must_match_its_policy_version() -> None:
+    """标签只写文号对不上新政策，只写代号又对不上版本；两列必须经登记表一致。"""
+
+    labels = _datasets()["labels.csv"]
+    labels[0]["policy_version"] = "另一份文号"
+    register = [_register(), _register(policy_id="CN-OTHER-2024-001", version="另一份文号")]
+
+    problems = align_dataset(_datasets(labels=labels, register=register), _manifest())["problems"]
+
+    assert any(
+        "C001" in item and "标签的政策归属不一致" in item for item in problems
+    )
+
+
+def test_two_criterion_codes_claiming_one_library_criterion_are_reported() -> None:
+    """同一条库条件被两个 CSV 条件代号认领：映射不是一对一，报未解决。"""
+
+    criteria = _datasets()["criteria_review.csv"]
+    criteria.append(
+        {
+            "policy_id": "CN-TAX-SME-2023-012",
+            "criterion_id": "SME-003",
+            "source_version": DOCUMENT,
+            "adjudicated_expression": json.dumps(ENTRY_GATE, ensure_ascii=False),
+        }
+    )
+
+    problems = align_dataset(_datasets(criteria=criteria), _manifest())["problems"]
+
+    assert any(
+        "c1" in item and "SME-002" in item and "SME-003" in item and "不是一对一" in item
+        for item in problems
+    )
+
+
+def test_a_policy_id_missing_from_the_register_is_reported() -> None:
+    criteria = _datasets()["criteria_review.csv"]
+    criteria[0]["policy_id"] = "CN-UNKNOWN-2024-001"
+
+    problems = align_dataset(_datasets(criteria=criteria), _manifest())["problems"]
+
+    assert any("CN-UNKNOWN-2024-001" in item and "没有在 source_register.csv 登记" in item for item in problems)
+
+
+def test_a_registered_version_missing_from_the_database_is_reported() -> None:
+    """登记表的标题能对上库，文号却对不上：说明库里那份不是按这版登记表导入的。"""
+
+    register = [_register(version="库里没有的文号")]
+
+    problems = align_dataset(_datasets(register=register), _manifest())["problems"]
+
+    assert any("库里没有的文号" in item and "不一致" in item for item in problems)
+
+    # 连标题都对不上时，直接报库里没有这一版
+    register = [_register(version="库里没有的文号", title="库里也没有的标题")]
+
+    problems = align_dataset(_datasets(register=register), _manifest())["problems"]
+
+    assert any("在库里没有对应版本" in item for item in problems)
+
+
+def test_a_policy_with_two_registered_versions_needs_source_version_to_pick_one() -> None:
+    """同一政策在登记表里有两版（如 GXJS 2008/2016），``source_version`` 得指出是哪一版。"""
+
+    manifest = _manifest()
+    twin = json.loads(json.dumps(manifest["policies"][0]))
+    twin.update(
+        {
+            "policyId": "p1b",
+            "policyVersionId": "v2",
+            "version": "v2.0",
+            "documentNumber": "另一份文号",
+            "title": "另一份政策",
+        }
+    )
+    manifest["policies"].append(twin)
+    register = [
+        _register(policy_id="CN-TAX-DUAL", version=DOCUMENT, title="小型微利企业所得税优惠"),
+        _register(policy_id="CN-TAX-DUAL", version="另一份文号", title="另一份政策"),
+    ]
+    criteria = _datasets()["criteria_review.csv"]
+    criteria[0]["policy_id"] = "CN-TAX-DUAL"
+    criteria[0]["source_version"] = "申报通知（未登记）"
+    labels = _datasets()["labels.csv"]
+    labels[0]["policy_id"] = "CN-TAX-DUAL"
+
+    mapping = align_dataset(
+        _datasets(criteria=criteria, labels=labels, register=register), manifest
+    )
+
+    assert any("2 个版本" in item and "无法判定条件属于哪一版" in item for item in mapping["problems"])
+    assert mapping["policies"] == []
+
+    # 写上其中一版的文号就能定下来
+    criteria[0]["source_version"] = DOCUMENT
+    mapping = align_dataset(
+        _datasets(criteria=criteria, labels=labels, register=register), manifest
+    )
+
+    assert mapping["problems"] == []
+    assert [item["policyVersionId"] for item in mapping["policies"]] == ["v1"]
 
 
 def test_every_required_file_must_be_loaded() -> None:
@@ -376,6 +529,7 @@ def test_every_required_file_must_be_loaded() -> None:
         ("labels.csv", "没有可用的标注用例"),
         ("criteria_review.csv", "没有任何条件被对齐"),
         ("enterprises.csv", "没有任何企业对得上"),
+        ("source_register.csv", "没有任何政策代号被登记"),
     ],
 )
 def test_an_empty_table_is_not_a_completed_mapping(name: str, message: str) -> None:

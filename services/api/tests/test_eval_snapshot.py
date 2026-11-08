@@ -170,19 +170,21 @@ def _manifest(**overrides):
         ],
         # 只记录、不参与比对：服务重启是正常操作，比它会让每次核对都失败
         "processStartedAt": "2026-11-05T09:00:00+00:00",
-        # 三份输入本来就不在一个目录里（仓库里分别是 evaluation/policies/fixtures），
+        # 四份输入本来就不在一个目录里（仓库里分别是 evaluation/policies/fixtures），
         # 清单记的是签认路径，不是文件名
         "dataset": [
             {"path": "data/evaluation/labels.csv", "sha256": "a" * 64},
             {"path": "data/policies/criteria_review.csv", "sha256": "b" * 64},
             {"path": "data/fixtures/enterprises.csv", "sha256": "c" * 64},
+            {"path": "data/policies/source_register.csv", "sha256": "d" * 64},
         ],
         "datasetMapping": {
-            "rules": "content-alignment@1",
+            "rules": "content-alignment@3",
             "files": [
                 "data/evaluation/labels.csv",
                 "data/policies/criteria_review.csv",
                 "data/fixtures/enterprises.csv",
+                "data/policies/source_register.csv",
             ],
             "policies": [
                 {
@@ -305,7 +307,8 @@ def test_diff_ignores_dataset_files_added_after_signing() -> None:
             {"path": "data/evaluation/labels.csv", "sha256": "a" * 64},
             {"path": "data/policies/criteria_review.csv", "sha256": "b" * 64},
             {"path": "data/fixtures/enterprises.csv", "sha256": "c" * 64},
-            {"path": "data/evaluation/later_added.csv", "sha256": "d" * 64},
+            {"path": "data/policies/source_register.csv", "sha256": "d" * 64},
+            {"path": "data/evaluation/later_added.csv", "sha256": "e" * 64},
         ]
     )
 
@@ -748,7 +751,12 @@ def test_inputs_refuses_to_run_without_any_dataset_file(tmp_path: Path, monkeypa
         cli.main(["inputs", "--out", "-"])
 
     message = str(error.value.code)
-    for name in ("labels.csv", "criteria_review.csv", "enterprises.csv"):
+    for name in (
+        "labels.csv",
+        "criteria_review.csv",
+        "enterprises.csv",
+        "source_register.csv",
+    ):
         assert name in message
     assert "--no-dataset" in message
 
@@ -909,17 +917,29 @@ def _write_dataset(directory: Path, *, income: str = "3500000.00", title: str) -
     with (directory / "labels.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["case_id", "enterprise_id", "policy_version", "criterion_id"],
+            fieldnames=[
+                "case_id",
+                "enterprise_id",
+                "policy_id",
+                "policy_version",
+                "criterion_id",
+            ],
         )
         writer.writeheader()
         writer.writerow(
             {
                 "case_id": "C001",
                 "enterprise_id": "E1",
+                "policy_id": "DEMO",
                 "policy_version": title,
                 "criterion_id": "G1",
             }
         )
+    with (directory / "source_register.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["policy_id", "version", "title"])
+        writer.writeheader()
+        # 库里这份政策没有文号，版本标识就是标题
+        writer.writerow({"policy_id": "DEMO", "version": "", "title": title})
 
 
 @pytest.mark.db
@@ -964,7 +984,12 @@ def _keep_only_header(path: Path) -> None:
 
 def _dataset_args(directory: Path) -> list[str]:
     args = ["--no-config"]
-    for name in ("labels.csv", "criteria_review.csv", "enterprises.csv"):
+    for name in (
+        "labels.csv",
+        "criteria_review.csv",
+        "enterprises.csv",
+        "source_register.csv",
+    ):
         args += ["--dataset-file", name]
     return args + ["--dataset-dir", str(directory)]
 
@@ -1009,7 +1034,9 @@ def test_a_dataset_manifest_cannot_be_verified_as_database_only(
 
 @pytest.mark.db
 @pytest.mark.usefixtures("clean_tables")
-@pytest.mark.parametrize("empty", ["labels.csv", "criteria_review.csv", "enterprises.csv"])
+@pytest.mark.parametrize(
+    "empty", ["labels.csv", "criteria_review.csv", "enterprises.csv", "source_register.csv"]
+)
 def test_verify_fails_when_one_table_has_no_rows(
     empty, repo, database_url_schema, monkeypatch, tmp_path: Path
 ) -> None:
@@ -1035,14 +1062,15 @@ def test_verify_fails_when_one_table_has_no_rows(
 
 
 def _write_split_dataset(root: Path, *, title: str) -> list[str]:
-    """按仓库真实布局写三份输入：标注在 ``data/evaluation``、条件在 ``data/policies``、
-    企业在 ``data/fixtures``——只记文件名的话，这三份根本没法重现。"""
+    """按仓库真实布局写四份输入：标注在 ``data/evaluation``、条件与登记表在
+    ``data/policies``、企业在 ``data/fixtures``——只记文件名的话，这四份根本没法重现。"""
 
     staging = root / "staging"
     _write_dataset(staging, title=title)
     layout = {
         "labels.csv": root / "data" / "evaluation" / "labels.csv",
         "criteria_review.csv": root / "data" / "policies" / "criteria_review.csv",
+        "source_register.csv": root / "data" / "policies" / "source_register.csv",
         "enterprises.csv": root / "data" / "fixtures" / "enterprises.csv",
     }
     for name, target in layout.items():
@@ -1063,7 +1091,7 @@ def _dataset_args_for(paths: list[str]) -> list[str]:
 def test_the_repository_layout_survives_verifying_from_another_directory(
     repo, database_url_schema, monkeypatch, tmp_path: Path
 ) -> None:
-    """三份输入分散在三个目录：清单记相对项目根的路径，换个工作目录也读得到（M2 P1）。"""
+    """四份输入分散在三个目录：清单记相对项目根的路径，换个工作目录也读得到（M2 P1）。"""
 
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
     _make_enterprise(repo)
@@ -1182,7 +1210,7 @@ def test_the_same_file_cannot_be_signed_twice(tmp_path: Path, monkeypatch) -> No
 def test_two_files_with_the_same_name_in_different_directories_are_refused(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """不同目录的同名文件一起签：映射按文件名区分三份输入，后一个会顶替前一个。"""
+    """不同目录的同名文件一起签：映射按文件名区分四份输入，后一个会顶替前一个。"""
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
     first = tmp_path / "first"

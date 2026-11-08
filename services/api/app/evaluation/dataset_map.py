@@ -3,13 +3,12 @@
 整文件哈希只能证明「文件没变」，证明不了「这些文件就是导入进库的那一份」：拿两套
 互不相关、但各自稳定的 CSV 与企业数据，哈希照样对得上。所以这里按内容把两边对齐：
 
-* **政策版本**：CSV 的文号（``labels.csv`` 的 ``policy_version``、``criteria_review.csv``
-  的 ``source_version``）↔ 库 ``policy_version.document_number``，没有文号时按 ``title``
-  对齐（部分政策材料的「版本」本身是文件标题）。任一侧重复都算歧义，报出来。
-  ``source_version`` 不一定是本政策的文号：数据侧也用它记这条引文实际引自哪份文件
-  （如《财税〔2015〕119号》、申报通知）。这类行按**表达式指纹在库里找唯一归属**——
-  同一指纹只出现在一个政策版本里才认，出现在多个版本仍报歧义，绝不按「第一个找到的」
-  硬配。
+* **政策版本**：靠 ``source_register.csv`` 的 ``policy_id → 版本`` 登记判定，并与 CSV
+  的 ``policy_version``／``source_version``、库里的 ``document_number``／``title``
+  三方核对。``source_version`` 不一定是本政策的文号：数据侧也用它记这条引文实际引自
+  哪份文件（如《财税〔2015〕119号》、申报通知）。归属**不靠**「表达式在库里唯一」——
+  另一份政策恰好有唯一相同表达式时，那不能证明这条条件属于它；归属只由 ``policy_id``
+  经登记表决定。``source_version`` 恰好是另一份已登记政策的文号时直接报未解决。
 * **条件**：政策版本内，CSV ``adjudicated_expression`` 的规范化 JSON 哈希 ↔ 库里该
   条件的 ``expressionFingerprint``。要求一对一：一条 CSV 行匹配到两行条件、或库里
   有条条件没有任何 CSV 行认领，都报出来。
@@ -45,11 +44,20 @@ from .snapshot import SnapshotError, expression_fingerprint, sha256_hex
 #: 对齐口径的版本号。改了规则就换一个值：旧清单会报「映射不同」，并点名可能是规则版本变了。
 #: ``@2``：``source_version`` 不是本政策文号时（记的是这条引文实际引自的文件），
 #: 退回按表达式指纹找唯一归属；映射键改用库里的文号/标题，不再原样回填 CSV 那一列。
-ALIGNMENT_RULES = "content-alignment@2"
+#: ``@3``：归属不再靠「表达式在库里唯一」，而是由 ``source_register.csv`` 的
+#: ``policy_id → 版本`` 判定，并与库里的文号/标题三方核对；同时要求条件一对一
+#: （同一条库条件不能被两个 CSV 条件代号认领）。
+ALIGNMENT_RULES = "content-alignment@3"
 
 #: 需要参与对齐的文件与它们的必需列。其余文件只算哈希，不做映射。
 REQUIRED_COLUMNS: Mapping[str, tuple[str, ...]] = {
-    "labels.csv": ("case_id", "enterprise_id", "policy_version", "criterion_id"),
+    "labels.csv": (
+        "case_id",
+        "enterprise_id",
+        "policy_id",
+        "policy_version",
+        "criterion_id",
+    ),
     "criteria_review.csv": (
         "policy_id",
         "criterion_id",
@@ -66,9 +74,12 @@ REQUIRED_COLUMNS: Mapping[str, tuple[str, ...]] = {
         "source",
         "verified",
     ),
+    # 政策代号 → 政策版本（文号/标题）的登记表。CSV 的业务代号在库里没有对应列，
+    # 「这条条件属于哪份政策」只能靠它约束；没有它，表达式指纹唯一也不足以证明归属。
+    "source_register.csv": ("policy_id", "version", "title"),
 }
 
-#: 正式评测冻结必须齐的三份输入；缺任何一份，映射就证明不了整体对应关系。
+#: 正式评测冻结必须齐的四份输入；缺任何一份，映射就证明不了整体对应关系。
 REQUIRED_FILES: tuple[str, ...] = tuple(REQUIRED_COLUMNS)
 
 #: 这些单位的 CSV 文本在库里是 ``numeric`` 列。
@@ -95,7 +106,7 @@ def read_dataset_rows(path: Path) -> list[dict[str, str]]:
 def load_dataset_rows(paths: Sequence[Path]) -> dict[str, list[dict[str, str]]]:
     """读 CSV 的行内容；只读 :data:`REQUIRED_COLUMNS` 里认识的文件。
 
-    键是**文件名**（对齐规则按它区分三份输入，``labels.csv`` 就是标注表），所以调用方
+    键是**文件名**（对齐规则按它区分四份输入，``labels.csv`` 就是标注表），所以调用方
     必须先保证没有两个不同目录的同名文件——那会让这里的键互相覆盖。
     """
 
@@ -185,9 +196,8 @@ def _criteria_by_fingerprint(
 ) -> dict[str, list[tuple[Mapping[str, Any], Mapping[str, Any]]]]:
     """表达式指纹 → 库里所有含该表达式的 (政策版本, 条件)。
 
-    ``source_version`` 记的是「这条引文实际引自哪份文件」时，它不会命中库里的文号或
-    标题（例如《财税〔2015〕119号》、某份申报通知）。这时只能按内容认归属，而前提是
-    这个表达式在库里只有一个版本含它——多个版本都含就是歧义，报出来而不是猜。
+    只用来在「找不到」时解释这条表达式其实在哪儿，**不用来定归属**：另一份政策恰好有
+    唯一相同的表达式，也不能证明这条条件属于它（M2 在 #51 复审指出）。
     """
 
     index: dict[str, list[tuple[Mapping[str, Any], Mapping[str, Any]]]] = {}
@@ -199,8 +209,150 @@ def _criteria_by_fingerprint(
     return index
 
 
+def _register_versions(
+    rows: Sequence[Mapping[str, str]],
+    problems: list[str],
+) -> dict[str, list[dict[str, str]]]:
+    """``policy_id → [{version, title}]``：受签认的政策代号登记表。
+
+    CSV 的业务代号在库里没有列，唯一能把「这条条件属于哪份政策」写死的就是这张表。
+    """
+
+    register: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        policy_id = _text(row, "policy_id")
+        version = _text(row, "version")
+        title = _text(row, "title")
+        if not policy_id:
+            problems.append("source_register.csv 有行缺少 policy_id")
+            continue
+        if not version and not title:
+            problems.append(
+                f"source_register.csv 的 {policy_id} 既没有 version 也没有 title，"
+                "无法对应到库里的政策版本"
+            )
+            continue
+        register.setdefault(policy_id, []).append({"version": version, "title": title})
+    for policy_id, items in register.items():
+        versions = [item["version"] for item in items if item["version"]]
+        duplicates = sorted({value for value in versions if versions.count(value) > 1})
+        for version in duplicates:
+            problems.append(
+                f"source_register.csv 的政策代号 {policy_id} 重复登记了版本 {version}，无法判定"
+            )
+    return register
+
+
+def _register_owners(
+    register: Mapping[str, Sequence[Mapping[str, str]]],
+) -> dict[str, set[str]]:
+    """版本的文号/标题 → 登记在哪个 ``policy_id`` 名下，用来发现「引文文号属于别的政策」。"""
+
+    owners: dict[str, set[str]] = {}
+    for policy_id, items in register.items():
+        for item in items:
+            for identifier in (item.get("version"), item.get("title")):
+                text = (identifier or "").strip()
+                if text:
+                    owners.setdefault(text, set()).add(policy_id)
+    return owners
+
+
+def _matches_version(item: Mapping[str, str], text: str) -> bool:
+    return bool(text) and text in (
+        (item.get("version") or "").strip(),
+        (item.get("title") or "").strip(),
+    )
+
+
+def _pick_registered_version(
+    policy_id: str,
+    source_version: str,
+    register: Mapping[str, Sequence[Mapping[str, str]]],
+    owners: Mapping[str, set[str]],
+    problems: list[str],
+) -> Mapping[str, str] | None:
+    """按 ``policy_id`` 与 ``source_version`` 定版本；定不下来就报未解决，不猜。"""
+
+    items = register.get(policy_id)
+    if not items:
+        problems.append(
+            f"criteria_review.csv 的政策代号 {policy_id} 没有在 source_register.csv 登记，"
+            "条件的政策归属无法核对"
+        )
+        return None
+    matched = [item for item in items if _matches_version(item, source_version)]
+    if len(matched) == 1:
+        return matched[0]
+    if len(matched) > 1:
+        problems.append(
+            f"source_version {source_version} 同时对上了政策代号 {policy_id} 在登记表里的"
+            "多个版本，无法判定条件属于哪一版"
+        )
+        return None
+    others = sorted(owners.get(source_version, set()) - {policy_id})
+    if others:
+        problems.append(
+            f"criteria_review.csv 里政策代号 {policy_id} 的行写着 source_version "
+            f"{source_version}，而它登记在另一份政策（{'、'.join(others)}）名下——"
+            "来源文号与政策代号不一致"
+        )
+        return None
+    if len(items) > 1:
+        versions = "、".join(item["version"] or item["title"] for item in items)
+        problems.append(
+            f"政策代号 {policy_id} 在登记表里有 {len(items)} 个版本（{versions}），"
+            f"source_version {source_version} 不是其中任何一个，无法判定条件属于哪一版"
+        )
+        return None
+    # 只有一个版本：这一列记的是登记表之外的文件（如《财税〔2015〕119号》、申报通知），
+    # 归属仍由 policy_id 决定，内容还要在该版本里逐条比对。
+    return items[0]
+
+
+def _resolve_library_version(
+    policy_id: str,
+    item: Mapping[str, str],
+    policies: Mapping[str, Mapping[str, Any]],
+    problems: list[str],
+) -> tuple[Mapping[str, Any], str] | None:
+    """把登记表的一行落到库里唯一一个政策版本，并核对文号/标题与库一致。"""
+
+    version = (item.get("version") or "").strip()
+    title = (item.get("title") or "").strip()
+    policy = policies.get(version) if version else None
+    if policy is None and title:
+        policy = policies.get(title)
+    if policy is None:
+        problems.append(
+            f"source_register.csv 的 {policy_id}@{version or title} 在库里没有对应版本"
+        )
+        return None
+    library_version = (policy.get("documentNumber") or "").strip()
+    library_title = (policy.get("title") or "").strip()
+    if version and library_version and version != library_version:
+        problems.append(
+            f"政策代号 {policy_id}：登记表版本是 {version}，库里这个版本的文号是 "
+            f"{library_version}，两者不一致"
+        )
+        return None
+    if title and library_title and title != library_title:
+        problems.append(
+            f"政策代号 {policy_id}@{version or title}：登记表标题与库里标题不一致"
+        )
+        return None
+    identifier = _policy_identifier(policy)
+    if not identifier:
+        problems.append(
+            f"政策代号 {policy_id}@{version or title} 对上的政策版本没有文号也没有标题"
+        )
+        return None
+    return policy, identifier
+
+
 def _align_criteria(
     rows: Sequence[Mapping[str, str]],
+    register: Mapping[str, Sequence[Mapping[str, str]]],
     policies: Mapping[str, Mapping[str, Any]],
     manifest: Mapping[str, Any],
     problems: list[str],
@@ -213,73 +365,79 @@ def _align_criteria(
     """
 
     by_fingerprint = _criteria_by_fingerprint(manifest)
+    owners = _register_owners(register)
     mapping: dict[str, dict[str, str]] = {}
-    owners: dict[str, Mapping[str, Any]] = {}
-    claimed: dict[str, set[str]] = {}
+    resolved: dict[str, tuple[str, Mapping[str, Any]]] = {}
+    claimants: dict[tuple[str, str], set[str]] = {}
     for row in rows:
-        document = _text(row, "source_version")
+        policy_id = _text(row, "policy_id")
         code = _text(row, "criterion_id")
-        if not document or not code:
-            problems.append("criteria_review.csv 有行缺少 source_version 或 criterion_id")
+        source_version = _text(row, "source_version")
+        if not policy_id or not code:
+            problems.append("criteria_review.csv 有行缺少 policy_id 或 criterion_id")
             continue
         fingerprint = expression_fingerprint(
             _parse_expression(_text(row, "adjudicated_expression"))
         )
-        policy = policies.get(document)
-        if policy is not None:
-            matched = [
-                (policy, item)
-                for item in policy.get("criteria", [])
-                if item.get("expressionFingerprint") == fingerprint
-            ]
-        else:
-            # 这一列写的是引文所在的文件，不是本政策的文号：按表达式内容找归属
-            matched = list(by_fingerprint.get(fingerprint, []))
+        item = _pick_registered_version(policy_id, source_version, register, owners, problems)
+        if item is None:
+            continue
+        found = _resolve_library_version(policy_id, item, policies, problems)
+        if found is None:
+            continue
+        policy, identifier = found
+        matched = [
+            criterion
+            for criterion in policy.get("criteria", [])
+            if criterion.get("expressionFingerprint") == fingerprint
+        ]
         if not matched:
+            elsewhere = sorted(
+                {str(entry[0].get("policyVersionId")) for entry in by_fingerprint.get(fingerprint, [])}
+            )
+            hint = (
+                f"；该表达式在库里的 {'、'.join(elsewhere)} 出现，但没有登记给 {policy_id}"
+                if elsewhere
+                else ""
+            )
             problems.append(
-                f"criteria_review.csv 的条件 {code}（{document}）在库里找不到相同表达式"
-                + ("" if policy is not None else "，且没有任何政策版本含该表达式")
+                f"criteria_review.csv 的条件 {code}（{policy_id}"
+                f"@{item['version'] or item['title']}）在库里找不到相同表达式{hint}"
             )
             continue
         if len(matched) > 1:
-            versions = "、".join(
-                sorted({str(item[0].get("policyVersionId")) for item in matched})
-            )
             problems.append(
-                f"criteria_review.csv 的条件 {code}（{document}）匹配到库里 "
-                f"{len(matched)} 条相同表达式（版本 {versions}），无法判定对应哪一条"
+                f"criteria_review.csv 的条件 {code}（{policy_id}@{item['version'] or item['title']}）"
+                f"在该政策版本里有 {len(matched)} 条相同表达式，无法判定对应哪一条"
             )
             continue
-        owner, criterion = matched[0]
-        identifier = _policy_identifier(owner)
-        if not identifier:
-            problems.append(
-                f"criteria_review.csv 的条件 {code}（{document}）对上的政策版本没有文号也没有标题"
-            )
-            continue
-        known = owners.get(identifier)
-        if known is not None and known.get("policyVersionId") != owner.get("policyVersionId"):
-            problems.append(
-                f"标识 {identifier} 在数据集映射里指向了多个政策版本，无法判定"
-            )
-            continue
-        owners[identifier] = owner
-        criterion_id = str(criterion["criterionId"])
+        criterion_id = str(matched[0]["criterionId"])
         entry = mapping.setdefault(identifier, {})
-        if code in entry and entry[code] != criterion_id:
+        previous = entry.get(code)
+        if previous is not None and previous != criterion_id:
             problems.append(f"criteria_review.csv 的条件代号 {code} 重复且指向不同条件")
             continue
         entry[code] = criterion_id
-        version_id = str(owner.get("policyVersionId"))
-        claimed.setdefault(version_id, set()).add(criterion_id)
+        version_id = str(policy.get("policyVersionId"))
+        resolved.setdefault(version_id, (identifier, policy))
+        claimants.setdefault((version_id, criterion_id), set()).add(code)
+
+    # 一对一：同一条库条件不能被两个 CSV 条件代号同时认领
+    for (version_id, criterion_id), codes in sorted(claimants.items()):
+        if len(codes) > 1:
+            identifier = resolved[version_id][0]
+            problems.append(
+                f"{identifier} 的库条件 {criterion_id} 被 {len(codes)} 个 CSV 条件代号认领"
+                f"（{'、'.join(sorted(codes))}），条件映射不是一对一"
+            )
 
     # 反方向：库里这个版本有条条件，CSV 里没有任何一行认领它
-    for identifier, policy in sorted(owners.items()):
-        version_id = str(policy.get("policyVersionId"))
+    for version_id, (identifier, policy) in sorted(resolved.items()):
+        claimed = {cid for (vid, cid) in claimants if vid == version_id}
         unclaimed = [
             str(item["criterionId"])
             for item in policy.get("criteria", [])
-            if str(item["criterionId"]) not in claimed.get(version_id, set())
+            if str(item["criterionId"]) not in claimed
         ]
         if unclaimed:
             problems.append(
@@ -394,18 +552,41 @@ def _align_cases(
     rows: Sequence[Mapping[str, str]],
     enterprises: Mapping[str, Mapping[str, Any]],
     criteria: Mapping[str, Mapping[str, str]],
+    register: Mapping[str, Sequence[Mapping[str, str]]],
     problems: list[str],
 ) -> int:
     seen: set[tuple[str, str, str, str]] = set()
+    checked: set[tuple[str, str]] = set()
     for row in rows:
         case_id = _text(row, "case_id")
         code = _text(row, "enterprise_id")
+        policy_id = _text(row, "policy_id")
         document = _text(row, "policy_version")
         criterion = _text(row, "criterion_id")
         if code not in enterprises:
             problems.append(
                 f"labels.csv 的用例 {case_id}：企业代号 {code} 不在 enterprises.csv 里"
             )
+        # 三方一致：policy_id 经登记表指向的版本，必须就是这一行写的 policy_version。
+        # 只比其中一列，标签挂到另一份政策的同代号条件下也会「对得上」。
+        if not policy_id or not document:
+            problems.append(
+                f"labels.csv 的用例 {case_id}：缺少 policy_id 或 policy_version，无法核对归属"
+            )
+        elif (policy_id, document) not in checked:
+            checked.add((policy_id, document))
+            items = register.get(policy_id, [])
+            if not items:
+                problems.append(
+                    f"labels.csv 的用例 {case_id}：政策代号 {policy_id} 不在 "
+                    "source_register.csv 里"
+                )
+            elif not any(_matches_version(item, document) for item in items):
+                versions = "、".join(item["version"] or item["title"] for item in items)
+                problems.append(
+                    f"labels.csv 的用例 {case_id}：政策代号 {policy_id} 在登记表里登记的是"
+                    f" {versions}，policy_version 却写着 {document}——标签的政策归属不一致"
+                )
         if document not in criteria:
             problems.append(
                 f"labels.csv 的用例 {case_id}：文号 {document} 不在 criteria_review.csv 里"
@@ -436,18 +617,23 @@ def align_dataset(
     problems.extend(policy_problems)
 
     provided = set(datasets)
-    # 只对上了一份、或一份都没给，都不算「映射做完了」：正式冻结要三份齐全
+    # 只对上了一份、或一份都没给，都不算「映射做完了」：正式冻结要四份齐全
     for name in REQUIRED_FILES:
         if name not in provided:
             problems.append(f"数据集映射未解决：没有加载 {name} 的行内容")
 
+    register = _register_versions(datasets.get("source_register.csv", []), problems)
     criteria = _align_criteria(
-        datasets.get("criteria_review.csv", []), policies, manifest, problems
+        datasets.get("criteria_review.csv", []), register, policies, manifest, problems
     )
     enterprises = _align_enterprises(datasets.get("enterprises.csv", []), manifest, problems)
-    case_count = _align_cases(datasets.get("labels.csv", []), enterprises, criteria, problems)
+    case_count = _align_cases(
+        datasets.get("labels.csv", []), enterprises, criteria, register, problems
+    )
 
     # 「文件给了但一条都没对上」同样是没做完：空映射不能当作核对通过
+    if "source_register.csv" in provided and not register:
+        problems.append("数据集映射未解决：没有任何政策代号被登记到库里的版本")
     if "criteria_review.csv" in provided and not criteria:
         problems.append("数据集映射未解决：没有任何条件被对齐到库里的条件")
     if "enterprises.csv" in provided and not enterprises:
