@@ -91,24 +91,37 @@ def test_建版后中断的重跑会续跑并发布(importer, repo, database_url
     )
 
 
-def test_存条款后中断的重跑会重存并发布(importer, repo, database_url_schema, plan):
-    """中断在「条款已存、还没发布」：续跑要把条款整版重写，而不是叠一份。"""
+def test_存条款后中断的重跑会重存并发布(importer, repo, database_url_schema, plan, monkeypatch):
+    """中断在「条款已存、还没发布」：续跑要把条款整版重写，而不是叠一份。
 
-    draft = _create_draft(importer, repo, plan)
-    repo.save_criteria(
-        policy_id=draft.id,
-        version=draft.version,
-        expected_revision=draft.revision,
-        criteria=[],
-        findings=[],
-        status="pending_review",
-        trace_id=str(uuid4()),
-    )
+    这个中间态由导入器自己产生：条款在 ``save_criteria`` 里写完、``publish`` 之前被杀。
+    所以这里让 ``publish`` 抛一次错来造，库里留下的是导入器按计划写好的整套条款。
+    不能手写 ``criteria=[]`` 的 ``pending_review``：真实流程里没有这种草稿，状态机会
+    按「缺条件」判冲突——那是状态机该做的，不是库该有的状态。
+    """
+
+    original = repo.publish
+    killed: list[bool] = []
+
+    def publish_after_kill(**kwargs):
+        if not killed:
+            killed.append(True)
+            raise RuntimeError("模拟发布前进程被杀")
+        return original(**kwargs)
+
+    monkeypatch.setattr(repo, "publish", publish_after_kill)
+    with pytest.raises(RuntimeError):
+        _import(importer, repo, database_url_schema, plan)
+
     assert query_one(database_url_schema, "SELECT review_status FROM policy_version")[0] == "pending_review"
+    assert query_one(database_url_schema, "SELECT count(*) FROM policy_criterion")[0] == len(
+        plan.criteria
+    )
 
     assert _import(importer, repo, database_url_schema, plan) == 0
 
     assert query_one(database_url_schema, "SELECT review_status FROM policy_version")[0] == "published"
+    # 整版替换：还是原来那几条，没有叠一份。
     assert query_one(database_url_schema, "SELECT count(*) FROM policy_criterion")[0] == len(
         plan.criteria
     )
