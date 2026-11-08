@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -59,7 +61,8 @@ def _create_draft(importer, repo, plan):
         metadata=plan.metadata,
         sources=importer._prepared(plan),
         storage_keys=importer._storage_keys(plan),
-        trace_id="test-interrupt",
+        # trace_id 落的是 uuid 列，不能写任意字符串。
+        trace_id=str(uuid4()),
     )
 
 
@@ -99,7 +102,7 @@ def test_存条款后中断的重跑会重存并发布(importer, repo, database_
         criteria=[],
         findings=[],
         status="pending_review",
-        trace_id="test-interrupt",
+        trace_id=str(uuid4()),
     )
     assert query_one(database_url_schema, "SELECT review_status FROM policy_version")[0] == "pending_review"
 
@@ -125,12 +128,20 @@ def test_草稿的来源变过就拒绝而不是继续写(importer, repo, databa
     assert query_one(database_url_schema, "SELECT review_status FROM policy_version")[0] == "pending_parse"
 
 
-def test_已发布但条件被删掉的版本重跑返回非零(importer, repo, database_url_schema, plan):
-    assert _import(importer, repo, database_url_schema, plan) == 0
-    with psycopg.connect(database_url_schema) as conn:
-        conn.execute(
-            "DELETE FROM policy_criterion WHERE criterion_id = ("
-            "  SELECT criterion_id FROM policy_criterion ORDER BY criterion_id LIMIT 1)"
-        )
+def test_已发布但少了条件时重跑返回非零(importer, repo, database_url_schema, plan):
+    """发布过的版本少了一条条件，重跑必须拒绝——不能当成「已经导好了」。
+
+    这里不用 DELETE 去凑这个状态：已发布版本的条款被库里的不可变触发器保护着，
+    那是产品约束，测试不去绕它。改成「先只导一条条件并发布，再按完整计划重跑」，
+    得到的就是同一个库内状态（已发布、条件不全）。
+    """
+
+    partial = replace(plan, criteria=plan.criteria[:1])
+    assert _import(importer, repo, database_url_schema, partial) == 0
+    assert query_one(database_url_schema, "SELECT count(*) FROM policy_criterion")[0] == 1
+    assert query_one(database_url_schema, "SELECT review_status FROM policy_version")[0] == "published"
 
     assert _import(importer, repo, database_url_schema, plan) == 1
+
+    # 拒绝时一行都不写：库里还是那一条。
+    assert query_one(database_url_schema, "SELECT count(*) FROM policy_criterion")[0] == 1
