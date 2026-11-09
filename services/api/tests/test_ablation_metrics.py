@@ -130,12 +130,11 @@ def test_quote_support_skips_criterion_without_usable_source(dataset):
         criterion = dataset.criterion(dataset.case_for(label.case_id), label.criterion_code)
         run.verdicts[label.key]["quote"] = criterion.spans[0]
     result = quote_support(dataset, run, labels)
-    # 除 RD-001 外都有引文可查；RD-001 出现在 6 个 case 里，这 6 条都不进分母。
-    # 它的归属改成 2023 年第7号之后会变成可验证，届时分母为 146、本列表为空——
-    # 那次改动必须与 CSV 同一个提交，并同步 test_ablation_dataset 的同类断言。
-    assert result["unverifiable_criteria_skipped"] == ["RD-001"]
-    assert result["denominator"] == 140
-    assert result["supported"] == 140
+    # RD-001 归属修正后，8 段引文在 2023 年第 7 号正文可查；不再有被跳过的条件，
+    # 分母为全部 146 条（原为 140，RD-001 的 6 条曾被排除）。
+    assert result["unverifiable_criteria_skipped"] == []
+    assert result["denominator"] == 146
+    assert result["supported"] == 146
 
 
 def test_quote_support_flags_unverifiable_quote(dataset):
@@ -143,8 +142,8 @@ def test_quote_support_flags_unverifiable_quote(dataset):
     run = _run(dataset, quote="这句话不在任何原文里")
     result = quote_support(dataset, run, labels)
     assert result["supported"] == 0
-    # 146 条标签减去 RD-001 的 6 条（出处原文不可用，不进分母）。归属修正后为 146。
-    assert len(result["cases"]) == 140
+    # RD-001 归属修正后其 6 条也进分母：146 条标签全部参与引用可证实率。
+    assert len(result["cases"]) == 146
 
 
 def test_timeliness_counts_only_expired_cases(dataset):
