@@ -4,6 +4,12 @@
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
+## #46—#48 扩展设计入口（2026-11-09）
+
+[扩展接口设计](../docs/EXTENSION_INTERFACES.md) 定义账号/会话/对象归属、发现配置/运行/候选审核、完整度/轨迹/趋势的建议请求与响应，以及迁移、幂等、权限和错误边界。新增端点目前**待评审、未实现**；现行 OpenAPI 保持 `1.0.0-rc.9` 与 16 个端点，未提前生成不存在的客户端能力。开发顺序和未决项见[开发计划](../docs/DEVELOPMENT_PLAN.md)。
+
+M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实现 PR 将已签收部分同步进 OpenAPI、后端 schema、M2 生成类型/客户端及成功失败示例。鉴权改造必须附旧门禁/脚本和新账号数据隔离迁移方案。迁移当前到 `008`，实施前核查最新序号再追加；不修改已部署 SQL。
+
 ## 已实现范围（后端，2026-10-27：16/16）
 
 | 接口 | 方法路径 | 状态 |
@@ -21,7 +27,7 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 | API-11 `createRun` | `POST /assessment-runs` | 已实现；四态求值 + 补问 + 清单 + 解释 + 轨迹，缓存可绕过 |
 | API-12 `getRun` | `GET /assessment-runs/{runId}` | 已实现；返回 run 快照 + 读取时有效性视图 |
 | API-13 `downloadReport` | `GET /assessment-runs/{runId}/report.md` | 已实现；Markdown 附件，附「截至下载时刻」的有效性 |
-| API-14 `getTrace` | `GET /admin/assessment-runs/{runId}/trace` | 已实现；管理 Bearer、脱敏、阶段顺序重排 |
+| API-14 `getTrace` | `GET /assessment-runs/{runId}/trace` | 已实现；管理 Bearer、脱敏、阶段顺序重排；路径无 /admin 不代表公开可读 |
 | API-15 `listAdminPolicies` | `GET /admin/policies` | 已实现；`{items,nextCursor}`，无 ETag |
 | API-16 `getAdminPolicy` | `GET /admin/policies/{policyId}` | 已实现；200 + ETag，缺省取最新导入版本 |
 
