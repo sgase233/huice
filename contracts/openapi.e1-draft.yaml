@@ -1,0 +1,1071 @@
+# E1 契约草案：账号、会话与对象权限（AUTH-01—07，以及现有端点的 security 与 404/409 语义变更）。
+#
+# 这不是现行契约，也不是可服务端点的声明：
+#   - 基线是 contracts/openapi.yaml@1.0.0-rc.9（评测指纹 8fe2368b… 锁定的那一版），本文件不替换它；
+#   - 不参与 contracts/generate_types.py 的类型生成，不影响 APP_VERSION，也不改变冻结指纹；
+#   - 复用现有 schema 一律用相对 $ref 指向 ./openapi.yaml#/components/...，本文件不复制它们，
+#     以免草案与正式契约各写一份、日后漂移。
+#
+# 评审路径：M2 逐端点核对 security、必填字段、错误码与旧消费者兼容性 →
+# 版本号与切换安排共同签收 → E1 实现完成后再并入 contracts/openapi.yaml。
+openapi: 3.1.0
+info:
+  title: 惠策协同 HTTP 协作契约（E1 草案：账号、会话与对象权限）
+  version: 1.1.0-rc.1-draft.1
+  description: |
+    **草案，未实现，未并入正式契约。** 编号 AUTH-01—07 是设计追踪编号（见
+    docs/EXTENSION_INTERFACES.md §3.2），合并进正式契约时按现行 API-01—16 的顺序续编。
+
+    ## 草案基线
+    - 基线：`contracts/openapi.yaml` 的 `1.0.0-rc.9`（16 个端点，评测指纹 `8fe2368b…`）。
+    - 本文件只描述**增量**：7 个新增操作、16 个现有操作的权限语义变化、新增错误码与示例。
+      现有请求/响应 schema 不重写，用 `./openapi.yaml#/components/...` 引用。
+    - 未包含：DISC-01—08（E2）、VIS-01—06（E3）。它们不依赖本草案的判定顺序，另行评审。
+
+    ## 版本
+    - 草案号 `1.1.0-rc.1-draft.1`；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
+      本文件不自定 `1.1.0`。
+    - 合并时 `contracts/openapi.yaml` 的 `info.version` 与 `APP_VERSION` 必须同一次改动一起升，
+      否则 `test_served_version_matches_the_contract` 会红；届时指纹本来就要重算。
+
+    ## 类型生成
+    - 前端 wire 类型仍由 `contracts/generate_types.py` 从**正式** `contracts/openapi.yaml` 生成到
+      `apps/web/src/api/types.ts`；本草案不进入该管线。
+    - 合并顺序：并入 `openapi.yaml` → 跑 `python contracts/generate_types.py` → 前端按新类型改造。
+      `apps/web/**` 由 M2 维护，M1 只提供类型与端点说明，不直接改。
+    - 本草案里的新 schema 已按生成器的可表达范围写（对象/数组/枚举/anyOf 可空），
+      不使用 `allOf` 组合对象等生成器不支持的形式。
+
+    ## 凭证与判定顺序（D1）
+    1. 会话 Cookie `huice_session`（`UserSession`）—— 角色凭证。
+    2. `ADMIN_TOKEN` Bearer（`AdminBearer`）—— **E1 后只读**：`/admin/**` 查询、全部 run 轨迹、自检。
+    3. 演示 Cookie `huice_demo_session`（`DemoSession`）—— restricted 模式的演示门禁，同时是
+       demo 身份（只作用于无主合成数据）。
+
+    判定顺序：**只有「未提供」才轮到下一个；「提供了但无效」一律 401，绝不降级**
+    （无效会话不得静默切到 demo，否则用户会把合成数据当成自己的）。四个凭据同时存在时：
+    会话有效 → 以会话为准，忽略 Bearer 与 demo；会话提供但无效 → 401 `SESSION_INVALID`，
+    即便 Bearer 有效也不降级。完整真值表见 docs/devlog/M1-11-10-E0决策提案.md §D1.5。
+
+    **外层门禁与身份是两件事**：restricted 模式下 demo cookie 还是网关门禁。门禁缺失仍是
+    403 `DEMO_SESSION_REQUIRED`（沿用现有错误码，判定在身份之前），不参与上面的三选一；
+    门禁通过后才按「demo 身份」处理，此时签名无效是 401 `DEMO_SESSION_INVALID`。
+
+    **旧消费者注意**：现行契约把若干端点写成同一个 security 对象里同时列 `DemoSession` 与
+    `AdminBearer`（OpenAPI 里是 AND）。E1 后用 security 列表区分「或」与「且」：审核端写操作是
+    `DemoSession(门禁) AND UserSession(reviewer)`，业务读是 `UserSession OR DemoSession`。
+    合并时逐端点核对，不能靠读旧对象推断 OR。
+
+    角色与对象另起一层判定，不与凭证混用：凭证有效但角色不够 → 403 `ROLE_FORBIDDEN`；
+    角色够但对象不属于本人 → **404 `OBJECT_NOT_FOUND`**（与「不存在」不区分，避免泄露是否存在）。
+
+    ## 错误码
+    见 `x-error-codes`。所有错误沿用现有 `ApiError` 结构（`error.code` / `error.message` /
+    `error.details` / `traceId`），不新增错误信封，`X-Trace-Id` 与 `traceId` 同值。
+
+    ## 旧消费者兼容
+    见 `x-legacy-consumers`。结论先说：**E1 不是「后端加个登录、前端不动」**，
+    审核端页面必须与后端同窗口改造。
+  x-e1-status: draft
+servers:
+- url: /api/v1
+tags:
+- name: auth
+  description: 注册、登录、会话恢复、登出、改密（AUTH-01—05）
+- name: public
+  description: 现有公开业务端点（含 E1 后按归属过滤的列表）
+- name: admin
+  description: 现有审核端端点（E1 后写操作只允许审核员会话）
+security: []
+paths:
+  /auth/register:
+    post:
+      operationId: registerUser
+      summary: AUTH-01 注册
+      tags:
+      - auth
+      security: []
+      description: |
+        事务内创建账号与（企业用户必填的）唯一企业，两者同成同败：字段非法或审核员密钥错误时
+        不留下半个账号或半个企业。默认**不自动登录**，须再调 AUTH-02。
+
+        - `enterprise`：企业用户**必填**；审核员可选（提交即绑定，不提交则首次调用 API-08 时创建）。
+        - `reviewerSignupKey`：仅审核员注册时提供，服务端校验，错误与缺失同样处理，不回显细节。
+        - 不接受客户端指定 `role`：角色由 `reviewerSignupKey` 是否存在决定，服务端裁定。
+        - **Origin 必须存在且与 `PUBLIC_ORIGIN` 同源**，缺失或不匹配一律 403（D1.6）。
+        - 限流：IP 维度 5 次/分钟；连续 20 次失败锁 15 分钟（只锁 IP，不锁用户名）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            examples:
+              enterpriseUser:
+                summary: 企业用户（必填企业信息）
+                value:
+                  username: acme-2026
+                  password: correct horse battery staple
+                  enterprise:
+                    nameSynthetic: 合成企业A
+                    period:
+                      startDate: '2026-01-01'
+                      endDate: '2026-12-31'
+                    facts:
+                    - key: region
+                      value: '440300'
+                      unit: code
+                      period:
+                        startDate: '2026-01-01'
+                        endDate: '2026-12-31'
+                      source: user_input
+                    - key: industry
+                      value: C39
+                      unit: code
+                      period:
+                        startDate: '2026-01-01'
+                        endDate: '2026-12-31'
+                      source: user_input
+              reviewer:
+                summary: 审核员（不带企业、带注册密钥）
+                value:
+                  username: reviewer-01
+                  password: correct horse battery staple
+                  reviewerSignupKey: <由部署方通过机密渠道提供，不在仓库与日志中出现>
+      responses:
+        '201':
+          description: 已创建；响应不含密码哈希、注册密钥或会话凭据
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+              examples:
+                ok:
+                  value:
+                    user:
+                      id: 77777777-7777-4777-8777-777777777777
+                      username: acme-2026
+                      role: enterprise
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DependencyUnavailable'
+        default:
+          $ref: './openapi.yaml#/components/responses/ApiFailure'
+  /auth/login:
+    post:
+      operationId: loginUser
+      summary: AUTH-02 登录
+      tags:
+      - auth
+      security: []
+      description: |
+        成功后下发会话 Cookie `huice_session`（`HttpOnly; Secure; SameSite=Lax; Path=/api`；
+        `APP_ENV=local` 时关闭 `Secure`），同时返回 `csrfToken`，后续写请求走 `X-CSRF-Token`。
+
+        账号不存在与密码错误使用**同一个** 401 `INVALID_CREDENTIALS` 与同一提示文案，
+        响应不透露账号是否存在。限流与锁定同 AUTH-01（IP 维度，`username` 只计数不锁定，
+        避免他人恶意锁死某个账号）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 登录成功；`Set-Cookie` 下发 `huice_session`
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+            Set-Cookie:
+              description: >-
+                huice_session=<token>; HttpOnly; Secure; SameSite=Lax; Path=/api; Max-Age=<ttl>。
+                local 模式不带 Secure。令牌明文只出现在这里，服务端只存 sha256。
+              schema:
+                type: string
+            Cache-Control:
+              description: 响应禁止缓存。
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+              examples:
+                ok:
+                  value:
+                    user:
+                      id: 77777777-7777-4777-8777-777777777777
+                      username: acme-2026
+                      role: enterprise
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+                    expiresAt: '2026-11-10T22:00:00Z'
+                    csrfToken: 9f2c1d0e5b6a4c7d8e9f0a1b2c3d4e5f
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: 凭据错误（账号不存在与密码错误不区分）
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: './openapi.yaml#/components/schemas/ApiError'
+              examples:
+                invalid:
+                  value:
+                    error:
+                      code: INVALID_CREDENTIALS
+                      message: 用户名或密码错误。
+                      details: {}
+                    traceId: 11111111-1111-4111-8111-111111111111
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DependencyUnavailable'
+        default:
+          $ref: './openapi.yaml#/components/responses/ApiFailure'
+  /auth/logout:
+    post:
+      operationId: logoutUser
+      summary: AUTH-03 登出
+      tags:
+      - auth
+      security:
+      - UserSession: []
+      description: |
+        撤销当前服务端会话并清除 Cookie，`204`，无响应体。**无有效会话时也返回 204**（幂等），
+        但不会因为「没带会话」就去撤销别人的会话。带会话时必须通过 CSRF 校验与同源校验。
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: 已登出（无论原本是否有效）
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+            Set-Cookie:
+              description: huice_session=; Path=/api; Max-Age=0
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DependencyUnavailable'
+        default:
+          $ref: './openapi.yaml#/components/responses/ApiFailure'
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      summary: AUTH-04 会话恢复
+      tags:
+      - auth
+      security:
+      - UserSession: []
+      description: |
+        刷新页面后恢复登录态与 `enterpriseId`；返回与 AUTH-02 相同的 `csrfToken`（首版不轮换）。
+        响应禁止缓存。会话过期或已撤销一律 401，不降级到 demo 或 Bearer。
+      responses:
+        '200':
+          description: 当前会话
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+            Cache-Control:
+              description: 响应禁止缓存。
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+              examples:
+                reviewer:
+                  value:
+                    user:
+                      id: 88888888-8888-4888-8888-888888888888
+                      username: reviewer-01
+                      role: reviewer
+                      enterpriseId: null
+                    expiresAt: '2026-11-10T22:00:00Z'
+                    csrfToken: 9f2c1d0e5b6a4c7d8e9f0a1b2c3d4e5f
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DependencyUnavailable'
+        default:
+          $ref: './openapi.yaml#/components/responses/ApiFailure'
+  /auth/password:
+    post:
+      operationId: changePassword
+      summary: AUTH-05 改密
+      tags:
+      - auth
+      security:
+      - UserSession: []
+      description: |
+        校验旧密码后更新哈希，并**立即撤销该账号的全部会话**（含当前会话），清 Cookie；
+        用户须重新登录。没有「替他人改密」的接口，审核员也不能重置他人密码。
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeRequest'
+      responses:
+        '204':
+          description: 已更新；全部会话已撤销
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+            Set-Cookie:
+              description: huice_session=; Path=/api; Max-Age=0
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DependencyUnavailable'
+        default:
+          $ref: './openapi.yaml#/components/responses/ApiFailure'
+  /enterprises:
+    get:
+      operationId: listEnterprises
+      summary: AUTH-06 企业列表
+      tags:
+      - public
+      security:
+      - UserSession: []
+      - DemoSession: []
+      description: |
+        角色与归属过滤在**服务端**完成，不能靠前端隐藏：
+        - 企业用户：至多本人一条；
+        - 审核员：全部（含评测用途、`ownership=unowned` 的历史无主企业）；
+        - demo：仅无主企业；
+        - Bearer：403 `ROLE_FORBIDDEN`（E1 后只读范围不含业务列表）。
+        游标与该身份、筛选绑定；越权游标返回 400/422，不返回他人的下一页。
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 企业列表
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnterpriseSummaryList'
+              examples:
+                reviewer:
+                  value:
+                    items:
+                    - id: 11111111-1111-4111-8111-111111111111
+                      nameSynthetic: 合成企业A
+                      period:
+                        startDate: '2026-01-01'
+                        endDate: '2026-12-31'
+                      ownership: self
+                    - id: 66666666-6666-4666-8666-666666666666
+                      nameSynthetic: 评测样例企业
+                      period:
+                        startDate: '2026-01-01'
+                        endDate: '2026-12-31'
+                      ownership: unowned
+                    nextCursor: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DependencyUnavailable'
+        default:
+          $ref: './openapi.yaml#/components/responses/ApiFailure'
+  /assessment-runs:
+    get:
+      operationId: listRuns
+      summary: AUTH-07 分析运行列表
+      tags:
+      - public
+      security:
+      - UserSession: []
+      - DemoSession: []
+      description: |
+        支持历史分析与报告导航，不能只依赖浏览器保存的 `runId`。归属过滤在服务端：
+        企业用户只看本人企业的 run，审核员看全部，demo 只看无主企业的 run，Bearer 403。
+
+        `status` 是 E1 新增的生命周期字段（D5.3）：`queued/running/succeeded/failed`。
+        E1 之前的历史记录只可能是 `succeeded`（旧实现仅在成功后插行），
+        因此旧数据按 `succeeded` 返回，不补造失败记录，也不把 `created_at == finished_at`
+        当成 0 毫秒耗时。失败与未完成的 run **不提供报告下载**（`reportAvailable=false`）。
+      parameters:
+        - name: enterpriseId
+          in: query
+          required: false
+          description: 仅作为筛选条件；非本人企业一律 404，不因传错 id 而泄露存在性。
+          schema:
+            $ref: './openapi.yaml#/components/schemas/UUID'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 运行列表
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/TraceId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSummaryList'
+              examples:
+                mixed:
+                  value:
+                    items:
+                    - id: 55555555-5555-4555-8555-555555555555
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+                      asOf: '2026-10-23T10:00:00+08:00'
+                      createdAt: '2026-10-23T02:00:00Z'
+                      status: succeeded
+                      reportAvailable: true
+                    - id: 99999999-9999-4999-8999-999999999999
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+                      asOf: '2026-11-10T09:00:00+08:00'
+                      createdAt: '2026-11-10T01:00:00Z'
+                      status: failed
+                      reportAvailable: false
+                    nextCursor: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/DependencyUnavailable'
+        default:
+          $ref: './openapi.yaml#/components/responses/ApiFailure'
+components:
+  securitySchemes:
+    UserSession:
+      type: apiKey
+      in: cookie
+      name: huice_session
+      description: >-
+        账号会话。HttpOnly; Secure; SameSite=Lax; Path=/api（local 模式关闭 Secure）。
+        绝对有效期 12 小时、空闲 30 分钟滑动，先到者生效；服务端只存令牌 sha256。
+    DemoSession:
+      type: apiKey
+      in: cookie
+      name: huice_demo_session
+      description: >-
+        沿用现行定义：restricted 模式的演示门禁，同时是 demo 身份（只作用于
+        owner_user_id IS NULL 的合成数据）。E1 起载荷增加 sid，用于每会话配额；
+        无 sid 的旧 cookie 只读，写操作返回 403 DEMO_SESSION_LEGACY。
+    AdminBearer:
+      type: http
+      scheme: bearer
+      description: >-
+        ADMIN_TOKEN，**E1 后只读**：/admin/** 查询、全部 run 轨迹、自检。
+        任何写操作（导入、抽取、条件保存、发布）与业务列表一律 403。
+        运维脚本需要发布时必须用审核员账号登录换会话，不虚构操作者身份。
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: >-
+        带会话 Cookie 的写请求必填，缺失或与会话内 csrfToken 不一致返回 403 CSRF_REQUIRED；
+        同时校验 Origin 与 PUBLIC_ORIGIN 同源，不匹配 403 ORIGIN_MISMATCH。
+        Bearer/CLI 请求不校验（见 D1.6 四类请求）。
+      schema:
+        type: string
+        minLength: 16
+    Cursor:
+      $ref: './openapi.yaml#/components/parameters/Cursor'
+    Limit:
+      $ref: './openapi.yaml#/components/parameters/Limit'
+  headers:
+    TraceId:
+      description: Request trace UUID; error body uses the same value.
+      schema:
+        $ref: './openapi.yaml#/components/schemas/UUID'
+  responses:
+    BadRequest:
+      description: 请求语法或查询参数错误
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+    Unauthenticated:
+      description: 未提供凭证，或提供的凭证无效/过期；不降级到其它凭证
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+          examples:
+            sessionExpired:
+              value:
+                error:
+                  code: SESSION_INVALID
+                  message: 会话已失效，请重新登录。
+                  details:
+                    reason: expired
+                traceId: 11111111-1111-4111-8111-111111111111
+            noCredential:
+              value:
+                error:
+                  code: UNAUTHENTICATED
+                  message: 需要登录。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+    Forbidden:
+      description: 凭证有效但角色不允许，或缺 CSRF/同源校验
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+          examples:
+            roleForbidden:
+              value:
+                error:
+                  code: ROLE_FORBIDDEN
+                  message: 当前身份无权执行该操作。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+            csrfRequired:
+              value:
+                error:
+                  code: CSRF_REQUIRED
+                  message: 缺少或错误的 CSRF 令牌。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+            originMismatch:
+              value:
+                error:
+                  code: ORIGIN_MISMATCH
+                  message: 请求来源与允许的源不一致。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+            demoLegacy:
+              value:
+                error:
+                  code: DEMO_SESSION_LEGACY
+                  message: 该演示会话由旧版签发，只能查看；请重新签发后再创建样本。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+    NotFound:
+      description: 对象不存在，**或**存在但不属于当前身份（两者不区分）
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+          examples:
+            notMine:
+              value:
+                error:
+                  code: OBJECT_NOT_FOUND
+                  message: 未找到该对象。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+    Conflict:
+      description: 状态冲突（重复用户名、已绑定企业等）
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+          examples:
+            usernameTaken:
+              value:
+                error:
+                  code: USERNAME_TAKEN
+                  message: 该用户名已被占用。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+            alreadyBound:
+              value:
+                error:
+                  code: ENTERPRISE_ALREADY_BOUND
+                  message: 该账号已绑定企业，不能再创建第二家。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+    ValidationError:
+      description: 业务校验失败（字段、事实期间、表达式等）
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+    RateLimited:
+      description: 限流或配额用尽
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+          examples:
+            demoQuota:
+              value:
+                error:
+                  code: DEMO_QUOTA_EXCEEDED
+                  message: 本次演示会话最多创建 20 个样本。
+                  details:
+                    limit: 20
+                traceId: 11111111-1111-4111-8111-111111111111
+            locked:
+              value:
+                error:
+                  code: ACCOUNT_LOCKED
+                  message: 尝试过于频繁，请稍后再试。
+                  details:
+                    retryAfterSeconds: 900
+                traceId: 11111111-1111-4111-8111-111111111111
+    InternalError:
+      description: 内部错误（脱敏，不含堆栈、密钥或连接串）
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+    DependencyUnavailable:
+      description: 依赖不可用（数据库/缓存/对象存储）；响应不含连接串
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/TraceId'
+      content:
+        application/json:
+          schema:
+            $ref: './openapi.yaml#/components/schemas/ApiError'
+          examples:
+            db:
+              value:
+                error:
+                  code: DEPENDENCY_UNAVAILABLE
+                  message: 依赖服务暂不可用，请稍后重试。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+  schemas:
+    UserRole:
+      type: string
+      enum:
+      - enterprise
+      - reviewer
+    User:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - username
+      - role
+      - enterpriseId
+      properties:
+        id:
+          $ref: './openapi.yaml#/components/schemas/UUID'
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        role:
+          $ref: '#/components/schemas/UserRole'
+        enterpriseId:
+          description: 未绑定企业时为 null（审核员可以先不建企业）。
+          anyOf:
+          - $ref: './openapi.yaml#/components/schemas/UUID'
+          - type: 'null'
+      description: 不返回密码哈希、注册密钥、会话令牌或任何密钥类字段。
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - username
+      - password
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+        enterprise:
+          $ref: './openapi.yaml#/components/schemas/EnterpriseInput'
+        reviewerSignupKey:
+          type: string
+          minLength: 16
+          description: 仅审核员注册；出现即按审核员创建账号。
+      description: >-
+        企业用户必须提供 enterprise；审核员可省略。不接受客户端指定 role，
+        也不接受客户端提供的 owner/verified 归属字段。
+    RegisterResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - user
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - username
+      - password
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 64
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+    PasswordChangeRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - currentPassword
+      - newPassword
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 128
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 128
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - user
+      - expiresAt
+      - csrfToken
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        expiresAt:
+          $ref: './openapi.yaml#/components/schemas/Timestamp'
+        csrfToken:
+          type: string
+          minLength: 16
+          description: 与会话内保存的值相同；首版不轮换，登录响应与 AUTH-04 返回同一个值。
+    Ownership:
+      type: string
+      enum:
+      - self
+      - unowned
+      - other
+      description: >-
+        self=当前账号绑定的企业；unowned=评测/演示用途、owner_user_id IS NULL；
+        other=他人的企业（只有审核员会看到）。
+    EnterpriseSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - nameSynthetic
+      - period
+      - ownership
+      properties:
+        id:
+          $ref: './openapi.yaml#/components/schemas/UUID'
+        nameSynthetic:
+          type: string
+        period:
+          $ref: './openapi.yaml#/components/schemas/Period'
+        ownership:
+          $ref: '#/components/schemas/Ownership'
+      description: 列表不返回 facts，避免一次拉全量事实；详情仍走 API-09。
+    EnterpriseSummaryList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnterpriseSummary'
+        nextCursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+    RunStatus:
+      type: string
+      enum:
+      - queued
+      - running
+      - succeeded
+      - failed
+    RunSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - enterpriseId
+      - asOf
+      - createdAt
+      - status
+      - reportAvailable
+      properties:
+        id:
+          $ref: './openapi.yaml#/components/schemas/UUID'
+        enterpriseId:
+          $ref: './openapi.yaml#/components/schemas/UUID'
+        asOf:
+          $ref: './openapi.yaml#/components/schemas/Timestamp'
+        createdAt:
+          $ref: './openapi.yaml#/components/schemas/Timestamp'
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        reportAvailable:
+          type: boolean
+          description: 只有 succeeded 且结果快照完整时为 true；未完成/失败的 run 不给报告下载。
+    RunSummaryList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunSummary'
+        nextCursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+x-error-codes:
+  - code: UNAUTHENTICATED
+    status: 401
+    meaning: 未提供任何凭证。
+  - code: SESSION_INVALID
+    status: 401
+    meaning: 会话已过期或已撤销。details.reason ∈ expired / revoked / unknown。
+  - code: TOKEN_INVALID
+    status: 401
+    meaning: Bearer 无效。
+  - code: DEMO_SESSION_REQUIRED
+    status: 403
+    meaning: restricted 模式的外层 demo 门禁缺失/过期；沿用现有错误码，判定在所有身份判定之前。
+  - code: DEMO_SESSION_INVALID
+    status: 401
+    meaning: 门禁已通过，但作为身份的 demo cookie 签名无效或已过期。
+  - code: INVALID_CREDENTIALS
+    status: 401
+    meaning: 用户名或密码错误；两者不区分。
+  - code: CSRF_REQUIRED
+    status: 403
+    meaning: 带会话的写请求缺少 X-CSRF-Token 或不匹配。
+  - code: ORIGIN_MISMATCH
+    status: 403
+    meaning: Origin 缺失或与 PUBLIC_ORIGIN 不同源（注册/登录同样适用）。
+  - code: ROLE_FORBIDDEN
+    status: 403
+    meaning: 凭证有效但角色不允许，或 Bearer 调用了写操作/业务列表。
+  - code: DEMO_SESSION_LEGACY
+    status: 403
+    meaning: 旧版 demo cookie（无 sid），只读。
+  - code: OBJECT_NOT_FOUND
+    status: 404
+    meaning: 对象不存在或不属于当前身份；与「不存在」不区分。
+  - code: USERNAME_TAKEN
+    status: 409
+    meaning: 用户名已被占用（唯一约束）。
+  - code: ENTERPRISE_ALREADY_BOUND
+    status: 409
+    meaning: 该账号已绑定企业，不能再创建第二家。
+  - code: DEMO_QUOTA_EXCEEDED
+    status: 429
+    meaning: 单次演示会话超过 20 个无主样本。
+  - code: ACCOUNT_LOCKED
+    status: 429
+    meaning: 同一 IP 连续失败过多，锁定 15 分钟。
+  - code: VALIDATION_ERROR
+    status: 422
+    meaning: 沿用现有业务校验错误码族，不改结构。
+  - code: DEPENDENCY_UNAVAILABLE
+    status: 503
+    meaning: 数据库/缓存/对象存储不可用；响应不含连接串。
+x-e1-impact:
+  - endpoint: GET /health
+    current: 公开
+    e1: 不变
+    newFailures: []
+  - endpoint: GET /policies
+    current: DemoSession（restricted 门禁）
+    e1: 门禁不变；登录后可直接访问
+    newFailures: []
+  - endpoint: GET /policies/{policyId}
+    current: DemoSession（restricted 门禁）
+    e1: 门禁不变
+    newFailures: []
+  - endpoint: POST /admin/policies/import
+    current: DemoSession AND AdminBearer
+    e1: DemoSession（门禁，local 免） AND UserSession(role=reviewer)；Bearer 403
+    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID]
+  - endpoint: POST /admin/policies/{policyId}/extract
+    current: DemoSession AND AdminBearer
+    e1: 同上；Idempotency-Key 语义不变
+    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID]
+  - endpoint: PUT /admin/policies/{policyId}/criteria
+    current: DemoSession AND AdminBearer
+    e1: 同上
+    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID]
+  - endpoint: POST /admin/policies/{policyId}/publish
+    current: DemoSession AND AdminBearer
+    e1: 同上
+    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID]
+  - endpoint: GET /admin/policies
+    current: DemoSession AND AdminBearer
+    e1: 审核员会话 或 Bearer（只读保留）
+    newFailures: [403 ROLE_FORBIDDEN（企业会话）]
+  - endpoint: GET /admin/policies/{policyId}
+    current: DemoSession AND AdminBearer
+    e1: 审核员会话 或 Bearer（只读保留）
+    newFailures: [403 ROLE_FORBIDDEN（企业会话）]
+  - endpoint: POST /enterprises
+    current: DemoSession
+    e1: 企业会话 409 ENTERPRISE_ALREADY_BOUND / 审核员（未绑定企业时） / demo（强制 owner NULL）；Bearer 403
+    newFailures: [409 ENTERPRISE_ALREADY_BOUND, 403 ROLE_FORBIDDEN, 429 DEMO_QUOTA_EXCEEDED, 403 DEMO_SESSION_LEGACY]
+  - endpoint: GET /enterprises/{enterpriseId}
+    current: DemoSession
+    e1: 本人 / 审核员全部 / demo 仅无主；非本人 404
+    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）]
+  - endpoint: PATCH /enterprises/{enterpriseId}/facts/{factKey}
+    current: DemoSession
+    e1: 本人 / 审核员仅本人企业 / demo 仅无主；他人 404
+    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）]
+  - endpoint: POST /assessment-runs
+    current: DemoSession
+    e1: 本人企业 / 审核员本人企业 / demo 无主企业；Bearer 403
+    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）]
+  - endpoint: GET /assessment-runs/{runId}
+    current: DemoSession
+    e1: 本人 run / 审核员全部 / demo 无主 run；Bearer 403；未完成的 run 409 RUN_NOT_COMPLETED
+    newFailures: [404 OBJECT_NOT_FOUND, 409 RUN_NOT_COMPLETED, 403 ROLE_FORBIDDEN（Bearer）]
+  - endpoint: GET /assessment-runs/{runId}/report.md
+    current: DemoSession
+    e1: 同 API-12；失败/未完成不给报告
+    newFailures: [404 OBJECT_NOT_FOUND, 409 RUN_NOT_COMPLETED]
+  - endpoint: GET /assessment-runs/{runId}/trace
+    current: DemoSession AND AdminBearer
+    e1: 本人 run（脱敏投影）/ 审核员全部 run / Bearer 全部 run（保留）/ demo 无主 run
+    newFailures: [404 OBJECT_NOT_FOUND]
+x-legacy-consumers:
+  - consumer: apps/web/src/api/client.ts:126
+    today: 对 /admin/、/trace 自动附带 Bearer
+    afterE1: 删除该逻辑
+    action: 审核端页面改会话登录；M2 维护
+  - consumer: 审核页「管理令牌」输入框
+    today: 浏览器持 ADMIN_TOKEN
+    afterE1: 下线
+    action: 同上
+  - consumer: apps/web/src/RealApp.tsx:218「保存企业 / 复制为新样本」
+    today: 无归属创建
+    afterE1: demo 下创建无主样本（服务端强制 NULL），有会话时按归属创建
+    action: 协议不变，后端加约束；M2 核对页面文案
+  - consumer: 直接调 /admin/** 的浏览器脚本
+    today: 持 Bearer 可用（含写）
+    afterE1: 写操作 403，只能读
+    action: 改用审核员会话或 CLI
+  - consumer: infra/deploy/issue-session.py
+    today: 签发 demo cookie
+    afterE1: 载荷增加 sid，并写 demo_quota 行（created=0，expires_at 与 cookie 同寿命）
+    action: 随 E1 一并改造；旧 cookie 只读
+  - consumer: 导入 CLI（直连库）
+    today: 直连数据库
+    afterE1: 不变
+    action: 无
+  - consumer: Playwright 用例
+    today: 手动填管理令牌
+    afterE1: 改登录流
+    action: M2 处理
+x-open-questions:
+  - 正式版本号（拟 1.1.0-rc.1）与逐端点兼容结论，待本草案评审后共同签收。
+  - 登录页上线时间与「双通道」切换窗口：由 M2 定，本草案不预设。
+  - 会话有效期初值 12 小时 / 空闲 30 分钟、demo 配额 20 条、密码最短 12 位：均为初始值，
+    可在评审中调整；一旦写入正式契约即冻结。
+  - 是否在企业会话下也开放 GET /admin/** 只读：当前按 D1.2 矩阵为不允许。
+  - 审核员密钥的轮换与初始下发方式：部署侧事项，不在本契约内定义。

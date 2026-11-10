@@ -10,6 +10,14 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 
 M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实现 PR 将已签收部分同步进 OpenAPI、后端 schema、M2 生成类型/客户端及成功失败示例。鉴权改造必须附旧门禁/脚本和新账号数据隔离迁移方案。迁移当前到 `008`，实施前核查最新序号再追加；不修改已部署 SQL。
 
+## E1 契约草案（2026-11-10）
+
+[`openapi.e1-draft.yaml`](openapi.e1-draft.yaml) 是 #46 账号/会话/对象权限的**评审用草案**，不是可生成客户端的能力声明：它不进 `generate_types.py` 的管线、不影响 `APP_VERSION` 与评测指纹（`openapi.yaml` 仍是唯一真源）。
+
+- 内容：AUTH-01—07 七个操作、16 个现有操作的 security 与 404/409 语义变更（`x-e1-impact`）、错误码表（`x-error-codes`）、旧消费者清单（`x-legacy-consumers`）、未决项（`x-open-questions`）。
+- 写法：复用的现有 schema 一律 `$ref: './openapi.yaml#/components/...'`，草案不复制它们；两份文件在同一个目录，工具可直接解析。
+- 流程：M2 逐端点评审 → 版本号与切换安排共同签收 → E1 实现完成后并入 `openapi.yaml`，同一次改动里升级 `info.version` 与 `APP_VERSION` 并重算指纹。
+
 ## 已实现范围（后端，2026-10-27：16/16）
 
 | 接口 | 方法路径 | 状态 |
