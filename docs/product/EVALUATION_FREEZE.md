@@ -1,7 +1,7 @@
 # 留出集评测集冻结声明（草案）
 
-> 版本：v0.9-draft｜起草：M3｜日期：2026-11-04｜最近修订：2026-11-07
-> **状态：M2 已复审（2026-11-07，head 原 `0e4a54d`；清理提交信息后为 `8c975dd`），保留草案、未签认；本轮修正后待 M2 再复核。** 在 M2 签认前，本文件不得作为「已冻结」的依据引用；仓库内也不得出现「已冻结」的对外表述。
+> 版本：v0.9-draft｜起草：M3｜日期：2026-11-04｜最近修订：2026-11-10
+> **状态：M2 已于 2026-11-10 完成本轮文档评审并签认修订方向（审查基线 `164ba32`，见 PR #57 评论）；本轮修订作为阶段性记录推进，保留草案、未正式冻结；原始证据核验与剩余事项待闭环。** 在 M2 完成正式冻结签认前，本文件不得作为「已冻结」的依据引用；仓库内也不得出现「已冻结」的对外表述。
 > 关联文件：[`LABEL_VERSIONS.md`](./LABEL_VERSIONS.md)、[`ACCEPTANCE.md`](./ACCEPTANCE.md)、[`ANNOTATION_GUIDE.md`](./ANNOTATION_GUIDE.md) §6.1、[`data/evaluation/labels.csv`](../../data/evaluation/labels.csv)。
 
 ## 1. 冻结对象与用途
@@ -26,6 +26,8 @@
 
 > **`conflict` 覆盖说明：** 留出集 `conflict` 为 **0**。四态中的冲突目前仅由引擎单元测试覆盖，**没有真实数据支撑**；评测报告不得声称已验证 conflict 场景（见 `ACCEPTANCE.md` 覆盖状态）。
 
+> **两种统计口径（2026-11-10 补）：** 原始标签 **148 条 / 34 个唯一组合**（dev 122 / holdout 26）；消融与导入跑数排除旧版本 `C031`、`C033` 后为 **32 个组合 / 146 条标签**（dev 120 / holdout 26）。留出集评分对象始终为 **6 个组合 / 26 条标签**，两种口径下不变。详见 §5.2 的统计口径说明。
+
 ## 3. 不可变指纹
 
 以下指纹中，`labels.csv`、`enterprises.csv` 与旧版 `criteria_review.csv` 于 2026-11-04 在 `main`（`fc5c8e0`）计算；`criteria_review.csv` 的新值于 2026-11-08 修正后重算：
@@ -44,12 +46,34 @@
 >
 > 指纹只识别所列文件，**不证明数据库导入与运行输入一致**；后者见 §5.2 的映射与一致性核对。
 
+> **换行口径（2026-11-10 补）：** 上表中 `labels.csv`（`9ea7310c…`）与 `enterprises.csv`（`fae2a66a…`）是 **Windows 工作树 `sha256sum` 的原始字节值**（`core.autocrlf=true` 检出为 CRLF）。最终提交 `b9d2371` 的 Git blob、以及 `git -c core.autocrlf=false archive` 导出的文件是 **LF 原始字节**；同一文件两套值不同属**换行差异，不是内容变化**。ECS 侧记录的是 LF 值：
+>
+> | 文件（LF 原始字节，`b9d2371`） | SHA-256 |
+> | --- | --- |
+> | `data/evaluation/labels.csv` | `62f53bd7e7d70246162367d370b4367d12d769a3b9ed69e4a749ff11975b93fa` |
+> | `data/fixtures/enterprises.csv` | `e836d551dd3e872ed00a9685f5da75bee6f921881816f3db67e9310316e89996` |
+> | `data/policies/source_register.csv` | `1d4c2b1e86e3472f7b0949470f8b4f0245e3eedb7fce2cb40043878cff0f44ed` |
+> | `data/policies/criteria_review.csv` | `01c8821c7ee5a50750acdbf3a65cc7f8b7fe65d51367ca59ab23fd8a20234627` |
+>
+> 上表 `criteria_review.csv` 的当前值 `01c8821c…` 本身就是 LF 口径，故两侧一致；其 Windows CRLF 检出值与之不同，不另列。`labels.csv` 的 holdout 子集哈希 `f380ca6d…` 按**规范化内容**（排序、UTF-8、LF、`csv.writer` 最小引号）计算，与工作树换行无关，两种检出下相同。本节不改变 §5.2 `manifest` / `codeFingerprint` 的原始字节签名规则：两者仍按实际读取/导出的字节计算，不忽略签名差异。
+
 ### 复现方法
 
-整文件：
+**整文件，Windows 工作树原始字节**（对应上表 `labels.csv` 的 `9ea7310c…`）：
 
 ```bash
-sha256sum data/evaluation/labels.csv
+sha256sum data/evaluation/labels.csv   # CRLF 检出
+```
+
+**整文件，最终提交 LF 原始字节**（对应 ECS 与上节 LF 表）：从明确提交导出到独立目录后再算实际字节哈希；不要在 Windows 工作树直接 `sha256sum` 后当作 ECS 值：
+
+```bash
+mkdir -p /tmp/huice-b9d2371
+git -c core.autocrlf=false archive b9d2371 data/evaluation/labels.csv | tar -x -C /tmp/huice-b9d2371
+sha256sum /tmp/huice-b9d2371/data/evaluation/labels.csv   # 62f53bd7…
+
+# 等价：直接对 Git blob 求哈希
+git cat-file blob b9d2371:data/evaluation/labels.csv | sha256sum
 ```
 
 holdout 子集（按 `case_id, criterion_id` 排序、UTF-8、LF、`csv.writer` 最小引号）：
@@ -110,7 +134,7 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 
 在上述 1–5 完成前，政策级指标写「未定义/不报告」，不能写成 0 或 100%。
 
-### 5.2 输入与执行快照（输入已由 M1 提供；执行快照部分完成，消融已于 2026-11-10 补跑，见下；M2 待复核）
+### 5.2 输入与执行快照（输入已由 M1 提供；执行快照部分完成，消融已于 2026-11-10 补跑；M2 已签认本轮修订方向，原始证据待核验）
 
 三份 CSV 的哈希只能识别文件，不足以复现一次实际评测。执行前须由 M1 提供并核对：
 
@@ -141,17 +165,69 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 >
 > **注意：** 自 `ae15dc0` 起导入器按 `reference_sources.csv` 写入跨文件出处的官方链接；缺该行时引用它的条件判 blocked、附件不写库，不借用主政策链接。HT-007 的 `source_span` 已改为官方逐字句「此项费用总额不得超过可加计扣除研发费用总额的10%」，119 号节选同步换成官方原文句。
 
-**进度（截至 2026-11-10）：** 第 1、2、3、5 项与第 4 项 `freeze-report` 由 #39 实现（已合入，2026-11-06 09:59）；部署文件指纹 `codeFingerprint` 由 #42 补入（已合入，2026-11-07 03:46），复算方式见第 3 项。清单结构以当前 `main` 的 `app.evaluation` 为准，不再引用 #39 的 head 提交。已合入不等于已完成：M1 报告的 ECS 清单分两次——@2 时代那次映射未解决 30 项、`verify` 非零，已作废；@3 在 `a087284…`（119 号旧节选）+ `15f3acd` 上跑出未解决 0、`verify` 0，但输入不是本 PR 最终数据，不得套用。**2026-11-09 已在 ECS 上用最终代码 `main@b9d2371` + 本 PR 完整 `data/` + 实库重出：inputs 清单 `86290c43…`（7 版 / 6 企业 / 148 用例，未解决 0）、`verify --commit b9d2371` 退出 0（一致 10 个政策版本 / 8 个企业；多出的 3 版为 11/05 演练遗留的 drill-policy）、`codeFingerprint` `8fe2368b…`（54 文件）。** M2 尚未独立访问核实，§5.2 仍待 M2 复核；本声明保持草案。上述执行证据已在 ECS 留档、仓库内未收录，M2 签认时需一并归档。
+**进度（截至 2026-11-10）：** 第 1、2、3、5 项与第 4 项 `freeze-report` 由 #39 实现（已合入，2026-11-06 09:59）；部署文件指纹 `codeFingerprint` 由 #42 补入（已合入，2026-11-07 03:46），复算方式见第 3 项。清单结构以当前 `main` 的 `app.evaluation` 为准，不再引用 #39 的 head 提交。已合入不等于已完成：M1 报告的 ECS 清单分两次——@2 时代那次映射未解决 30 项、`verify` 非零，已作废；@3 在 `a087284…`（119 号旧节选）+ `15f3acd` 上跑出未解决 0、`verify` 0，但输入不是本 PR 最终数据，不得套用。**2026-11-09 已在 ECS 上用最终代码 `main@b9d2371` + 本 PR 完整 `data/` + 实库重出：inputs 清单 `86290c43…`（7 版 / 6 企业 / 148 条条件级标签映射，未解决 0）、`verify --commit b9d2371` 退出 0（一致 10 个政策版本 / 8 个企业；多出的 3 版为 11/05 演练遗留的 drill-policy）、`codeFingerprint` `8fe2368b…`（54 文件）。** M2 未独立登录 ECS 复核上述云端证据；本声明保持草案，正式冻结待证据闭环与 M2 签认。上述执行证据已在 ECS 留档、仓库内未收录（完整索引见 §5.3），M2 签认时需一并归档。
 >
 > M1 已把消融加载口径改为读 `source_document`（按 `|` 与段数对齐，空时退回政策正文；提交 `200b7fe`（cherry-pick 为 `e7a25b4`，已带入本分支）。归属修正后 RD-001 的 8 段引文在第 7 号正文逐字可查、HT-007 的引文在 119 号节选可查，`unverifiable_criteria()` 为空；引用可证实率分母由 **140 → 146**。这是语义修正的必然结果，不是调数：**11-06 旧跑数的 140 必须与旧哈希 `767c6b…` 一起报告，不得套用 146。**
 
 > **2026-11-08 状态（历史）：** 当日 #51 仍 OPEN（head `1ef0bc6`），本 PR 的导入器仍是旧实现，故当时不验证整条链；M2 对 `--manifest` 缺来源的疑点待 #51 解决。
 >
-> **2026-11-09 当前：** #51 已合入 main（merge `cf74ffa`），#36 已合入（`d551ac7`），本分支 `ae15dc0` 已合入 main，导入器与消融代码同 main；ECS 已用最终代码 `main@b9d2371` + 本 PR 完整 `data/` + 实库重出（`--manifest` 13 份、干跑 7/7/0、inputs 清单 `86290c43…`、`verify` 退出 0、`codeFingerprint` `8fe2368b…`）。HT-2021 已按受控流程重导：119 号附件 `7148785…`/282 字，HT-007 引文为官方逐字句，新版本 `58b427a4…`。M2 尚未独立核实，本声明保持草案。
+> **2026-11-09 状态（历史）：** #51 已合入 main（merge `cf74ffa`），#36 已合入（`d551ac7`），本分支 `ae15dc0` 已合入 main，导入器与消融代码同 main；ECS 已用最终代码 `main@b9d2371` + 本 PR 完整 `data/` + 实库重出（`--manifest` 13 份、干跑 7/7/0、inputs 清单 `86290c43…`、`verify` 退出 0、`codeFingerprint` `8fe2368b…`）。HT-2021 已按受控流程重导：119 号附件 `7148785…`/282 字，HT-007 引文为官方逐字句，新版本 `58b427a4…`。M2 尚未独立核实，本声明保持草案。
 >
 > **2026-11-09 ECS 重出证据（M1 提供，M2 未独立核实）：** 部署 `main@b9d2371`（ECS 无 `.git`，该 commit 来自部署记录；磁盘代码身份由 `codeFingerprint` `8fe2368b…` 证明）；`--manifest` 13 份（criteria `01c8821c…`、119号 `7148785…`、labels `62f53bd…`，ECS LF 口径与 M3 一致）；干跑 7/7/0、退出 0；`--apply` 仅 HT-2021 判 conflict，按受控流程重导（全库备份 `31edecb5…`、删除 11/08 旧 run `2235ade8…`、十个触发器 `tgenabled` 恢复 `O`；119 号附件 `7148785…`/282 字，HT-007 引文为官方逐字句，新版本 `58b427a4…`）；回归 run `5ba1223b-7771-4a58-95d6-98173fd6d3d5`（微光软件、HT-2021 + 第 7 号、2026 全年），报告 111 行、带来源 17 条（第 7 号 10 + HT-2021 7），与 `evidenceRefs` 逐条对上。空壳 policy `7b5fcb15…`、drill-policy 三版及临时目录待演示前清理。该组 `verify` 数字对应清理前的库状态；清理后需重跑一次并更新本节（消融读 `data/`，不受影响）。
 >
-> **2026-11-10 消融补跑（M1 提供，M2 未独立核实）：** 在 ECS `/opt/huice/app/services/api`，代码 `main@b9d2371`（磁盘身份由 `codeFingerprint 8fe2368b…` 证明），数据 `/opt/huice/app/data`，执行 `python -m app.ablation pipeline --as-of 2026-11-06 --out /root/ablation-final.jsonl`：完成 **32 个 case，失败 0**。产物 `/root/ablation-final.jsonl` 在 ECS 留档、仓库内未收录：33 行（1 表头 + 32 case），sha256 `fe44e33efc1292c729deae7a3bea829c243305243ab8a557916b7d7f2f6ebe46`；头 `manifest` **12 项**；`cases/labels` 32/146；`as_of` `2026-11-06T12:00:00+08:00`；`scheme/prompt_version/model` 为 `pipeline`/`rule:criteria@1`/`rule-only`。三项关键哈希与 §5.2 一致：`labels.csv 62f53bd7…`、`criteria_review.csv 01c8821c…`、`财税〔2015〕119号.txt 71487854…`。消融侧 12 项 ≠ 导入器 13 份：`Dataset.manifest()` 只收四份 CSV + 被 case 引用的政策正文与出处原文，`reference_sources.csv` 只进导入器签名，按上表分工不是漏项；`model=rule-only` 是因为 `pipeline` 不传模型客户端，判断全由规则引擎完成。本次在 RDS 另建空库 `huice_eval` 供临时 schema（`huice_ablation_<pid>`，跑完自动删），未触碰演示库。
+> **2026-11-10 消融补跑（M1 提供，M2 未独立核实）：** 在 ECS `/opt/huice/app/services/api`，代码 `main@b9d2371`（磁盘身份由 `codeFingerprint 8fe2368b…` 证明），数据 `/opt/huice/app/data`，执行 `python -m app.ablation pipeline --as-of 2026-11-06 --out /root/ablation-final.jsonl`：完成 **32 个 case，outcome 失败 0**（outcome 失败数，非分类误判数）。产物 `/root/ablation-final.jsonl` 在 ECS 留档、仓库内未收录：33 行（1 表头 + 32 case），sha256 `fe44e33efc1292c729deae7a3bea829c243305243ab8a557916b7d7f2f6ebe46`；头 `manifest` **12 项**；`cases/labels` 32/146；`as_of` `2026-11-06T12:00:00+08:00`；`scheme/prompt_version/model` 为 `pipeline`/`rule:criteria@1`/`rule-only`。三项关键哈希与 §5.2 一致：`labels.csv 62f53bd7…`、`criteria_review.csv 01c8821c…`、`财税〔2015〕119号.txt 71487854…`。消融侧 12 项 ≠ 导入器 13 份：`Dataset.manifest()` 只收四份 CSV + 被 case 引用的政策正文与出处原文，`reference_sources.csv` 只进导入器签名，按上表分工不是漏项；`model=rule-only` 是因为 `pipeline` 不传模型客户端，判断全由规则引擎完成。本次在 RDS 另建空库 `huice_eval` 供临时 schema（`huice_ablation_<pid>`，跑完自动删），未触碰演示库。
+>
+> **复现前提与命令口径（2026-11-10 补）：** 上句命令是 M1 的历史执行命令；后续复现须先满足下列前提。**工作目录** `services/api`（使 `python -m app.ablation` 解析到本仓库 `app` 包；`Dataset` 默认数据目录由 `REPO_ROOT` 解析为 `/opt/huice/app/data`，可用 `--data` 覆盖）。**Python 环境**为部署 venv。**asOf** `--as-of 2026-11-06` 落为北京时间正午 `2026-11-06T12:00:00+08:00`（不给默认今天）。**输出** `--out` 指定 JSONL；不给则打到 stdout。**独立评测库**：`app.ablation.pipeline._resolve_dsn` 只认 `HUICE_EVAL_DATABASE_URL` 或 `--dsn`，**不回退 `DATABASE_URL`**（且两者相同时直接拒绝灌库）。单独 `export HUICE_EVAL_DATABASE_URL` 不会赋值；须先按部署约定加载有效值——`set -a; . /etc/huice/api.env; set +a`，再由 `DATABASE_URL` 换库名派生 DSN 并 `export HUICE_EVAL_DATABASE_URL`，仅在该会话有效、不落盘、不进命令行参数。目标库须为空闲库、有 `CREATE SCHEMA` 权限且预装 `vector`；脚本建临时 schema `huice_ablation_<pid>`，跑完 `DROP SCHEMA ... CASCADE`。**不得**把业务库地址或真实连接串写进文档、命令行参数或提交。该配置来源由 M1 提供（2026-11-10 回复）：不在 `/etc/huice/api.env`、systemd unit 或仓库中，为在 RDS 上手工创建的空库 `huice_eval`。
+>
+> **统计口径（2026-11-10 补）：** 文中「失败 0」是**运行 outcome 失败数**，不是分类误判数；本次是 `pipeline`/`rule-only` 补跑，**不代表** `baseline` 对照、指标计算、真实模型调用或完整消融实验全部完成。样本：原始 **34 个唯一组合 / 148 条条件级标签映射**；排除旧版本 `C031`、`C033` 后 **32 个组合 / 146 条标签**（dev 120 / holdout 26）；留出集评分对象始终为 **6 个组合 / 26 条标签**。`conflict` 仍无留出样本，政策级指标仍不报告，非盲测限制不变。
+
+### 5.3 剩余证据待办与证据索引（2026-11-10，M3 整理）
+
+> 依据 M1 2026-11-10 15:01 回复（PR #52）整理。云端原始产物由 M1 在 ECS 留存，M3 未登录 ECS 复核，也未代做云端待办；未逐项公开的条目按 M2 要求标「待提供/待核实」，不据缺席反推不存在。本节仅整理，不改变 §5.2 的证据要求。
+
+**A. 剩余证据待办表**
+
+| # | 事项 | 负责人 | 状态（截至 2026-11-10） | 说明 |
+| --- | --- | --- | --- | --- |
+| 1 | 对原始 `report-r2.md` 执行 `freeze-report` | M1 | 已产出，待 M2 核验 | M2 14:32 评审时尚未执行；M1 于 15:01 回复补出：原始 `03082c21…`（111 行）、稳定正文 `8d4c45ab…`、`sourceSha256 03082c21…`、`frozenSha256 8d4c45ab…`、`downloadedAt 2026-11-09T11:06:35Z`、`droppedLines 12`；ECS `/root/` 留档，仓库未收录。 |
+| 2 | 完整 trace JSON 及哈希 | M1 | 已提供，待 M2 核验 | `/root/trace-5ba1223b.json`，5012 B，`f6921e7c…`；只含阶段摘要与 `{type,id}`，**不作为条件级证据**。 |
+| 3 | run 元数据 | M1 | 已提供，待 M2 核验 | 演示库 `assessment_run`/`assessment` 实查（非报告转述），字段见 C；未导出转储。 |
+| 4 | 代码/进程身份核对 | M1 | 已提供，待 M2 核验 | 磁盘指纹 `8fe2368b…`（54 文件）、清单进程 `processStartedAt 2026-11-09T10:56:46Z`、当前进程按启动时间复算（写于其后的代码文件 0 个）；**进程内存中的内容仍不能证明**，按 §5.2 第 3 项原意保留。 |
+| 5 | 证据索引 | M3 整理 | 已列（见 B） | 依据 M1 提供；ECS 留存与仓库归档分开；不提交转储、密钥或真实敏感材料。 |
+| 6 | 清理空壳 policy/drill-policy 后重出快照并 `verify` | M1 | 待办（演示前） | 清理会改变库状态，须重出 `inputs` + `verify` 并保留清理前记录；清理前「10 版本 / 8 企业」不用于证明清理后；消融读 `data/`，不受影响。 |
+| 7 | `verify --process-pid` 参数未消费 | M1 | 待办（另开 PR） | `_cmd_verify` 不消费该参数，用其补签认无效；从 `verify` 移除或真正接上，不在本文档范围。 |
+| 8 | 消融 JSONL 入库归档 | 待定（M1 提供） | ECS 留档、仓库未收录 | `ablation-final.jsonl`，`fe44e33e…`；是否入库由所有者决定，不提交转储。 |
+| 9 | 独立核验原始材料并完成正式冻结签认 | M2 | 待办 | 本轮（`164ba32`）为文档评审签认，不是最终冻结。 |
+
+**B. 证据索引（产物 / 所属运行 / 访问位置 / 完整哈希 / 提供人 / 状态）**
+
+| 产物 | 所属运行 | 位置 | 完整哈希 | 提供人 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| `report-r2.md`（原始报告） | run `5ba1223b…` | ECS `/root/` | `03082c21…` | M1 | ECS 留档，仓库未收录 |
+| `report-r2.frozen.md`（稳定正文） | 同上 | ECS `/root/` | `8d4c45ab…` | M1 | 同上；审计四字段见 A#1 |
+| `trace-5ba1223b.json` | 同上 | ECS `/root/` | `f6921e7c…` | M1 | 同上；仅作可追溯索引 |
+| run 元数据 | 同上 | 演示库两表 | —（见 C） | M1 | 库内可查，未导出转储 |
+| `inputs-b9d2371-r2.json` | 库状态签认 | ECS `/root/` | `86290c43…` | M1 | ECS 留档 |
+| `ablation-final.jsonl` | 消融补跑 | ECS `/root/` | `fe44e33e…` | M1 | ECS 留档 |
+| 代码指纹 | `main@b9d2371` | 可复算 | `8fe2368b…` | M1 | 仓库代码 + ECS 磁盘一致 |
+| 部署提交 `b9d2371` | — | 部署记录 | — | M1 | ECS 无 `.git`，不可用 git 验证 |
+
+> 仓库内已归档的只有 `data/**`、`contracts/`、`services/api/**` 及其可复算的指纹部分；其余均为 ECS 留档，未提交转储、密钥或真实企业材料。
+
+**C. run 元数据（演示库两表实查）**
+
+| 字段 | 值 |
+| --- | --- |
+| `id` | `5ba1223b-7771-4a58-95d6-98173fd6d3d5` |
+| `enterprise_id` | `0e7799f3…`（合成企业） |
+| `as_of` | `2026-11-06T12:00+08:00` |
+| `status` | `succeeded` |
+| `fact_version` | `647e4842…` |
+| `model_or_rule_version` | `rule:criteria@1` |
+| `created_at` / `finished_at` | 同为 `2026-11-09T19:05:52+08:00`（同一事务落库、同步执行） |
+| 两条 `assessment` | HT-2021 政策 `10c0f286…` / 版本 `58b427a4…` → `insufficient_evidence`；第 7 号 `d3165f03…` / 版本 `cd05c775…` → `insufficient_evidence` |
+
+> run 引用的政策根是重导后的新根 `10c0f286…`，不是待清理的空壳 `7b5fcb15…`；版本 `58b427a4…` 与 §5.2 记录一致。
 
 ## 6. 锁定边界声明（避免误读）
 
@@ -166,9 +242,9 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 
 | 角色 | 动作 | 状态 | 起草/复核日期 | 正式签认时间 |
 | --- | --- | --- | --- | --- |
-| M3 | 起草本声明、提供指纹与复现方法 | 已起草；2026-11-09 按 M1/M2 复审意见修订；2026-11-10 按 PR #52 评论补消融结果与措辞 | 2026-11-04 | — |
-| M2 | 复核正式表述、评测协议与政策级/输入快照口径 | 已复审；保留草案、未签认 | 2026-11-07（head 原 `0e4a54d` / 现 `8c975dd`） | — |
-| M1 | 提供输入映射、运行参数与结果导出方式，确认运行时数据与快照一致 | 已提供 #39、`200b7fe`（cherry-pick `e7a25b4`）与 #51（head `1ef0bc6`，已合入 main `cf74ffa`；消融实际文件签名、导入器 `--manifest`）。ECS 清单分两次：@2 时代 30 项未解决、`verify` 非零，已作废；@3 在 `a087284…`（119 号旧节选）+ `15f3acd` 上未解决 0、`verify` 0，但输入非本 PR 最终数据，不得套用。最终组合已于 2026-11-09 重出：inputs 清单 `86290c43…`、`verify` 退出 0（10 版本 / 8 企业）、`codeFingerprint` `8fe2368b…`；消融已于 2026-11-10 补跑（32 case / 失败 0，JSONL `fe44e33e…`，头 `manifest` 12 项）；M2 未独立核实 | — | — |
+| M3 | 起草本声明、提供指纹与复现方法 | 已起草；2026-11-09 按 M1/M2 复审意见修订；2026-11-10 按 PR #52 评论补消融结果与措辞；2026-11-10 按 M2 本轮评审补 §3 换行口径与导出复现、§5.2 复现前提、§5.3 剩余证据待办与索引 | 2026-11-04；2026-11-10 | — |
+| M2 | 复核正式表述、评测协议与政策级/输入快照口径 | 已完成 2026-11-10 本轮文档评审并签认修订方向（审查基线 `164ba32`，见 PR #57 评论）；剩余修订与原始证据核验待闭环，**未完成正式冻结** | 2026-11-07（head 原 `0e4a54d` / 现 `8c975dd`）；2026-11-10（`164ba32`） | — |
+| M1 | 提供输入映射、运行参数与结果导出方式，确认运行时数据与快照一致 | 已提供 #39、`200b7fe`（cherry-pick `e7a25b4`）与 #51（head `1ef0bc6`，已合入 main `cf74ffa`；消融实际文件签名、导入器 `--manifest`）。ECS 清单分两次：@2 时代 30 项未解决、`verify` 非零，已作废；@3 在 `a087284…`（119 号旧节选）+ `15f3acd` 上未解决 0、`verify` 0，但输入非本 PR 最终数据，不得套用。最终组合已于 2026-11-09 重出：inputs 清单 `86290c43…`、`verify` 退出 0（10 版本 / 8 企业）、`codeFingerprint` `8fe2368b…`；消融已于 2026-11-10 补跑（32 case / outcome 失败 0，JSONL `fe44e33e…`，头 `manifest` 12 项）；2026-11-10 补出 `freeze-report`（原始 `03082c21…` / 稳定正文 `8d4c45ab…` / `droppedLines 12`）、trace `f6921e7c…`、run 元数据、代码/进程身份与证据索引（见 §5.3）；清理后重跑快照与 `verify --process-pid` 修复待办；M2 未独立核实 | — | — |
 
 > 正式冻结以 M2 在本表填写**签认时间**为准；本文件状态改为「已复核」前，不得对外称已冻结。
 
@@ -178,6 +254,8 @@ print(hashlib.sha256(buf.getvalue().encode("utf-8")).hexdigest())
 2. 本轮先不报政策级指标、按 §5.1 完成前置条件后再报，是否可接受？
 3. §5.2 的输入/执行快照要求是否足够；待 M1 提供后是否可作为冻结前置？
 4. 指纹与版本时间线是否仍足够复现（§3–§4）？
+
+> 2026-11-10 更新：M2 已完成本轮文档评审并签认修订方向（见 PR #57 评论）；上述 1–4 项本轮未被单独驳回，正式冻结前仍待原始证据核验后确认。
 
 ## 8. 变更控制
 
