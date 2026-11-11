@@ -8,10 +8,20 @@
 #
 # 评审路径：M2 逐端点核对 security、必填字段、错误码与旧消费者兼容性 →
 # 版本号与切换安排共同签收 → E1 实现完成后再并入 contracts/openapi.yaml。
+#
+# 修订记录
+#   draft.1（2026-11-10）：首版，7 个新增操作 + 16 个现有操作的权限语义变化。
+#   draft.2（2026-11-11）：按 PR #55 复审意见修订四条——
+#     (1) 新增 x-e1-gate-model：标准 security 只表达身份，部署模式相关的门禁逐端点写进
+#         x-e1-gate，给出判定顺序、门禁/身份真值表与可复核的请求样例；
+#     (2) AUTH-03 登出写成「提供但无效一律 401」的显式例外，给真值表，去掉 401 响应；
+#     (3) 说明 demo 门禁与 demo 身份是同一个 cookie、同一套校验，给出两种模式下的
+#         真值表，明确 401 DEMO_SESSION_INVALID 只在 local 模式可达；
+#     (4) RunStatus 写明 E1 承诺的四个状态、E3b 的 interrupted 扩展与消费者前向兼容规则。
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约（E1 草案：账号、会话与对象权限）
-  version: 1.1.0-rc.1-draft.1
+  version: 1.1.0-rc.1-draft.2
   description: |
     **草案，未实现，未并入正式契约。** 编号 AUTH-01—07 是设计追踪编号（见
     docs/EXTENSION_INTERFACES.md §3.2），合并进正式契约时按现行 API-01—16 的顺序续编。
@@ -36,28 +46,44 @@ info:
     - 本草案里的新 schema 已按生成器的可表达范围写（对象/数组/枚举/anyOf 可空），
       不使用 `allOf` 组合对象等生成器不支持的形式。
 
-    ## 凭证与判定顺序（D1）
+    ## 凭证、门禁与判定顺序（D1）
     1. 会话 Cookie `huice_session`（`UserSession`）—— 角色凭证。
     2. `ADMIN_TOKEN` Bearer（`AdminBearer`）—— **E1 后只读**：`/admin/**` 查询、全部 run 轨迹、自检。
-    3. 演示 Cookie `huice_demo_session`（`DemoSession`）—— restricted 模式的演示门禁，同时是
-       demo 身份（只作用于无主合成数据）。
+    3. 演示 Cookie `huice_demo_session`（`DemoSession`）—— restricted 模式的**外层门禁**；
+       门禁通过后，同一个 cookie 又充当 demo 身份（只作用于无主合成数据）。
 
-    判定顺序：**只有「未提供」才轮到下一个；「提供了但无效」一律 401，绝不降级**
+    **门禁与身份分开判定，但用同一个 cookie、同一套校验**（版本 + HMAC + 有效期，
+    见 `services/api/app/security.py:demo_session_is_valid`）。restricted 模式下先过门禁：
+    缺失、格式/签名不对、已过期，一律 403 `DEMO_SESSION_REQUIRED`，判定在一切身份判定**之前**，
+    拿到有效 Bearer 也不能绕过。门禁通过即证明该 cookie 签名有效且未过期，因此
+    **restricted 模式下不存在「门禁通过但 demo 身份无效」的分支**；`401 DEMO_SESSION_INVALID`
+    只在 local 模式可达（没有门禁挡在前面时，「携带了无效 demo cookie」按全局规则算 401）。
+    两种模式的真值表、与其它凭据并存的情形见 `x-e1-gate-model`。
+
+    **身份选择**：**只有「未提供」才轮到下一个；「提供了但无效」一律 401，绝不降级**
     （无效会话不得静默切到 demo，否则用户会把合成数据当成自己的）。四个凭据同时存在时：
     会话有效 → 以会话为准，忽略 Bearer 与 demo；会话提供但无效 → 401 `SESSION_INVALID`，
     即便 Bearer 有效也不降级。完整真值表见 docs/devlog/M1-11-10-E0决策提案.md §D1.5。
 
-    **外层门禁与身份是两件事**：restricted 模式下 demo cookie 还是网关门禁。门禁缺失仍是
-    403 `DEMO_SESSION_REQUIRED`（沿用现有错误码，判定在身份之前），不参与上面的三选一；
-    门禁通过后才按「demo 身份」处理，此时签名无效是 401 `DEMO_SESSION_INVALID`。
+    **唯一的例外是 AUTH-03 登出**：它不要求任何有效凭证（幂等），因此不适用「提供即校验、
+    无效即 401」，也不被外层门禁拦——否则 demo cookie 一过期就再也无法登出、也清不掉 Cookie。
+    例外只覆盖登出这一个操作，见该操作的响应表。
 
-    **旧消费者注意**：现行契约把若干端点写成同一个 security 对象里同时列 `DemoSession` 与
-    `AdminBearer`（OpenAPI 里是 AND）。E1 后用 security 列表区分「或」与「且」：审核端写操作是
-    `DemoSession(门禁) AND UserSession(reviewer)`，业务读是 `UserSession OR DemoSession`。
-    合并时逐端点核对，不能靠读旧对象推断 OR。
+    **旧消费者注意**：现行契约把若干端点写成同一 security 对象里同时列 `DemoSession` 与
+    `AdminBearer`（OpenAPI 里是 AND），但那个 AND 混了「门禁」与「身份」两件事。E1 起：
+    `security` **只表达身份**（列表内是「或」，对象内是「且」）；部署模式相关的外层门禁一律写进
+    每个操作的 `x-e1-gate`。旧对象的字面含义不变，不要从旧对象反推 E1 的 OR/AND。
 
     角色与对象另起一层判定，不与凭证混用：凭证有效但角色不够 → 403 `ROLE_FORBIDDEN`；
     角色够但对象不属于本人 → **404 `OBJECT_NOT_FOUND`**（与「不存在」不区分，避免泄露是否存在）。
+    写请求另加 CSRF 与同源校验（D1.6）：带会话的写请求缺 `X-CSRF-Token` → 403 `CSRF_REQUIRED`，
+    Origin 缺失或不同源 → 403 `ORIGIN_MISMATCH`。
+
+    ## 本草案怎么读
+    - `security` = 身份要求；`x-e1-gate` = 外层门禁（按部署模式分 local/restricted）。
+    - 判定顺序固定为：门禁 → 身份 → 角色 → 对象归属 → CSRF/Origin。
+    - restricted 对应现网 `APP_ENV=demo` + `DEMO_ACCESS_MODE=restricted`，local 对应
+      `APP_ENV=local`（配置层已强制两者一致，见 `services/api/app/config.py`）。
 
     ## 错误码
     见 `x-error-codes`。所有错误沿用现有 `ApiError` 结构（`error.code` / `error.message` /
@@ -77,6 +103,164 @@ tags:
 - name: admin
   description: 现有审核端端点（E1 后写操作只允许审核员会话）
 security: []
+x-e1-gate-model:
+  standard-security-limitation: |
+    标准 OpenAPI 3.1 的 `security` 只能表达「这次请求需要哪些凭证」：列表内是「或」，对象内是「且」。
+    它**无法**表达两件事：
+    (1) 同一份文档在 local 与 restricted 两种部署下要求不同的外层门禁；
+    (2) 门禁与身份用的是同一个 cookie，却按层给出不同状态码（403 还是 401）。
+    因此本草案的分工固定为：
+    - `security` 只写身份（标准语义，不做扩展、不塞门禁）；
+    - 部署模式相关的门禁写在每个操作的 `x-e1-gate`；16 个现有操作写在 `x-e1-impact` 的
+      `gate` / `identity` / `roles` / `ownership` / `csrf` 列；
+    - 服务端判定顺序以本节的 `evaluation-order` 为准。两份信息都只是文档口径，
+      错误信封仍沿用现有 `ApiError`。
+
+  evaluation-order:
+    - step: 1
+      layer: 外层门禁
+      applies: 仅 restricted；GET /health 与 POST /auth/logout 豁免
+      failure: '403 DEMO_SESSION_REQUIRED'
+    - step: 2
+      layer: 身份
+      applies: 按操作的 security（列表内 OR，对象内 AND），只认「未提供」才轮到下一个
+      failure: '401 UNAUTHENTICATED / 401 SESSION_INVALID / 401 TOKEN_INVALID / 401 DEMO_SESSION_INVALID'
+    - step: 3
+      layer: 角色
+      applies: 该身份能否调用此操作
+      failure: '403 ROLE_FORBIDDEN'
+    - step: 4
+      layer: 对象归属
+      applies: 目标对象是否属于当前身份
+      failure: '404 OBJECT_NOT_FOUND（与「不存在」不区分）'
+    - step: 5
+      layer: CSRF 与 Origin
+      applies: 仅写请求，且按凭证类型区分（D1.6）
+      failure: '403 CSRF_REQUIRED / 403 ORIGIN_MISMATCH'
+
+  modes:
+    local:
+      appEnv: local
+      demoAccessMode: local
+      gate: none
+      note: |
+        没有门禁。demo cookie 仍可用作 demo 身份，但必须自己签名有效；携带了无效值按 401 处理
+        （全局「提供即校验」规则），而不是像 restricted 那样在门禁层就被 403 挡下。
+    restricted:
+      appEnv: demo
+      demoAccessMode: restricted
+      gate: 'huice_demo_session（DemoSession），与 DEMO_SESSION_SECRET 签名绑定'
+      note: |
+        门禁对**所有身份**一律适用（包括有效 Bearer 和有效会话）；只有 /health 与 /auth/logout 豁免。
+        门禁缺失、格式/签名不对、已过期都返回同一个 403 DEMO_SESSION_REQUIRED（沿用现网错误码与文案），
+        不在响应里区分是哪一种，避免探测签名。
+
+  gate-and-identity-truth-table:
+    - mode: restricted
+      demoCookie: 缺失
+      otherCredentials: 任意
+      result: '403 DEMO_SESSION_REQUIRED'
+      note: 门禁在身份之前；有效会话或有效 Bearer 都不例外。
+    - mode: restricted
+      demoCookie: 版本前缀不对 / 三段格式破损 / HMAC 不匹配
+      otherCredentials: 任意
+      result: '403 DEMO_SESSION_REQUIRED'
+      note: 与「缺失」同一码同一文案，不区分。
+    - mode: restricted
+      demoCookie: 签名有效但已过期
+      otherCredentials: 任意
+      result: '403 DEMO_SESSION_REQUIRED'
+      note: 现网 `_check_session` 就返回这个码；E1 不新增 401 分支。
+    - mode: restricted
+      demoCookie: 签名有效且未过期（无 sid 的旧 cookie 也通过门禁）
+      otherCredentials: 无
+      result: demo 身份
+      note: 旧 cookie 只读；写操作另回 403 DEMO_SESSION_LEGACY。
+    - mode: restricted
+      demoCookie: 签名有效且未过期
+      otherCredentials: 有效会话
+      result: 会话身份优先
+      note: 门禁通过后按 D1.5 选身份；租户归属按会话，不按 demo。
+    - mode: restricted
+      demoCookie: 签名有效且未过期
+      otherCredentials: 提供会话但无效/过期
+      result: '401 SESSION_INVALID'
+      note: 门禁已过，进入身份层；无效会话不降级到 demo。
+    - mode: local
+      demoCookie: 缺失
+      otherCredentials: 无
+      result: '401 UNAUTHENTICATED'
+      note: 该端点 security 含 DemoSession 时（无其它可用凭证）。
+    - mode: local
+      demoCookie: 缺失
+      otherCredentials: 有效会话或有效 Bearer
+      result: 按该身份继续
+      note: 无门禁，直接进入身份层。
+    - mode: local
+      demoCookie: 提供但签名无效或已过期
+      otherCredentials: 无更高优先级的有效凭证
+      result: '401 DEMO_SESSION_INVALID'
+      note: 这是 DEMO_SESSION_INVALID 唯一的可达路径。
+    - mode: local
+      demoCookie: 提供但签名无效或已过期
+      otherCredentials: 有效会话
+      result: 会话身份继续，忽略 demo
+      note: 按 D1.5「会话有效则忽略 Bearer 与 demo」；与 restricted 不同，不因此 403。
+    - mode: local
+      demoCookie: 签名有效且未过期
+      otherCredentials: 无
+      result: demo 身份
+      note: 只作用于无主数据；旧 cookie 同上只读。
+
+  logout-exception: |
+    AUTH-03 登出是「提供但无效一律 401」的**显式例外**，也豁免外层门禁：
+    登出只撤销调用者自己出示的那一个会话，不读业务数据；若它要求有效凭证，
+    demo cookie 或会话一过期就再也清不掉 Cookie。详见 AUTH-03 的响应表。
+
+  decision-notes:
+    - 门禁豁免清单只有两项：GET /health（现网就是公开）与 POST /auth/logout（见上）。
+    - restricted 下注册/登录/会话恢复/改密**也要过门禁**：演示部署的入口是演示链接，
+      没有邀请就不该出现注册入口；门禁过期时也拿不到后续接口，单独豁免登录没有意义。
+    - demo 门禁与 demo 身份是同一个 cookie、同一套校验函数；两者的区别只是**在哪一层短路**
+      以及由此得到的错误码，不存在「同一请求两次不同结论」的分支。
+    - 门禁不参与「四选一」的优先级排序（它先于身份判定），因此 gate-and-identity-truth-table
+      的第一维是部署模式，而不是凭据组合。
+
+  recipes:
+    - name: local-无凭证
+      mode: local
+      request: 'curl -sS -o /dev/null -w "%{http_code}\n" "$API/enterprises"'
+      expect: '401 UNAUTHENTICATED'
+    - name: local-无效-demo-cookie
+      mode: local
+      request: 'curl -sS -H "Cookie: huice_demo_session=v1.1.deadbeef" "$API/enterprises"'
+      expect: '401 DEMO_SESSION_INVALID'
+    - name: restricted-无-demo-带有效-Bearer
+      mode: restricted
+      request: 'curl -sS -H "Authorization: Bearer $TOKEN" "$API/policies"'
+      expect: '403 DEMO_SESSION_REQUIRED（Bearer 不能绕过门禁）'
+    - name: restricted-有效-demo
+      mode: restricted
+      request: 'curl -sS -H "Cookie: huice_demo_session=$DEMO" "$API/enterprises"'
+      expect: '200，ownership=unowned 的企业'
+    - name: restricted-demo-加有效会话
+      mode: restricted
+      request: 'curl -sS -H "Cookie: huice_demo_session=$DEMO; huice_session=$SID" "$API/enterprises"'
+      expect: '200，按会话归属过滤；demo 被忽略'
+    - name: restricted-无效会话-加有效-demo
+      mode: restricted
+      request: 'curl -sS -H "Cookie: huice_demo_session=$DEMO; huice_session=expired" "$API/enterprises"'
+      expect: '401 SESSION_INVALID（不降级到 demo）'
+    - name: restricted-登出-过期会话-无-demo
+      mode: restricted
+      request: 'curl -sS -i -X POST -H "Cookie: huice_session=expired" "$API/auth/logout"'
+      expect: '204，`Set-Cookie: huice_session=; Max-Age=0`；不因门禁或缺 CSRF 而 403'
+    - name: 占位符说明
+      mode: both
+      request: '（不是请求）'
+      expect: >-
+        $API=部署的 /api/v1 基址；$DEMO 由 infra/deploy/issue-session.py 签发；
+        $SID/$TOKEN 只在服务器上取值。真实值不进仓库、不进命令历史、不贴进 PR 或聊天。
 paths:
   /auth/register:
     post:
@@ -85,6 +269,10 @@ paths:
       tags:
       - auth
       security: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 下也要过门禁（没有邀请就不提供注册入口）；失败 403 DEMO_SESSION_REQUIRED。
       description: |
         事务内创建账号与（企业用户必填的）唯一企业，两者同成同败：字段非法或审核员密钥错误时
         不留下半个账号或半个企业。默认**不自动登录**，须再调 AUTH-02。
@@ -94,6 +282,8 @@ paths:
         - 不接受客户端指定 `role`：角色由 `reviewerSignupKey` 是否存在决定，服务端裁定。
         - **Origin 必须存在且与 `PUBLIC_ORIGIN` 同源**，缺失或不匹配一律 403（D1.6）。
         - 限流：IP 维度 5 次/分钟；连续 20 次失败锁 15 分钟（只锁 IP，不锁用户名）。
+      parameters:
+        - $ref: '#/components/parameters/OriginHeader'
       requestBody:
         required: true
         content:
@@ -173,19 +363,38 @@ paths:
       tags:
       - auth
       security: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 下也要过门禁；失败 403 DEMO_SESSION_REQUIRED，不进入凭据校验、不计入锁定计数。
       description: |
         成功后下发会话 Cookie `huice_session`（`HttpOnly; Secure; SameSite=Lax; Path=/api`；
         `APP_ENV=local` 时关闭 `Secure`），同时返回 `csrfToken`，后续写请求走 `X-CSRF-Token`。
 
+        **Origin 必须存在且与 `PUBLIC_ORIGIN` 同源**，缺失或不匹配一律 403 `ORIGIN_MISMATCH`
+        （D1.6 第一行：此时还没有已认证状态，所以不要求 CSRF，但只要 Origin）。这条与 AUTH-01 相同，
+        不因「登录本身不改变服务端状态」而省略——登录会下发会话 Cookie，属于 CSRF 的目标。
+
         账号不存在与密码错误使用**同一个** 401 `INVALID_CREDENTIALS` 与同一提示文案，
         响应不透露账号是否存在。限流与锁定同 AUTH-01（IP 维度，`username` 只计数不锁定，
         避免他人恶意锁死某个账号）。
+
+        restricted 部署下，门禁先于凭据校验：没有有效 demo cookie 时直接 403
+        `DEMO_SESSION_REQUIRED`，不校验账号密码、也不消耗失败次数。
+      parameters:
+        - $ref: '#/components/parameters/OriginHeader'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
+            examples:
+              enterpriseUser:
+                summary: 企业用户（浏览器同源请求，Origin 见参数）
+                value:
+                  username: acme-2026
+                  password: correct horse battery staple
       responses:
         '200':
           description: 登录成功；`Set-Cookie` 下发 `huice_session`
@@ -254,16 +463,38 @@ paths:
       summary: AUTH-03 登出
       tags:
       - auth
-      security:
-      - UserSession: []
+      security: []
+      x-e1-gate:
+        local: none
+        restricted: exempt
+        note: 豁免演示门禁；否则 demo cookie 一过期就无法登出、也清不掉 Cookie。
+      x-e1-credential-rule:
+        exception: 本操作不适用「提供但无效一律 401」；无效会话按「无会话」处理并返回 204。
       description: |
-        撤销当前服务端会话并清除 Cookie，`204`，无响应体。**无有效会话时也返回 204**（幂等），
-        但不会因为「没带会话」就去撤销别人的会话。带会话时必须通过 CSRF 校验与同源校验。
+        撤销**调用者自己出示的那一个**会话并清除 Cookie，`204`，无响应体。
+        它不查询也不撤销其他会话，因此**无效会话也返回 204**，不返回 401——
+        这是全局「提供的凭证无效一律 401」的**显式例外**，只适用于本操作。
+
+        | 传入的 `huice_session` | 服务端动作 | `X-CSRF-Token` | `Origin` | 响应 |
+        | --- | --- | --- | --- | --- |
+        | 未提供 | 不查库、不修改任何行 | 不需要 | 不校验 | `204` + 清 Cookie |
+        | 提供但格式不对 / 不存在 / 已过期 / 已撤销 | 视同「无有效会话」：不查不到就不动，返回成功 | 不需要 | 不校验 | `204` + 清 Cookie |
+        | 有效 | 置 `revoked_at`，撤销这一个会话 | **必填**，缺失或不匹配 → `403 CSRF_REQUIRED` | 必须与 `PUBLIC_ORIGIN` 同源，否则 `403 ORIGIN_MISMATCH` | `204` + 清 Cookie |
+
+        - **清 Cookie**：三种情形都在响应里带 `Set-Cookie: huice_session=; Path=/api; Max-Age=0`
+          （local 模式无 `Secure`，与下发时一致），否则浏览器会继续带着死值重试。
+        - **CSRF 只在有效会话时需要**：没有有效会话时既没有可被冒用的状态、也没有可比的
+          `csrfToken`，此时强求 CSRF 只会让「会话过期后收尾」失败。有有效会话时缺 CSRF
+          → `403 CSRF_REQUIRED`，且**不撤销**任何东西（先校验后动作）。
+        - **不含 401**：本操作没有 401 分支；错误只可能来自 CSRF/Origin（403）或服务端（5xx）。
+        - **与门禁的关系**：restricted 下本操作豁免 `DemoSession` 门禁；带 Bearer 或同时带
+          demo cookie 时不改变行为，也不撤销 Bearer 或 demo 所代表的任何东西。
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/OriginHeaderOptional'
       responses:
         '204':
-          description: 已登出（无论原本是否有效）
+          description: 已登出；无论原本是否有效（无有效会话时不产生任何服务端改动）
           headers:
             X-Trace-Id:
               $ref: '#/components/headers/TraceId'
@@ -271,8 +502,6 @@ paths:
               description: huice_session=; Path=/api; Max-Age=0
               schema:
                 type: string
-        '401':
-          $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
         '500':
@@ -289,6 +518,10 @@ paths:
       - auth
       security:
       - UserSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 下先过门禁；门禁缺失是 403，会话无效才是 401，两者不互换。
       description: |
         刷新页面后恢复登录态与 `enterpriseId`；返回与 AUTH-02 相同的 `csrfToken`（首版不轮换）。
         响应禁止缓存。会话过期或已撤销一律 401，不降级到 demo 或 Bearer。
@@ -333,11 +566,16 @@ paths:
       - auth
       security:
       - UserSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 下先过门禁，再验会话；缺 CSRF/Origin 是 403，会话无效是 401。
       description: |
         校验旧密码后更新哈希，并**立即撤销该账号的全部会话**（含当前会话），清 Cookie；
         用户须重新登录。没有「替他人改密」的接口，审核员也不能重置他人密码。
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/OriginHeader'
       requestBody:
         required: true
         content:
@@ -377,6 +615,10 @@ paths:
       security:
       - UserSession: []
       - DemoSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: 门禁与身份是同一个 cookie；restricted 下只有门禁通过，DemoSession 才可能作为身份参与选择。
       description: |
         角色与归属过滤在**服务端**完成，不能靠前端隐藏：
         - 企业用户：至多本人一条；
@@ -439,14 +681,33 @@ paths:
       security:
       - UserSession: []
       - DemoSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: 同 AUTH-06：先门禁后身份，403 与 401 不互换。
       description: |
         支持历史分析与报告导航，不能只依赖浏览器保存的 `runId`。归属过滤在服务端：
         企业用户只看本人企业的 run，审核员看全部，demo 只看无主企业的 run，Bearer 403。
 
-        `status` 是 E1 新增的生命周期字段（D5.3）：`queued/running/succeeded/failed`。
-        E1 之前的历史记录只可能是 `succeeded`（旧实现仅在成功后插行），
-        因此旧数据按 `succeeded` 返回，不补造失败记录，也不把 `created_at == finished_at`
-        当成 0 毫秒耗时。失败与未完成的 run **不提供报告下载**（`reportAvailable=false`）。
+        `status` 是 E1 新增的生命周期字段（D5.3）。**E1 只承诺四个取值**
+        `queued/running/succeeded/failed`，且 E1 不产生 `interrupted`：
+        - E1 之前的历史记录只可能是 `succeeded`（旧实现仅在成功后插行），旧数据按 `succeeded`
+          返回，不补造失败记录，也不把 `created_at == finished_at` 当成 0 毫秒耗时；
+        - `queued` 只出现在 E1 起的新写入路径上（受理即落行），E1 之前没有 `queued`。
+
+        **`interrupted` 是 E3b 的扩展，不在本草案的枚举里**：D5.3 的启动扫描（`running` 记录早于
+        运行上限、advisory lock 无人持有、原连接已断开，三者同时满足才置 `interrupted`）随 E3b 落地。
+        E1 不做启动扫描，进程崩溃留下的孤儿 `running` **保持 `running`**，不自动改写。
+
+        为避免以后加枚举值成为破坏性变更，消费者**现在就**必须按以下规则处理未知取值：
+        1. `reportAvailable` 是「能否下载报告」的唯一权威标志，未知取值一律按 `false`；
+        2. 详情与报告接口把未知取值按「未完成」处理（409 `RUN_NOT_COMPLETED`），不得当作 `succeeded`；
+        3. 列表原样展示服务端字符串，前端不得假定「非 `succeeded` 即 `failed`」；
+        4. 不得依据状态自动重跑；E1 与 E3b 都不提供自动重跑。
+
+        失败、未完成与被中断的 run **都可以出现在列表里**，但**不提供报告下载**。
+        是否给 `interrupted` 单列一个错误码（而不是复用 409 `RUN_NOT_COMPLETED`）留待共同评审，
+        见 `x-open-questions`。
       parameters:
         - name: enterpriseId
           in: query
@@ -515,9 +776,12 @@ components:
       in: cookie
       name: huice_demo_session
       description: >-
-        沿用现行定义：restricted 模式的演示门禁，同时是 demo 身份（只作用于
-        owner_user_id IS NULL 的合成数据）。E1 起载荷增加 sid，用于每会话配额；
-        无 sid 的旧 cookie 只读，写操作返回 403 DEMO_SESSION_LEGACY。
+        同一个 cookie、同一套校验，承担两个角色：restricted 模式下先当**外层门禁**，
+        通过后当 **demo 身份**（只作用于 owner_user_id IS NULL 的合成数据）。
+        门禁失败一律 403 DEMO_SESSION_REQUIRED（缺失/签名不对/过期不区分）；
+        401 DEMO_SESSION_INVALID 只在 local 模式（无门禁）下「携带了无效值」时出现。
+        E1 起载荷增加 sid，用于每会话配额；无 sid 的旧 cookie 通过门禁但只读，
+        写操作返回 403 DEMO_SESSION_LEGACY。真值表见顶层 x-e1-gate-model。
     AdminBearer:
       type: http
       scheme: bearer
@@ -531,12 +795,34 @@ components:
       in: header
       required: false
       description: >-
-        带会话 Cookie 的写请求必填，缺失或与会话内 csrfToken 不一致返回 403 CSRF_REQUIRED；
-        同时校验 Origin 与 PUBLIC_ORIGIN 同源，不匹配 403 ORIGIN_MISMATCH。
-        Bearer/CLI 请求不校验（见 D1.6 四类请求）。
+        **带有效会话 Cookie 的写请求**必填，缺失或与会话内 csrfToken 不一致返回 403 CSRF_REQUIRED；
+        有会话时同时校验 Origin 与 PUBLIC_ORIGIN 同源，不匹配 403 ORIGIN_MISMATCH。
+        写请求分四类（D1.6）：注册/登录只校验 Origin、不要求 CSRF；带会话的写请求两者都要；
+        带 demo cookie 的写请求要 Origin（+Referer）但不要求 CSRF；带 Bearer 或不带凭证的
+        CLI/curl 请求两者都不校验。AUTH-03 登出在没有有效会话时不要求 CSRF。
       schema:
         type: string
         minLength: 16
+    OriginHeader:
+      name: Origin
+      in: header
+      required: true
+      description: >-
+        必须是 PUBLIC_ORIGIN 的确切源（scheme + host + port，不带路径与末尾斜杠）。
+        缺失或不匹配一律 403 ORIGIN_MISMATCH（D1.6）。浏览器会自动带上；curl/脚本需显式提供。
+      schema:
+        type: string
+        format: uri
+    OriginHeaderOptional:
+      name: Origin
+      in: header
+      required: false
+      description: >-
+        有有效会话时必填并校验同源（否则 403 ORIGIN_MISMATCH）；无有效会话时不校验。
+        仅用于 AUTH-03 登出这类「无效会话也成功」的操作。
+      schema:
+        type: string
+        format: uri
     Cursor:
       $ref: './openapi.yaml#/components/parameters/Cursor'
     Limit:
@@ -557,7 +843,9 @@ components:
           schema:
             $ref: './openapi.yaml#/components/schemas/ApiError'
     Unauthenticated:
-      description: 未提供凭证，或提供的凭证无效/过期；不降级到其它凭证
+      description: >-
+        未提供凭证，或提供的凭证无效/过期；不降级到其它凭证。
+        例外：AUTH-03 登出没有 401 分支（无效会话也返回 204），见该操作说明。
       headers:
         X-Trace-Id:
           $ref: '#/components/headers/TraceId'
@@ -877,6 +1165,21 @@ components:
       - running
       - succeeded
       - failed
+      description: |
+        **E1 承诺的四个取值，仅此四个**：
+        - `queued`：已受理、尚未开始（E1 起的新写入从这里开始）；
+        - `running`：执行中；
+        - `succeeded`：完成且有结果快照；
+        - `failed`：执行失败，或依赖在重试后仍不可用。
+        E1 不产生也不扫描 `interrupted`；E3b 落地 D5.3 的启动扫描后才会新增该取值。
+        消费者必须按「未知取值 = 未完成」处理（`reportAvailable=false`、详情 409
+        `RUN_NOT_COMPLETED`、列表原样展示、不自动重跑），见 AUTH-07 说明。
+      x-e1-lifecycle:
+        e1: [queued, running, succeeded, failed]
+        reserved: interrupted
+        addedBy: E3b（D5.3 启动扫描）
+        e1-orphan-handling: '进程崩溃留下的 running 在 E1 保持 running，不自动改写'
+        forward-compatible-consumers: true
     RunSummary:
       type: object
       additionalProperties: false
@@ -928,10 +1231,16 @@ x-error-codes:
     meaning: Bearer 无效。
   - code: DEMO_SESSION_REQUIRED
     status: 403
-    meaning: restricted 模式的外层 demo 门禁缺失/过期；沿用现有错误码，判定在所有身份判定之前。
+    meaning: >-
+      restricted 模式的外层 demo 门禁未通过（缺失、格式/签名不对、已过期，不区分）；
+      沿用现有错误码，判定在所有身份判定之前，带有效 Bearer 或有效会话也不能绕过。
+      豁免：GET /health、POST /auth/logout。
   - code: DEMO_SESSION_INVALID
     status: 401
-    meaning: 门禁已通过，但作为身份的 demo cookie 签名无效或已过期。
+    meaning: >-
+      **只在 local 模式可达**：没有门禁挡在前面，携带的 demo cookie 签名无效或已过期，
+      且没有更高优先级的有效凭证；按「提供但无效即 401」处理。
+      restricted 下不存在这个分支（门禁层已经用 403 拦下）。
   - code: INVALID_CREDENTIALS
     status: 401
     meaning: 用户名或密码错误；两者不区分。
@@ -950,6 +1259,11 @@ x-error-codes:
   - code: OBJECT_NOT_FOUND
     status: 404
     meaning: 对象不存在或不属于当前身份；与「不存在」不区分。
+  - code: RUN_NOT_COMPLETED
+    status: 409
+    meaning: >-
+      该 run 尚未成功完成（queued/running/failed，以及未来出现的未知取值，含 E3b 的
+      interrupted），详情与报告接口不给结果。是否给 interrupted 单列错误码待共同评审。
   - code: USERNAME_TAKEN
     status: 409
     meaning: 用户名已被占用（唯一约束）。
@@ -968,70 +1282,141 @@ x-error-codes:
   - code: DEPENDENCY_UNAVAILABLE
     status: 503
     meaning: 数据库/缓存/对象存储不可用；响应不含连接串。
+x-e1-impact-conventions:
+  gate: restricted 模式的外层门禁（DemoSession）；local 模式一律 none。
+  identity: 门禁通过后按 security 选身份（列表内 OR）；「提供但无效」不降级。
+  roles: 身份层之后；角色不满足 → 403 ROLE_FORBIDDEN。
+  ownership: 角色层之后；对象不属于当前身份 → 404 OBJECT_NOT_FOUND（与「不存在」同码）。
+  csrf: 仅写请求；带会话必须 X-CSRF-Token + Origin，带 demo 要 Origin（+Referer）不要求 CSRF，Bearer/无凭证不校验。
+  bearer-scope: Bearer 的只读面 = /admin/** 查询、全部 run 轨迹、/health；其余业务读一律 403。
 x-e1-impact:
   - endpoint: GET /health
     current: 公开
-    e1: 不变
+    gate: {local: none, restricted: none}
+    identity: 无
+    roles: 无
+    ownership: '—'
+    csrf: 无（只读）
     newFailures: []
   - endpoint: GET /policies
-    current: DemoSession（restricted 门禁）
-    e1: 门禁不变；登录后可直接访问
-    newFailures: []
+    current: DemoSession（restricted 门禁，local 免）
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession（任意角色）或 DemoSession
+    roles: Bearer → 403；其余无角色限制（策略库是公共参考数据）
+    ownership: '—'
+    csrf: 无（只读）
+    newFailures: [401 SESSION_INVALID, 403 ROLE_FORBIDDEN（仅 Bearer）]
   - endpoint: GET /policies/{policyId}
-    current: DemoSession（restricted 门禁）
-    e1: 门禁不变
-    newFailures: []
+    current: DemoSession（restricted 门禁，local 免）
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession（任意角色）或 DemoSession
+    roles: Bearer → 403
+    ownership: '—'
+    csrf: 无（只读）
+    newFailures: [401 SESSION_INVALID, 403 ROLE_FORBIDDEN（仅 Bearer）]
   - endpoint: POST /admin/policies/import
     current: DemoSession AND AdminBearer
-    e1: DemoSession（门禁，local 免） AND UserSession(role=reviewer)；Bearer 403
-    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession(role=reviewer)
+    roles: 企业会话/demo/Bearer → 403 ROLE_FORBIDDEN（写操作不再接受 Bearer）
+    ownership: '—'
+    csrf: '会话写请求：X-CSRF-Token + Origin'
+    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: POST /admin/policies/{policyId}/extract
     current: DemoSession AND AdminBearer
-    e1: 同上；Idempotency-Key 语义不变
-    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession(role=reviewer)
+    roles: 同上
+    ownership: '—'
+    csrf: '会话写请求：X-CSRF-Token + Origin'
+    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: PUT /admin/policies/{policyId}/criteria
     current: DemoSession AND AdminBearer
-    e1: 同上
-    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession(role=reviewer)
+    roles: 同上
+    ownership: '—'
+    csrf: '会话写请求：X-CSRF-Token + Origin'
+    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: POST /admin/policies/{policyId}/publish
     current: DemoSession AND AdminBearer
-    e1: 同上
-    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession(role=reviewer)
+    roles: 同上
+    ownership: '—'
+    csrf: '会话写请求：X-CSRF-Token + Origin'
+    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: GET /admin/policies
     current: DemoSession AND AdminBearer
-    e1: 审核员会话 或 Bearer（只读保留）
-    newFailures: [403 ROLE_FORBIDDEN（企业会话）]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession(role=reviewer) 或 AdminBearer（只读保留）
+    roles: 企业会话/demo → 403 ROLE_FORBIDDEN
+    ownership: '—'
+    csrf: 无（只读）
+    newFailures: [403 ROLE_FORBIDDEN（企业会话）, 401 SESSION_INVALID]
   - endpoint: GET /admin/policies/{policyId}
     current: DemoSession AND AdminBearer
-    e1: 审核员会话 或 Bearer（只读保留）
-    newFailures: [403 ROLE_FORBIDDEN（企业会话）]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession(role=reviewer) 或 AdminBearer（只读保留）
+    roles: 企业会话/demo → 403 ROLE_FORBIDDEN
+    ownership: '—'
+    csrf: 无（只读）
+    newFailures: [403 ROLE_FORBIDDEN（企业会话）, 401 SESSION_INVALID]
   - endpoint: POST /enterprises
     current: DemoSession
-    e1: 企业会话 409 ENTERPRISE_ALREADY_BOUND / 审核员（未绑定企业时） / demo（强制 owner NULL）；Bearer 403
-    newFailures: [409 ENTERPRISE_ALREADY_BOUND, 403 ROLE_FORBIDDEN, 429 DEMO_QUOTA_EXCEEDED, 403 DEMO_SESSION_LEGACY]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession（enterprise 未绑定 / reviewer 未绑定）或 DemoSession
+    roles: Bearer → 403 ROLE_FORBIDDEN
+    ownership: 会话创建归本人；demo 创建强制 owner_user_id = NULL
+    csrf: '会话写：X-CSRF-Token + Origin；demo 写：Origin（+Referer），不要 CSRF'
+    newFailures: [409 ENTERPRISE_ALREADY_BOUND, 403 ROLE_FORBIDDEN, 429 DEMO_QUOTA_EXCEEDED, 403 DEMO_SESSION_LEGACY, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: GET /enterprises/{enterpriseId}
     current: DemoSession
-    e1: 本人 / 审核员全部 / demo 仅无主；非本人 404
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession 或 DemoSession
+    roles: Bearer → 403 ROLE_FORBIDDEN
+    ownership: 本人 / 审核员全部 / demo 仅无主；非本人 404
+    csrf: 无（只读）
     newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）]
   - endpoint: PATCH /enterprises/{enterpriseId}/facts/{factKey}
     current: DemoSession
-    e1: 本人 / 审核员仅本人企业 / demo 仅无主；他人 404
-    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession 或 DemoSession
+    roles: Bearer → 403 ROLE_FORBIDDEN
+    ownership: 本人 / 审核员仅本人企业 / demo 仅无主；他人 404
+    csrf: '会话写：X-CSRF-Token + Origin；demo 写：Origin（+Referer）'
+    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: POST /assessment-runs
     current: DemoSession
-    e1: 本人企业 / 审核员本人企业 / demo 无主企业；Bearer 403
-    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession 或 DemoSession
+    roles: Bearer → 403 ROLE_FORBIDDEN
+    ownership: 本人企业 / 审核员本人企业 / demo 无主企业；他人 404
+    csrf: '会话写：X-CSRF-Token + Origin；demo 写：Origin（+Referer）'
+    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: GET /assessment-runs/{runId}
     current: DemoSession
-    e1: 本人 run / 审核员全部 / demo 无主 run；Bearer 403；未完成的 run 409 RUN_NOT_COMPLETED
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession 或 DemoSession
+    roles: Bearer → 403 ROLE_FORBIDDEN
+    ownership: 本人 run / 审核员全部 / demo 无主 run；非本人 404
+    csrf: 无（只读）
     newFailures: [404 OBJECT_NOT_FOUND, 409 RUN_NOT_COMPLETED, 403 ROLE_FORBIDDEN（Bearer）]
   - endpoint: GET /assessment-runs/{runId}/report.md
     current: DemoSession
-    e1: 同 API-12；失败/未完成不给报告
-    newFailures: [404 OBJECT_NOT_FOUND, 409 RUN_NOT_COMPLETED]
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession 或 DemoSession
+    roles: Bearer → 403 ROLE_FORBIDDEN
+    ownership: 同 API-12；失败/未完成不给报告（409 RUN_NOT_COMPLETED）
+    csrf: 无（只读）
+    newFailures: [404 OBJECT_NOT_FOUND, 409 RUN_NOT_COMPLETED, 403 ROLE_FORBIDDEN（Bearer）]
   - endpoint: GET /assessment-runs/{runId}/trace
     current: DemoSession AND AdminBearer
-    e1: 本人 run（脱敏投影）/ 审核员全部 run / Bearer 全部 run（保留）/ demo 无主 run
+    gate: {local: none, restricted: DemoSession}
+    identity: UserSession 或 AdminBearer 或 DemoSession
+    roles: 企业会话仅本人 run 的脱敏投影；审核员与 Bearer 看全部 run
+    ownership: 本人 run / 审核员全部 run / demo 无主 run；非本人 404
+    csrf: 无（只读）
     newFailures: [404 OBJECT_NOT_FOUND]
 x-legacy-consumers:
   - consumer: apps/web/src/api/client.ts:126
@@ -1064,6 +1449,12 @@ x-legacy-consumers:
     action: M2 处理
 x-open-questions:
   - 正式版本号（拟 1.1.0-rc.1）与逐端点兼容结论，待本草案评审后共同签收。
+  - 外层门禁的豁免清单是否就两项（GET /health、POST /auth/logout）：本草案按「登出必须可用」取这两项，
+    待共同评审确认。
+  - restricted 下注册/登录是否也要过门禁：本草案取「要」（演示部署只能从邀请入口进入），
+    备选是豁免登录，便于门禁过期后重新登录——但门禁过期后其它接口同样不可用，故不推荐。
+  - E3b 的 `interrupted` 是否单列错误码 `RUN_INTERRUPTED`：本草案暂复用 409 `RUN_NOT_COMPLETED`，
+    待 E3b 契约草案共同评审。
   - 登录页上线时间与「双通道」切换窗口：由 M2 定，本草案不预设。
   - 会话有效期初值 12 小时 / 空闲 30 分钟、demo 配额 20 条、密码最短 12 位：均为初始值，
     可在评审中调整；一旦写入正式契约即冻结。
