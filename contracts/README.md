@@ -1,12 +1,12 @@
 # 接口契约
 
-`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.9`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
+`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.10`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
 ## #46—#48 扩展设计入口（2026-11-09）
 
-[扩展接口设计](../docs/EXTENSION_INTERFACES.md) 定义账号/会话/对象归属、发现配置/运行/候选审核、完整度/轨迹/趋势的建议请求与响应，以及迁移、幂等、权限和错误边界。新增端点目前**待评审、未实现**；现行 OpenAPI 保持 `1.0.0-rc.9` 与 16 个端点，未提前生成不存在的客户端能力。开发顺序和未决项见[开发计划](../docs/DEVELOPMENT_PLAN.md)。
+[扩展接口设计](../docs/EXTENSION_INTERFACES.md) 定义账号/会话/对象归属、发现配置/运行/候选审核、完整度/轨迹/趋势的建议请求与响应，以及迁移、幂等、权限和错误边界。新增端点目前**待评审、未实现**；现行 OpenAPI 保持 `1.0.0-rc.10` 与 16 个端点，未提前生成不存在的客户端能力。开发顺序和未决项见[开发计划](../docs/DEVELOPMENT_PLAN.md)。
 
 M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实现 PR 将已签收部分同步进 OpenAPI、后端 schema、M2 生成类型/客户端及成功失败示例。鉴权改造必须附旧门禁/脚本和新账号数据隔离迁移方案。迁移当前到 `008`，实施前核查最新序号再追加；不修改已部署 SQL。
 
@@ -97,6 +97,12 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
     - 四态现在的读法：`facts_filled`（要证明的事实都有取值，**不代表材料已交或已核验**）、`facts_missing`（有事实键、至少一个还没取值）、`manual_check`（没有事实键，程序判断不了）、`policy_closed`（政策已到期或窗口已关）。
     - `missing` 布尔仍是保守口径（`manual_check` 也算 `true`），语义不变；报告文案同步改为「所需事实都有取值，但不代表材料已交」「所需事实有缺项」，不再出现「缺材料」。
     - 破坏性：枚举只有这两个值变了，按旧值匹配的消费者会落空。`apps/web/src/api/types.ts` 需由 M2 按 rc.9 重新生成并同步页面文案（把「资料缺失／资料已提供」改成「所需事实有缺项／事实已齐（不代表已交）」口径），在那之前 `python contracts/generate_types.py --check` 会红。
+
+14. rc.10（2026-11-11，应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」）：16 个操作的 `security` 改成 E1 之后的**真实**身份集合，新增 `securitySchemes.UserSession`（cookie `huice_session`）。
+    - 后台写（导入、抽取、保存条件、发布）只剩 `UserSession`：E1 起运维 Bearer 只读，原来写的 `DemoSession + AdminBearer` 既许诺了 Bearer 能写，也把两个方案写进**同一个映射**（那是「与」不是「或」），与实现两处都不符。
+    - 后台读（`GET /admin/policies`、`GET /admin/policies/{policyId}`）是 `UserSession` 或 `AdminBearer`；轨迹（`GET /assessment-runs/{runId}/trace`）三类身份都可读；其余业务接口是 `UserSession` 或 `DemoSession`——Bearer 在 E1 后读不到业务数据（403）。
+    - 兼容性：`security` 不进生成的类型（`generate_types.py` 只读 `components.schemas`），`apps/web/src/api/types.ts` 不变，`--check` 仍一致。按旧文档「Bearer 能写」实现的调用方在 E1 已实装后本来就会收到 403，这次只是把文档改成事实。
+    - **E1 的 7 个新端点仍未并入本契约**（只在 `openapi.e1-draft.yaml`）：并入会新增 schema，`types.ts` 必须由 M2 重新生成，属消费者切换窗口；清单见 PR #61。
 
 ## 当前实现产出的错误码
 

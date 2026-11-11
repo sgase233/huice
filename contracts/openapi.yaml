@@ -2,8 +2,8 @@
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约
-  version: 1.0.0-rc.9
-  description: "2026-11-06 候选冻结版（rc.9：PreparationItem.status 的取值改为事实口径 facts_filled / facts_missing / manual_check / policy_closed。原来的 provided 会被读成「材料已提交」，而服务端只读企业事实、不读材料，`provided` 实际只说「这份材料要证明的事实都有取值」——名字比它能证明的多说了一层；`missing` 同理，它说的是事实缺项，不是「材料没交」。missing 布尔字段的语义不变（保守口径，manual_check 也算 true）。应答 M2 对 PR #40 的 P1）。rc.8 为 2026-11-06 版（PreparationItem 新增必填 materialId 与 status，把「资料缺失」拆成 provided / missing / manual_check / policy_closed 四种明确状态——没有事实键的材料（申请书等）本就判断不了，不能显示成「资料缺失」；政策已关闭时材料不再提交，也不能记成缺失。missing 保留且仍是保守口径（manual_check 也算 true），展示以 status 为准。应答 M2 对 PR #37 的 P1；其中 provided / missing 两个名字在 rc.9 改为 facts_filled / facts_missing）。rc.7 为 2026-11-05 版（ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。现行 API-01—API-16 均已有实现；最终联合验收仍须留证，M1/M2 复核后定版。2026-11-09 的 issue #46—#48 扩展设计见 docs/EXTENSION_INTERFACES.md；新增端点尚未实现，未纳入本契约。restricted 模式需要网关会话；local 模式免 DemoSession，但管理 Bearer 仍必需。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。语义/流程见 docs/IMPLEMENTATION_AND_INTERFACE.md。"
+  version: 1.0.0-rc.10
+  description: "2026-11-11 候选冻结版（rc.10：security 与 E1 的实际授权对齐——后台写操作只接受 UserSession，运维 Bearer 从「可写」改为「只读」；业务接口是 UserSession 或 DemoSession，不再声称 Bearer 能读；轨迹三个身份都可读。新增 securitySchemes.UserSession（cookie huice_session）。应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」；rc.9 为 2026-11-06 版（rc.9：PreparationItem.status 的取值改为事实口径 facts_filled / facts_missing / manual_check / policy_closed。原来的 provided 会被读成「材料已提交」，而服务端只读企业事实、不读材料，`provided` 实际只说「这份材料要证明的事实都有取值」——名字比它能证明的多说了一层；`missing` 同理，它说的是事实缺项，不是「材料没交」。missing 布尔字段的语义不变（保守口径，manual_check 也算 true）。应答 M2 对 PR #40 的 P1）。rc.8 为 2026-11-06 版（PreparationItem 新增必填 materialId 与 status，把「资料缺失」拆成 provided / missing / manual_check / policy_closed 四种明确状态——没有事实键的材料（申请书等）本就判断不了，不能显示成「资料缺失」；政策已关闭时材料不再提交，也不能记成缺失。missing 保留且仍是保守口径（manual_check 也算 true），展示以 status 为准。应答 M2 对 PR #37 的 P1；其中 provided / missing 两个名字在 rc.9 改为 facts_filled / facts_missing）。rc.7 为 2026-11-05 版（ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。现行 API-01—API-16 均已有实现；最终联合验收仍须留证，M1/M2 复核后定版。2026-11-09 的 issue #46—#48 扩展设计见 docs/EXTENSION_INTERFACES.md；其中 7 个新端点已实现，目前仍只写在 contracts/openapi.e1-draft.yaml，并入本契约要等前端类型重新生成。restricted 模式需要网关会话；local 模式免 DemoSession，但业务接口仍需身份（UserSession 或 DemoSession），后台写操作只接受审核员 UserSession。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。语义/流程见 docs/IMPLEMENTATION_AND_INTERFACE.md。"
 servers:
 - url: /api/v1
 tags:
@@ -77,6 +77,7 @@ paths:
       tags:
       - public
       security:
+      - UserSession: []
       - DemoSession: []
       parameters:
       - $ref: '#/components/parameters/PublicStatus'
@@ -124,6 +125,7 @@ paths:
       tags:
       - public
       security:
+      - UserSession: []
       - DemoSession: []
       parameters:
       - $ref: '#/components/parameters/policyId'
@@ -211,8 +213,7 @@ paths:
       tags:
       - admin
       security:
-      - DemoSession: []
-        AdminBearer: []
+      - UserSession: []
       parameters: []
       responses:
         '201':
@@ -314,8 +315,7 @@ paths:
       tags:
       - admin
       security:
-      - DemoSession: []
-        AdminBearer: []
+      - UserSession: []
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/IfMatch'
@@ -361,8 +361,7 @@ paths:
       tags:
       - admin
       security:
-      - DemoSession: []
-        AdminBearer: []
+      - UserSession: []
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/IfMatch'
@@ -402,8 +401,7 @@ paths:
       tags:
       - admin
       security:
-      - DemoSession: []
-        AdminBearer: []
+      - UserSession: []
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/IfMatch'
@@ -442,6 +440,7 @@ paths:
       tags:
       - public
       security:
+      - UserSession: []
       - DemoSession: []
       parameters: []
       responses:
@@ -504,6 +503,7 @@ paths:
       tags:
       - public
       security:
+      - UserSession: []
       - DemoSession: []
       parameters:
       - $ref: '#/components/parameters/enterpriseId'
@@ -533,6 +533,7 @@ paths:
       tags:
       - public
       security:
+      - UserSession: []
       - DemoSession: []
       parameters:
       - $ref: '#/components/parameters/enterpriseId'
@@ -574,6 +575,7 @@ paths:
       tags:
       - public
       security:
+      - UserSession: []
       - DemoSession: []
       parameters: []
       responses:
@@ -656,6 +658,7 @@ paths:
       tags:
       - public
       security:
+      - UserSession: []
       - DemoSession: []
       parameters:
       - $ref: '#/components/parameters/runId'
@@ -685,6 +688,7 @@ paths:
       tags:
       - public
       security:
+      - UserSession: []
       - DemoSession: []
       parameters:
       - $ref: '#/components/parameters/runId'
@@ -723,8 +727,9 @@ paths:
       tags:
       - admin
       security:
+      - UserSession: []
+      - AdminBearer: []
       - DemoSession: []
-        AdminBearer: []
       parameters:
       - $ref: '#/components/parameters/runId'
       responses:
@@ -752,8 +757,8 @@ paths:
       tags:
       - admin
       security:
-      - DemoSession: []
-        AdminBearer: []
+      - UserSession: []
+      - AdminBearer: []
       parameters:
       - $ref: '#/components/parameters/AdminStatus'
       - $ref: '#/components/parameters/PolicyType'
@@ -783,8 +788,8 @@ paths:
       tags:
       - admin
       security:
-      - DemoSession: []
-        AdminBearer: []
+      - UserSession: []
+      - AdminBearer: []
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/Version'
@@ -817,7 +822,12 @@ components:
     AdminBearer:
       type: http
       scheme: bearer
-      description: Runtime-only ADMIN_TOKEN for admin and trace APIs; never VITE/localStorage.
+      description: Runtime-only ADMIN_TOKEN; E1 起**只读**（后台读接口与轨迹），任何写操作都用 UserSession；never VITE/localStorage.
+    UserSession:
+      type: apiKey
+      in: cookie
+      name: huice_session
+      description: 登录会话（HttpOnly、可撤销、只存令牌摘要）。E1 起是唯一可写的身份；运维 Bearer 只读。
   parameters:
     policyId:
       name: policyId

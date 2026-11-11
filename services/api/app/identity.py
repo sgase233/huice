@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -320,6 +322,18 @@ def claim_demo_sample(request: Request, identity: Identity) -> int:
     return used
 
 
+def release_demo_sample(request: Request, identity: Identity) -> None:
+    """退还 ``claim_demo_sample`` 占下的名额：只在「占了额、样本没建成」时调用。
+
+    先占额后落库是必要的（并发下不能两个请求同时拿到最后一个名额），所以失败路径
+    必须显式退还，否则一次参数错误或数据库冲突就永久吃掉演示会话的配额。
+    """
+
+    if not identity.is_demo or identity.demo_sid is None:
+        return
+    request.app.state.accounts.release_demo_sample(sid_hash=auth.digest(identity.demo_sid))
+
+
 # ------------------------------------------------------------- Cookie 工具
 
 
@@ -358,9 +372,25 @@ def clear_session_cookie(response: Response, settings) -> None:
 class LoginLimiter:
     """进程内的登录/注册限流（#54 D1.7）。
 
-    ``huice-api.service`` 是单 worker，进程内计数够用；Redis 不可用时不阻断，
-    重启清零是接受的代价——外层 nginx ``limit_req`` 再兜一层。被锁只针对 IP，
-    ``username`` 维度只计数不锁，避免他人恶意锁死某个账号。
+    三条约束，都按 **IP** 计（``username`` 只出现在日志里，不锁账号，避免他人恶意
+    锁死某个用户名）：
+
+    1. **在途名额**：同一 IP 同时最多 ``max_inflight``（默认 5）个认证请求在跑。
+       名额在进入 scrypt **之前**原子占下，所以并发洪峰无法绕过限流同时压满 CPU——
+       这是 #61 review 指出的窗口：旧实现只检查已记账的失败，首个失败落账前所有
+       并发请求都能通过。
+    2. **失败窗口**：60 秒内 5 次失败后拒绝，直到窗口滑过。
+    3. **连续失败**：累计 20 次失败锁 900 秒。只有 401/403 算失败；数据库故障等
+       5xx 只释放名额，故障期间不会把整片 IP 锁死。
+
+    **成功不清零失败记录**，只释放自己的在途名额。否则握有一个有效账号的人可以
+    靠反复「登录成功」把同一 IP 的失败计数清掉，再接着猜别的账号——失败窗口就形同
+    虚设。被锁、超窗、在途满一律 429 ``ACCOUNT_LOCKED``（带 ``Retry-After``）。
+
+    计数在进程内：``huice-api.service`` 是单 worker（``--proxy-headers`` 已启用，
+    ``request.client`` 是 nginx 转发来的真实对端）。重启清零、多 worker 不共享
+    都是接受的代价；``infra/deploy/nginx-huice.conf`` 另有一层粗粒度 ``limit_req``
+    兜突发流量，但它不替代这里的按失败次数锁定。
     """
 
     def __init__(
@@ -370,21 +400,44 @@ class LoginLimiter:
         max_attempts: int = 5,
         lock_after: int = 20,
         lock_seconds: float = 900.0,
+        max_inflight: int | None = None,
         clock=time.monotonic,
     ) -> None:
         self._window = window_seconds
         self._max_attempts = max_attempts
         self._lock_after = lock_after
         self._lock_seconds = lock_seconds
+        self._max_inflight = max_attempts if max_inflight is None else max_inflight
         self._clock = clock
         self._lock = threading.Lock()
         self._attempts: dict[str, list[float]] = {}
         self._failures: dict[str, int] = {}
         self._locked_until: dict[str, float] = {}
+        self._inflight: dict[str, int] = {}
 
-    def check(self, key: str) -> None:
-        """超限或锁定期内抛 429；否则放行（不记账，记账在失败时做）。"""
+    @contextmanager
+    def attempt(self, key: str) -> Iterator[None]:
+        """把一次认证请求框起来：进入时原子占名额，被拒（401/403）记一次失败。
 
+        用法是 ``with limiter.attempt(client_key(request)):`` 包住「校验密码/注册」
+        这一段；纯字段校验（422）与 Origin/门禁放在块外，不消耗失败次数。
+        """
+
+        self._reserve(key)
+        try:
+            yield
+        except ApiProblem as exc:
+            # 只把「确实被拒的凭据」记成失败：401 密码错、403 注册密钥错。
+            # 数据库不可用之类的 5xx 只释放名额——故障期间不该把整片 IP 锁死。
+            self._settle(key, failed=exc.status_code in (401, 403))
+            raise
+        except BaseException:
+            self._settle(key, failed=False)
+            raise
+        else:
+            self._settle(key, failed=False)
+
+    def _reserve(self, key: str) -> None:
         now = self._clock()
         with self._lock:
             locked_until = self._locked_until.get(key, 0.0)
@@ -395,10 +448,21 @@ class LoginLimiter:
             if len(recent) >= self._max_attempts:
                 retry_after = self._window - (now - recent[0])
                 raise _too_many(max(retry_after, 1.0))
+            if self._inflight.get(key, 0) >= self._max_inflight:
+                # 在途满只说明「现在正忙」，不代表这次尝试失败：不记账，马上重试即可。
+                raise _too_many(1.0)
+            self._inflight[key] = self._inflight.get(key, 0) + 1
 
-    def record_failure(self, key: str) -> None:
+    def _settle(self, key: str, *, failed: bool) -> None:
         now = self._clock()
         with self._lock:
+            remaining = self._inflight.get(key, 0) - 1
+            if remaining > 0:
+                self._inflight[key] = remaining
+            else:
+                self._inflight.pop(key, None)
+            if not failed or self._locked_until.get(key, 0.0) > now:
+                return
             recent = [stamp for stamp in self._attempts.get(key, []) if stamp > now - self._window]
             recent.append(now)
             self._attempts[key] = recent
@@ -409,12 +473,6 @@ class LoginLimiter:
                 self._failures[key] = 0
                 self._attempts[key] = []
 
-    def record_success(self, key: str) -> None:
-        with self._lock:
-            self._attempts.pop(key, None)
-            self._failures.pop(key, None)
-            self._locked_until.pop(key, None)
-
     def reset(self) -> None:
         """测试用：清空全部计数。"""
 
@@ -422,6 +480,7 @@ class LoginLimiter:
             self._attempts.clear()
             self._failures.clear()
             self._locked_until.clear()
+            self._inflight.clear()
 
 
 def _too_many(retry_after: float) -> ApiProblem:

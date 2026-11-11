@@ -138,7 +138,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/008_material_requirements.sql
 
 迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `009_users_sessions.sql`，下一份是 `010_*.sql`，已登记给政策发现 #54 D2.5），不改历史脚本；每条迁移同样登记 `schema_migration`。
 
-`009_users_sessions.sql`（E1，2026-11-11）在本地 PostgreSQL 16 上验过三种起跑线：空库连跑两遍（第二遍只有 `NOTICE ... already exists`）、「已到 008」的库升一次再连跑一遍、以及库里先有一行历史合成企业再升级——升级后该企业 `owner_user_id` 仍为 `NULL`（历史数据不会被首个注册账号认领），`schema_migration` 九行，`demo_quota` / `user_session` 列类型与非空约束、`enterprise_owner_user_uidx`（部分唯一索引）与两个外键均与脚本一致；`pytest -m db` 86 项、全量 1121 项通过。**云端 RDS 尚未执行 009**，随 E1 部署按 `infra/deploy/migrate.sh` 走。
+`009_users_sessions.sql`（E1，2026-11-11）在本地 PostgreSQL 16 上验过三种起跑线：空库连跑两遍（第二遍只有 `NOTICE ... already exists`）、「已到 008」的库升一次再连跑一遍、以及库里先有一行历史合成企业再升级——升级后该企业 `owner_user_id` 仍为 `NULL`（历史数据不会被首个注册账号认领），`schema_migration` 九行，`demo_quota` / `user_session` 列类型与非空约束、`enterprise_owner_user_uidx`（部分唯一索引）与两个外键均与脚本一致；`pytest -m db` 91 项、全量 1144 项通过（2026-11-11 应答 PR #61 的五条复审后又跑了一遍；新增 db 用例覆盖并发绑定企业的唯一索引）。**云端 RDS 尚未执行 009**，随 E1 部署按 `infra/deploy/migrate.sh` 走。
 
 ## 4. 云端资源状态（截至 2026-11-06）
 
@@ -289,7 +289,7 @@ systemctl show huice-api -p ExecStart --no-pager
 | `DATABASE_URL` | `postgresql://huice:...@127.0.0.1:5432/huice_dev` | RDS **内网**地址 | 缺省或非 `postgresql://` 前缀即启动失败 |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | `redis://:<密码>@<实例内网>:6379/0` | 需 `redis://`/`rediss://` 前缀 |
 | `CORS_ORIGINS` | `http://127.0.0.1:5173` | 前端真实源（逗号分隔） | 拒绝 `*`、带路径或带查询串的源 |
-| `DEMO_ACCESS_MODE` | `local`（免 cookie） | `restricted`（另需 `huice_demo_session` cookie） | 两种模式都**不免** Bearer |
+| `DEMO_ACCESS_MODE` | `local`（免 cookie） | `restricted`（另需 `huice_demo_session` cookie） | 两种模式都**不免**门禁；E1 起业务接口要登录会话或演示会话，运维 Bearer 只读（后台读与轨迹），后台写只接受审核员会话 |
 | `MODEL_MODE` | `fixture`（或 `deepseek` + 本地 Key） | `fixture`，联调通过后改 `deepseek` | 取值 `fixture`/`deepseek`（原 `maas` 已移除，队长 2026-10-23 决定改用 DeepSeek）。`deepseek` 需 `DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL`/`DEEPSEEK_API_KEY`，且 base URL 必须是 http(s)；缺项或格式不对即启动失败并只报变量名 |
 | `OBJECT_STORE_MODE` | `local` | `obs` | `obs` 需 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK`，缺任一项启动失败并只报变量名 |
 | `LOCAL_OBJECT_DIR` | `.local-objects` | 不使用 | 仅 `local` 模式生效；已 gitignore |

@@ -197,3 +197,13 @@ class AccountsRepository:
             )
             row = cur.fetchone()
         return None if row is None else int(row[0])
+
+    def release_demo_sample(self, *, sid_hash: str) -> None:
+        """退还一个名额（建样在占额之后失败时调用）：只减不增，不会把计数减到 0 以下。"""
+
+        with self._db.connection() as conn, conn.transaction():
+            conn.execute(
+                "UPDATE demo_quota SET created = created - 1 "
+                "WHERE sid_hash = %s AND created > 0",
+                (sid_hash,),
+            )

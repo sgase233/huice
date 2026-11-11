@@ -149,10 +149,11 @@ def test_impact_gate_column_matches_router_dependencies():
 def test_published_security_matches_current_classification():
     """服务端实际发布给客户端的 security。
 
-    草案的口径是「``security`` 只表达身份，门禁写 ``x-e1-gate``」。现有 16 个端点还是
-    E1 之前的写法（门禁与身份混在一个对象里），按 ``x-e1-impact.current`` 的分类；
-    E1 新增的 AUTH-01—05 按草案逐条给：注册/登录/登出不要求身份（``[]``），
-    ``/auth/me`` 与 ``/auth/password`` 只要会话。
+    草案的口径是「``security`` 只表达身份，门禁写 ``x-e1-gate``」。E1 起这 16 个端点
+    的 security 已按**真实授权**改写（#61 review 的 P1）：业务接口是会话或演示会话，
+    后台读是会话或运维 Bearer，后台写只有会话——Bearer 只读。新增的 AUTH-01—05 按
+    草案逐条给：注册/登录/登出不要求身份（``[]``），``/auth/me`` 与
+    ``/auth/password`` 只要会话。
     """
 
     application = create_app(
@@ -170,10 +171,14 @@ def test_published_security_matches_current_classification():
 
     expected_security = {
         "getHealth": [],
-        "/admin/": [{"DemoSession": [], "AdminBearer": []}],
-        "default": [{"DemoSession": []}],
         "authPublic": [],
         "authSession": [{"UserSession": []}],
+        # 后台读：会话或只读 Bearer；后台写：只有会话（E1 起 Bearer 只读）。
+        "adminRead": [{"UserSession": []}, {"AdminBearer": []}],
+        "adminWrite": [{"UserSession": []}],
+        # 轨迹：本人、审核员会话与运维 Bearer 都能读，演示会话也能看无主样本的轨迹。
+        "trace": [{"UserSession": []}, {"AdminBearer": []}, {"DemoSession": []}],
+        "default": [{"UserSession": []}, {"DemoSession": []}],
     }
     #: 草案写明 security 为空的三条；其余两条只认会话。
     public_auth = {"/auth/register", "/auth/login", "/auth/logout"}
@@ -191,10 +196,16 @@ def test_published_security_matches_current_classification():
                 expected = expected_security["authPublic"]
             elif bare in session_auth:
                 expected = expected_security["authSession"]
+            elif bare.endswith("/trace"):
+                expected = expected_security["trace"]
             elif "admin" in (operation.get("tags") or []):
-                # 与 services/api/app/main.py 的 _install_openapi 一致：按 tag 分类，
-                # API-14 轨迹挂在 /assessment-runs 下但属 admin tag。
-                expected = expected_security["/admin/"]
+                # 与 services/api/app/main.py 的 _security_for 一致：API-14 轨迹挂在
+                # /assessment-runs 下但属 admin tag，故上面先判 trace 再判 tag。
+                expected = (
+                    expected_security["adminRead"]
+                    if method == "get"
+                    else expected_security["adminWrite"]
+                )
             else:
                 expected = expected_security["default"]
             if operation.get("security") != expected:

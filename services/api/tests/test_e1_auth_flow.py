@@ -345,3 +345,42 @@ def test_session_cookie_is_httponly_lax_and_scoped_to_api(client, accounts):
     assert "HttpOnly" in header
     assert "SameSite=lax" in header.replace("samesite=lax", "SameSite=lax")
     assert "Path=/api" in header
+
+
+# ------------------------------------------------------------------ 限流（D1.7）
+
+
+def test_the_sixth_failed_login_is_throttled_even_with_the_right_password(client, accounts):
+    accounts.seed_user("throttle.one")
+
+    for _ in range(5):
+        assert login(client, "throttle.one", "wrong-password-1").status_code == 401
+
+    blocked = login(client, "throttle.one")
+
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "ACCOUNT_LOCKED"
+    assert blocked.headers["Retry-After"]
+    # 被限流时连正确密码都到不了比对，更不会签发会话。
+    assert "set-cookie" not in blocked.headers
+
+
+def test_a_successful_login_does_not_reset_the_failure_window(client, accounts):
+    accounts.seed_user("reset.one")
+
+    for _ in range(4):
+        assert login(client, "reset.one", "wrong-password-1").status_code == 401
+    assert login(client, "reset.one").status_code == 200
+
+    assert login(client, "reset.one", "wrong-password-1").status_code == 401  # 第 5 次
+    assert login(client, "reset.one").status_code == 429
+
+
+def test_field_validation_does_not_burn_attempts(client, accounts):
+    """格式错误的注册请求是 422，不该算作一次失败把后来的登录锁住。"""
+
+    accounts.seed_user("careful.one")
+    for _ in range(6):
+        assert register(client, username="A").status_code == 422
+
+    assert login(client, "careful.one").status_code == 200

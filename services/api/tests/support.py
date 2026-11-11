@@ -923,3 +923,8 @@ class FakeAccounts:
             return None
         self.quota[sid_hash] = used + 1
         return used + 1
+
+    def release_demo_sample(self, *, sid_hash):
+        used = self.quota.get(sid_hash, 0)
+        if used > 0:
+            self.quota[sid_hash] = used - 1

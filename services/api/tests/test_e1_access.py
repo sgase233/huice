@@ -227,6 +227,36 @@ def test_demo_quota_is_enforced_per_session(app, accounts, settings):
     assert response.json()["error"]["details"]["limit"] == settings.demo_session_quota
 
 
+def test_an_invalid_body_never_consumes_demo_quota(app, accounts):
+    demo = as_demo(app)
+
+    response = demo.post(
+        "/api/v1/enterprises",
+        json={**ENTERPRISE_BODY, "period": {"startDate": "2026-12-31", "endDate": "2026-01-01"}},
+    )
+
+    assert response.status_code == 422
+    assert accounts.quota == {}
+
+
+def test_a_failed_insert_gives_the_quota_back(app, accounts, monkeypatch):
+    """先占额后落库：写库失败必须退还名额，否则一次冲突就永久吃掉一个样本。"""
+
+    demo = as_demo(app)
+    repository = app.state.repository
+
+    def boom(**kwargs):
+        raise RuntimeError("写库失败")
+
+    monkeypatch.setattr(repository, "create_enterprise", boom)
+
+    response = demo.post("/api/v1/enterprises", json=ENTERPRISE_BODY)
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert accounts.quota[auth_tools.digest("demo-sid-0001")] == 0
+
+
 # ------------------------------------------------------------------ 列表
 
 

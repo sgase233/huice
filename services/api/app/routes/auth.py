@@ -59,8 +59,8 @@ def register_user(request: Request, body: RegisterRequest) -> RegisterResponse:
     accounts = request.app.state.accounts
     limiter = request.app.state.login_limiter
     key = client_key(request)
-    limiter.check(key)
 
+    # 纯字段校验放在限流块外：格式错误不是「凭证错误」，不该消耗失败次数。
     username = auth.normalize_username(body.username)
     if not auth.username_is_valid(username):
         raise ApiProblem(
@@ -69,17 +69,7 @@ def register_user(request: Request, body: RegisterRequest) -> RegisterResponse:
             "用户名不合法：3—32 位小写字母、数字、下划线、点或连字符。",
             {"fieldErrors": [{"field": "username", "message": "用户名只允许 a-z、0-9、_ . -。"}]},
         )
-
-    role = "enterprise"
-    if body.reviewer_signup_key is not None:
-        # 密钥错误与「该部署根本没有配置密钥」返回同一个 403 与同一文案，
-        # 不回显部署细节，也不告诉调用方密钥是否正确。
-        if not _signup_key_matches(body.reviewer_signup_key, settings.reviewer_signup_key):
-            limiter.record_failure(key)
-            raise ApiProblem(403, "ROLE_FORBIDDEN", SIGNUP_KEY_REJECTED_MESSAGE)
-        role = "reviewer"
-
-    if role == "enterprise" and body.enterprise is None:
+    if body.reviewer_signup_key is None and body.enterprise is None:
         # 企业用户必须提交 EnterpriseInput 四要素；审核员可不建企业，留到首次 API-08。
         raise ApiProblem(
             422,
@@ -87,15 +77,23 @@ def register_user(request: Request, body: RegisterRequest) -> RegisterResponse:
             "企业用户注册必须提供企业信息（企业名、期间、地区、行业）。",
             {"fieldErrors": [{"field": "enterprise", "message": "缺少企业信息。"}]},
         )
-
     profile = normalize_profile(body.enterprise) if body.enterprise is not None else None
-    account = accounts.register(
-        username=username,
-        password_hash=auth.hash_password(body.password),
-        role=role,
-        profile=profile,
-    )
-    limiter.record_success(key)
+
+    with limiter.attempt(key):
+        role = "enterprise"
+        if body.reviewer_signup_key is not None:
+            # 密钥错误与「该部署根本没有配置密钥」返回同一个 403 与同一文案，
+            # 不回显部署细节，也不告诉调用方密钥是否正确。
+            if not _signup_key_matches(body.reviewer_signup_key, settings.reviewer_signup_key):
+                raise ApiProblem(403, "ROLE_FORBIDDEN", SIGNUP_KEY_REJECTED_MESSAGE)
+            role = "reviewer"
+
+        account = accounts.register(
+            username=username,
+            password_hash=auth.hash_password(body.password),
+            role=role,
+            profile=profile,
+        )
     return RegisterResponse(
         user=User(
             id=account["id"],
@@ -119,36 +117,36 @@ def login_user(request: Request, response: Response, body: LoginRequest) -> Sess
     accounts = request.app.state.accounts
     limiter = request.app.state.login_limiter
     key = client_key(request)
-    limiter.check(key)
-
-    now = datetime.now(timezone.utc)
     username = auth.normalize_username(body.username)
-    account = accounts.find_user_by_username(username)
-    if (
-        account is None
-        or account["status"] != "active"
-        or not auth.verify_password(body.password, account["password_hash"])
-    ):
-        limiter.record_failure(key)
-        raise ApiProblem(401, "INVALID_CREDENTIALS", INVALID_CREDENTIALS_MESSAGE)
 
-    # 同一浏览器不留两个活会话（也避免会话固定）：请求里带了**有效**旧会话就撤销它；
-    # 无效或过期的一律忽略，不当作「提供了无效凭证」。
-    _revoke_presented_session(request, accounts, now)
+    # 限流块从「查账号 + 验密码」开始：慢哈希与失败判定都在名额之内，
+    # 并发请求无法在首个失败落账前一起挤进 scrypt。
+    with limiter.attempt(key):
+        now = datetime.now(timezone.utc)
+        account = accounts.find_user_by_username(username)
+        if (
+            account is None
+            or account["status"] != "active"
+            or not auth.verify_password(body.password, account["password_hash"])
+        ):
+            raise ApiProblem(401, "INVALID_CREDENTIALS", INVALID_CREDENTIALS_MESSAGE)
 
-    ttl = timedelta(hours=settings.session_ttl_hours)
-    token = auth.new_session_token()
-    expires_at = now + ttl
-    accounts.create_session(
-        user_id=account["id"],
-        token_hash=auth.digest(token),
-        csrf_hash=auth.digest(auth.csrf_token_for(token)),
-        created_at=now,
-        expires_at=expires_at,
-    )
+        # 同一浏览器不留两个活会话（也避免会话固定）：请求里带了**有效**旧会话就撤销它；
+        # 无效或过期的一律忽略，不当作「提供了无效凭证」。
+        _revoke_presented_session(request, accounts, now)
+
+        ttl = timedelta(hours=settings.session_ttl_hours)
+        token = auth.new_session_token()
+        expires_at = now + ttl
+        accounts.create_session(
+            user_id=account["id"],
+            token_hash=auth.digest(token),
+            csrf_hash=auth.digest(auth.csrf_token_for(token)),
+            created_at=now,
+            expires_at=expires_at,
+        )
     set_session_cookie(response, token, settings, max_age=int(ttl.total_seconds()))
     response.headers["Cache-Control"] = "no-store"
-    limiter.record_success(key)
 
     enterprise_id = accounts.enterprise_id_for_user(account["id"])
     return SessionResponse(

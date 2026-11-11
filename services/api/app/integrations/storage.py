@@ -972,25 +972,49 @@ class PolicyRepository:
         owner_user_id: UUID | None = None,
     ) -> Enterprise:
         enterprise_id = uuid4()
-        with self._db.connection() as conn, conn.transaction():
-            insert_enterprise_profile(
-                conn,
-                enterprise_id=enterprise_id,
-                profile=profile,
-                owner_user_id=owner_user_id,
-            )
-            self._insert_trace(
-                conn,
-                trace_id=trace_id,
-                stage="profile",
-                input_summary="创建企业画像",
-                output_summary=f"事实 {len(profile.facts)} 条，版本 {profile.fact_version[:12]}",
-                policy_version_id=None,
-                model_or_rule_version="rule:profile@1",
-                elapsed_ms=0,
-            )
-            facts = self._load_facts(conn, enterprise_id)
+        try:
+            with self._db.connection() as conn, conn.transaction():
+                insert_enterprise_profile(
+                    conn,
+                    enterprise_id=enterprise_id,
+                    profile=profile,
+                    owner_user_id=owner_user_id,
+                )
+                self._insert_trace(
+                    conn,
+                    trace_id=trace_id,
+                    stage="profile",
+                    input_summary="创建企业画像",
+                    output_summary=f"事实 {len(profile.facts)} 条，版本 {profile.fact_version[:12]}",
+                    policy_version_id=None,
+                    model_or_rule_version="rule:profile@1",
+                    elapsed_ms=0,
+                )
+                facts = self._load_facts(conn, enterprise_id)
+        except UniqueViolation:
+            # 路由层已经先查过 ``identity.enterprise_id``；两个请求同时到达时都会看到
+            # NULL，唯一索引才是真正的判定点。这里把它翻译成与串行路径同一个 409，
+            # 而不是漏成 500——「一家企业一个账号」的规则对并发一样成立。
+            raise self._already_bound_problem(owner_user_id) from None
         return _enterprise_of(enterprise_id, profile.name_synthetic, profile.period_start, profile.period_end, facts)
+
+    def _already_bound_problem(self, owner_user_id: UUID | None) -> ApiProblem:
+        bound_id = None
+        if owner_user_id is not None:
+            with self._db.connection() as conn:
+                row = self._fetchone(
+                    conn,
+                    "SELECT id FROM enterprise WHERE owner_user_id = %s",
+                    (owner_user_id,),
+                )
+                bound_id = None if row is None else row["id"]
+        details = {"enterpriseId": str(bound_id)} if bound_id is not None else {}
+        return ApiProblem(
+            409,
+            "ENTERPRISE_ALREADY_BOUND",
+            "当前账号已绑定企业，不能重复创建；如需更新请调用 PATCH 事实接口。",
+            details,
+        )
 
     def get_enterprise(self, enterprise_id: UUID) -> Enterprise:
         with self._db.connection() as conn:

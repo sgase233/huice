@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 from contextlib import asynccontextmanager
 from typing import Any
@@ -141,6 +142,16 @@ _SESSION_ONLY_PATHS = {
     f"{API_PREFIX}/auth/me",
     f"{API_PREFIX}/auth/password",
 }
+#: 轨迹既给本人、也给审核员会话与运维 Bearer（``require_identity`` + 归属判定）。
+_ANY_IDENTITY_PATH = f"{API_PREFIX}/assessment-runs/{{runId}}/trace"
+
+#: 发布出来的 ``security`` 与 ``app/identity.py`` 的实际判定一一对应，按「或」组织：
+#: 数组里每一项是一个可接受的凭证组合。E1 之后 Bearer 只读，所以写操作只剩会话；
+#: 业务接口不再接受 Bearer（``require_public_identity`` 对它回 403）。
+_BUSINESS_SECURITY = [{"UserSession": []}, {"DemoSession": []}]
+_ANY_IDENTITY_SECURITY = [{"UserSession": []}, {"AdminBearer": []}, {"DemoSession": []}]
+_REVIEWER_READ_SECURITY = [{"UserSession": []}, {"AdminBearer": []}]
+_REVIEWER_WRITE_SECURITY = [{"UserSession": []}]
 
 
 def _install_openapi(app: FastAPI) -> None:
@@ -157,25 +168,34 @@ def _install_openapi(app: FastAPI) -> None:
         )
         schema.setdefault("components", {})["securitySchemes"] = SECURITY_SCHEMES
         for path, operations in schema.get("paths", {}).items():
-            for operation in operations.values():
+            for method, operation in operations.items():
                 tags = operation.get("tags") or []
-                if path == f"{API_PREFIX}/health":
-                    operation["security"] = []
-                elif path in _PUBLIC_AUTH_PATHS:
-                    # 注册/登录/登出不靠已有凭证；它们自己的校验是 Origin（与登出的 CSRF）。
-                    operation["security"] = []
-                elif path in _SESSION_ONLY_PATHS:
-                    operation["security"] = [{"UserSession": []}]
-                elif "admin" in tags:
-                    # 后台接口（含 API-14 轨迹）在演示会话之外再加管理 Bearer。
-                    operation["security"] = [{"DemoSession": [], "AdminBearer": []}]
-                else:
-                    # 公开接口仍受演示会话约束：网关拦一遍、后端再验一遍签名与有效期。
-                    operation["security"] = [{"DemoSession": []}]
+                operation["security"] = _security_for(path, method, tags)
         app.openapi_schema = schema
         return schema
 
     app.openapi = openapi  # type: ignore[method-assign]
+
+
+def _security_for(path: str, method: str, tags: list[str]) -> list[dict[str, list[str]]]:
+    """一个操作的 ``security``：与路由里真正调用的 ``require_*`` 逐条对齐。
+
+    后台的读与写必须分开写——E1 之后运维 Bearer 只能读，把写操作也标成
+    「DemoSession + AdminBearer」会让契约承诺一个后端一定会 403 的入口。
+    """
+
+    if path == f"{API_PREFIX}/health" or path in _PUBLIC_AUTH_PATHS:
+        # 注册/登录/登出不靠已有凭证；它们自己的校验是 Origin（与登出的 CSRF）。
+        return []
+    if path in _SESSION_ONLY_PATHS:
+        return [{"UserSession": []}]
+    if path == _ANY_IDENTITY_PATH:
+        return copy.deepcopy(_ANY_IDENTITY_SECURITY)
+    if "admin" in tags:
+        if method.lower() in {"get", "head"}:
+            return copy.deepcopy(_REVIEWER_READ_SECURITY)
+        return copy.deepcopy(_REVIEWER_WRITE_SECURITY)
+    return copy.deepcopy(_BUSINESS_SECURITY)
 
 
 def _cursor_secret(settings: Settings) -> str:

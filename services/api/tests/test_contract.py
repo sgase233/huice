@@ -129,8 +129,20 @@ class ContractTests(unittest.TestCase):
     def test_admin_security_concurrency_headers_and_report_media(self):
         for path, ops in CONTRACT["paths"].items():
             for method, operation in ops.items():
-                if path.startswith("/admin/") or path.endswith("/trace"):
-                    self.assertEqual(operation["security"], [{"DemoSession": [], "AdminBearer": []}])
+                # E1 起运维 Bearer 只读：后台读是「会话或 Bearer」，
+                # 后台写只剩会话；轨迹三类身份都能读。
+                if path.endswith("/trace"):
+                    self.assertEqual(
+                        operation["security"],
+                        [{"UserSession": []}, {"AdminBearer": []}, {"DemoSession": []}],
+                    )
+                elif path.startswith("/admin/"):
+                    expected = (
+                        [{"UserSession": []}, {"AdminBearer": []}]
+                        if method == "get"
+                        else [{"UserSession": []}]
+                    )
+                    self.assertEqual(operation["security"], expected)
                 if path.endswith(("/extract", "/criteria", "/publish")) or method == "patch":
                     names = {p.get("$ref", "").rsplit("/", 1)[-1] for p in operation["parameters"]}
                     self.assertIn("IfMatch", names)

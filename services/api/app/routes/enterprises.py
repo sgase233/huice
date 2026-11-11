@@ -19,6 +19,7 @@ from ..errors import ApiProblem, trace_id_of
 from ..identity import (
     Identity,
     claim_demo_sample,
+    release_demo_sample,
     require_csrf,
     require_public_identity,
     require_writable_demo,
@@ -80,11 +81,17 @@ def create_enterprise(
     request: Request, response: Response, body: EnterpriseInput
 ) -> Enterprise:
     identity = require_public_identity(request)
-    owner_user_id = _create_owner(request, identity)
+    # 先校验再占额：参数不合法不该消耗演示配额（占额是原子的、昂贵的）。
     profile = normalize_profile(body)
-    enterprise = request.app.state.repository.create_enterprise(
-        profile=profile, trace_id=trace_id_of(request), owner_user_id=owner_user_id
-    )
+    owner_user_id = _create_owner(request, identity)
+    try:
+        enterprise = request.app.state.repository.create_enterprise(
+            profile=profile, trace_id=trace_id_of(request), owner_user_id=owner_user_id
+        )
+    except BaseException:
+        # demo 先占额后写库：写库失败（含并发绑定撞唯一索引）时把名额退回去。
+        release_demo_sample(request, identity)
+        raise
     response.headers["ETag"] = f'"{enterprise.fact_version}"'
     return enterprise
 

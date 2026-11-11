@@ -1,6 +1,6 @@
 # 惠策协同：功能实现逻辑与接口协作约定
 
-> 初稿：2026-10-23；当前状态更新：2026-11-09，本地基线 `807e1bb`；现行契约 `1.0.0-rc.9`。成员沿用 M1（后端）、M2（前端）、M3（政策与验收）。
+> 初稿：2026-10-23；当前状态更新：2026-11-11，E1 后端实现已合入（PR #55 draft.4）；现行契约 `1.0.0-rc.10`。成员沿用 M1（后端）、M2（前端）、M3（政策与验收）。
 >
 > 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[原开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及现有代码整理。后端已实现 **16 个端点**，前端六类业务页已接入，已有隔离库/真实 HTTP/合成数据的阶段浏览器记录；最终云端联合与业务验收仍按实际证据确认。第 8 节保留各日期历史验证，不代表本次重跑。后续范围和排期见[开发计划](DEVELOPMENT_PLAN.md)，新增账号、发现候选及图表接口见[扩展接口设计](EXTENSION_INTERFACES.md)，该设计待签收，不能替代现行 OpenAPI。
 
@@ -336,7 +336,7 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
   - 对象归属：他人企业与 run 一律 404，且与「不存在」**同码同文案**（`ENTERPRISE_NOT_FOUND` / `RUN_NOT_FOUND`），否则 404/403 的差别本身就是「他人对象是否存在」的探针。企业读：本人 / 审核员全部 / demo 仅无主；企业写：仅本人（审核员也只能改本人）；run 读同企业读口径。
   - CSRF/Origin：会话写请求要 `X-CSRF-Token`（登录返回的 `csrfToken`，等于 `sha256("huice-csrf:" + 会话令牌)[:32]`）；注册/登录/登出只校验 Origin；demo 写只校验 Origin（+Referer）；Bearer 不校验。两样都缺时先报 `ORIGIN_MISMATCH`。
 - 本地模式仅监听 loopback。**运维通道**（`Authorization: Bearer <ADMIN_TOKEN>`）只用于脚本/curl 读后台政策与轨迹：M1 在受控机器手动输入，M2 的 client 仅保存在内存，退出/刷新清空，不写 localStorage、URL 或 VITE 变量；E1 后浏览器里的后台写操作改用**审核员会话**，不再把 `ADMIN_TOKEN` 打进前端。没有凭证不展示后台数据。
-- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie，再交给后端做身份判定；后端自己校验 cookie 的 HMAC 签名与有效期（签发脚本 `infra/deploy/issue-session.py`，同时写 `demo_quota` 起始行）；签名密钥是独立的 `DEMO_SESSION_SECRET`（restricted 模式必填），**不由 `ADMIN_TOKEN` 派生**，因此持有 Bearer 的人不能自行签发会话，两层门禁相互独立。网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 里 `security` 只写身份，门禁写在草案的 `x-e1-gate`；local 模式免演示 cookie。健康检查无认证且不含连接详情。
+- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie，再交给后端做身份判定；后端自己校验 cookie 的 HMAC 签名与有效期（签发脚本 `infra/deploy/issue-session.py`，同时写 `demo_quota` 起始行）；签名密钥是独立的 `DEMO_SESSION_SECRET`（restricted 模式必填），**不由 `ADMIN_TOKEN` 派生**，因此持有 Bearer 的人不能自行签发会话，两层门禁相互独立。网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 里 `security` 只写身份，门禁写在草案的 `x-e1-gate`；local 模式免演示 cookie。健康检查无认证且不含连接详情。**rc.10 起发布的 `security` 与该判定逐条对齐**（M2 在 PR #61 的 P1）：业务接口 `UserSession` 或 `DemoSession`，后台读 `UserSession` 或 `AdminBearer`，后台写只有 `UserSession`（Bearer 只读），轨迹三类身份都可读——契约不再承诺后端一定会 403 的入口。
 - 跨源开发 fetch 使用 `credentials:'include'`，CORS 只允许确切前端源并允许 credentials。允许头 `Content-Type,Authorization,If-Match,Idempotency-Key,X-CSRF-Token`；暴露头 `ETag,X-Trace-Id,Content-Disposition`。M1 处理 OPTIONS；M2 不能以 no-cors 规避。
 
 ## 4. 端点与参数传递（路径均省略 /api/v1）
@@ -348,12 +348,14 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
 | API-01 `GET /health` | 无 body | 200 `{status:"ok",version}`；未就绪 503 |
 | API-02 `GET /policies` | query：status=published/closed、type=tax/grant、region、asOf、cursor、limit 均可选；不传 status 时含已审开放和关闭样本；**region 按「该区划 + 全国性政策」匹配**——传 `440300` 同时返回 `region=CN` 的全国性政策，传 `CN` 只返回全国性政策（2026-10-29 修，见下） | 200 `PolicyList`；支持历史展示 |
 | API-03 `GET /policies/{policyId}` | path UUID；query version 可选 | 200 `PolicyDetail`，sources/criteria/preparationTemplate |
-| API-08 `POST /enterprises` | JSON `EnterpriseInput`，见 2.3 | 201 `Enterprise` + ETag |
+| API-08 `POST /enterprises` | JSON `EnterpriseInput`，见 2.3。会话写要 CSRF + Origin；demo 写只要 Origin，并占用本次演示会话的一个建样名额 | 201 `Enterprise` + ETag；账号已绑企业 409 `ENTERPRISE_ALREADY_BOUND`（`details.enterpriseId` 给已绑的那家；两个并发请求同时到达时同样 409，由 `owner_user_id` 部分唯一索引兜底）；演示配额用完 429 `DEMO_QUOTA_EXCEEDED`（`details.limit`） |
 | API-09 `GET /enterprises/{enterpriseId}` | path UUID | 200 `Enterprise` + ETag |
 | API-10 `PATCH /enterprises/{enterpriseId}/facts/{factKey}` | path ID/key；If-Match 头必填；JSON `FactUpdate` 不含 key，period 必填；仅企业本人可写（审核员、demo、Bearer 不行） | 200 完整 `Enterprise` + 新 ETag |
 | AUTH-06 `GET /enterprises`（E1 新增） | query cursor/limit 可选；服务端按身份过滤：企业会话只看本人、审核员看全部、demo 只看无主样本、Bearer 403 | 200 `EnterpriseSummaryList` = `{items:EnterpriseSummary[],nextCursor}`，`EnterpriseSummary={id,nameSynthetic,period,ownership}`；`ownership` 为 `self/other/unowned`。列表不带 `facts`：一次拉全量事实会让导航页变成画像下载 |
 
 `Enterprise={id,nameSynthetic,period,facts:EnterpriseFact[],factVersion}`。API-02 只给政策元数据，不含企业判断；M2 按 policyId 将 API-11/12 的 assessments 合并到列表。未分析时显示“尚未分析”，不得猜测四态。
+
+> **演示建样名额先占后退（2026-11-11，#61 review 的 P2）**：demo 建企业时先原子占一个名额、再落库（并发下不能两个请求同时拿到最后一个名额），所以写库失败——参数已校验，但事务本身失败——时必须把名额退回去（`release_demo_sample`，`UPDATE … SET created = created - 1 WHERE created > 0`）。`normalize_profile` 的 422 校验提前到占额之前，格式错误不消耗名额。补了三条用例：非法 body 后配额不变、写库抛错后配额回到 0、配额用尽仍 429。
 
 > **region 过滤按「该区划 + 全国」（2026-10-29 修）**：行政区划码只覆盖地方，国家层面的政策没有对应区划码，`source_register.csv` 统一记 `CN`（`storage.NATIONAL_REGION_CODE`）。若按等值过滤，深圳企业查 `region=440300` 会看不到《研发费用加计扣除公告》这类全国性政策——候选集合数量对但内容缺，而且缺的是最不该缺的那部分。因此改为「`region = 传入值` 或 `region = CN`」，只放宽不收紧；传 `CN` 本身只返回全国性政策。目前不支持「只看地方」的严格过滤，若 M2 需要再加显式参数，不加就默认放宽。前端展示时应把 `region=CN` 显示为「全国」，不要显示成区划码。
 
@@ -404,7 +406,17 @@ API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络�
 | AUTH-04 `GET /auth/me` | 只要会话（Bearer → 403 `ROLE_FORBIDDEN`） | 200 `{user,expiresAt,csrfToken}`（`csrfToken` 与 AUTH-02 相同，首版不轮换），`no-store`；会话失效 401 `SESSION_INVALID` |
 | AUTH-05 `POST /auth/password` | JSON `{currentPassword,newPassword}`；CSRF + Origin 必填 | 204；成功后撤销该账号**全部**会话并清 Cookie。旧密码错 401 `INVALID_CREDENTIALS` |
 
-共用的两处工具：密码哈希 `hashlib.scrypt`（格式 `scrypt$n$r$p$salt$hash`），CSRF 值 `sha256("huice-csrf:" + 会话令牌)[:32]`。登录限流按 IP：60 秒 5 次、连续 20 次失败锁 900 秒，超限 429 `ACCOUNT_LOCKED` + `Retry-After`（只锁 IP，不锁用户名——否则他人可以恶意锁死某个账号）。
+共用的两处工具：密码哈希 `hashlib.scrypt`（格式 `scrypt$n$r$p$salt$hash`），CSRF 值 `sha256("huice-csrf:" + 会话令牌)[:32]`。
+
+登录/注册限流按 IP，三条约束（`app/identity.py` 的 `LoginLimiter.attempt()`，名额在**进入慢哈希之前**原子占下）：
+
+1. **在途名额**：同一 IP 同时最多 5 个认证请求在跑，第 6 个立刻 429（`Retry-After: 1`）。没有这一条时，并发洪峰会在首个失败落账前全部通过检查，一起压满 scrypt 的 CPU（M2 在 PR #61 的 P1）。
+2. **失败窗口**：60 秒内 5 次失败后拒绝，直到窗口滑过。
+3. **连续失败**：累计 20 次失败锁 900 秒。
+
+只有 401/403（密码错、注册密钥错）算失败；数据库故障等 5xx 只释放名额，故障期间不会把整片 IP 锁死。**成功不清零失败记录**，只释放自己的名额——否则握有一个有效账号的人可以靠反复登录把失败计数刷掉，再接着猜别的账号。纯字段校验（422）在限流块之外，不消耗失败次数。计数在进程内：`huice-api.service` 是单 worker，重启清零；`nginx-huice.conf` 另有一层每 IP 20 r/s（突发 40）的粗粒度 `limit_req` 兜瞬时洪峰，它看不到密码对不对，替代不了上面的按失败次数锁定。
+
+**保底审核员**：E1 起后台写操作只接受审核员会话（Bearer 只读），而注册接口建审核员要配置 `REVIEWER_SIGNUP_KEY`。全新部署用 `infra/deploy/create-admin.py` 由持 root 的人在 ECS 上写库建第一个审核员（只从环境读 `DATABASE_URL`/`ADMIN_INIT_USERNAME`/`ADMIN_INIT_PASSWORD`，不覆盖既有账号），流程见 `infra/deploy/README.md` §3.4。
 
 ## 5. 一次完整联调如何传参
 

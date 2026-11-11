@@ -86,6 +86,40 @@ def test_security_schemes_are_served(schema):
     schemes = schema["components"]["securitySchemes"]
     assert schemes["AdminBearer"]["scheme"] == "bearer"
     assert schemes["DemoSession"]["name"] == "huice_demo_session"
+    assert schemes["UserSession"]["name"] == "huice_session"
+
+
+def test_published_security_keeps_the_bearer_read_only(contract):
+    """E1 起运维 Bearer 只读：发布的契约不能把写操作或业务接口许诺给 Bearer。
+
+    这条防的是「契约继续写着 DemoSession + AdminBearer、后端却 403」的回退——
+    M2 在 PR #61 上指出的正是这个不一致。它直接读契约文件，与业务代码无关。
+    """
+
+    writes = [
+        ("post", "/admin/policies/import"),
+        ("post", "/admin/policies/{policyId}/extract"),
+        ("put", "/admin/policies/{policyId}/criteria"),
+        ("post", "/admin/policies/{policyId}/publish"),
+    ]
+    for method, path in writes:
+        assert contract["paths"][path][method]["security"] == [{"UserSession": []}], path
+
+    reads = [
+        ("get", "/admin/policies"),
+        ("get", "/admin/policies/{policyId}"),
+        ("get", "/assessment-runs/{runId}/trace"),
+    ]
+    for method, path in reads:
+        schemes = [next(iter(entry)) for entry in contract["paths"][path][method]["security"]]
+        assert "AdminBearer" in schemes, path
+        assert "DemoSession" not in schemes or path.endswith("/trace"), path
+
+    for method, path in IMPLEMENTED:
+        if path.startswith("/admin/") or path == "/health":
+            continue
+        schemes = [next(iter(entry)) for entry in contract["paths"][path][method]["security"]]
+        assert "DemoSession" in schemes and "UserSession" in schemes, path
 
 
 def test_unimplemented_endpoints_are_not_served(schema):
