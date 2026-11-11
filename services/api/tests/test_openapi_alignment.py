@@ -464,9 +464,14 @@ def test_register_username_constraints_match_the_server_rule(contract, schema):
     1. **结构**：三份文档（正式契约、运行时 `/openapi.json`、草案）的 `RegisterRequest`
        与 `User` 的 `username` 都是同一组 `minLength`/`maxLength`/`pattern`，且与
        `app/auth.py` 的常量一致；
-    2. **行为**：凡是契约会放行的字符串，服务端规则也必须放行（契约不得接受服务端随后
-       拒掉的值）。反方向——契约比服务端更严——是允许且有意的：服务端先去首尾空白、转
-       小写再套规则，所以契约字段说明写着「先规范化」。
+    2. **行为**：凡是契约会放行的字符串，服务端规则也必须放行，且原样通过不被改写（契约
+       不得接受服务端随后拒掉或静默改写的值）。
+
+    反方向——契约比服务端更严——是**已写明**的口径（PR #61 复审 P2）：契约的
+    ``pattern``/``maxLength`` 作用于请求体原始值，要求调用方先 trim、转小写再发；服务端
+    再做的幂等规范化只是容错，不是契约承诺。下面把这条已知差异也钉住：`` ABC `` 这类
+    原始值服务端会接受，但契约 schema 必须拒绝——谁把 ``pattern`` 放宽成「顺手兼容」，
+    这条就会红。
     """
 
     from jsonschema import Draft202012Validator
@@ -508,7 +513,13 @@ def test_register_username_constraints_match_the_server_rule(contract, schema):
         "ab/c",
         "用户abc",
         "ab@c",
+        # 服务端容错会接受、契约按原始值必须拒绝的两例（PR #61 复审 P2）。
+        " ACME.Two ",
+        "  " + "a" * 32 + "  ",
     ]
+
+    from app.schemas import RegisterRequest
+
     accepted_by_contract = [value for value in samples if validator.is_valid(value)]
     assert "a" * 33 not in accepted_by_contract, "契约不得放行 33 位用户名"
     assert "a" * 64 not in accepted_by_contract, "契约不得放行 64 位用户名"
@@ -516,3 +527,12 @@ def test_register_username_constraints_match_the_server_rule(contract, schema):
         assert username_is_valid(normalize_username(value)), (
             f"契约放行了 {value!r}，服务端规则却拒绝它"
         )
+        parsed = RegisterRequest(username=value, password="x" * 12)
+        assert parsed.username == value, f"契约放行的 {value!r} 被服务端改写了"
+
+    # 已知且已写明的差异：这些原始值服务端容错接受（trim + 小写后合规），契约 schema 拒绝。
+    for lenient in (" ACME.Two ", "  " + "a" * 32 + "  "):
+        assert not validator.is_valid(lenient), (
+            f"契约不该放行未规范化的原始值 {lenient!r}——请先改契约字段说明与客户端约定"
+        )
+        assert username_is_valid(normalize_username(lenient)), lenient

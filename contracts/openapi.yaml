@@ -3247,11 +3247,13 @@ components:
           maxLength: 32
           pattern: '^[a-z0-9_.-]{3,32}$'
           description: >-
-            3—32 位，只允许 a-z、0-9、下划线、点、连字符。服务端先去首尾空白再转小写，
-            之后才套上面这条规则，所以 ' ACME.Two ' 与 acme.two 是同一个名字；不合规一律
-            422 VALIDATION_ERROR（details.fieldErrors[].field = username）。
-            本规则与实现同源（app/auth.py 的 USERNAME_PATTERN，库表 CHECK 也是这一条），
-            契约不会接受一个服务端随后拒掉的值。
+            3—32 位，只允许 a-z、0-9、下划线、点、连字符。**约束作用于请求体里的原始值**：
+            调用方先自行去首尾空白、转小写再发（ACME.Two → acme.two），标准 JSON Schema
+            校验器与服务端就给同一个答案，不会出现「schema 拒、服务端收」。服务端解析时仍会
+            兜底再做一次 trim + 转小写（幂等），所以带首尾空白或大写的原始输入通常也能成功，
+            但那是服务端的容错，不是契约承诺——客户端不得依赖它发送非规范化值。
+            不合规一律 422 VALIDATION_ERROR（details.fieldErrors[].field = username）。
+            规则与实现同源（app/auth.py 的 USERNAME_PATTERN，库表 009 的 CHECK 也是它）。
         password:
           type: string
           minLength: 12

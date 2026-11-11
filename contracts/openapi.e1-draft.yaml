@@ -48,10 +48,13 @@
 #         3—32 位 + pattern ^[a-z0-9_.-]{3,32}$（先去首尾空白再转小写），与 app/auth.py 的
 #         USERNAME_PATTERN、库表 CHECK 和正式契约同一条规则；
 #     (2) 版本说明不再写成笼统的「向后兼容」：相对 rc.10 是纯增量，相对 rc.9 是破坏性鉴权变更。
+#   draft.7（2026-11-11）：按 PR #61 复审 P2 明确用户名的校验对象——
+#     契约的 pattern/maxLength 作用于**请求体原始值**（调用方先 trim、转小写再发），
+#     服务端再做一次幂等规范化只是容错、不是承诺；正式契约、本文与实现说明同步此口径。
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约（E1 草案：账号、会话与对象权限）
-  version: 1.1.0-rc.1-draft.6
+  version: 1.1.0-rc.1-draft.7
   description: |
     **本文件是设计记录，不是可服务端点的声明。** 7 个操作与账号/会话 schema 自
     `openapi.yaml` 的 `1.1.0-rc.1` 起已并入正式契约；端点、schema 与 security 以正式契约为准，
@@ -65,7 +68,7 @@ info:
     - 未包含：DISC-01—08（E2）、VIS-01—06（E3）。它们不依赖本草案的判定顺序，另行评审。
 
     ## 版本
-    - 草案号 `1.1.0-rc.1-draft.6`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
+    - 草案号 `1.1.0-rc.1-draft.7`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
       本文件不自定 `1.1.0`。
     - 合并时 `contracts/openapi.yaml` 的 `info.version` 与 `APP_VERSION` 必须同一次改动一起升，
       否则 `test_served_version_matches_the_contract` 会红；届时指纹本来就要重算。
@@ -1210,9 +1213,12 @@ components:
           maxLength: 32
           pattern: '^[a-z0-9_.-]{3,32}$'
           description: >-
-            3—32 位，只允许 a-z、0-9、下划线、点、连字符。服务端先去首尾空白再转小写，
-            之后才套这条规则；不合规一律 422 VALIDATION_ERROR（fieldErrors[].field = username）。
-            与 app/auth.py 的 USERNAME_PATTERN、库表 CHECK 同一条规则（draft.6 修正：原写 64）。
+            3—32 位，只允许 a-z、0-9、下划线、点、连字符。约束作用于**请求体原始值**：
+            调用方先 trim、转小写再发（ACME.Two → acme.two），标准 JSON Schema 校验器与
+            服务端就会给同一个答案；服务端解析时再做一次幂等规范化只是容错，不是契约承诺，
+            客户端不得依赖它发送非规范化值。不合规一律 422 VALIDATION_ERROR
+            （fieldErrors[].field = username）。与 app/auth.py 的 USERNAME_PATTERN、库表
+            CHECK 同一条规则（draft.6 修正：原写 64；draft.7 补校验对象口径）。
         password:
           type: string
           minLength: 12

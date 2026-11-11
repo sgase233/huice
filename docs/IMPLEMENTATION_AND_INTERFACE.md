@@ -400,7 +400,7 @@ API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络�
 
 | ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
 | --- | --- | --- |
-| AUTH-01 `POST /auth/register` | JSON `{username,password,enterprise?,reviewerSignupKey?}`；`username` 规范化后须匹配 `^[a-z0-9_.-]{3,32}$`。企业用户必须带 `enterprise`；带**有效** `reviewerSignupKey` 时不建企业。只有 Origin 校验，不消费会话 Cookie | 201 `{user:{id,username,role,enterpriseId}}`，不自动登录；重名 409 `USERNAME_TAKEN`，密钥错 403 `ROLE_FORBIDDEN` |
+| AUTH-01 `POST /auth/register` | JSON `{username,password,enterprise?,reviewerSignupKey?}`；`username` 按**发送的原始值**校验 `^[a-z0-9_.-]{3,32}$`——调用方先 trim、转小写再发（`ACME.Two` → `acme.two`），服务端再做的幂等规范化只是容错、不是契约承诺，按契约发的合法值原样入库。企业用户必须带 `enterprise`；带**有效** `reviewerSignupKey` 时不建企业。只有 Origin 校验，不消费会话 Cookie | 201 `{user:{id,username,role,enterpriseId}}`，不自动登录；重名 409 `USERNAME_TAKEN`，密钥错 403 `ROLE_FORBIDDEN` |
 | AUTH-02 `POST /auth/login` | JSON `{username,password}`；只有 Origin 校验。请求里**有效**的会话会被撤销并换新（不留两个活会话）；无效/过期的直接忽略，不返回 401 | 200 `{user,expiresAt,csrfToken}` + `Set-Cookie: huice_session=…; HttpOnly; SameSite=lax; Path=/api`（非 local 加 `Secure`），`Cache-Control: no-store`；账号不存在与密码错同为 401 `INVALID_CREDENTIALS` |
 | AUTH-03 `POST /auth/logout` | 无 body；只撤销**当前出示的**会话，缺 CSRF 时 403 `CSRF_REQUIRED` 且无副作用；无效会话按「无会话」处理 | 204 + 清 Cookie。门禁豁免（否则 demo cookie 过期后连登出都做不了） |
 | AUTH-04 `GET /auth/me` | 只要会话（Bearer → 403 `ROLE_FORBIDDEN`） | 200 `{user,expiresAt,csrfToken}`（`csrfToken` 与 AUTH-02 相同，首版不轮换），`no-store`；会话失效 401 `SESSION_INVALID` |

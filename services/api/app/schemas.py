@@ -514,10 +514,13 @@ class RegisterRequest(WireModel):
     """注册请求。
 
     用户名的规则只有一处真值：``app/auth.py`` 的 ``USERNAME_PATTERN``（3—32 位
-    ``[a-z0-9_.-]``，先去首尾空白再转小写）。这里用它生成 JSON Schema 并在解析阶段判，
-    与契约 ``RegisterRequest.username`` 的 ``pattern``/``maxLength`` 同源。M2 在 #61 复审
-    指出：先前 schema 写到 64 位、规则却在 handler 里另判，按契约构造的 33—64 位用户名能过
-    schema 却被 422 拒绝——现在 schema 与实际规则给同一个答案。
+    ``[a-z0-9_.-]``）。这里用它生成 JSON Schema，发布出去的 ``pattern``/``maxLength``
+    与契约同源。M2 在 #61 复审指出：先前 schema 写到 64 位、规则却在 handler 里另判，
+    按契约构造的 33—64 位用户名能过 schema 却被 422 拒绝——现在两者给同一个答案。
+
+    口径（#61 复审 P2）：**契约约束的是请求体里的原始值**，调用方先 trim、转小写再发；
+    服务端在校验前还做一次幂等的规范化，属于容错而不是契约承诺——按契约构造的合法值
+    原样通过、原样入库，服务端不会静默改写它。
     """
 
     username: Annotated[
@@ -535,10 +538,12 @@ class RegisterRequest(WireModel):
     @field_validator("username", mode="before")
     @classmethod
     def _normalize_username(cls, value: object) -> object:
-        """trim + 小写后再判规则；不合法就给一句能读懂的中文说明。
+        """服务端容错：先 trim + 小写再判规则；不合法就给一句能读懂的中文说明。
 
-        非字符串原样放行，让类型校验按 ``type_error`` 处理（与其它字段同一个信封）。
-        规范化本身交给 ``auth.normalize_username``，不在这里重写一遍 ``str.strip().lower()``。
+        契约要求调用方发送**已规范化**的值（``pattern``/``maxLength`` 就是按发送值写的），
+        所以这里接受带首尾空白或大写的输入只是宽容处理，不是承诺：合法值本来就原样通过，
+        不会被改写。非字符串原样放行，让类型校验按 ``type_error`` 处理（与其它字段同一个
+        信封）。规范化本身交给 ``auth.normalize_username``，不在这里重写一遍。
         """
 
         if not isinstance(value, str):

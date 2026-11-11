@@ -14,7 +14,7 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 
 ## E1 契约草案（2026-11-10）
 
-[`openapi.e1-draft.yaml`](openapi.e1-draft.yaml) 是 #46 账号/会话/对象权限的**设计记录**（`1.1.0-rc.1-draft.6`）。自 `openapi.yaml` 的 `1.1.0-rc.1` 起，7 个操作与账号/会话 schema 已并入正式契约，端点、schema 与 `security` 以 `openapi.yaml` 为准；本文件保留评审时用到的门禁/身份真值表、错误码清单与可复核的请求样例。它不进 `generate_types.py` 的管线、不影响 `APP_VERSION` 与评测指纹。
+[`openapi.e1-draft.yaml`](openapi.e1-draft.yaml) 是 #46 账号/会话/对象权限的**设计记录**（`1.1.0-rc.1-draft.7`）。自 `openapi.yaml` 的 `1.1.0-rc.1` 起，7 个操作与账号/会话 schema 已并入正式契约，端点、schema 与 `security` 以 `openapi.yaml` 为准；本文件保留评审时用到的门禁/身份真值表、错误码清单与可复核的请求样例。它不进 `generate_types.py` 的管线、不影响 `APP_VERSION` 与评测指纹。
 
 - 内容：AUTH-01—07 七个操作、16 个现有操作的 security 与 404/409 语义变更（`x-e1-impact`）、错误码表（`x-error-codes`）、旧消费者清单（`x-legacy-consumers`）、未决项（`x-open-questions`）。
 - 写法：复用的现有 schema 一律 `$ref: './openapi.yaml#/components/...'`，草案不复制它们；两份文件在同一个目录，工具可直接解析。
@@ -116,7 +116,7 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 15. `1.1.0-rc.1`（2026-11-11，应答 M2 对 PR #61 的复审）：把 E1 的 7 个操作并入正式契约。
     - 新增路径/操作：`POST /auth/register`、`POST /auth/login`、`POST /auth/logout`、`GET /auth/me`、`POST /auth/password`，以及给既有 `/enterprises`、`/assessment-runs` 增加 `GET`（AUTH-06/AUTH-07）。
     - 新增 13 个 schema：`UserRole`、`User`、`RegisterRequest`、`RegisterResponse`、`LoginRequest`、`PasswordChangeRequest`、`SessionResponse`、`Ownership`、`EnterpriseSummary`、`EnterpriseSummaryList`、`RunStatus`、`RunSummary`、`RunSummaryList`；新增参数 `CsrfToken`、`OriginHeader`、`OriginHeaderOptional`。
-    - `RegisterRequest.username` 与 `User.username` 是 **3—32 位**（`minLength: 3`、`maxLength: 32`、`pattern: ^[a-z0-9_.-]{3,32}$`），服务端先去首尾空白再转小写，之后才套这条规则。规则只有一处真值：`app/auth.py` 的 `USERNAME_PATTERN`，库表（迁移 `009` 的 `app_user_username_shape` CHECK）与契约的 `pattern` 都是它；`app/schemas.py` 直接读这个常量生成 JSON Schema 并在解析阶段判。此前契约写 64 位、handler 另判 3—32，按契约构造的 33—64 位用户名能过 schema 却被 422 拒绝，现已同源（M2 在 PR #61 复审指出）。`LoginRequest.username` 相反：只做规范化后查账号，**不**套注册规则，长度或字符不合规的名字统一回 401 `INVALID_CREDENTIALS`，不借登录接口暴露名字格式或是否存在（契约字段说明已写）。
+    - `RegisterRequest.username` 与 `User.username` 是 **3—32 位**（`minLength: 3`、`maxLength: 32`、`pattern: ^[a-z0-9_.-]{3,32}$`），服务端先去首尾空白再转小写，之后才套这条规则。规则只有一处真值：`app/auth.py` 的 `USERNAME_PATTERN`，库表（迁移 `009` 的 `app_user_username_shape` CHECK）与契约的 `pattern` 都是它；`app/schemas.py` 直接读这个常量生成 JSON Schema 并在解析阶段判。此前契约写 64 位、handler 另判 3—32，按契约构造的 33—64 位用户名能过 schema 却被 422 拒绝，现已同源（M2 在 PR #61 复审指出）。`LoginRequest.username` 相反：只做规范化后查账号，**不**套注册规则，长度或字符不合规的名字统一回 401 `INVALID_CREDENTIALS`，不借登录接口暴露名字格式或是否存在（契约字段说明已写）。**校验对象写明是请求体的原始值**（M2 在 PR #61 复审 P2）：契约要求调用方先 trim、转小写再发，`pattern`/`maxLength` 直接作用于发送值，用 schema 做请求校验的客户端与服务端因此一致；服务端解析时再做一次幂等规范化只是容错，不是契约承诺，带首尾空白或大写的原始输入能成功属实现细节，客户端不得依赖。按契约构造的合法值原样通过、原样入库。
     - 版本从 `1.0.0` 升到 `1.1.0`：新增了路径、操作与 components，`apps/web/src/api/types.ts` 必须重新生成，所以不是补丁级。`info.version` 与 `APP_VERSION` 已同一次改动一起升。**兼容性分两层，不能笼统说「向后兼容」**：①相对本 PR 内的 `rc.10` 是**纯增量**——既有 16 个操作的 schema、`security` 与门禁一字未改；②相对 `main` 上的 `rc.9` 与按 `rc.9` 写的旧调用方是**破坏性鉴权变更**——`rc.10` 已把后台写权限从运维 Bearer 改为审核员会话（Bearer 只读，拿 Bearer 写后台会 403），从 `rc.9` 升级必须同时切换调用方，不能只换契约文件。`1.1.0-rc.1` 是候选版本号，最终版本口径由 M1/M2 确认。
     - **已知中间状态**：`python contracts/generate_types.py --check` 与 `services/api/tests/test_contract.py::test_types_are_generated_from_current_contract` 在 M2 重新生成 `types.ts` 之前会红。`apps/web/**` 归 M2，M1 不直接改；生成只需要 `python contracts/generate_types.py`（差异是新增的 13 个 schema，既有类型不变）。
     - 门禁判定顺序补一层：门禁在**解析请求体之前**执行，restricted 下缺 cookie 一律 403 `DEMO_SESSION_REQUIRED`（缺字段/错类型/空体/非 JSON 都一样），local 模式同样的请求才是 422。`x-e1-gate-model` 的 `evaluation-order` 与各操作 `x-e1-gate.note` 已同步。
