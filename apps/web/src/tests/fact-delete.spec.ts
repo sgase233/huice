@@ -24,6 +24,8 @@ test('触屏设备始终显示删除文字', async ({ browser }) => {
   const button = page.getByRole('button', { name: '移除此项信息' });
   await expect(button.locator('.fact-delete-label')).toHaveCSS('opacity', '1');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await button.scrollIntoViewIfNeeded();
+  expect(await page.locator('.fact-card').last().evaluate(element => element.getAnimations().length)).toBe(0);
   await button.tap();
   await expect(page.locator('.fact-card')).toHaveCount(2);
   await context.close();

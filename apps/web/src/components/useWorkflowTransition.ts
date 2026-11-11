@@ -15,7 +15,7 @@ export default function useWorkflowTransition(page: string) {
   }, [page]);
   useEffect(() => {
     const root = content.current;
-    if (!root || window.matchMedia('(prefers-reduced-motion: reduce)').matches || !('IntersectionObserver' in window)) return;
+    if (!root || window.matchMedia('(prefers-reduced-motion: reduce)').matches || window.matchMedia('(hover: none)').matches || !('IntersectionObserver' in window)) return;
     const seen = new WeakSet<Element>();
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {

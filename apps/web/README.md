@@ -4,6 +4,8 @@
 
 **扩展工作从[项目组文档入口](../../docs/README.md)开始。**M2 先按[开发计划](../../docs/DEVELOPMENT_PLAN.md)与 M1/M3 复核 D1—D5，再依照[扩展接口设计](../../docs/EXTENSION_INTERFACES.md)接入登录/归属、候选审核和图表。现行契约为 rc.9；新增端点仍为待评审设计，不自行在客户端补一套字段或权限。页面状态、深浅主题与文字约束见[UI 简报](../../docs/ui/UI_BRIEF.md)，交付对照[验收清单](../../docs/product/ACCEPTANCE.md)。
 
+M2 的任务顺序、接口依赖、交付物与验证方式见[阶段性工作计划](M2_WORK_PLAN.md)；项目共同排期仍以开发计划为准，实际执行记录见[M2 工作日志](../../docs/devlog/M2.md)。
+
 ## 页面信息层级与组件
 
 `企业画像 → 机会列表 → 政策详情/证据 → 清单/报告` 是企业用户路径；真实模式包含受限审核和轨迹入口；固定样例模式的审核页仍是预览。页面顶端持续显示演示标记，左侧导航在窄屏变为横向可滚动导航。状态由文字与颜色共同表达；`StatusBadge` 分开呈现四态、失效、关闭。`EvidenceRow` 呈现合成引用，`PreparationList` 呈现按税收/资金区分的清单。
@@ -47,7 +49,7 @@ npm run test:e2e
 
 常规 `npm run test:e2e` 使用模拟接口并跳过 `live-flow.spec.ts`。真实联调用例会创建企业并 PATCH 事实，**只能指向专用隔离库**，不能对共享开发库或演示服务运行。该用例当前固定请求 `http://127.0.0.1:8000/api/v1`；Vite 也须使用该地址，CORS 必须允许 `http://127.0.0.1:5173` 并暴露 ETag。
 
-可按以下流程在专用空库复现。先按 M1 的 `infra/local/README.md` 准备 PostgreSQL 16 + pgvector，单独创建绑定 `127.0.0.1:55432` 的测试实例及数据库 `huice_m2_phase3_test`，按顺序执行 `infra/sql/001` 至 `006`。使用 Python 3.12 安装 `services/api/requirements.lock`。不要在现有数据库执行下面的种子操作。
+可按以下流程在专用空库复现。先按 M1 的 `infra/local/README.md` 准备 PostgreSQL 16 + pgvector，单独创建绑定 `127.0.0.1:55432` 的测试实例及数据库 `huice_m2_phase3_test`，按顺序执行 `infra/sql/001` 至 `008`。使用 Python 3.12 安装 `services/api/requirements.lock`。不要在现有数据库执行下面的种子操作。
 
 ```powershell
 # 从仓库根目录执行；<...> 替换为临时测试数据库的专用凭据
@@ -75,7 +77,7 @@ Remove-Item Env:HUICE_LIVE
 
 ### 第五阶段真实审核专项复现
 
-仅使用专用隔离库 `huice_m2_phase5_test`，不能连接共享库或正式环境。先启动绑定本机的 PostgreSQL 16 + pgvector（`127.0.0.1:55432`）和 Redis（`127.0.0.1:56379`），创建此专用数据库并按 `infra/sql/001` 至 `006` 顺序执行迁移。使用 Python 3.12 和 `services/api/requirements.lock` 创建测试虚拟环境；确保端口 8000 未被其他服务占用。
+仅使用专用隔离库，不能连接共享库或正式环境；下例使用 `huice_m2_phase5_test`，也可新建独立空库避免影响已有测试数据。先启动绑定本机的 PostgreSQL 16 + pgvector（`127.0.0.1:55432`）和 Redis（`127.0.0.1:56379`），创建专用数据库并按 `infra/sql/001` 至 `008` 顺序执行迁移。使用 Python 3.12 和 `services/api/requirements.lock` 创建测试虚拟环境；确保端口 8000 未被其他服务占用。
 
 ```powershell
 # 从仓库根目录执行；凭据仅填临时测试值，不写入仓库。

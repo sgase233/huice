@@ -87,7 +87,7 @@ test('隔离后端真实 HTTP：行业排除与缺失事实', async ({ page }) =
   await page.getByRole('button', { name: '分析所选政策' }).click();
   await expect(manual.getByText('还缺资料')).toBeVisible();
   await manual.getByRole('button', { name: '查看详情' }).click();
-  await expect(page.getByText(/请人工核查合成条件/).first()).toBeVisible();
+  await expect(page.getByText('本条须人工核查：请人工核查合成条件', { exact: true })).toBeVisible();
 });
 
 test('隔离后端：税收与资金清单及多问题跳过', async ({ page }) => {

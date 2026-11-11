@@ -54,7 +54,7 @@ test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取',
   await expect(added.getByLabel('标题', { exact: true })).toBeFocused();
   await page.keyboard.insertText('嵌套条件');
   const type = added.getByRole('combobox', { name: '类型' });
-  await tabTo(page, type); page.once('dialog', dialog => dialog.accept()); await page.keyboard.press('Home');
+  await tabTo(page, type); page.once('dialog', dialog => dialog.accept()); await page.keyboard.press('Space'); await page.keyboard.press('Home'); await page.keyboard.press('Enter');
   await expect(added.getByRole('group', { name: '规则：且' })).toBeVisible();
   await expectLabels(page);
   for (const index of [0, 1]) {

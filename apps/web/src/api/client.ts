@@ -1,5 +1,5 @@
 import type {
-  AssessmentInput, AssessmentRun, Enterprise, EnterpriseInput, ExtractPolicyInput,
+  AssessmentInput, AssessmentRun, Enterprise, EnterpriseInput, Expression, ExtractPolicyInput,
   ExtractionResult, FactKey, FactUpdate, HealthResponse, PolicyDetail, PolicyDraft,
   PolicyDraftList, PolicyImportMetadata, PolicyList, PublishPolicyInput,
   SaveCriteriaInput, SaveCriteriaResult, TraceResponse,
@@ -42,7 +42,7 @@ const safeEvidence = (value: unknown) => isObject(value) && typeof value.quote =
 
 const safeDraftSpan = (value: unknown) => safeEvidence(value) && isObject(value) && typeof value.sourceId === 'string' && (value.page === null || (typeof value.page === 'number' && Number.isInteger(value.page) && value.page > 0)) && (value.section === null || typeof value.section === 'string');
 
-function validExpression(value: unknown, depth = 0): boolean {
+export function validExpression(value: unknown, depth = 0): value is Expression {
   if (!isObject(value) || depth > 20 || typeof value.op !== 'string') return false;
   if (value.op === 'and' || value.op === 'or') return Array.isArray(value.children) && value.children.length >= 2 && value.children.every(child => validExpression(child, depth + 1));
   if (value.op === 'not') return validExpression(value.child, depth + 1);
@@ -52,7 +52,7 @@ function validExpression(value: unknown, depth = 0): boolean {
   if (value.op === 'industry_exclusion') return value.factKey === 'industry' && Array.isArray(value.excluded) && value.excluded.every(item => typeof item === 'string');
   if (!['lt', 'lte', 'eq', 'gte', 'gt', 'ne'].includes(String(value.comparator))) return false;
   if (value.op === 'date') return ['establishedDate', 'specificMarketSince'].includes(String(value.factKey)) && typeof value.value === 'string';
-  if (value.op === 'quarterly_average') return ['assets', 'employeeCount'].includes(String(value.metric)) && typeof value.value === 'string' && ['CNY', 'person'].includes(String(value.unit));
+  if (value.op === 'quarterly_average') return ((value.metric === 'assets' && value.unit === 'CNY') || (value.metric === 'employeeCount' && value.unit === 'person')) && typeof value.value === 'string';
   if (value.op === 'compare') return typeof value.factKey === 'string' && Object.hasOwn(factUnits, value.factKey) && value.unit === factUnits[value.factKey as keyof typeof factUnits] && (typeof value.value === 'string' || typeof value.value === 'boolean');
   return false;
 }
@@ -68,7 +68,7 @@ function assertShape(value: unknown, kind: string): void {
   }
   if (kind === 'TraceResponse') {
     for (const step of record.steps as unknown[]) {
-      if (!isObject(step) || typeof step.sequence !== 'number' || !['ingestion', 'extraction', 'citation_validation', 'human_review', 'profile', 'retrieval', 'evaluation', 'questioning', 'explanation'].includes(String(step.stage)) || !['ok', 'needs_review', 'retryable_error', 'fatal_error'].includes(String(step.status)) || typeof step.inputSummary !== 'string' || typeof step.outputSummary !== 'string' || typeof step.modelOrRuleVersion !== 'string' || typeof step.elapsedMs !== 'number' || !Array.isArray(step.objectRefs) || !step.objectRefs.every(ref => isObject(ref) && Object.keys(ref).length === 2 && ['enterprise', 'policy', 'policyVersion'].includes(String(ref.type)) && typeof ref.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.id)) || !(step.policyId === null || typeof step.policyId === 'string') || !(step.policyVersion === null || typeof step.policyVersion === 'string') || !(step.errorCode === null || typeof step.errorCode === 'string') || !(step.humanAction === null || typeof step.humanAction === 'string')) throw new Error('接口契约错误：轨迹步骤无效');
+      if (!isObject(step) || (!Number.isInteger(step.sequence) || (step.sequence as number) < 1) || !['ingestion', 'extraction', 'citation_validation', 'human_review', 'profile', 'retrieval', 'evaluation', 'questioning', 'explanation'].includes(String(step.stage)) || !['ok', 'needs_review', 'retryable_error', 'fatal_error'].includes(String(step.status)) || typeof step.inputSummary !== 'string' || typeof step.outputSummary !== 'string' || typeof step.modelOrRuleVersion !== 'string' || (!Number.isInteger(step.elapsedMs) || (step.elapsedMs as number) < 0) || !Array.isArray(step.objectRefs) || !step.objectRefs.every(ref => isObject(ref) && Object.keys(ref).length === 2 && ['enterprise', 'policy', 'policyVersion'].includes(String(ref.type)) && typeof ref.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.id)) || !(step.policyId === null || typeof step.policyId === 'string') || !(step.policyVersion === null || typeof step.policyVersion === 'string') || !(step.errorCode === null || typeof step.errorCode === 'string') || !(step.humanAction === null || typeof step.humanAction === 'string')) throw new Error('接口契约错误：轨迹步骤无效');
     }
   }
   if (kind === 'PolicyDraft') {
@@ -102,12 +102,15 @@ function assertShape(value: unknown, kind: string): void {
   }
   if (kind === 'AssessmentRun') {
     if (typeof record.id !== 'string' || !Array.isArray(record.assessments) || !record.policyVersionMap || typeof record.policyVersionMap !== 'object' || Array.isArray(record.policyVersionMap)) throw new Error('接口契约错误：AssessmentRun 字段缺失');
+    const policyIds = new Set<string>();
     for (const assessment of record.assessments as Record<string, unknown>[]) {
       if (!isObject(assessment)) throw new Error('接口契约错误：判断结果无效');
       if (!['satisfied', 'not_satisfied', 'insufficient_evidence', 'conflict'].includes(String(assessment.result)) ||
           !['current', 'stale'].includes(String(assessment.validity))) {
         throw new Error('接口契约错误：未知判断状态');
       }
+      if (typeof assessment.policyId !== 'string' || !assessment.policyId.trim() || policyIds.has(assessment.policyId.toLowerCase())) throw new Error('接口契约错误：分析结果的政策标识缺失或重复');
+      policyIds.add(assessment.policyId.toLowerCase());
       if (!Array.isArray(assessment.criteriaResults)) throw new Error('接口契约错误：缺少条件结果');
       if (!Array.isArray(assessment.missingFacts) || !Array.isArray(assessment.staleReasons) || !Array.isArray(assessment.warnings)) throw new Error('接口契约错误：判断结果字段缺失');
       if (assessment.nextQuestion !== null && assessment.nextQuestion !== undefined) {
@@ -164,7 +167,11 @@ export const api = {
   updateFact: (enterpriseId: string, key: FactKey, input: FactUpdate, etag: string) =>
     request<Enterprise>(`/enterprises/${segment(enterpriseId)}/facts/${segment(key)}`, 'Enterprise', { method: 'PATCH', headers: match(etag), body: json(input) }),
   createRun: (input: AssessmentInput) => request<AssessmentRun>('/assessment-runs', 'AssessmentRun', { method: 'POST', body: json(input) }),
-  getRun: (runId: string) => request<AssessmentRun>(`/assessment-runs/${segment(runId)}`, 'AssessmentRun'),
+  getRun: async (runId: string) => {
+    const response = await request<AssessmentRun>(`/assessment-runs/${segment(runId)}`, 'AssessmentRun');
+    if (response.data.id.toLowerCase() !== runId.toLowerCase()) throw new Error('接口契约错误：返回的分析记录与请求不一致');
+    return response;
+  },
   downloadReport: (runId: string) => request<string>(`/assessment-runs/${segment(runId)}/report.md`, 'markdown', { headers: { Accept: 'text/markdown' } }),
   getTrace: (runId: string) => request<TraceResponse>(`/assessment-runs/${segment(runId)}/trace`, 'TraceResponse'),
   listAdminPolicies: (filters: { status?: string; type?: string; cursor?: string; limit?: number } = {}) =>

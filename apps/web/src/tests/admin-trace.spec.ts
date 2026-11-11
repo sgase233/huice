@@ -71,6 +71,7 @@ test('轨迹按序展示降级、失败、版本和人工动作', async ({ page 
   await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   const steps = page.locator('.trace-steps > li');
+  await expect(page.getByText('按已记录的顺序展示；当前记录未区分政策处理与企业分析。')).toBeVisible();
   await expect(steps).toHaveCount(3);
   await expect(steps.nth(0).getByRole('heading')).toHaveText('1. 引用校验 · 需要审核');
   await expect(steps.nth(0)).toContainText('版本：v2');
@@ -80,6 +81,27 @@ test('轨迹按序展示降级、失败、版本和人工动作', async ({ page 
   await expect(steps.nth(1)).toContainText('rule-v2');
   await expect(steps.nth(1)).toContainText('18 毫秒');
   await expect(steps.nth(2).getByRole('heading')).toHaveText('3. 条款抽取 · 处理失败');
+  await page.setViewportSize({ width: 375, height: 850 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/trace-flow-mobile.png', fullPage: true });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: '切换深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await steps.first().screenshot({ path: 'test-results/trace-flow-dark.png' });
+});
+
+test('轨迹序号不符合契约时显示错误而不保留旧轨迹', async ({ page }) => {
+  let calls = 0;
+  const step = { sequence: 1, stage: 'profile', status: 'ok', inputSummary: '输入', outputSummary: '旧轨迹', objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'v1', elapsedMs: 0, errorCode: null, humanAction: null };
+  await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [{ ...step, sequence: ++calls === 1 ? 1 : 0 }] } }));
+  await page.goto('/#trace');
+  await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
+  await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
+  await page.getByRole('button', { name: '读取轨迹' }).click();
+  await expect(page.getByText('输出：旧轨迹')).toBeVisible();
+  await page.getByRole('button', { name: '读取轨迹' }).click();
+  await expect(page.getByRole('alert')).toContainText('轨迹步骤无效');
+  await expect(page.locator('.trace-steps')).toHaveCount(0);
 });
 
 for (const status of [200, 401]) {
