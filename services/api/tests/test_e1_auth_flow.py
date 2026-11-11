@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import auth as auth_tools
@@ -102,6 +103,68 @@ def test_register_rejects_an_invalid_username(client):
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
     assert response.json()["error"]["details"]["fieldErrors"][0]["field"] == "username"
+
+
+#: 长度边界：2 / 3 / 32 / 33 / 64。33—64 位在 M2 复审（PR #61）之前能过 schema 校验、
+#: 却在 handler 里被 422 拒绝——契约与实现各判一套。现在 schema 直接用 ``USERNAME_PATTERN``。
+USERNAME_LENGTH_CASES = [
+    pytest.param("ab", 422, id="2-chars"),
+    pytest.param("abc", 201, id="3-chars"),
+    pytest.param("a" * 32, 201, id="32-chars"),
+    pytest.param("a" * 33, 422, id="33-chars"),
+    pytest.param("a" * 64, 422, id="64-chars"),
+]
+
+
+@pytest.mark.parametrize("username, expected", USERNAME_LENGTH_CASES)
+def test_register_enforces_the_documented_username_length(client, accounts, username, expected):
+    response = register(client, username=username)
+
+    assert response.status_code == expected, response.text
+    if expected == 201:
+        assert response.json()["user"]["username"] == username
+        assert username in accounts.users
+    else:
+        error = response.json()["error"]
+        assert error["code"] == "VALIDATION_ERROR"
+        assert [item["field"] for item in error["details"]["fieldErrors"]] == ["username"]
+
+
+@pytest.mark.parametrize("username", ["a_b-c.d", "x.y_z-1"])
+def test_register_accepts_the_documented_username_charset(client, accounts, username):
+    """下划线、点、连字符都在规则内；数字与连字符混排也一样。"""
+
+    response = register(client, username=username)
+
+    assert response.status_code == 201, response.text
+    assert response.json()["user"]["username"] == username
+    assert username in accounts.users
+
+
+@pytest.mark.parametrize(
+    "username",
+    ["ab c", "ab/c", "用户abc", "ab@c", "abc!", "   ", "abcdefghijklmnopqrstuvwxyz0123456"],
+)
+def test_register_rejects_usernames_outside_the_documented_charset(client, username):
+    """空格、斜杠、中文、符号、纯空白、超长：同一个 422，同一条规则说明。"""
+
+    response = register(client, username=username)
+
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    field_errors = error["details"]["fieldErrors"]
+    assert [item["field"] for item in field_errors] == ["username"]
+    assert auth_tools.USERNAME_RULE_MESSAGE in field_errors[0]["message"]
+
+
+def test_register_trims_and_lowercases_before_applying_the_length_rule(client):
+    """文档写的顺序是「先去首尾空白、再转小写、最后套 3—32 位」，这里按 32 位边界验一次。"""
+
+    response = register(client, username="  " + "A" * 32 + "  ")
+
+    assert response.status_code == 201, response.text
+    assert response.json()["user"]["username"] == "a" * 32
 
 
 def test_register_requires_an_enterprise_for_enterprise_accounts(client):

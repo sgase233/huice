@@ -11,8 +11,24 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 from pydantic.alias_generators import to_camel
+
+from .auth import (
+    MAX_USERNAME_LENGTH,
+    MIN_USERNAME_LENGTH,
+    USERNAME_PATTERN,
+    USERNAME_RULE_MESSAGE,
+    normalize_username,
+    username_is_valid,
+)
 
 NonEmptyStr = Annotated[str, StringConstraints(min_length=1)]
 Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
@@ -475,19 +491,62 @@ UserRole = Literal["enterprise", "reviewer"]
 
 
 class User(WireModel):
-    """对外身份；不返回密码哈希、注册密钥或任何会话凭据。"""
+    """对外身份；不返回密码哈希、注册密钥或任何会话凭据。
+
+    用户名带与注册同一组约束：库表 ``009`` 的 CHECK 保证只会有这个形状，这里把不变式
+    也写进响应 schema，发布出去的文档才和 ``RegisterRequest`` 说同一件事。
+    """
 
     id: UUID
-    username: str
+    username: Annotated[
+        str,
+        StringConstraints(
+            min_length=MIN_USERNAME_LENGTH,
+            max_length=MAX_USERNAME_LENGTH,
+            pattern=USERNAME_PATTERN.pattern,
+        ),
+    ]
     role: UserRole
     enterprise_id: UUID | None
 
 
 class RegisterRequest(WireModel):
-    username: Annotated[str, StringConstraints(min_length=3, max_length=64)]
+    """注册请求。
+
+    用户名的规则只有一处真值：``app/auth.py`` 的 ``USERNAME_PATTERN``（3—32 位
+    ``[a-z0-9_.-]``，先去首尾空白再转小写）。这里用它生成 JSON Schema 并在解析阶段判，
+    与契约 ``RegisterRequest.username`` 的 ``pattern``/``maxLength`` 同源。M2 在 #61 复审
+    指出：先前 schema 写到 64 位、规则却在 handler 里另判，按契约构造的 33—64 位用户名能过
+    schema 却被 422 拒绝——现在 schema 与实际规则给同一个答案。
+    """
+
+    username: Annotated[
+        str,
+        StringConstraints(
+            min_length=MIN_USERNAME_LENGTH,
+            max_length=MAX_USERNAME_LENGTH,
+            pattern=USERNAME_PATTERN.pattern,
+        ),
+    ]
     password: Annotated[str, StringConstraints(min_length=12, max_length=128)]
     enterprise: EnterpriseInput | None = None
     reviewer_signup_key: Annotated[str, StringConstraints(min_length=16)] | None = None
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def _normalize_username(cls, value: object) -> object:
+        """trim + 小写后再判规则；不合法就给一句能读懂的中文说明。
+
+        非字符串原样放行，让类型校验按 ``type_error`` 处理（与其它字段同一个信封）。
+        规范化本身交给 ``auth.normalize_username``，不在这里重写一遍 ``str.strip().lower()``。
+        """
+
+        if not isinstance(value, str):
+            return value
+        username = normalize_username(value)
+        if not username_is_valid(username):
+            raise ValueError(USERNAME_RULE_MESSAGE)
+        return username
 
 
 class RegisterResponse(WireModel):

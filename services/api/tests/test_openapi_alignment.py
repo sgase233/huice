@@ -453,3 +453,66 @@ def test_trace_step_rejects_untyped_references():
     ):
         with pytest.raises(ValidationError):
             TraceStep(objectRefs=[ref], **base)
+
+
+def test_register_username_constraints_match_the_server_rule(contract, schema):
+    """用户名的契约约束必须与实现同一条规则（PR #61 复审第 1 条）。
+
+    M2 指出过：契约写 3—64 位、服务端规则是 3—32 位，按契约构造的 33—64 位用户名能过
+    schema 校验却被 422 拒绝。这里两件事一起锁住：
+
+    1. **结构**：三份文档（正式契约、运行时 `/openapi.json`、草案）的 `RegisterRequest`
+       与 `User` 的 `username` 都是同一组 `minLength`/`maxLength`/`pattern`，且与
+       `app/auth.py` 的常量一致；
+    2. **行为**：凡是契约会放行的字符串，服务端规则也必须放行（契约不得接受服务端随后
+       拒掉的值）。反方向——契约比服务端更严——是允许且有意的：服务端先去首尾空白、转
+       小写再套规则，所以契约字段说明写着「先规范化」。
+    """
+
+    from jsonschema import Draft202012Validator
+
+    from app.auth import (
+        MAX_USERNAME_LENGTH,
+        MIN_USERNAME_LENGTH,
+        USERNAME_PATTERN,
+        normalize_username,
+        username_is_valid,
+    )
+
+    documents = {
+        "openapi.yaml": contract["components"]["schemas"],
+        "运行时 /openapi.json": schema["components"]["schemas"],
+    }
+    for label, schemas in documents.items():
+        for name in ("RegisterRequest", "User"):
+            username = schemas[name]["properties"]["username"]
+            assert username["minLength"] == MIN_USERNAME_LENGTH, (label, name)
+            assert username["maxLength"] == MAX_USERNAME_LENGTH, (label, name)
+            assert username["pattern"] == USERNAME_PATTERN.pattern, (label, name)
+
+    validator = Draft202012Validator(
+        contract["components"]["schemas"]["RegisterRequest"]["properties"]["username"]
+    )
+    samples = [
+        "",
+        " ",
+        "ab",
+        "abc",
+        "a" * 32,
+        "a" * 33,
+        "A" * 20,
+        "a" * 64,
+        "acme.two",
+        "a_b-c.d",
+        "ab c",
+        "ab/c",
+        "用户abc",
+        "ab@c",
+    ]
+    accepted_by_contract = [value for value in samples if validator.is_valid(value)]
+    assert "a" * 33 not in accepted_by_contract, "契约不得放行 33 位用户名"
+    assert "a" * 64 not in accepted_by_contract, "契约不得放行 64 位用户名"
+    for value in accepted_by_contract:
+        assert username_is_valid(normalize_username(value)), (
+            f"契约放行了 {value!r}，服务端规则却拒绝它"
+        )

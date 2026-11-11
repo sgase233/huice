@@ -43,10 +43,15 @@
 #     (2) 判定顺序补「请求体解析与字段校验」一层：门禁写在 handler 里会被 422 抢先，实现改为
 #         GatedRoute（在解析请求体之前跑），因此 restricted 下缺 cookie 一律 403，不看请求体；
 #     (3) 各操作的 summary 与正式契约、服务端发布一致，统一为裸编号。
+#   draft.6（2026-11-11）：按 PR #61 复审 ——
+#     (1) 用户名约束与实现对齐：RegisterRequest.username 与 User.username 由 3—64 位改为
+#         3—32 位 + pattern ^[a-z0-9_.-]{3,32}$（先去首尾空白再转小写），与 app/auth.py 的
+#         USERNAME_PATTERN、库表 CHECK 和正式契约同一条规则；
+#     (2) 版本说明不再写成笼统的「向后兼容」：相对 rc.10 是纯增量，相对 rc.9 是破坏性鉴权变更。
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约（E1 草案：账号、会话与对象权限）
-  version: 1.1.0-rc.1-draft.5
+  version: 1.1.0-rc.1-draft.6
   description: |
     **本文件是设计记录，不是可服务端点的声明。** 7 个操作与账号/会话 schema 自
     `openapi.yaml` 的 `1.1.0-rc.1` 起已并入正式契约；端点、schema 与 security 以正式契约为准，
@@ -60,7 +65,7 @@ info:
     - 未包含：DISC-01—08（E2）、VIS-01—06（E3）。它们不依赖本草案的判定顺序，另行评审。
 
     ## 版本
-    - 草案号 `1.1.0-rc.1-draft.5`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
+    - 草案号 `1.1.0-rc.1-draft.6`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
       本文件不自定 `1.1.0`。
     - 合并时 `contracts/openapi.yaml` 的 `info.version` 与 `APP_VERSION` 必须同一次改动一起升，
       否则 `test_served_version_matches_the_contract` 会红；届时指纹本来就要重算。
@@ -1181,7 +1186,9 @@ components:
         username:
           type: string
           minLength: 3
-          maxLength: 64
+          maxLength: 32
+          pattern: '^[a-z0-9_.-]{3,32}$'
+          description: 已规范化的用户名（小写）；规则见 RegisterRequest.username。
         role:
           $ref: '#/components/schemas/UserRole'
         enterpriseId:
@@ -1200,7 +1207,12 @@ components:
         username:
           type: string
           minLength: 3
-          maxLength: 64
+          maxLength: 32
+          pattern: '^[a-z0-9_.-]{3,32}$'
+          description: >-
+            3—32 位，只允许 a-z、0-9、下划线、点、连字符。服务端先去首尾空白再转小写，
+            之后才套这条规则；不合规一律 422 VALIDATION_ERROR（fieldErrors[].field = username）。
+            与 app/auth.py 的 USERNAME_PATTERN、库表 CHECK 同一条规则（draft.6 修正：原写 64）。
         password:
           type: string
           minLength: 12

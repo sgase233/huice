@@ -63,15 +63,10 @@ def register_user(request: Request, body: RegisterRequest) -> RegisterResponse:
     limiter = request.app.state.login_limiter
     key = client_key(request)
 
-    # 纯字段校验放在限流块外：格式错误不是「凭证错误」，不该消耗失败次数。
+    # 用户名的格式由 ``RegisterRequest`` 在解析阶段判完（3—32 位、字符集、trim + 小写），
+    # 与契约同一个 ``pattern``；这里只再规范化一次，保证交给仓储的值满足库里的 CHECK。
+    # 纯字段校验都在限流块外：格式错误不是「凭证错误」，不该消耗失败次数。
     username = auth.normalize_username(body.username)
-    if not auth.username_is_valid(username):
-        raise ApiProblem(
-            422,
-            "VALIDATION_ERROR",
-            "用户名不合法：3—32 位小写字母、数字、下划线、点或连字符。",
-            {"fieldErrors": [{"field": "username", "message": "用户名只允许 a-z、0-9、_ . -。"}]},
-        )
     if body.reviewer_signup_key is None and body.enterprise is None:
         # 企业用户必须提交 EnterpriseInput 四要素；审核员可不建企业，留到首次 API-08。
         raise ApiProblem(

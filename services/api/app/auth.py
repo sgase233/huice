@@ -30,6 +30,12 @@ MIN_USERNAME_LENGTH = 3
 MAX_USERNAME_LENGTH = 32
 
 USERNAME_PATTERN = re.compile(r"^[a-z0-9_.-]{3,32}$")
+#: 规则的唯一文字口径：422 ``fieldErrors[].message`` 用它，契约 ``RegisterRequest.username``
+#: 的 description 与它同义（#61 复审：schema 与 handler 曾各判一套，33—64 位能过 schema）。
+USERNAME_RULE_MESSAGE = (
+    "用户名须为 3—32 位，只允许 a-z、0-9、下划线、点或连字符；"
+    "首尾空白会被忽略，大写字母自动转小写。"
+)
 
 SESSION_COOKIE = "huice_session"
 #: 与 ``infra/sql/009_users_sessions.sql`` 的 CHECK 一致。
