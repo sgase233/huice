@@ -48,9 +48,12 @@ checkout 出来用同一条 ``python -m app.evaluation fingerprint`` 复算，�
 指纹」对上；``verify`` 在当前机器上重算并比对。``codeCommit`` 保留，但退化为**注记**。
 
 指纹只回答「磁盘上这些文件是什么」，回答不了「进程里跑的是不是这份代码」——那一条
-靠 ``--process-pid`` 做交叉核对：记下该进程的启动时间，并把「写于进程启动之后」的
-代码文件全部列出来（盘上比进程新，说明可能 ``pull`` 了没重启），有这种文件就直接
-停下。三件事（磁盘代码 / 对应哪个提交 / 进程里跑的是哪份）分开证明，不互相冒充。
+靠 ``inputs --process-pid`` 做交叉核对：记下该进程的启动时间（清单里的
+``processStartedAt``），并把「写于进程启动之后」的代码文件全部列出来（盘上比进程新，
+说明可能 ``pull`` 了没重启），有这种文件就直接停下。``verify`` 没有这个参数、也不比较
+``processStartedAt``——服务重启是正常操作，比对它只会制造误报，进程身份不能用
+``verify`` 证明。三件事（磁盘代码 / 对应哪个提交 / 进程里跑的是哪份）分开证明，
+不互相冒充。
 
 **第 4 项「结果导出」的输入侧在 ``freeze-report``**：它把下载到的 API-13 报告裁成
 不含「截至下载时刻的有效性」的冻结产物，剔除按固定标记整行/整段删除、可重复得到同一
@@ -220,10 +223,11 @@ def _process_started(args: argparse.Namespace, inspection: CodeInspection) -> st
     时才做——看不到进程，就不假装看过。
     """
 
-    if args.process_pid is None:
+    pid = getattr(args, "process_pid", None)
+    if pid is None:
         return None
     try:
-        started = process_started_at(args.process_pid)
+        started = process_started_at(pid)
     except CodeFingerprintError as exc:
         raise SystemExit(f"{PROGRAM}：{exc}") from None
     stale = stale_code_files(inspection.files, started)
@@ -231,7 +235,7 @@ def _process_started(args: argparse.Namespace, inspection: CodeInspection) -> st
         listed = "、".join(f"{item.path}（写于 {item.mtime.isoformat()}）" for item in stale[:5])
         more = "" if len(stale) <= 5 else f"，另有 {len(stale) - 5} 个"
         raise SystemExit(
-            f"{PROGRAM}：进程 {args.process_pid} 启动于 {started.isoformat()}，"
+            f"{PROGRAM}：进程 {pid} 启动于 {started.isoformat()}，"
             f"但有 {len(stale)} 个代码文件写于其后：{listed}{more}——"
             "盘上是新的、进程里可能还是旧的，此时记下的指纹对不上正在跑的代码。"
             "请先重启服务再签认/核对"
@@ -418,12 +422,13 @@ def _report_code_identity(expected: Mapping[str, Any], actual: Mapping[str, Any]
         f"提示：磁盘代码与签认一致（指纹 {short}…，{count} 个文件）；"
         "但「这份代码对应哪个提交」与「进程里跑的是不是它」仍未证明——"
         "前者要把该提交 checkout 出来用 fingerprint 子命令复算，"
-        "后者要在签认时用 --process-pid 记下进程启动时间做交叉核对",
+        "后者要在签认时用 inputs --process-pid 记下进程启动时间做交叉核对"
+        "（verify 不比较它，重启是正常操作）",
         file=sys.stderr,
     )
     if expected.get("processStartedAt") is None:
         print(
-            "提示：签认时没有记录服务进程启动时间（--process-pid），"
+            "提示：签认时没有记录服务进程启动时间（inputs --process-pid），"
             "因此「盘上的代码」与「进程里的代码」之间没有交叉证据",
             file=sys.stderr,
         )
@@ -584,15 +589,6 @@ def _common(parser: argparse.ArgumentParser) -> None:
         "--collected-at",
         help="覆盖清单的采集时间（ISO 8601），便于复现同一份清单",
     )
-    parser.add_argument(
-        "--process-pid",
-        type=int,
-        help=(
-            "正在运行的服务进程 PID（如 systemctl show -p MainPID huice-api 取到的值）："
-            "记下它的启动时间，并把「写于进程启动之后」的代码文件一并列出——"
-            "有这种文件就停下（盘上新的、进程里可能还是旧的）。只在 Linux 上可用"
-        ),
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -604,6 +600,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     inputs = sub.add_parser("inputs", help="从数据库导出输入清单")
     inputs.add_argument("--out", default="-", help="输出文件，默认写到标准输出")
+    inputs.add_argument(
+        "--process-pid",
+        type=int,
+        help=(
+            "正在运行的服务进程 PID（如 systemctl show -p MainPID huice-api 取到的值）："
+            "把它的启动时间记进清单的 processStartedAt，并把「写于进程启动之后」的代码文件"
+            "一并列出——有这种文件就停下（盘上新的、进程里可能还是旧的）。只在 Linux 上"
+            "可用；verify 不接受这个参数，它不复核进程身份"
+        ),
+    )
     _common(inputs)
     inputs.set_defaults(handler=_cmd_inputs)
 
