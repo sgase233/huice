@@ -104,8 +104,8 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 
 | HTTP | code | 触发条件 |
 | --- | --- | --- |
-| 401 | `UNAUTHENTICATED` | 缺少或错误的 Bearer（响应带 `WWW-Authenticate: Bearer`） |
-| 403 | `DEMO_SESSION_REQUIRED` | `DEMO_ACCESS_MODE=restricted` 且 `huice_demo_session` 缺失、签名不符或已过期（格式 `v1.<过期秒>.<HMAC>`，用独立机密 `DEMO_SESSION_SECRET` 签发，见 `infra/deploy/issue-session.py`） |
+| 401 | `UNAUTHENTICATED` | 未提供任何凭证（E1 起「提供了但无效」另报 `TOKEN_INVALID` / `SESSION_INVALID`，不再混用本码，也不降级到下一种凭证；新增错误码见 `openapi.e1-draft.yaml` 的 `x-error-codes`） |
+| 403 | `DEMO_SESSION_REQUIRED` | `DEMO_ACCESS_MODE=restricted` 且 `huice_demo_session` 缺失、签名不符或已过期（格式 `v2.<过期秒>.<sid>.<HMAC>`，E1 前签发的 `v1.<过期秒>.<HMAC>` 仍验签通过但只读；用独立机密 `DEMO_SESSION_SECRET` 签发，见 `infra/deploy/issue-session.py`） |
 | 400 | `INVALID_QUERY` | query/path 参数不合法（含 limit 越界、非法 UUID、游标无效） |
 | 400 | `INVALID_METADATA` | `metadata` 不是合法 JSON 对象 |
 | 400 | `INVALID_MULTIPART` | multipart 结构损坏 |

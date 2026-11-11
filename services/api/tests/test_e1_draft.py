@@ -15,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-from app.main import create_app
+from app.main import API_PREFIX, create_app
 from app.config import Settings
 from app.routes import admin_policies, assessment_runs, enterprises, health, policies
 from support import ADMIN_TOKEN, DEMO_SESSION_SECRET
@@ -25,12 +25,12 @@ CONTRACTS = REPO_ROOT / "contracts"
 DRAFT_PATH = CONTRACTS / "openapi.e1-draft.yaml"
 BASE_PATH = CONTRACTS / "openapi.yaml"
 
-#: 草案 `x-e1-impact.current` 的三种写法 → 现行实现里的 router 级依赖。
-#: 出现新写法时本文件会失败，提示把新形态补进来——避免「案里写了、代码里没有」静默通过。
-CURRENT_FORMS = {
-    "公开": [],
-    "DemoSession（restricted 门禁，local 免）": ["require_demo_session"],
-    "AdminBearer（local）/ DemoSession AND AdminBearer（restricted）": ["require_admin"],
+#: 草案 `x-e1-impact.gate.restricted` 的取值 → 现行实现里路由器级的门禁依赖。
+#: （`current` 一列描述的是 E1 之前的实现，已随 E1 落地变成历史说明。）
+GATE_FORMS = {
+    "DemoSession": ["require_demo_session"],
+    "none": [],
+    "exempt": [],
 }
 
 
@@ -87,15 +87,27 @@ def test_draft_validator_passes():
     assert counts["draft_operations"] == 7
 
 
+#: E1 新加、只写在草案里的操作；它们不在 ``x-e1-impact``（那一表只写现有 16 个端点
+#: 的改造）。并入 ``openapi.yaml`` 之后这些行应当删除或改写成「已落地」。
+E1_ONLY_OPERATIONS = {"listEnterprises", "listRuns"}
+
+
 def test_impact_rows_cover_exactly_the_mounted_operations():
     contract = _contract_operations(BASE_PATH)
     mounted = _mounted_operations()
+    baseline_mounted = {
+        operation_id: deps
+        for operation_id, deps in mounted.items()
+        if operation_id not in E1_ONLY_OPERATIONS
+    }
 
-    assert set(mounted) == set(contract), (
+    assert set(baseline_mounted) == set(contract), (
         "草案基线端点与 services/api 实际挂载的操作不一致："
-        f"只在契约里 {sorted(set(contract) - set(mounted))}，"
-        f"只在实现里 {sorted(set(mounted) - set(contract))}"
+        f"只在契约里 {sorted(set(contract) - set(baseline_mounted))}，"
+        f"只在实现里 {sorted(set(baseline_mounted) - set(contract))}"
     )
+    # E1 的两个列表接口必须真的挂上（草案写了、代码没有，是最容易漏的一项）。
+    assert E1_ONLY_OPERATIONS <= set(mounted)
     baseline = set(contract.values())
     assert len(baseline) == 16
 
@@ -104,8 +116,13 @@ def test_impact_rows_cover_exactly_the_mounted_operations():
     assert rows == baseline
 
 
-def test_impact_current_column_matches_router_dependencies():
-    """16 行的 `current` 是对**现行**实现的断言，逐条拿代码核对。"""
+def test_impact_gate_column_matches_router_dependencies():
+    """16 行的 `gate.restricted` 是 E1 后的门禁断言，逐条拿代码核对。
+
+    E1 之前的写法是「门禁 + 身份」压在一个路由器级依赖里（Bearer 或 demo cookie），
+    所以 ``x-e1-impact.current`` 描述的是改造前的代码，已无法拿现在的实现对；
+    现在路由器上只剩门禁一层，身份与角色都在处理器里。
+    """
 
     contract = _contract_operations(BASE_PATH)
     mounted = _mounted_operations()
@@ -116,18 +133,27 @@ def test_impact_current_column_matches_router_dependencies():
         endpoint = row["endpoint"]
         operation_id = next(oid for oid, ep in contract.items() if ep == endpoint)
         actual = sorted(mounted[operation_id])
-        current = row["current"]
-        assert current in CURRENT_FORMS, (
-            f"{endpoint}: 未知的 current 写法 {current!r}，请在 CURRENT_FORMS 里补上对应依赖"
+        restricted = row["gate"]["restricted"]
+        assert restricted in GATE_FORMS, (
+            f"{endpoint}: 草案出现未登记的门禁写法 {restricted!r}，"
+            "请核对后补进本文件的 GATE_FORMS"
         )
-        expected = sorted(CURRENT_FORMS[current])
+        expected = sorted(GATE_FORMS[restricted])
         if actual != expected:
-            mismatches.append(f"{endpoint}: 草案说 {current!r}，实现依赖是 {actual}")
+            mismatches.append(
+                f"{endpoint}: 草案门禁是 {restricted!r}，实现依赖是 {actual}"
+            )
     assert mismatches == [], "\n".join(mismatches)
 
 
 def test_published_security_matches_current_classification():
-    """服务端实际发布给客户端的 security：health 无、公开端点 DemoSession、后台两者 AND。"""
+    """服务端实际发布给客户端的 security。
+
+    草案的口径是「``security`` 只表达身份，门禁写 ``x-e1-gate``」。现有 16 个端点还是
+    E1 之前的写法（门禁与身份混在一个对象里），按 ``x-e1-impact.current`` 的分类；
+    E1 新增的 AUTH-01—05 按草案逐条给：注册/登录/登出不要求身份（``[]``），
+    ``/auth/me`` 与 ``/auth/password`` 只要会话。
+    """
 
     application = create_app(
         Settings(
@@ -146,14 +172,25 @@ def test_published_security_matches_current_classification():
         "getHealth": [],
         "/admin/": [{"DemoSession": [], "AdminBearer": []}],
         "default": [{"DemoSession": []}],
+        "authPublic": [],
+        "authSession": [{"UserSession": []}],
     }
+    #: 草案写明 security 为空的三条；其余两条只认会话。
+    public_auth = {"/auth/register", "/auth/login", "/auth/logout"}
+    session_auth = {"/auth/me", "/auth/password"}
+
     problems = []
     for path, operations in schema["paths"].items():
         for method, operation in operations.items():
             if method not in {"get", "put", "post", "patch", "delete"}:
                 continue
+            bare = path.removeprefix(API_PREFIX)
             if path.endswith("/health"):
                 expected = expected_security["getHealth"]
+            elif bare in public_auth:
+                expected = expected_security["authPublic"]
+            elif bare in session_auth:
+                expected = expected_security["authSession"]
             elif "admin" in (operation.get("tags") or []):
                 # 与 services/api/app/main.py 的 _install_openapi 一致：按 tag 分类，
                 # API-14 轨迹挂在 /assessment-runs 下但属 admin tag。
@@ -163,4 +200,4 @@ def test_published_security_matches_current_classification():
             if operation.get("security") != expected:
                 problems.append(f"{method.upper()} {path}: {operation.get('security')} != {expected}")
     assert problems == [], "\n".join(problems)
-    assert len(schema["paths"]) == 16
+    assert len(schema["paths"]) == 21

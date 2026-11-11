@@ -11,16 +11,62 @@ from __future__ import annotations
 import re
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Request, Response
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 
+from ..access import require_enterprise_access
 from ..agents.profile import normalize_fact_update, normalize_profile
 from ..errors import ApiProblem, trace_id_of
-from ..schemas import Enterprise, EnterpriseInput, FactKey, FactUpdate
+from ..identity import (
+    Identity,
+    claim_demo_sample,
+    require_csrf,
+    require_public_identity,
+    require_writable_demo,
+)
+from ..schemas import (
+    Enterprise,
+    EnterpriseInput,
+    EnterpriseSummaryList,
+    FactKey,
+    FactUpdate,
+)
 from ..security import require_demo_session
 
 router = APIRouter(tags=["public"], dependencies=[Depends(require_demo_session)])
 
 _FACT_VERSION_RE = re.compile(r"^[a-f0-9]{64}$")
+
+
+@router.get(
+    "/enterprises",
+    response_model=EnterpriseSummaryList,
+    operation_id="listEnterprises",
+    summary="AUTH-06",
+)
+def list_enterprises(
+    request: Request,
+    cursor: str | None = Query(default=None, min_length=1),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> EnterpriseSummaryList:
+    """归属过滤在服务端：企业用户至多一条、审核员全部、demo 仅无主。
+
+    游标绑定身份与可见范围（``scope`` 进了签名摘要），拿别人的游标续页会 400，
+    不会返回他人数据的下一页。
+    """
+
+    identity = require_public_identity(request)
+    if identity.is_demo:
+        scope = "unowned"
+    elif identity.is_reviewer:
+        scope = "all"
+    else:
+        scope = "owned"
+    return request.app.state.repository.list_enterprises(
+        scope=scope,
+        viewer_user_id=identity.user_id,
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 @router.post(
@@ -33,12 +79,36 @@ _FACT_VERSION_RE = re.compile(r"^[a-f0-9]{64}$")
 def create_enterprise(
     request: Request, response: Response, body: EnterpriseInput
 ) -> Enterprise:
+    identity = require_public_identity(request)
+    owner_user_id = _create_owner(request, identity)
     profile = normalize_profile(body)
     enterprise = request.app.state.repository.create_enterprise(
-        profile=profile, trace_id=trace_id_of(request)
+        profile=profile, trace_id=trace_id_of(request), owner_user_id=owner_user_id
     )
     response.headers["ETag"] = f'"{enterprise.fact_version}"'
     return enterprise
+
+
+def _create_owner(request: Request, identity: Identity) -> UUID | None:
+    """建样本的归属：会话建自己的，demo 建无主的；两种写路径的校验不同。
+
+    账号已经绑过企业时 409 而不是再建一家——``enterprise.owner_user_id`` 的部分唯一
+    索引也会挡住，但那是并发兜底；正常情况下应该给一个说得清的错误。
+    """
+
+    if identity.is_user:
+        if identity.enterprise_id is not None:
+            raise ApiProblem(
+                409,
+                "ENTERPRISE_ALREADY_BOUND",
+                "当前账号已绑定企业，不能重复创建；如需更新请调用 PATCH 事实接口。",
+                {"enterpriseId": str(identity.enterprise_id)},
+            )
+        require_csrf(request, identity)
+        return identity.user_id
+    require_writable_demo(request, identity)
+    claim_demo_sample(request, identity)
+    return None
 
 
 @router.get(
@@ -50,6 +120,8 @@ def create_enterprise(
 def get_enterprise(
     request: Request, response: Response, enterpriseId: UUID = Path()
 ) -> Enterprise:
+    identity = require_public_identity(request)
+    require_enterprise_access(request, identity, enterpriseId, write=False)
     enterprise = request.app.state.repository.get_enterprise(enterpriseId)
     response.headers["ETag"] = f'"{enterprise.fact_version}"'
     return enterprise
@@ -68,6 +140,12 @@ def update_fact(
     enterpriseId: UUID = Path(),
     factKey: FactKey = Path(),
 ) -> Enterprise:
+    identity = require_public_identity(request)
+    require_enterprise_access(request, identity, enterpriseId, write=True)
+    if identity.is_user:
+        require_csrf(request, identity)
+    else:
+        require_writable_demo(request, identity)
     expected_version = _require_fact_version(request)
     repository = request.app.state.repository
 

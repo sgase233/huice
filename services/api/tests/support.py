@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from app import auth as auth_tools
 from app.agents.contracts import PolicySnapshot, SnapshotCriterion
 from app.agents.profile import (
     NormalizedFact,
@@ -22,6 +23,8 @@ from app.errors import ApiProblem
 from app.schemas import (
     Criterion,
     Enterprise,
+    EnterpriseSummary,
+    EnterpriseSummaryList,
     Period,
     PolicyDetail,
     PolicyDraft,
@@ -29,6 +32,8 @@ from app.schemas import (
     PolicyList,
     PolicySummary,
     PreparationTemplate,
+    RunSummary,
+    RunSummaryList,
     SourceSpan,
     TraceResponse,
     TraceStep,
@@ -90,6 +95,9 @@ class FakeRepository:
         self.saved_runs: list[dict] = []
         self.runs: dict[object, object] = {}
         self.trace_calls: list[object] = []
+        # E1 归属：企业 → owner_user_id（None 表示无主），run → 发起账号。
+        self.enterprise_owners: dict[object, object] = {}
+        self.run_users: dict[object, object] = {}
 
     def create_policy_version(
         self,
@@ -344,9 +352,16 @@ class FakeRepository:
 
     # -------------------------------------------------------------- 企业画像
 
-    def create_enterprise(self, *, profile: NormalizedProfile, trace_id: str) -> Enterprise:
+    def create_enterprise(
+        self,
+        *,
+        profile: NormalizedProfile,
+        trace_id: str,
+        owner_user_id=None,
+    ) -> Enterprise:
         enterprise_id = uuid4()
         self.created.append({"profile": profile, "trace_id": trace_id})
+        self.enterprise_owners[enterprise_id] = owner_user_id
         return self._store_enterprise(
             enterprise_id,
             profile.name_synthetic,
@@ -359,6 +374,37 @@ class FakeRepository:
         if enterprise is None:
             raise ApiProblem(404, "ENTERPRISE_NOT_FOUND", "没有找到对应的企业画像。")
         return enterprise
+
+    def enterprise_owner(self, enterprise_id):
+        if enterprise_id not in self.enterprises:
+            raise ApiProblem(404, "ENTERPRISE_NOT_FOUND", "没有找到对应的企业画像。")
+        return self.enterprise_owners.get(enterprise_id)
+
+    def list_enterprises(self, *, scope, viewer_user_id, cursor, limit):
+        self.list_enterprises_calls = getattr(self, "list_enterprises_calls", [])
+        self.list_enterprises_calls.append(
+            {"scope": scope, "viewer_user_id": viewer_user_id, "cursor": cursor, "limit": limit}
+        )
+        items = []
+        for enterprise_id, enterprise in self.enterprises.items():
+            owner = self.enterprise_owners.get(enterprise_id)
+            if scope == "owned" and owner != viewer_user_id:
+                continue
+            if scope == "unowned" and owner is not None:
+                continue
+            items.append(
+                EnterpriseSummary(
+                    id=enterprise_id,
+                    name_synthetic=enterprise.name_synthetic,
+                    period=enterprise.period,
+                    ownership=(
+                        "unowned"
+                        if owner is None
+                        else ("self" if owner == viewer_user_id else "other")
+                    ),
+                )
+            )
+        return EnterpriseSummaryList(items=items[:limit], next_cursor=None)
 
     def update_fact(
         self, *, enterprise_id, fact: NormalizedFact, expected_fact_version, trace_id
@@ -378,6 +424,18 @@ class FakeRepository:
         else:
             facts = [*facts, fact]
         return self._store_enterprise(enterprise_id, name, period, facts)
+
+    def add_enterprise(self, profile: NormalizedProfile, *, owner_user_id=None) -> Enterprise:
+        """直接放一家企业（用例准备数据用，不走 API）。"""
+
+        enterprise_id = uuid4()
+        self.enterprise_owners[enterprise_id] = owner_user_id
+        return self._store_enterprise(
+            enterprise_id,
+            profile.name_synthetic,
+            Period(start_date=profile.period_start, end_date=profile.period_end),
+            list(profile.facts),
+        )
 
     def _store_enterprise(
         self, enterprise_id, name: str, period: Period, facts: list[NormalizedFact]
@@ -432,7 +490,9 @@ class FakeRepository:
             "policy_ids": [item.policy_id for item in run.assessments],
         }
 
-    def save_run(self, *, run, dependencies, trace_steps, trace_id, policy_version_ids) -> None:
+    def save_run(
+        self, *, run, dependencies, trace_steps, trace_id, policy_version_ids, user_id=None
+    ) -> None:
         self.saved_runs.append(
             {
                 "run": run,
@@ -440,15 +500,59 @@ class FakeRepository:
                 "trace_steps": list(trace_steps),
                 "trace_id": trace_id,
                 "policy_version_ids": dict(policy_version_ids),
+                "user_id": user_id,
             }
         )
         self.runs[run.id] = run
+        self.run_users[run.id] = user_id
 
     def get_run(self, run_id):
         run = self.runs.get(run_id)
         if run is None:
             raise ApiProblem(404, "RUN_NOT_FOUND", "没有找到对应的判断运行。")
         return run
+
+    def run_owner(self, run_id):
+        if run_id not in self.runs:
+            raise ApiProblem(404, "RUN_NOT_FOUND", "没有找到对应的判断运行。")
+        return self.run_users.get(run_id)
+
+    def run_status(self, run_id):
+        if run_id not in self.runs:
+            raise ApiProblem(404, "RUN_NOT_FOUND", "没有找到对应的判断运行。")
+        return "succeeded"
+
+    def list_runs(self, *, scope, viewer_user_id, enterprise_id, cursor, limit):
+        self.list_runs_calls = getattr(self, "list_runs_calls", [])
+        self.list_runs_calls.append(
+            {
+                "scope": scope,
+                "viewer_user_id": viewer_user_id,
+                "enterprise_id": enterprise_id,
+                "cursor": cursor,
+                "limit": limit,
+            }
+        )
+        items = []
+        for run_id, run in self.runs.items():
+            owner = self.run_users.get(run_id)
+            if scope == "owned" and owner != viewer_user_id:
+                continue
+            if scope == "unowned" and owner is not None:
+                continue
+            if enterprise_id is not None and run.enterprise_id != enterprise_id:
+                continue
+            items.append(
+                RunSummary(
+                    id=run_id,
+                    enterprise_id=run.enterprise_id,
+                    as_of=run.as_of,
+                    created_at=run.created_at,
+                    status="succeeded",
+                    report_available=True,
+                )
+            )
+        return RunSummaryList(items=items[:limit], next_cursor=None)
 
     def get_trace(self, run_id):
         """把保存 run 时收到的在线轨迹原样转成 API-14 的形状。"""
@@ -669,3 +773,153 @@ def _snapshot_of(draft: PolicyDraft) -> PolicySnapshot:
             for item in draft.criteria
         ),
     )
+
+
+class FakeAccounts:
+    """内存版账号/会话仓储（``app.state.accounts`` 的替身）。
+
+    只实现身份判定、注册、改密与演示配额用到的那几个方法，不模拟 SQL：真 SQL 由
+    ``tests/test_accounts_db.py`` 这类带库用例覆盖，这里只让无库用例能跑完整鉴权链。
+    """
+
+    def __init__(self, repository=None) -> None:
+        self.repository = repository
+        self.users: dict[str, dict] = {}
+        self.sessions: dict[str, dict] = {}
+        self.user_enterprises: dict[object, object] = {}
+        self.quota: dict[str, int] = {}
+
+    # ---------------------------------------------------------------- 准备
+
+    def seed_user(
+        self,
+        username: str,
+        *,
+        role: str = "enterprise",
+        password: str = "correct-horse-battery-9",
+        enterprise_id=None,
+        status: str = "active",
+    ) -> dict:
+        row = {
+            "id": uuid4(),
+            "username": username,
+            "password_hash": auth_tools.hash_password(password),
+            "role": role,
+            "status": status,
+        }
+        self.users[username] = row
+        self.user_enterprises[row["id"]] = enterprise_id
+        return row
+
+    def seed_session(self, username: str, *, token: str, revoked: bool = False) -> str:
+        user = self.users[username]
+        now = datetime.now(timezone.utc)
+        self.sessions[auth_tools.digest(token)] = {
+            "id": uuid4(),
+            "user_id": user["id"],
+            "expires_at": now + timedelta(hours=12),
+            "last_seen_at": now,
+            "revoked_at": now if revoked else None,
+            "username": user["username"],
+            "role": user["role"],
+            "user_status": user["status"],
+            "enterprise_id": self.user_enterprises.get(user["id"]),
+        }
+        return token
+
+    # ---------------------------------------------------------------- 账号
+
+    def find_user_by_username(self, username: str):
+        return self.users.get(username)
+
+    def get_user(self, user_id):
+        return next((row for row in self.users.values() if row["id"] == user_id), None)
+
+    def register(self, *, username, password_hash, role, profile):
+        if username in self.users:
+            raise ApiProblem(409, "USERNAME_TAKEN", "该用户名已被占用，请换一个。")
+        row = {
+            "id": uuid4(),
+            "username": username,
+            "password_hash": password_hash,
+            "role": role,
+            "status": "active",
+        }
+        self.users[username] = row
+        enterprise_id = None
+        if profile is not None and self.repository is not None:
+            enterprise = self.repository.add_enterprise(profile, owner_user_id=row["id"])
+            enterprise_id = enterprise.id
+        self.user_enterprises[row["id"]] = enterprise_id
+        return {
+            "id": row["id"],
+            "username": username,
+            "role": role,
+            "enterprise_id": enterprise_id,
+        }
+
+    def enterprise_id_for_user(self, user_id):
+        """会话读路径每次都重新推导（真 SQL 用子查询），不能停在 seed 时的值。"""
+
+        known = self.user_enterprises.get(user_id)
+        if known is not None:
+            return known
+        if self.repository is not None:
+            for enterprise_id, owner in self.repository.enterprise_owners.items():
+                if owner == user_id:
+                    return enterprise_id
+        return None
+
+    def update_password(self, *, user_id, password_hash) -> None:
+        for row in self.users.values():
+            if row["id"] == user_id:
+                row["password_hash"] = password_hash
+        for session in self.sessions.values():
+            if session["user_id"] == user_id:
+                session["revoked_at"] = datetime.now(timezone.utc)
+
+    # ---------------------------------------------------------------- 会话
+
+    def create_session(self, *, user_id, token_hash, csrf_hash, created_at, expires_at):
+        session_id = uuid4()
+        user = self.get_user(user_id)
+        self.sessions[token_hash] = {
+            "id": session_id,
+            "user_id": user_id,
+            "expires_at": expires_at,
+            "last_seen_at": created_at,
+            "revoked_at": None,
+            "username": user["username"],
+            "role": user["role"],
+            "user_status": user["status"],
+            "enterprise_id": self.user_enterprises.get(user_id),
+        }
+        return session_id
+
+    def find_session(self, token_hash):
+        row = self.sessions.get(token_hash)
+        if row is None:
+            return None
+        return {**row, "enterprise_id": self.enterprise_id_for_user(row["user_id"])}
+
+    def touch_session(self, session_id, seen_at) -> None:
+        for session in self.sessions.values():
+            if session["id"] == session_id:
+                session["last_seen_at"] = seen_at
+
+    def revoke_session(self, session_id, *, at) -> None:
+        for session in self.sessions.values():
+            if session["id"] == session_id and session["revoked_at"] is None:
+                session["revoked_at"] = at
+
+    # ------------------------------------------------------------ 演示配额
+
+    def ensure_demo_quota(self, *, sid_hash, expires_at) -> None:
+        self.quota.setdefault(sid_hash, 0)
+
+    def claim_demo_sample(self, *, sid_hash, expires_at, limit):
+        used = self.quota.get(sid_hash, 0)
+        if used >= limit:
+            return None
+        self.quota[sid_hash] = used + 1
+        return used + 1

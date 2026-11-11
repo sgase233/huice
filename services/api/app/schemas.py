@@ -467,3 +467,80 @@ class TraceStep(WireModel):
 
 class TraceResponse(WireModel):
     steps: list[TraceStep]
+
+
+# ------------------------------------------------------- 账号与会话（E1，AUTH）
+
+UserRole = Literal["enterprise", "reviewer"]
+
+
+class User(WireModel):
+    """对外身份；不返回密码哈希、注册密钥或任何会话凭据。"""
+
+    id: UUID
+    username: str
+    role: UserRole
+    enterprise_id: UUID | None
+
+
+class RegisterRequest(WireModel):
+    username: Annotated[str, StringConstraints(min_length=3, max_length=64)]
+    password: Annotated[str, StringConstraints(min_length=12, max_length=128)]
+    enterprise: EnterpriseInput | None = None
+    reviewer_signup_key: Annotated[str, StringConstraints(min_length=16)] | None = None
+
+
+class RegisterResponse(WireModel):
+    user: User
+
+
+class LoginRequest(WireModel):
+    username: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+    password: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class PasswordChangeRequest(WireModel):
+    current_password: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    new_password: Annotated[str, StringConstraints(min_length=12, max_length=128)]
+
+
+class SessionResponse(WireModel):
+    user: User
+    expires_at: AwareDatetime
+    csrf_token: str
+
+
+# ------------------------------------------------- 列表（AUTH-06/AUTH-07）
+
+Ownership = Literal["self", "unowned", "other"]
+
+
+class EnterpriseSummary(WireModel):
+    """列表不带 ``facts``：一次拉全量事实会让导航页变成画像下载。"""
+
+    id: UUID
+    name_synthetic: str
+    period: Period
+    ownership: Ownership
+
+
+class EnterpriseSummaryList(WireModel):
+    items: list[EnterpriseSummary]
+    next_cursor: str | None
+
+
+RunStatus = Literal["queued", "running", "succeeded", "failed"]
+
+
+class RunSummary(WireModel):
+    id: UUID
+    enterprise_id: UUID
+    as_of: AwareDatetime
+    created_at: AwareDatetime
+    status: RunStatus
+    report_available: bool
+
+
+class RunSummaryList(WireModel):
+    items: list[RunSummary]
+    next_cursor: str | None

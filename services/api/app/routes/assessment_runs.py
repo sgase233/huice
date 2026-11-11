@@ -16,17 +16,30 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Request, Response
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 
+from ..access import require_enterprise_access, require_run_access
 from ..agents.contracts import AgentContext
 from ..agents.orchestrator import assess
 from ..agents.report import render_markdown
 from ..errors import ApiProblem, trace_id_of
-from ..schemas import AssessmentInput, AssessmentRun, TraceResponse
-from ..security import require_admin, require_demo_session
+from ..identity import (
+    require_csrf,
+    require_identity,
+    require_public_identity,
+    require_writable_demo,
+)
+from ..schemas import (
+    AssessmentInput,
+    AssessmentRun,
+    RunSummaryList,
+    TraceResponse,
+)
+from ..security import require_demo_session
 
 router = APIRouter(tags=["public"], dependencies=[Depends(require_demo_session)])
-admin_router = APIRouter(tags=["admin"], dependencies=[Depends(require_admin)])
+#: 轨迹接口的门禁与公开接口相同；身份放宽到「会话或运维 Bearer」，角色与归属在处理器里判。
+admin_router = APIRouter(tags=["admin"], dependencies=[Depends(require_demo_session)])
 
 
 @router.post(
@@ -36,6 +49,14 @@ admin_router = APIRouter(tags=["admin"], dependencies=[Depends(require_admin)])
     summary="API-11",
 )
 def create_run(request: Request, body: AssessmentInput) -> AssessmentRun:
+    identity = require_public_identity(request)
+    # 归属在创建之前判：跑到一半才发现企业不属于本人，会留下一条他人看不见的 run。
+    require_enterprise_access(request, identity, body.enterprise_id, write=True)
+    if identity.is_user:
+        require_csrf(request, identity)
+    else:
+        require_writable_demo(request, identity)
+
     _check_period(body)
     _check_unique_policies(body)
 
@@ -51,6 +72,7 @@ def create_run(request: Request, body: AssessmentInput) -> AssessmentRun:
         repository=request.app.state.repository,
         llm=request.app.state.llm,
         cache=request.app.state.cache,
+        user_id=identity.user_id,
     )
 
 
@@ -61,7 +83,42 @@ def create_run(request: Request, body: AssessmentInput) -> AssessmentRun:
     summary="API-12",
 )
 def get_run(request: Request, runId: UUID = Path()) -> AssessmentRun:
+    identity = require_public_identity(request)
+    require_run_access(request, identity, runId)
     return request.app.state.repository.get_run(runId)
+
+
+@router.get(
+    "/assessment-runs",
+    response_model=RunSummaryList,
+    operation_id="listRuns",
+    summary="AUTH-07",
+)
+def list_runs(
+    request: Request,
+    enterpriseId: UUID | None = Query(default=None),
+    cursor: str | None = Query(default=None, min_length=1),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> RunSummaryList:
+    """先按身份定可见集，再在可见集里按 ``enterpriseId`` 筛；筛选不放宽可见范围。"""
+
+    identity = require_public_identity(request)
+    if enterpriseId is not None:
+        # 越界与不存在返回同一个 404：筛选对象是企业，不区分「不是你的」与「没有」。
+        require_enterprise_access(request, identity, enterpriseId, write=False)
+    if identity.is_demo:
+        scope = "unowned"
+    elif identity.is_reviewer:
+        scope = "all"
+    else:
+        scope = "owned"
+    return request.app.state.repository.list_runs(
+        scope=scope,
+        viewer_user_id=identity.user_id,
+        enterprise_id=enterpriseId,
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 @router.get(
@@ -72,7 +129,19 @@ def get_run(request: Request, runId: UUID = Path()) -> AssessmentRun:
     responses={200: {"content": {"text/markdown": {"schema": {"type": "string"}}}}},
 )
 def download_report(request: Request, runId: UUID = Path()) -> Response:
-    # 先按读取视图取 run：历史四态与证据原样，validity/staleReasons 用当前时间重算。
+    identity = require_public_identity(request)
+    require_run_access(request, identity, runId)
+    # E1 收紧：只有成功且有结果快照的 run 才给报告。失败/未完成的 run 能查看、能列在
+    # 列表里，但下载一律 409——把半成品当成结论导出，比没有报告更危险。
+    status = request.app.state.repository.run_status(runId)
+    if status != "succeeded":
+        raise ApiProblem(
+            409,
+            "RUN_NOT_COMPLETED",
+            "该判断运行尚未成功完成，暂不能下载报告。",
+            {"status": status},
+        )
+    # 按读取视图取 run：历史四态与证据原样，validity/staleReasons 用当前时间重算。
     run = request.app.state.repository.get_run(runId)
     markdown = render_markdown(run, downloaded_at=datetime.now(timezone.utc))
     return Response(
@@ -89,6 +158,15 @@ def download_report(request: Request, runId: UUID = Path()) -> Response:
     summary="API-14",
 )
 def get_trace(request: Request, runId: UUID = Path()) -> TraceResponse:
+    """轨迹：企业会话只看本人 run；审核员与运维 Bearer 看全部；demo 只看无主 run。
+
+    返回结构本身就是脱敏的（``TraceStep`` 只有阶段、状态、摘要与对象引用，不含提示词
+    与原文），所以企业会话不需要再裁字段——归属过滤已经把「他人企业的事实值」挡在外面。
+    """
+
+    identity = require_identity(request)
+    if identity.kind != "bearer":
+        require_run_access(request, identity, runId)
     return request.app.state.repository.get_trace(runId)
 
 

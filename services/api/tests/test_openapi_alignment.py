@@ -28,6 +28,18 @@ IMPLEMENTED = {
     ("get", "/assessment-runs/{runId}/trace"): "getTrace",
 }
 
+#: E1（#46）新增、目前只写在 ``contracts/openapi.e1-draft.yaml`` 里的五个操作；
+#: 终版并入 ``openapi.yaml`` 后应并进 ``IMPLEMENTED``，不要长期两处并存。
+E1_DRAFT_OPERATIONS = {
+    ("post", "/auth/register"): "registerUser",
+    ("post", "/auth/login"): "loginUser",
+    ("post", "/auth/logout"): "logoutUser",
+    ("get", "/auth/me"): "getCurrentUser",
+    ("post", "/auth/password"): "changePassword",
+    ("get", "/enterprises"): "listEnterprises",
+    ("get", "/assessment-runs"): "listRuns",
+}
+
 
 @pytest.fixture(scope="module")
 def contract() -> dict:
@@ -82,7 +94,20 @@ def test_unimplemented_endpoints_are_not_served(schema):
         for path, operations in schema["paths"].items()
         for method in operations
     }
-    assert served == set(IMPLEMENTED)
+    assert served == set(IMPLEMENTED) | set(E1_DRAFT_OPERATIONS)
+
+
+def test_e1_operations_are_declared_in_the_draft(schema):
+    """五个 AUTH 操作不进 ``openapi.yaml``，但必须在 E1 草案里逐条写明 operationId。"""
+
+    draft_path = CONTRACT_PATH.parent / "openapi.e1-draft.yaml"
+    draft = yaml.safe_load(draft_path.read_text(encoding="utf-8"))
+    for (method, path), operation_id in E1_DRAFT_OPERATIONS.items():
+        declared = draft["paths"].get(path, {}).get(method)
+        assert declared is not None, f"草案缺少 {method.upper()} {path}"
+        assert declared["operationId"] == operation_id
+        actual = schema["paths"][f"{API_PREFIX}{path}"][method]
+        assert actual["operationId"] == operation_id
 
 
 def test_served_version_matches_the_contract(contract):

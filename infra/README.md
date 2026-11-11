@@ -136,7 +136,9 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/008_material_requirements.sql
 
 > **2026-10-26 修正**：002 早期版本第 4 节用 `ALTER TABLE trace_step DROP TRIGGER IF EXISTS ...` 删触发器，这不是合法语法（`DROP TRIGGER` 是独立语句；`ALTER TABLE` 下也没有 `DROP TRIGGER IF EXISTS` 形式），执行会在该行报 `syntax error at or near "IF"`。已改为独立语句 `DROP TRIGGER IF EXISTS trace_step_no_update_delete ON trace_step;`，并在修正后连续执行两遍验证（退出码 0，`trace_step_status_check` 为 `ok/needs_review/retryable_error/fatal_error`）。由于脚本整体在一个事务里，旧的报错不会留下半成品结构；若 `schema_migration` 里已有 002 行但结构未变，先按 [local/README.md](local/README.md) 的「002 迁移」一节核对触发器与约束，再重跑 002。
 
-迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `008_material_requirements.sql`，下一份是 `009_*.sql`），不改历史脚本；每条迁移同样登记 `schema_migration`。
+迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `009_users_sessions.sql`，下一份是 `010_*.sql`，已登记给政策发现 #54 D2.5），不改历史脚本；每条迁移同样登记 `schema_migration`。
+
+`009_users_sessions.sql`（E1，2026-11-11）在本地 PostgreSQL 16 上验过三种起跑线：空库连跑两遍（第二遍只有 `NOTICE ... already exists`）、「已到 008」的库升一次再连跑一遍、以及库里先有一行历史合成企业再升级——升级后该企业 `owner_user_id` 仍为 `NULL`（历史数据不会被首个注册账号认领），`schema_migration` 九行，`demo_quota` / `user_session` 列类型与非空约束、`enterprise_owner_user_uidx`（部分唯一索引）与两个外键均与脚本一致；`pytest -m db` 86 项、全量 1121 项通过。**云端 RDS 尚未执行 009**，随 E1 部署按 `infra/deploy/migrate.sh` 走。
 
 ## 4. 云端资源状态（截至 2026-11-06）
 

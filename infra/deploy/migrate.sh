@@ -40,6 +40,7 @@ MIGRATIONS=(
     006_fact_dictionary_extension_rc4
     007_idempotency_usage_semantics
     008_material_requirements
+    009_users_sessions
 )
 
 # 只报变量名与原因：连接串里有口令，绝不能回显。

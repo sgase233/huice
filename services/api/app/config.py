@@ -30,6 +30,12 @@ LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 
 MIN_ADMIN_TOKEN_LENGTH = 16
 MIN_DEMO_SESSION_SECRET_LENGTH = 32
+MIN_REVIEWER_SIGNUP_KEY_LENGTH = 16
+
+#: E1 会话策略初始值（#55 draft.4 / #54 D1.4）。写进正式契约后冻结，改动属契约变更。
+DEFAULT_SESSION_TTL_HOURS = 12
+DEFAULT_SESSION_IDLE_MINUTES = 30
+DEFAULT_DEMO_SESSION_QUOTA = 20
 
 
 class ConfigError(RuntimeError):
@@ -57,6 +63,18 @@ class Settings:
     obs_endpoint: str = ""
     obs_ak: str = ""
     obs_sk: str = ""
+    #: 注册/登录写请求必须与此同源（#54 D1.6）。空串时取 CORS_ORIGINS 的第一项。
+    public_origin: str = ""
+    #: 审核员注册密钥；与 ADMIN_TOKEN 分开、可轮换、不进日志。未配置时审核员注册一律 403。
+    reviewer_signup_key: str = ""
+    session_ttl_hours: int = DEFAULT_SESSION_TTL_HOURS
+    session_idle_minutes: int = DEFAULT_SESSION_IDLE_MINUTES
+    demo_session_quota: int = DEFAULT_DEMO_SESSION_QUOTA
+
+    @property
+    def effective_public_origin(self) -> str:
+        """Origin 校验用的源：显式配置优先，否则取第一个允许的跨域源。"""
+        return self.public_origin or (self.cors_origins[0] if self.cors_origins else "")
 
     @property
     def local_object_path(self) -> Path:
@@ -138,6 +156,32 @@ class Settings:
         ) < MIN_DEMO_SESSION_SECRET_LENGTH:
             problems.append("DEMO_SESSION_SECRET")
 
+        # E1：注册/登录的 Origin 校验源。留空时取 CORS_ORIGINS 第一项（本机开发常见情形），
+        # 显式配置时必须是一个规范的源（scheme + host，不带路径与查询）。
+        public_origin = _text(env, "PUBLIC_ORIGIN", "")
+        if public_origin and not _is_origin(public_origin):
+            problems.append("PUBLIC_ORIGIN")
+
+        # 审核员注册密钥：与 ADMIN_TOKEN 分开、可轮换。未配置时审核员注册一律 403
+        # （与「密钥错误」同一个响应，不回显部署是否配置了它）。
+        reviewer_signup_key = _text(env, "REVIEWER_SIGNUP_KEY", "")
+        if reviewer_signup_key and not (
+            len(reviewer_signup_key) >= MIN_REVIEWER_SIGNUP_KEY_LENGTH
+        ):
+            problems.append("REVIEWER_SIGNUP_KEY")
+        if reviewer_signup_key and reviewer_signup_key == admin_token:
+            problems.append("REVIEWER_SIGNUP_KEY")
+
+        session_ttl_hours = _positive_int(
+            env, "SESSION_TTL_HOURS", DEFAULT_SESSION_TTL_HOURS, problems
+        )
+        session_idle_minutes = _positive_int(
+            env, "SESSION_IDLE_MINUTES", DEFAULT_SESSION_IDLE_MINUTES, problems
+        )
+        demo_session_quota = _positive_int(
+            env, "DEMO_SESSION_QUOTA", DEFAULT_DEMO_SESSION_QUOTA, problems
+        )
+
         deepseek_base_url = _text(env, "DEEPSEEK_BASE_URL", "")
         deepseek_model = _text(env, "DEEPSEEK_MODEL", "")
         deepseek_api_key = _text(env, "DEEPSEEK_API_KEY", "")
@@ -192,6 +236,11 @@ class Settings:
             obs_endpoint=obs_endpoint,
             obs_ak=obs_ak,
             obs_sk=obs_sk,
+            public_origin=public_origin,
+            reviewer_signup_key=reviewer_signup_key,
+            session_ttl_hours=session_ttl_hours,
+            session_idle_minutes=session_idle_minutes,
+            demo_session_quota=demo_session_quota,
         )
 
 
@@ -205,6 +254,34 @@ def _text(env: dict[str, str], name: str, default: str) -> str:
 def _is_https_or_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
+def _positive_int(
+    env: dict[str, str], name: str, default: int, problems: list[str]
+) -> int:
+    """读一个正整数开关；非数字、0 或负数都记为「变量不合法」，只报变量名。"""
+    raw = _text(env, name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        problems.append(name)
+        return default
+    if value <= 0:
+        problems.append(name)
+        return default
+    return value
+
+
+def _is_origin(value: str) -> bool:
+    parsed = urlparse(value)
+    return (
+        parsed.scheme in ("http", "https")
+        and bool(parsed.netloc)
+        and parsed.path in ("", "/")
+        and not parsed.query
+        and not parsed.fragment
+        and value != "*"
+    )
 
 
 def _is_postgres_url(value: str) -> bool:

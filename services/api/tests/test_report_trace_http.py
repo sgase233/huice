@@ -121,15 +121,24 @@ def test_report_errors_stay_json(client, missing_income_run):
 # ------------------------------------------------------------------ API-14
 
 
-def test_trace_requires_admin_bearer(client, missing_income_run):
+def test_trace_requires_an_identity(anon_client, client, missing_income_run, bearer):
+    """E1 起轨迹不再是 Bearer 专属：无凭证 401，企业会话只看本人 run，错误 Bearer 401。"""
+
     url = f"/api/v1/assessment-runs/{missing_income_run['id']}/trace"
 
-    anonymous = client.get(url)
+    anonymous = anon_client.get(url)
     assert anonymous.status_code == 401
-    assert anonymous.headers["www-authenticate"] == "Bearer"
+    assert anonymous.json()["error"]["code"] == "UNAUTHENTICATED"
 
-    wrong = client.get(url, headers={"Authorization": "Bearer wrong-token-000000"})
+    # 本人（企业会话）可以看自己 run 的脱敏轨迹。
+    assert client.get(url).status_code == 200
+
+    # 运维 Bearer 在 E1 后只读保留，仍可查看。
+    assert client.get(url, headers=bearer).status_code == 200
+
+    wrong = anon_client.get(url, headers={"Authorization": "Bearer wrong-token-000000"})
     assert wrong.status_code == 401
+    assert wrong.json()["error"]["code"] == "TOKEN_INVALID"
 
 
 def test_trace_lists_the_online_stages_in_order(client, auth, missing_income_run):

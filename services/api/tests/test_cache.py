@@ -438,7 +438,9 @@ def test_database_failure_is_not_masked_by_cache(client, app, repository, monkey
     def unavailable(*args, **kwargs):
         raise StorageUnavailable()
 
+    # E1 起建 run 先判企业归属：归属查询与画像读取都走数据库，两条都要算「不可用」。
     monkeypatch.setattr(repository, "get_enterprise", unavailable)
+    monkeypatch.setattr(repository, "enterprise_owner", unavailable)
     body = {
         "enterpriseId": str(uuid4()),
         "policyIds": [str(policy.id)],
