@@ -16,6 +16,7 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 
 - 内容：AUTH-01—07 七个操作、16 个现有操作的 security 与 404/409 语义变更（`x-e1-impact`）、错误码表（`x-error-codes`）、旧消费者清单（`x-legacy-consumers`）、未决项（`x-open-questions`）。
 - 写法：复用的现有 schema 一律 `$ref: './openapi.yaml#/components/...'`，草案不复制它们；两份文件在同一个目录，工具可直接解析。
+- 自检（可复跑，只读两份契约）：`python contracts/check_e1_draft.py`。检查 `$ref` 可解析、7 个操作都有 `x-e1-gate`、`x-e1-impact` 16 行与基线端点一一对应、错误码唯一且被引用、样例按 schema 通过。`services/api/tests/test_e1_draft.py` 在它之上再把 16 行的 `current` 列与现行 FastAPI 路由的 router 级依赖对一遍。
 - 流程：M2 逐端点评审 → 版本号与切换安排共同签收 → E1 实现完成后并入 `openapi.yaml`，同一次改动里升级 `info.version` 与 `APP_VERSION` 并重算指纹。
 
 ## 已实现范围（后端，2026-10-27：16/16）

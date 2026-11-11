@@ -29,10 +29,18 @@
 #     (5) AUTH-07 补 enterpriseId 的可筛范围表与正反例；
 #     (6) 登出补 Origin 先于 CSRF 的判定顺序，403 不撤会话、不清 Cookie；
 #     (7) info.description 的草案号与 info.version 同步。
+#   draft.4（2026-11-11）：M1 对 16 个现有操作做逐端点评审（对照 services/api 现行实现）后修订——
+#     (1) 404 码世系交代清楚：不新造统一 OBJECT_NOT_FOUND，归属层沿用对象专属码
+#         ENTERPRISE_NOT_FOUND / RUN_NOT_FOUND / POLICY_NOT_FOUND（7 处现网 404 不改码）；
+#     (2) x-e1-impact 的 newFailures 补全 401 族：UNAUTHENTICATED、SESSION_INVALID、
+#         DEMO_SESSION_INVALID（仅 local），以及错误 Bearer 由 UNAUTHENTICATED 改为 TOKEN_INVALID；
+#     (3) admin 行的 current 列改成按模式写（local 只要 Bearer），原来写成 AND 只对 restricted 成立；
+#     (4) report.md 的 ownership 写清「现状未完成也给 200 报告，E1 收紧为 409」；
+#     (5) trace 行写清企业会话的脱敏投影边界。
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约（E1 草案：账号、会话与对象权限）
-  version: 1.1.0-rc.1-draft.3
+  version: 1.1.0-rc.1-draft.4
   description: |
     **草案，未实现，未并入正式契约。** 编号 AUTH-01—07 是设计追踪编号（见
     docs/EXTENSION_INTERFACES.md §3.2），合并进正式契约时按现行 API-01—16 的顺序续编。
@@ -44,7 +52,7 @@ info:
     - 未包含：DISC-01—08（E2）、VIS-01—06（E3）。它们不依赖本草案的判定顺序，另行评审。
 
     ## 版本
-    - 草案号 `1.1.0-rc.1-draft.3`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
+    - 草案号 `1.1.0-rc.1-draft.4`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
       本文件不自定 `1.1.0`。
     - 合并时 `contracts/openapi.yaml` 的 `info.version` 与 `APP_VERSION` 必须同一次改动一起升，
       否则 `test_served_version_matches_the_contract` 会红；届时指纹本来就要重算。
@@ -94,7 +102,9 @@ info:
     每个操作的 `x-e1-gate`。旧对象的字面含义不变，不要从旧对象反推 E1 的 OR/AND。
 
     角色与对象另起一层判定，不与凭证混用：凭证有效但角色不够 → 403 `ROLE_FORBIDDEN`；
-    角色够但对象不属于本人 → **404 `OBJECT_NOT_FOUND`**（与「不存在」不区分，避免泄露是否存在）。
+    角色够但对象不属于本人 → **404，且与「不存在」返回同一个对象专属码**（`ENTERPRISE_NOT_FOUND` /
+    `RUN_NOT_FOUND` / `POLICY_NOT_FOUND`，沿用 rc.9 现网码；理由见 `x-e1-impact-conventions` 的
+    `not-found-codes`）。两种情况的响应体与文案完全相同，调用方无法据此判断对象是否存在。
     写请求另加 CSRF 与同源校验（D1.6）：带会话的写请求缺 `X-CSRF-Token` → 403 `CSRF_REQUIRED`，
     Origin 缺失或不同源 → 403 `ORIGIN_MISMATCH`。
 
@@ -151,7 +161,7 @@ x-e1-gate-model:
     - step: 4
       layer: 对象归属
       applies: 目标对象是否属于当前身份
-      failure: '404 OBJECT_NOT_FOUND（与「不存在」不区分）'
+      failure: '404 ENTERPRISE_NOT_FOUND / RUN_NOT_FOUND / POLICY_NOT_FOUND（按对象类型；与「不存在」同码同文案）'
     - step: 5
       layer: CSRF 与 Origin
       applies: 仅写请求，且按凭证类型区分（D1.6）
@@ -773,9 +783,9 @@ paths:
 
         | 身份 | 不传 `enterpriseId` | 传本人/可筛企业 | 传其他身份的企业 | 传不存在的 UUID |
         | --- | --- | --- | --- | --- |
-        | 企业用户 | 本人企业的 run | 200 | 404 `OBJECT_NOT_FOUND` | 404 `OBJECT_NOT_FOUND` |
-        | 审核员 | 全部 run（含无主企业） | 200，该企业的 run | 200（审核员可筛任意企业） | 404 `OBJECT_NOT_FOUND` |
-        | demo | 无主企业的 run | 200（仅无主企业） | 404 `OBJECT_NOT_FOUND`（有主企业一律不可见） | 404 `OBJECT_NOT_FOUND` |
+        | 企业用户 | 本人企业的 run | 200 | 404 `ENTERPRISE_NOT_FOUND` | 404 `ENTERPRISE_NOT_FOUND` |
+        | 审核员 | 全部 run（含无主企业） | 200，该企业的 run | 200（审核员可筛任意企业） | 404 `ENTERPRISE_NOT_FOUND` |
+        | demo | 无主企业的 run | 200（仅无主企业） | 404 `ENTERPRISE_NOT_FOUND`（有主企业一律不可见） | 404 `ENTERPRISE_NOT_FOUND` |
         | Bearer | — | — | — | 403 `ROLE_FORBIDDEN`（不进入筛选） |
 
         「其他身份的企业」与「不存在的 UUID」返回**同一个** 404、同一文案，调用方无法据此判断企业是否存在；
@@ -806,8 +816,8 @@ paths:
           required: false
           description: >-
             只做筛选，不放宽可见范围：先按身份定可见集，再在可见集里筛。可筛范围见操作说明的表。
-            不在可筛范围内时一律 404 OBJECT_NOT_FOUND，**不区分「企业不存在」与「不属于你」**，
-            两种情况响应体与文案完全相同。
+            不在可筛范围内时一律 404 `ENTERPRISE_NOT_FOUND`（筛选对象是企业），**不区分「企业不存在」
+            与「不属于你」**，两种情况响应体与文案完全相同。
           schema:
             $ref: './openapi.yaml#/components/schemas/UUID'
         - $ref: '#/components/parameters/Cursor'
@@ -1027,7 +1037,10 @@ components:
                   details: {}
                 traceId: 11111111-1111-4111-8111-111111111111
     NotFound:
-      description: 对象不存在，**或**存在但不属于当前身份（两者不区分）
+      description: >-
+        对象不存在，**或**存在但不属于当前身份（两者不区分）。`code` 按对象类型沿用现网码：
+        企业 `ENTERPRISE_NOT_FOUND`、判断运行 `RUN_NOT_FOUND`、政策草稿/版本 `POLICY_NOT_FOUND`；
+        本组件示例取企业场景。
       headers:
         X-Trace-Id:
           $ref: '#/components/headers/TraceId'
@@ -1039,8 +1052,8 @@ components:
             notMine:
               value:
                 error:
-                  code: OBJECT_NOT_FOUND
-                  message: 未找到该对象。
+                  code: ENTERPRISE_NOT_FOUND
+                  message: 没有找到对应的企业画像。
                   details: {}
                 traceId: 11111111-1111-4111-8111-111111111111
     Conflict:
@@ -1385,9 +1398,15 @@ x-error-codes:
   - code: DEMO_SESSION_LEGACY
     status: 403
     meaning: 旧版 demo cookie（无 sid），只读。
-  - code: OBJECT_NOT_FOUND
+  - code: ENTERPRISE_NOT_FOUND
     status: 404
-    meaning: 对象不存在或不属于当前身份；与「不存在」不区分。
+    meaning: 企业画像不存在，或存在但不属于当前身份；两种情况同码同文案（沿用现网码）。
+  - code: RUN_NOT_FOUND
+    status: 404
+    meaning: 判断运行不存在，或存在但不属于当前身份；两种情况同码同文案（沿用现网码）。
+  - code: POLICY_NOT_FOUND
+    status: 404
+    meaning: 政策草稿/版本不存在（沿用现网码；导入时指定不存在的政策为 422 同名码，不在本条）。
   - code: RUN_NOT_COMPLETED
     status: 409
     meaning: >-
@@ -1415,7 +1434,18 @@ x-e1-impact-conventions:
   gate: restricted 模式的外层门禁（DemoSession）；local 模式一律 none。
   identity: 门禁通过后按 security 选身份（列表内 OR）；「提供但无效」不降级。
   roles: 身份层之后；角色不满足 → 403 ROLE_FORBIDDEN。
-  ownership: 角色层之后；对象不属于当前身份 → 404 OBJECT_NOT_FOUND（与「不存在」同码）。
+  ownership: 角色层之后；对象不属于当前身份 → 404，与「不存在」同一个对象专属码、同一文案。
+  not-found-codes: |
+    404 沿用 rc.9 现网的对象专属码，E1 不新造统一的 `OBJECT_NOT_FOUND`：
+    - 企业：`ENTERPRISE_NOT_FOUND`（`services/api/app/integrations/storage.py:923`、`:947`）
+    - 判断运行：`RUN_NOT_FOUND`（`:1422`、`:1484`、`:1513`）
+    - 政策草稿/版本：`POLICY_NOT_FOUND`（`:596`、`:724`）
+    归属层（E1 新增）拒绝「他人的对象」时，必须返回**该对象类型对应的同一个码与同一文案**，
+    与仓储层的「不存在」逐字一致——对象类型本来就写在 URL 里，用专属码不会多泄露归属，
+    却保住了现有 7 处 404 的行为、日志与前端展示。
+    若将来要统一成单一 `OBJECT_NOT_FOUND`，属于破坏性变更（7 处改码 + 前端与日志），需另立版本。
+    反例（不要这么做）：归属层返回 `OBJECT_NOT_FOUND` 而仓储层返回 `RUN_NOT_FOUND`，
+    两者一对比就能区分「不存在」与「不属于你」，正好破坏本节要保证的不可区分性。
   csrf: 仅写请求；带会话必须 X-CSRF-Token + Origin，带 demo 要 Origin（+Referer）不要求 CSRF，Bearer/无凭证不校验。
   bearer-scope: Bearer 的只读面 = /admin/** 查询、全部 run 轨迹、/health；其余业务读一律 403。
 x-e1-impact:
@@ -1434,7 +1464,7 @@ x-e1-impact:
     roles: Bearer → 403；其余无角色限制（策略库是公共参考数据）
     ownership: '—'
     csrf: 无（只读）
-    newFailures: [401 SESSION_INVALID, 403 ROLE_FORBIDDEN（仅 Bearer）]
+    newFailures: [401 UNAUTHENTICATED, 401 SESSION_INVALID, 401 DEMO_SESSION_INVALID（仅 local 可达）, 403 ROLE_FORBIDDEN（仅 Bearer）]
   - endpoint: GET /policies/{policyId}
     current: DemoSession（restricted 门禁，local 免）
     gate: {local: none, restricted: DemoSession}
@@ -1442,111 +1472,111 @@ x-e1-impact:
     roles: Bearer → 403
     ownership: '—'
     csrf: 无（只读）
-    newFailures: [401 SESSION_INVALID, 403 ROLE_FORBIDDEN（仅 Bearer）]
+    newFailures: [401 UNAUTHENTICATED, 401 SESSION_INVALID, 401 DEMO_SESSION_INVALID（仅 local 可达）, 403 ROLE_FORBIDDEN（仅 Bearer）]
   - endpoint: POST /admin/policies/import
-    current: DemoSession AND AdminBearer
+    current: AdminBearer（local）/ DemoSession AND AdminBearer（restricted）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession(role=reviewer)
     roles: 企业会话/demo/Bearer → 403 ROLE_FORBIDDEN（写操作不再接受 Bearer）
     ownership: '—'
     csrf: '会话写请求：X-CSRF-Token + Origin'
-    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
+    newFailures: [401 TOKEN_INVALID（错误 Bearer 由 UNAUTHENTICATED 改为此码）, 401 SESSION_INVALID, 403 ROLE_FORBIDDEN, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: POST /admin/policies/{policyId}/extract
-    current: DemoSession AND AdminBearer
+    current: AdminBearer（local）/ DemoSession AND AdminBearer（restricted）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession(role=reviewer)
     roles: 同上
     ownership: '—'
     csrf: '会话写请求：X-CSRF-Token + Origin'
-    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
+    newFailures: [401 TOKEN_INVALID（错误 Bearer 由 UNAUTHENTICATED 改为此码）, 401 SESSION_INVALID, 403 ROLE_FORBIDDEN, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: PUT /admin/policies/{policyId}/criteria
-    current: DemoSession AND AdminBearer
+    current: AdminBearer（local）/ DemoSession AND AdminBearer（restricted）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession(role=reviewer)
     roles: 同上
     ownership: '—'
     csrf: '会话写请求：X-CSRF-Token + Origin'
-    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
+    newFailures: [401 TOKEN_INVALID（错误 Bearer 由 UNAUTHENTICATED 改为此码）, 401 SESSION_INVALID, 403 ROLE_FORBIDDEN, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: POST /admin/policies/{policyId}/publish
-    current: DemoSession AND AdminBearer
+    current: AdminBearer（local）/ DemoSession AND AdminBearer（restricted）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession(role=reviewer)
     roles: 同上
     ownership: '—'
     csrf: '会话写请求：X-CSRF-Token + Origin'
-    newFailures: [403 ROLE_FORBIDDEN, 401 SESSION_INVALID, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
+    newFailures: [401 TOKEN_INVALID（错误 Bearer 由 UNAUTHENTICATED 改为此码）, 401 SESSION_INVALID, 403 ROLE_FORBIDDEN, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
   - endpoint: GET /admin/policies
-    current: DemoSession AND AdminBearer
+    current: AdminBearer（local）/ DemoSession AND AdminBearer（restricted）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession(role=reviewer) 或 AdminBearer（只读保留）
     roles: 企业会话/demo → 403 ROLE_FORBIDDEN
     ownership: '—'
     csrf: 无（只读）
-    newFailures: [403 ROLE_FORBIDDEN（企业会话）, 401 SESSION_INVALID]
+    newFailures: [401 TOKEN_INVALID（错误 Bearer 由 UNAUTHENTICATED 改为此码）, 401 SESSION_INVALID, 403 ROLE_FORBIDDEN（企业会话与 demo 身份）]
   - endpoint: GET /admin/policies/{policyId}
-    current: DemoSession AND AdminBearer
+    current: AdminBearer（local）/ DemoSession AND AdminBearer（restricted）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession(role=reviewer) 或 AdminBearer（只读保留）
     roles: 企业会话/demo → 403 ROLE_FORBIDDEN
     ownership: '—'
     csrf: 无（只读）
-    newFailures: [403 ROLE_FORBIDDEN（企业会话）, 401 SESSION_INVALID]
+    newFailures: [401 TOKEN_INVALID（错误 Bearer 由 UNAUTHENTICATED 改为此码）, 401 SESSION_INVALID, 403 ROLE_FORBIDDEN（企业会话与 demo 身份）]
   - endpoint: POST /enterprises
-    current: DemoSession
+    current: DemoSession（restricted 门禁，local 免）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession（enterprise 未绑定 / reviewer 未绑定）或 DemoSession
     roles: Bearer → 403 ROLE_FORBIDDEN
     ownership: 会话创建归本人；demo 创建强制 owner_user_id = NULL
     csrf: '会话写：X-CSRF-Token + Origin；demo 写：Origin（+Referer），不要 CSRF'
-    newFailures: [409 ENTERPRISE_ALREADY_BOUND, 403 ROLE_FORBIDDEN, 429 DEMO_QUOTA_EXCEEDED, 403 DEMO_SESSION_LEGACY, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
+    newFailures: [401 UNAUTHENTICATED, 401 SESSION_INVALID, 401 DEMO_SESSION_INVALID（仅 local 可达）, 403 ROLE_FORBIDDEN（Bearer）, 403 DEMO_SESSION_LEGACY, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH, 409 ENTERPRISE_ALREADY_BOUND, 429 DEMO_QUOTA_EXCEEDED]
   - endpoint: GET /enterprises/{enterpriseId}
-    current: DemoSession
+    current: DemoSession（restricted 门禁，local 免）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession 或 DemoSession
     roles: Bearer → 403 ROLE_FORBIDDEN
     ownership: 本人 / 审核员全部 / demo 仅无主；非本人 404
     csrf: 无（只读）
-    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）]
+    newFailures: [401 UNAUTHENTICATED, 401 SESSION_INVALID, 401 DEMO_SESSION_INVALID（仅 local 可达）, 403 ROLE_FORBIDDEN（Bearer）, 404 ENTERPRISE_NOT_FOUND（他人企业同码）]
   - endpoint: PATCH /enterprises/{enterpriseId}/facts/{factKey}
-    current: DemoSession
+    current: DemoSession（restricted 门禁，local 免）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession 或 DemoSession
     roles: Bearer → 403 ROLE_FORBIDDEN
     ownership: 本人 / 审核员仅本人企业 / demo 仅无主；他人 404
     csrf: '会话写：X-CSRF-Token + Origin；demo 写：Origin（+Referer）'
-    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
+    newFailures: [401 UNAUTHENTICATED, 401 SESSION_INVALID, 401 DEMO_SESSION_INVALID（仅 local 可达）, 403 ROLE_FORBIDDEN（Bearer）, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH, 404 ENTERPRISE_NOT_FOUND（他人企业同码）]
   - endpoint: POST /assessment-runs
-    current: DemoSession
+    current: DemoSession（restricted 门禁，local 免）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession 或 DemoSession
     roles: Bearer → 403 ROLE_FORBIDDEN
     ownership: 本人企业 / 审核员本人企业 / demo 无主企业；他人 404
     csrf: '会话写：X-CSRF-Token + Origin；demo 写：Origin（+Referer）'
-    newFailures: [404 OBJECT_NOT_FOUND, 403 ROLE_FORBIDDEN（Bearer）, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH]
+    newFailures: [401 UNAUTHENTICATED, 401 SESSION_INVALID, 401 DEMO_SESSION_INVALID（仅 local 可达）, 403 ROLE_FORBIDDEN（Bearer）, 403 CSRF_REQUIRED, 403 ORIGIN_MISMATCH, 404 ENTERPRISE_NOT_FOUND（他人企业同码）]
   - endpoint: GET /assessment-runs/{runId}
-    current: DemoSession
+    current: DemoSession（restricted 门禁，local 免）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession 或 DemoSession
     roles: Bearer → 403 ROLE_FORBIDDEN
     ownership: 本人 run / 审核员全部 / demo 无主 run；非本人 404
     csrf: 无（只读）
-    newFailures: [404 OBJECT_NOT_FOUND, 409 RUN_NOT_COMPLETED, 403 ROLE_FORBIDDEN（Bearer）]
+    newFailures: [401 UNAUTHENTICATED, 401 SESSION_INVALID, 401 DEMO_SESSION_INVALID（仅 local 可达）, 403 ROLE_FORBIDDEN（Bearer）, 404 RUN_NOT_FOUND（他人 run 同码）, 409 RUN_NOT_COMPLETED]
   - endpoint: GET /assessment-runs/{runId}/report.md
-    current: DemoSession
+    current: DemoSession（restricted 门禁，local 免）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession 或 DemoSession
     roles: Bearer → 403 ROLE_FORBIDDEN
-    ownership: 同 API-12；失败/未完成不给报告（409 RUN_NOT_COMPLETED）
+    ownership: 同 API-12；失败/未完成不给报告（409 RUN_NOT_COMPLETED）。现状是「只要 run 有评估结果就 200 出报告」，E1 收紧为必须 succeeded
     csrf: 无（只读）
-    newFailures: [404 OBJECT_NOT_FOUND, 409 RUN_NOT_COMPLETED, 403 ROLE_FORBIDDEN（Bearer）]
+    newFailures: [401 UNAUTHENTICATED, 401 SESSION_INVALID, 401 DEMO_SESSION_INVALID（仅 local 可达）, 403 ROLE_FORBIDDEN（Bearer）, 404 RUN_NOT_FOUND（他人 run 同码）, 409 RUN_NOT_COMPLETED]
   - endpoint: GET /assessment-runs/{runId}/trace
-    current: DemoSession AND AdminBearer
+    current: AdminBearer（local）/ DemoSession AND AdminBearer（restricted）
     gate: {local: none, restricted: DemoSession}
     identity: UserSession 或 AdminBearer 或 DemoSession
     roles: 企业会话仅本人 run 的脱敏投影；审核员与 Bearer 看全部 run
-    ownership: 本人 run / 审核员全部 run / demo 无主 run；非本人 404
+    ownership: 本人 run / 审核员全部 run / demo 无主 run；非本人 404。企业会话只看本人 run 的脱敏投影（隐藏哪些字段由 E1 实现规格定义，本草案只承诺「不返回他人企业事实值」）
     csrf: 无（只读）
-    newFailures: [404 OBJECT_NOT_FOUND]
+    newFailures: [401 SESSION_INVALID, 401 TOKEN_INVALID（错误 Bearer 由 UNAUTHENTICATED 改为此码）, 404 RUN_NOT_FOUND（他人 run 同码）]
 x-legacy-consumers:
   - consumer: apps/web/src/api/client.ts:126
     today: 对 /admin/、/trace 自动附带 Bearer
