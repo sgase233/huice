@@ -173,7 +173,7 @@
 
 | 工作包 | 关联 D/验收 ID | 文件与状态 | 输入样本 | 预期输出 | 未决问题 | 接收人 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 完整度 | D4；VIS-AT-02；VIS-01 | [COMPLETENESS_SPEC.md](COMPLETENESS_SPEC.md)，M3 草案 | 18 键、`criteria_review.csv`、6 政策/9 版本 | 分组、逐键适用性、六种单位状态、3 个手算样例 | scope 默认、`creditRecord` 归组、分支可达性、null/无行区分、多细分市场 | M1、M2、M3 |
+| 完整度 | D4；VIS-AT-02；VIS-01 | [COMPLETENESS_SPEC.md](COMPLETENESS_SPEC.md)，M3 草案 | 18 键、`criteria_review.csv`、6 政策/9 版本 | 分组、逐键适用性、六种单位状态、5 个手算样例（A—E） | scope 默认、`creditRecord` 归组、分支可达性、null/无行区分、多细分市场 | M1、M2、M3 |
 | 审核/运行趋势 | D5；VIS-AT-06/07/08；VIS-04/05 | [METRICS_SPEC.md](METRICS_SPEC.md)，M3 草案 | #48 决定、`publish()` 实现、`assessment_run` | 事件定义、日终公式、北京时间边界、逐日样例 | 发布=审核完成、revision、跨午夜回填、采集前 partial、当天暂计数 | M1、M2、M3 |
 | 首批来源 | D3；DISC-AT-01—07 | [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) + CSV，M3 草案 | `source_register.csv`、9 个正文 URL、3 组附件 | 来源清单、附件大小/类型/哈希、重复/版本/正文附件样本、日期风险 | 栏目 403、固定 URL 列表（仅样本验证）、发现机制、附件限额、多窗口、token 测量 | M1、M2、负责人 |
 | 日期可信度 | D4/时间线；VIS-AT-04；VIS-06 | [POLICY_SCOPE.md](POLICY_SCOPE.md) 新节，命令行核查 | 官方正文/附件 | 每项发布日、窗口、有效期起止的已核实/推算/未知 | 年度指南、长期实施依据、有效期终点口径 | M1、M2 |
