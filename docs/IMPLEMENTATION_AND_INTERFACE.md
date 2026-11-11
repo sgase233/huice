@@ -243,7 +243,7 @@ python -m app.evaluation verify snapshot.json
 
 **部署文件指纹（`codeFingerprint`，M2 在 #39 同意、要求单独 PR 落地）**：清单顶层记 `codeFingerprint`/`codeFiles`/`codeScope`——对**部署机上实际存在的代码文件**算一遍规范化哈希（`app/evaluation/code_fingerprint.py`）。范围固定为 `services/api/app/**/*.py`、`contracts/openapi.yaml`、`services/api/requirements.lock`，排除 `__pycache__` 与 `*.pyc`；每项取 `(相对项目根的 POSIX 路径, 文件字节 sha256)`，按路径排序后用与清单其他哈希相同的 `canonical_json`/`sha256_hex` 再取一次 SHA-256。**缺文件、空集合一律报错**，不允许「扫到 0 个文件」算出一个稳定值——那等于什么都没证明，却长得像证明过。`python -m app.evaluation fingerprint`（`--json` 出逐文件明细，`--root` 指定另一棵树）不连库，任何人把某个提交 checkout 出来复算就能把「提交 ↔ 指纹」对上。
 
-三件事分开证明，谁也不冒充谁：**磁盘上的代码是什么**由指纹回答；**这份代码是不是某个提交**要 checkout 复算；**进程里跑的是不是它**指纹答不了。第三条只能交叉核对：`--process-pid` 记下服务进程启动时间（读 `/proc` 的第 22 字段与 `btime`，不用 `ps` 文本），并把**写于进程启动之后**的代码文件全部列出；有这种文件就直接停下并请先重启（盘上新的、进程里大概率是旧的）。`processStartedAt` 只记录、**不参与比对**——签认后重启是正常操作，比它会让每次核对都失败。这个 mtime 比对只是**辅助证据**：时间戳可以被保留或改写（`cp -p`、解包、还原备份都会），所以「没有更新的文件」不等于「进程里跑的就是盘上这份」，进程身份要另行核实。
+三件事分开证明，谁也不冒充谁：**磁盘上的代码是什么**由指纹回答；**这份代码是不是某个提交**要 checkout 复算；**进程里跑的是不是它**指纹答不了。第三条只能交叉核对：`inputs --process-pid` 记下服务进程启动时间（读 `/proc` 的第 22 字段与 `btime`，不用 `ps` 文本），并把**写于进程启动之后**的代码文件全部列出；有这种文件就直接停下并请先重启（盘上新的、进程里大概率是旧的）。这个参数**只属于 `inputs`**：`verify` 不接受它，也不比对 `processStartedAt`——签认后重启是正常操作，比它会让每次核对都失败；因此不能用 `verify --process-pid` 证明进程身份（2026-11-11 按 M2 复审移除，此前 `verify` 收下该参数却从不读它）。这个 mtime 比对只是**辅助证据**：时间戳可以被保留或改写（`cp -p`、解包、还原备份都会），所以「没有更新的文件」不等于「进程里跑的就是盘上这份」，进程身份要另行核实。
 
 **指纹算原始字节，不做换行归一化（M2 在 #42 的判断）**：`git archive` 在 `core.autocrlf=true` 的 Windows 上会把文本转成 CRLF，同一个提交在 Windows 检出与 Linux 部署上字节不同、指纹也就不同——这是**有意保留**的，因为 `.sh` 的换行会直接改变执行行为，归一化等于替核对方决定「这点差异不算」。跨系统核对时用 `git -c core.autocrlf=false archive` 导出同一份 LF 内容再算，并在记录里写明用的是哪种导出方式；将来若确有跨平台语义等价比较的需求，另加一个单独命名、版本化的归一化指纹，不改 `codeFingerprint` 的含义。
 

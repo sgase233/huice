@@ -1186,6 +1186,35 @@ def test_verify_names_a_signed_dataset_file_that_is_gone(tmp_path: Path, monkeyp
     assert "不存在" in message
 
 
+def test_verify_rejects_process_pid_that_it_never_used(capsys, monkeypatch) -> None:
+    """``verify`` 曾收下 ``--process-pid`` 却从不读它（M2 2026-11-11 复审）。
+
+    留着这个空参数等于默许「用 verify 证明进程身份」。进程启动时间只由
+    ``inputs --process-pid`` 记进清单，``verify`` 不接受这个参数。
+    """
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["verify", "sealed.json", "--process-pid", "1"])
+
+    assert error.value.code == 2
+    assert "process-pid" in capsys.readouterr().err
+
+
+def test_inputs_still_records_the_process_pid() -> None:
+    args = cli.build_parser().parse_args(["inputs", "--process-pid", "42"])
+    assert args.process_pid == 42
+
+
+def test_verify_builds_a_manifest_without_any_process_pid() -> None:
+    """``verify`` 的命名空间里现在没有 ``process_pid``：拼清单不能因此抛 AttributeError。"""
+
+    args = cli.build_parser().parse_args(["verify", "sealed.json"])
+    inspection = cli._inspect_code()
+    assert cli._process_started(args, inspection) is None
+
+
 def test_the_same_file_cannot_be_signed_twice(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://example/never-used")
     data = tmp_path / "evaluation"
