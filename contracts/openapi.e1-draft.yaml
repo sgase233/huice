@@ -18,10 +18,21 @@
 #     (3) 说明 demo 门禁与 demo 身份是同一个 cookie、同一套校验，给出两种模式下的
 #         真值表，明确 401 DEMO_SESSION_INVALID 只在 local 模式可达；
 #     (4) RunStatus 写明 E1 承诺的四个状态、E3b 的 interrupted 扩展与消费者前向兼容规则。
+#   draft.3（2026-11-11）：按 #55 第二轮/第三轮复审修订——
+#     (1) RunStatus 明确为封闭枚举：E1 保证不产生枚举外取值，E3b 加值须升版本 + 重新生成
+#         前端类型 + 同窗发布，不再用「文字前向兼容」兜底；
+#     (2) 凭据样例改成「只用于本机合成数据」，真实部署改用 600 权限的 curl 配置文件，
+#         并纠正「真实值不进命令行」的旧说法；
+#     (3) 注册/登录明确不消费已有会话 Cookie（浏览器会自动带 HttpOnly cookie），
+#         补注册的密钥/企业组合表与事务结果、登录的有效/失效会话处理；
+#     (4) AUTH-04 补 403 响应与会话恢复路径（区分门禁失效与会话失效）；
+#     (5) AUTH-07 补 enterpriseId 的可筛范围表与正反例；
+#     (6) 登出补 Origin 先于 CSRF 的判定顺序，403 不撤会话、不清 Cookie；
+#     (7) info.description 的草案号与 info.version 同步。
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约（E1 草案：账号、会话与对象权限）
-  version: 1.1.0-rc.1-draft.2
+  version: 1.1.0-rc.1-draft.3
   description: |
     **草案，未实现，未并入正式契约。** 编号 AUTH-01—07 是设计追踪编号（见
     docs/EXTENSION_INTERFACES.md §3.2），合并进正式契约时按现行 API-01—16 的顺序续编。
@@ -33,7 +44,7 @@ info:
     - 未包含：DISC-01—08（E2）、VIS-01—06（E3）。它们不依赖本草案的判定顺序，另行评审。
 
     ## 版本
-    - 草案号 `1.1.0-rc.1-draft.1`；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
+    - 草案号 `1.1.0-rc.1-draft.3`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
       本文件不自定 `1.1.0`。
     - 合并时 `contracts/openapi.yaml` 的 `info.version` 与 `APP_VERSION` 必须同一次改动一起升，
       否则 `test_served_version_matches_the_contract` 会红；届时指纹本来就要重算。
@@ -65,9 +76,17 @@ info:
     会话有效 → 以会话为准，忽略 Bearer 与 demo；会话提供但无效 → 401 `SESSION_INVALID`，
     即便 Bearer 有效也不降级。完整真值表见 docs/devlog/M1-11-10-E0决策提案.md §D1.5。
 
-    **唯一的例外是 AUTH-03 登出**：它不要求任何有效凭证（幂等），因此不适用「提供即校验、
-    无效即 401」，也不被外层门禁拦——否则 demo cookie 一过期就再也无法登出、也清不掉 Cookie。
-    例外只覆盖登出这一个操作，见该操作的响应表。
+    **例外只有两类，都写在对应操作里，不扩散到其它端点**：
+    1. **AUTH-03 登出**：不要求任何有效凭证（幂等），不适用「提供即校验、无效即 401」，
+       也不被外层门禁拦——否则 demo cookie 一过期就再也无法登出、也清不掉 Cookie。
+    2. **AUTH-01 注册、AUTH-02 登录**：这两个操作**建立**会话，因此**不消费**请求里已有的
+       `huice_session`（浏览器会自动带 HttpOnly cookie，前端删不掉）。注册忽略它；
+       登录遇到有效会话则撤销并替换，遇到无效会话直接忽略。若按上面的「提供即无效就 401」处理，
+       会话一过期用户就再也登录不了。它们同样没有 `SESSION_INVALID` / `TOKEN_INVALID` 分支。
+
+    **同一请求里 Origin 与 CSRF 都错时，先报 `ORIGIN_MISMATCH`**（Origin 缺失或不同源说明请求
+    根本不该到达这里，先于令牌比对）；`CSRF_REQUIRED` 只在同源成立后才可能返回。
+    403 一律**不撤销会话、不清 Cookie**——被拒的请求不应产生任何状态变化。
 
     **旧消费者注意**：现行契约把若干端点写成同一 security 对象里同时列 `DemoSession` 与
     `AdminBearer`（OpenAPI 里是 AND），但那个 AND 混了「门禁」与「身份」两件事。E1 起：
@@ -225,6 +244,12 @@ x-e1-gate-model:
       以及由此得到的错误码，不存在「同一请求两次不同结论」的分支。
     - 门禁不参与「四选一」的优先级排序（它先于身份判定），因此 gate-and-identity-truth-table
       的第一维是部署模式，而不是凭据组合。
+    - AUTH-01/02 不消费请求里已有的 `huice_session`（浏览器自动带 HttpOnly cookie，前端删不掉）：
+      注册忽略它，登录遇有效会话则撤销并替换、遇无效会话直接忽略。否则会话一过期就再也登录不了。
+    - 同一请求里 Origin 与 CSRF 都错，先报 `ORIGIN_MISMATCH`；403 一律不撤销会话、不清 Cookie。
+    - 注册/登录 × 会话状态的组合：restricted 且无 demo cookie → 无论会话是否有效，都是 403
+      `DEMO_SESSION_REQUIRED`（门禁在最前）；有门禁时，失效会话被忽略、注册照常成功、登录成功后
+      `Set-Cookie` 覆盖旧值；local 无门禁，只有「会话被忽略/被替换」这一种行为，不会出现 401。
 
   recipes:
     - name: local-无凭证
@@ -255,12 +280,31 @@ x-e1-gate-model:
       mode: restricted
       request: 'curl -sS -i -X POST -H "Cookie: huice_session=expired" "$API/auth/logout"'
       expect: '204，`Set-Cookie: huice_session=; Max-Age=0`；不因门禁或缺 CSRF 而 403'
-    - name: 占位符说明
+    - name: 占位符与凭据用法
       mode: both
-      request: '（不是请求）'
+      request: '（不是请求；凭据处理见同节 credential-handling）'
       expect: >-
-        $API=部署的 /api/v1 基址；$DEMO 由 infra/deploy/issue-session.py 签发；
-        $SID/$TOKEN 只在服务器上取值。真实值不进仓库、不进命令历史、不贴进 PR 或聊天。
+        样例里的 $DEMO/$SID/$TOKEN 只用于**本机合成数据**（本地 api + huice_test 库）。
+        云端真实凭据不要照抄进 -H：shell 会先把变量展开，值会出现在进程参数
+        （/proc/<pid>/cmdline）与 shell 历史里。真实部署请改用 600 权限的凭据文件。
+
+  credential-handling: |
+    这些样例是**本机合成数据**的调用示例，不是云端演示环境的操作手册：
+    - `$DEMO`：本地用 `python -m` 或 `infra/deploy/issue-session.py` 针对本地 `DEMO_SESSION_SECRET`
+      签发即可，值只在本机出现；
+    - `$SID`：本地登录后由 `Set-Cookie` 拿到的会话值；
+    - `$TOKEN`：本地 `api.env` 里的 `ADMIN_TOKEN`。
+
+    云端真实凭据的正确用法（本草案不提供可直接照抄的命令，只用占位符描述）：
+    1. 不要把真实值写进 `curl -H "Authorization: Bearer …"`：shell 展开后值出现在进程参数
+       （`/proc/<pid>/cmdline`，同机其他用户可读）与 shell 历史里；
+    2. 用 600 权限的凭据文件：`curl --config /root/.huice/curl.conf`（文件里写 `header = "Authorization: Bearer …"`
+       与 `cookie = "huice_session=…"`），或把 Cookie 落到 600 权限的 jar 再用 `curl -b <jar>`；
+    3. 签发只走 `infra/deploy/issue-session.py`，输出只写进 600 权限文件，不贴进 PR、群聊、日志或仓库；
+    4. 需要把命令留证时，先删掉凭据行再贴输出。
+
+    因此修正一处旧说法：本草案此前写「真实值不进命令行」——准确说法是**样例本身不含真实值**；
+    真实值若放进 `-H` 就会进命令行，故真实操作必须走上面的 600 权限文件路线。
 paths:
   /auth/register:
     post:
@@ -274,14 +318,32 @@ paths:
         restricted: DemoSession
         note: restricted 下也要过门禁（没有邀请就不提供注册入口）；失败 403 DEMO_SESSION_REQUIRED。
       description: |
-        事务内创建账号与（企业用户必填的）唯一企业，两者同成同败：字段非法或审核员密钥错误时
+        事务内创建账号与（企业用户必填的）唯一企业，两者同成同败：任何一步失败都回滚，
         不留下半个账号或半个企业。默认**不自动登录**，须再调 AUTH-02。
 
-        - `enterprise`：企业用户**必填**；审核员可选（提交即绑定，不提交则首次调用 API-08 时创建）。
-        - `reviewerSignupKey`：仅审核员注册时提供，服务端校验，错误与缺失同样处理，不回显细节。
-        - 不接受客户端指定 `role`：角色由 `reviewerSignupKey` 是否存在决定，服务端裁定。
-        - **Origin 必须存在且与 `PUBLIC_ORIGIN` 同源**，缺失或不匹配一律 403（D1.6）。
+        **注册不消费会话 Cookie**：浏览器会自动带上已有的 `huice_session`（HttpOnly，前端删不掉），
+        本操作**忽略**它——不校验、不撤销、也不因此返回 401（例外清单见 `info` 的判定顺序段）。
+        注册成功后当前会话保持不变（还是原来的账号）；要切到新账号，前端应先调 AUTH-03 再调 AUTH-02，
+        不能靠「直接再注册一次」切换。
+
+        `reviewerSignupKey` 与 `enterprise` 的组合（同一事务内判定，失败即回滚）：
+
+        | 请求 | 角色 | 响应 | 事务结果 |
+        | --- | --- | --- | --- |
+        | 不提供密钥，带 `enterprise` | enterprise | 201 | 建账号 + 建企业并绑定 |
+        | 不提供密钥，不带 `enterprise` | — | 422 `VALIDATION_ERROR` | 无任何写入 |
+        | 提供密钥但为空或短于 16 字符 | — | 422 `VALIDATION_ERROR`（schema 层拦截） | 无任何写入 |
+        | 提供长度合法但错误的密钥 | — | 403 `ROLE_FORBIDDEN` | 无任何写入，也不建企业 |
+        | 提供有效密钥，带 `enterprise` | reviewer | 201 | 建账号 + 建企业并绑定 |
+        | 提供有效密钥，不带 `enterprise` | reviewer | 201 | 只建账号，企业留到首次调用 API-08 时创建 |
+
+        - 密钥错误与「该部署根本没有配置密钥」返回**同一个** 403 与同一文案，不回显细节，
+          也不告诉调用方密钥是否正确。
+        - 不接受客户端指定 `role`：角色只由「是否提供有效密钥」决定，服务端裁定。
+        - **Origin 必须存在且与 `PUBLIC_ORIGIN` 同源**，缺失或不匹配一律 403 `ORIGIN_MISMATCH`（D1.6）。
         - 限流：IP 维度 5 次/分钟；连续 20 次失败锁 15 分钟（只锁 IP，不锁用户名）。
+        - **本操作没有 401 分支**：不校验任何凭证，也不会因为「带了失效会话」而失败。
+          403 只来自门禁、Origin 与密钥，409 只来自用户名冲突（`USERNAME_TAKEN`）。
       parameters:
         - $ref: '#/components/parameters/OriginHeader'
       requestBody:
@@ -374,6 +436,11 @@ paths:
         **Origin 必须存在且与 `PUBLIC_ORIGIN` 同源**，缺失或不匹配一律 403 `ORIGIN_MISMATCH`
         （D1.6 第一行：此时还没有已认证状态，所以不要求 CSRF，但只要 Origin）。这条与 AUTH-01 相同，
         不因「登录本身不改变服务端状态」而省略——登录会下发会话 Cookie，属于 CSRF 的目标。
+
+        **登录也不消费会话 Cookie**：请求里带的**有效**会话会被撤销并换成新会话（同一浏览器不留两个
+        活会话，也避免会话固定）；**无效或已过期的会话直接忽略**，不会被当成「提供了无效凭证」而 401。
+        否则用户会话一过期就再也无法重新登录。因此本操作**没有 `SESSION_INVALID` / `TOKEN_INVALID`
+        分支**：401 只表示账号密码错误（`INVALID_CREDENTIALS`），Bearer 同样被忽略。
 
         账号不存在与密码错误使用**同一个** 401 `INVALID_CREDENTIALS` 与同一提示文案，
         响应不透露账号是否存在。限流与锁定同 AUTH-01（IP 维度，`username` 只计数不锁定，
@@ -487,6 +554,10 @@ paths:
           `csrfToken`，此时强求 CSRF 只会让「会话过期后收尾」失败。有有效会话时缺 CSRF
           → `403 CSRF_REQUIRED`，且**不撤销**任何东西（先校验后动作）。
         - **不含 401**：本操作没有 401 分支；错误只可能来自 CSRF/Origin（403）或服务端（5xx）。
+        - **403 的优先级与副作用**：有效会话下若 `Origin` 与 `X-CSRF-Token` 同时不对，
+          先返回 `403 ORIGIN_MISMATCH`（Origin 说明请求根本不该到这里，先于令牌比对）；
+          只有在同源成立后才可能是 `403 CSRF_REQUIRED`。**403 时不撤销会话、不下发 `Set-Cookie`**：
+          被拒的请求不产生任何状态变化，「登出失败」不会顺手把用户踢下线。
         - **与门禁的关系**：restricted 下本操作豁免 `DemoSession` 门禁；带 Bearer 或同时带
           demo cookie 时不改变行为，也不撤销 Bearer 或 demo 所代表的任何东西。
       parameters:
@@ -525,6 +596,13 @@ paths:
       description: |
         刷新页面后恢复登录态与 `enterpriseId`；返回与 AUTH-02 相同的 `csrfToken`（首版不轮换）。
         响应禁止缓存。会话过期或已撤销一律 401，不降级到 demo 或 Bearer。
+
+        **两种失败要分开处理**（restricted 部署）：
+        - `403 DEMO_SESSION_REQUIRED`：外层门禁失效——回演示入口重新拿 demo cookie，
+          **会话本身可能还有效**，不要直接清掉并跳登录页；
+        - `401 SESSION_INVALID` / `401 UNAUTHENTICATED`：会话本身失效——跳登录页，
+          登录（AUTH-02）会覆盖旧 Cookie，不需要前端先删。
+        local 部署没有门禁，只可能出现 401。
       responses:
         '200':
           description: 当前会话
@@ -552,6 +630,8 @@ paths:
                     csrfToken: 9f2c1d0e5b6a4c7d8e9f0a1b2c3d4e5f
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -689,6 +769,18 @@ paths:
         支持历史分析与报告导航，不能只依赖浏览器保存的 `runId`。归属过滤在服务端：
         企业用户只看本人企业的 run，审核员看全部，demo 只看无主企业的 run，Bearer 403。
 
+        `enterpriseId` 只是筛选，**不放宽可见范围**（先定可见集，再在可见集里筛）：
+
+        | 身份 | 不传 `enterpriseId` | 传本人/可筛企业 | 传其他身份的企业 | 传不存在的 UUID |
+        | --- | --- | --- | --- | --- |
+        | 企业用户 | 本人企业的 run | 200 | 404 `OBJECT_NOT_FOUND` | 404 `OBJECT_NOT_FOUND` |
+        | 审核员 | 全部 run（含无主企业） | 200，该企业的 run | 200（审核员可筛任意企业） | 404 `OBJECT_NOT_FOUND` |
+        | demo | 无主企业的 run | 200（仅无主企业） | 404 `OBJECT_NOT_FOUND`（有主企业一律不可见） | 404 `OBJECT_NOT_FOUND` |
+        | Bearer | — | — | — | 403 `ROLE_FORBIDDEN`（不进入筛选） |
+
+        「其他身份的企业」与「不存在的 UUID」返回**同一个** 404、同一文案，调用方无法据此判断企业是否存在；
+        传本人企业但本地无 run 时返回 `200` + 空 `items`，不是 404。
+
         `status` 是 E1 新增的生命周期字段（D5.3）。**E1 只承诺四个取值**
         `queued/running/succeeded/failed`，且 E1 不产生 `interrupted`：
         - E1 之前的历史记录只可能是 `succeeded`（旧实现仅在成功后插行），旧数据按 `succeeded`
@@ -699,11 +791,11 @@ paths:
         运行上限、advisory lock 无人持有、原连接已断开，三者同时满足才置 `interrupted`）随 E3b 落地。
         E1 不做启动扫描，进程崩溃留下的孤儿 `running` **保持 `running`**，不自动改写。
 
-        为避免以后加枚举值成为破坏性变更，消费者**现在就**必须按以下规则处理未知取值：
-        1. `reportAvailable` 是「能否下载报告」的唯一权威标志，未知取值一律按 `false`；
-        2. 详情与报告接口把未知取值按「未完成」处理（409 `RUN_NOT_COMPLETED`），不得当作 `succeeded`；
-        3. 列表原样展示服务端字符串，前端不得假定「非 `succeeded` 即 `failed`」；
-        4. 不得依据状态自动重跑；E1 与 E3b 都不提供自动重跑。
+        `enum` 是封闭集合（见 `RunStatus`），所以 E1 服务端**保证不产生**这四个值以外的字符串；
+        E3b 增加 `interrupted` 时必须同时升契约版本、重新生成前端类型并同窗发布，
+        不存在「后端先上新枚举、前端靠兜底接住」的允许组合。
+        前端仍建议对未识别值做防御性降级（不当作 `succeeded`、不给报告入口、不自动重跑），
+        但那只是滚动升级窗口的保险，不是契约承诺。
 
         失败、未完成与被中断的 run **都可以出现在列表里**，但**不提供报告下载**。
         是否给 `interrupted` 单列一个错误码（而不是复用 409 `RUN_NOT_COMPLETED`）留待共同评审，
@@ -712,7 +804,10 @@ paths:
         - name: enterpriseId
           in: query
           required: false
-          description: 仅作为筛选条件；非本人企业一律 404，不因传错 id 而泄露存在性。
+          description: >-
+            只做筛选，不放宽可见范围：先按身份定可见集，再在可见集里筛。可筛范围见操作说明的表。
+            不在可筛范围内时一律 404 OBJECT_NOT_FOUND，**不区分「企业不存在」与「不属于你」**，
+            两种情况响应体与文案完全相同。
           schema:
             $ref: './openapi.yaml#/components/schemas/UUID'
         - $ref: '#/components/parameters/Cursor'
@@ -743,6 +838,22 @@ paths:
                       createdAt: '2026-11-10T01:00:00Z'
                       status: failed
                       reportAvailable: false
+                    nextCursor: null
+                reviewerFilteredByAnotherEnterprise:
+                  summary: 审核员用 ?enterpriseId=其他人的企业 —— 允许，只返回该企业的 run
+                  value:
+                    items:
+                    - id: 55555555-5555-4555-8555-555555555555
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+                      asOf: '2026-10-23T10:00:00+08:00'
+                      createdAt: '2026-10-23T02:00:00Z'
+                      status: succeeded
+                      reportAvailable: true
+                    nextCursor: null
+                enterpriseUserOwnEnterpriseEmpty:
+                  summary: 企业用户筛本人企业但还没有 run —— 200 + 空 items（不是 404）
+                  value:
+                    items: []
                     nextCursor: null
         '400':
           $ref: '#/components/responses/BadRequest'
@@ -905,6 +1016,14 @@ components:
                 error:
                   code: DEMO_SESSION_LEGACY
                   message: 该演示会话由旧版签发，只能查看；请重新签发后再创建样本。
+                  details: {}
+                traceId: 11111111-1111-4111-8111-111111111111
+            demoGate:
+              summary: restricted 部署的外层门禁未通过（与会话是否有效无关）
+              value:
+                error:
+                  code: DEMO_SESSION_REQUIRED
+                  message: 演示会话无效或已过期，请从演示入口重新进入。
                   details: {}
                 traceId: 11111111-1111-4111-8111-111111111111
     NotFound:
@@ -1166,20 +1285,30 @@ components:
       - succeeded
       - failed
       description: |
-        **E1 承诺的四个取值，仅此四个**：
+        **封闭枚举，E1 只有这四个取值**：
         - `queued`：已受理、尚未开始（E1 起的新写入从这里开始）；
         - `running`：执行中；
         - `succeeded`：完成且有结果快照；
         - `failed`：执行失败，或依赖在重试后仍不可用。
+
         E1 不产生也不扫描 `interrupted`；E3b 落地 D5.3 的启动扫描后才会新增该取值。
-        消费者必须按「未知取值 = 未完成」处理（`reportAvailable=false`、详情 409
-        `RUN_NOT_COMPLETED`、列表原样展示、不自动重跑），见 AUTH-07 说明。
+
+        **新增取值不是「文字上的前向兼容」**：`enum` 是封闭集合，严格的 OpenAPI 校验器与
+        按本契约生成的客户端类型都会拒绝 `enum` 以外的值。因此：
+        - E1 的服务端**保证**不产生这四值以外的字符串，前端不需要靠兜底逻辑「接住」未知值；
+        - E3b 增加 `interrupted` 时，必须**同时**升契约版本（`1.1.x` → `1.2.x` 之类）、
+          重新生成 `apps/web/src/api/types.ts` 并随前端同窗发布；只升后端不升前端是**不允许的发布组合**；
+        - 前端仍建议对未识别值降级为「未完成」（`reportAvailable=false`、详情 409
+          `RUN_NOT_COMPLETED`、列表原样展示、不自动重跑），但这属于**滚动升级窗口的防御性处理**，
+          不是本契约承诺的前向兼容，也不能替代版本与类型同步。
       x-e1-lifecycle:
         e1: [queued, running, succeeded, failed]
+        e1-does-not-emit: [interrupted]
         reserved: interrupted
         addedBy: E3b（D5.3 启动扫描）
+        adding-a-value-requires: 契约版本升版 + 重新生成前端类型 + 同窗口发布（不允许后端单边先行）
         e1-orphan-handling: '进程崩溃留下的 running 在 E1 保持 running，不自动改写'
-        forward-compatible-consumers: true
+        consumer-fallback: 防御性处理，不是契约承诺
     RunSummary:
       type: object
       additionalProperties: false
