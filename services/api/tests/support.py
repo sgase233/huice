@@ -74,7 +74,11 @@ class FakeObjectStore:
 
 
 class FakeRepository:
-    """内存版仓储，只复述入参，不模拟 SQL 行为。"""
+    """内存版仓储，只复述入参，不模拟 SQL 行为。
+
+    唯一的例外是演示配额：``create_enterprise`` 按真库的事务语义占额与回滚
+    （占额失败不建档、建档失败退额），否则无库用例断言不到这条规则。
+    """
 
     def __init__(self) -> None:
         self.drafts: list[PolicyDraft] = []
@@ -98,6 +102,11 @@ class FakeRepository:
         # E1 归属：企业 → owner_user_id（None 表示无主），run → 发起账号。
         self.enterprise_owners: dict[object, object] = {}
         self.run_users: dict[object, object] = {}
+        # 演示配额：sid_hash → 已占名额（真库是 ``demo_quota.created``）。
+        self.demo_quota_claimed: dict[str, int] = {}
+        self.demo_quota_expires: dict[str, datetime] = {}
+        # 让用例模拟「占额之后写库失败」：真库里这一步的回滚会连带名额。
+        self.enterprise_insert_error: Exception | None = None
 
     def create_policy_version(
         self,
@@ -358,16 +367,50 @@ class FakeRepository:
         profile: NormalizedProfile,
         trace_id: str,
         owner_user_id=None,
+        demo_quota=None,
     ) -> Enterprise:
-        enterprise_id = uuid4()
-        self.created.append({"profile": profile, "trace_id": trace_id})
-        self.enterprise_owners[enterprise_id] = owner_user_id
-        return self._store_enterprise(
-            enterprise_id,
-            profile.name_synthetic,
-            Period(start_date=profile.period_start, end_date=profile.period_end),
-            list(profile.facts),
-        )
+        # 与真实仓储同一语义：占额和建档同成同败。先占，之后任何一步失败都退回去。
+        claimed = self._claim_demo_sample(demo_quota)
+        try:
+            if self.enterprise_insert_error is not None:
+                raise self.enterprise_insert_error
+            enterprise_id = uuid4()
+            self.created.append({"profile": profile, "trace_id": trace_id})
+            self.enterprise_owners[enterprise_id] = owner_user_id
+            return self._store_enterprise(
+                enterprise_id,
+                profile.name_synthetic,
+                Period(start_date=profile.period_start, end_date=profile.period_end),
+                list(profile.facts),
+            )
+        except BaseException:
+            if claimed is not None:
+                self._release_demo_sample(claimed)
+            raise
+
+    def _claim_demo_sample(self, quota) -> str | None:
+        """``None`` 表示不是 demo（账号建自己的企业，不占名额）。"""
+
+        if quota is None:
+            return None
+        self.demo_quota_expires.setdefault(quota.sid_hash, quota.expires_at)
+        used = self.demo_quota_claimed.get(quota.sid_hash, 0)
+        if used >= quota.limit:
+            raise ApiProblem(
+                429,
+                "DEMO_QUOTA_EXCEEDED",
+                "本次演示会话可创建的样本数已用完，请从演示入口重新进入。",
+                {"limit": quota.limit},
+            )
+        self.demo_quota_claimed[quota.sid_hash] = used + 1
+        return quota.sid_hash
+
+    def _release_demo_sample(self, sid_hash: str) -> None:
+        remaining = self.demo_quota_claimed.get(sid_hash, 0) - 1
+        if remaining > 0:
+            self.demo_quota_claimed[sid_hash] = remaining
+        else:
+            self.demo_quota_claimed.pop(sid_hash, None)
 
     def get_enterprise(self, enterprise_id) -> Enterprise:
         enterprise = self.enterprises.get(enterprise_id)
@@ -787,7 +830,6 @@ class FakeAccounts:
         self.users: dict[str, dict] = {}
         self.sessions: dict[str, dict] = {}
         self.user_enterprises: dict[object, object] = {}
-        self.quota: dict[str, int] = {}
 
     # ---------------------------------------------------------------- 准备
 
@@ -915,16 +957,12 @@ class FakeAccounts:
     # ------------------------------------------------------------ 演示配额
 
     def ensure_demo_quota(self, *, sid_hash, expires_at) -> None:
-        self.quota.setdefault(sid_hash, 0)
+        """签发 demo cookie 时登记一行（``created = 0``）。
 
-    def claim_demo_sample(self, *, sid_hash, expires_at, limit):
-        used = self.quota.get(sid_hash, 0)
-        if used >= limit:
-            return None
-        self.quota[sid_hash] = used + 1
-        return used + 1
+        占额与退还都在建企业的事务里（``repository._claim_demo_sample``），
+        所以名额只存在仓储上——这里只是把「会话已登记」这件事也写进去，
+        让用例读到的状态与真库的 ``demo_quota`` 表一一对应。
+        """
 
-    def release_demo_sample(self, *, sid_hash):
-        used = self.quota.get(sid_hash, 0)
-        if used > 0:
-            self.quota[sid_hash] = used - 1
+        self.repository.demo_quota_expires.setdefault(sid_hash, expires_at)
+        self.repository.demo_quota_claimed.setdefault(sid_hash, 0)

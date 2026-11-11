@@ -82,6 +82,51 @@ def test_security_matches(contract, schema):
         assert actual == expected
 
 
+def test_gate_matches_the_contract(contract, schema):
+    """`x-e1-gate` 是 security 之外的第二个维度：门禁（restricted 的外层 demo cookie）。
+
+    标准 ``security`` 只能表达「要哪些凭证」，表达不了「restricted 部署还要先过门禁」。
+    PR #61 最新复审 P1 指的就是这个缺口：后台写在契约里只写了 ``UserSession``，读者
+    会以为任何部署下拿着会话就能写；实际还要先过 demo 门禁。这里把两份文档的门禁
+    逐操作锁死，只有 local/restricted 两个取值参与比较，note 是人读的说明。
+    """
+
+    for (method, path) in IMPLEMENTED:
+        expected = contract["paths"][path][method]["x-e1-gate"]
+        actual = schema["paths"][f"{API_PREFIX}{path}"][method]["x-e1-gate"]
+        assert actual["local"] == expected["local"] == "none", (method, path)
+        assert actual["restricted"] == expected["restricted"], (method, path)
+        assert actual["note"].strip(), f"{method.upper()} {path} 的门禁缺说明"
+
+    model = contract["x-e1-gate-model"]
+    served_model = schema["x-e1-gate-model"]
+    assert served_model["exempt"] == model["exempt"]
+    assert set(served_model["modes"]) == set(model["modes"]) == {"local", "restricted"}
+
+
+def test_gate_of_e1_operations_matches_the_draft(schema):
+    """七个 E1 操作还没并进正式契约，但门禁口径必须与草案逐条一致。"""
+
+    draft = yaml.safe_load(
+        (CONTRACT_PATH.parent / "openapi.e1-draft.yaml").read_text(encoding="utf-8")
+    )
+    for (method, path) in E1_DRAFT_OPERATIONS:
+        expected = draft["paths"][path][method]["x-e1-gate"]
+        actual = schema["paths"][f"{API_PREFIX}{path}"][method]["x-e1-gate"]
+        assert actual["local"] == expected["local"], (method, path)
+        assert actual["restricted"] == expected["restricted"], (method, path)
+
+
+def test_the_gate_is_exempt_only_for_health_and_logout(schema):
+    """豁免清单只有两项；其余操作在 restricted 下一律先过门禁。"""
+
+    exempt_paths = {f"{API_PREFIX}/health", f"{API_PREFIX}/auth/logout"}
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            gate = operation["x-e1-gate"]
+            assert (gate["restricted"] == "exempt") is (path in exempt_paths), (method, path)
+
+
 def test_security_schemes_are_served(schema):
     schemes = schema["components"]["securitySchemes"]
     assert schemes["AdminBearer"]["scheme"] == "bearer"

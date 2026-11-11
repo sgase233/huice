@@ -153,6 +153,34 @@ _ANY_IDENTITY_SECURITY = [{"UserSession": []}, {"AdminBearer": []}, {"DemoSessio
 _REVIEWER_READ_SECURITY = [{"UserSession": []}, {"AdminBearer": []}]
 _REVIEWER_WRITE_SECURITY = [{"UserSession": []}]
 
+#: ``x-e1-gate``：标准 ``security`` 只能表达「要哪些凭证」，表达不了「restricted 部署
+#: 还要先过外层 demo 门禁」，而门禁用的是另一个 cookie、在身份判定之前短路（PR #61
+#: 最新复审 P1）。所以每个操作另发一个 ``x-e1-gate``，取值按部署模式给。
+_GATE_EXEMPT_PATHS = {f"{API_PREFIX}/health", f"{API_PREFIX}/auth/logout"}
+_GATE_REQUIRED_NOTE = (
+    "restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）："
+    "缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。"
+)
+_GATE_EXEMPT_NOTE = (
+    "门禁豁免（仅 GET /health 与 POST /auth/logout 两项）；"
+    "身份仍按 security 判定。"
+)
+_GATE_MODEL = {
+    "standard-security-limitation": (
+        "标准 OpenAPI 3.1 的 security 只表达「这次请求需要哪些凭证」（列表内 OR、对象内 AND）；"
+        "它无法表达随部署模式变化的外层门禁，因此门禁逐操作写在 x-e1-gate。"
+    ),
+    "evaluation-order": "门禁 → 身份 → 角色 → 对象归属 → CSRF/Origin",
+    "modes": {
+        "local": "无门禁；身份仍按 security 判定（无效 demo cookie 在同一层回 401 DEMO_SESSION_INVALID）。",
+        "restricted": (
+            "要求签名有效的 huice_demo_session（DemoSession）；缺失、格式/签名不对、已过期都回同一个 "
+            "403 DEMO_SESSION_REQUIRED，且先于身份判定——连 security 为空的注册/登录也不例外。"
+        ),
+    },
+    "exempt": ["GET /health", "POST /auth/logout"],
+}
+
 
 def _install_openapi(app: FastAPI) -> None:
     """Serve an OpenAPI document that matches the security part of the contract."""
@@ -167,14 +195,29 @@ def _install_openapi(app: FastAPI) -> None:
             routes=app.routes,
         )
         schema.setdefault("components", {})["securitySchemes"] = SECURITY_SCHEMES
+        schema["x-e1-gate-model"] = copy.deepcopy(_GATE_MODEL)
         for path, operations in schema.get("paths", {}).items():
             for method, operation in operations.items():
                 tags = operation.get("tags") or []
                 operation["security"] = _security_for(path, method, tags)
+                operation["x-e1-gate"] = _gate_for(path)
         app.openapi_schema = schema
         return schema
 
     app.openapi = openapi  # type: ignore[method-assign]
+
+
+def _gate_for(path: str) -> dict[str, str]:
+    """一个操作的外层门禁：门禁只按部署模式与路径决定，与身份无关。
+
+    ``security: []`` 的注册/登录在 restricted 下同样要过门禁——它们自己也在 handler
+    里显式调 ``require_demo_session``，只把 ``security`` 标成「无凭证要求」会让读者
+    以为这两个接口在任何部署下都能直接调。
+    """
+
+    if path in _GATE_EXEMPT_PATHS:
+        return {"local": "none", "restricted": "exempt", "note": _GATE_EXEMPT_NOTE}
+    return {"local": "none", "restricted": "DemoSession", "note": _GATE_REQUIRED_NOTE}
 
 
 def _security_for(path: str, method: str, tags: list[str]) -> list[dict[str, list[str]]]:

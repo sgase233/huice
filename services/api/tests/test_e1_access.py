@@ -192,7 +192,7 @@ def test_demo_creates_an_unowned_sample_and_consumes_one_quota(app, accounts):
 
     owners = {str(key): value for key, value in app.state.repository.enterprise_owners.items()}
     assert owners[enterprise["id"]] is None
-    assert accounts.quota[auth_tools.digest("demo-sid-0001")] == 1
+    assert app.state.repository.demo_quota_claimed[auth_tools.digest("demo-sid-0001")] == 1
 
 
 def test_demo_cannot_see_owned_enterprises(app, accounts):
@@ -218,13 +218,15 @@ def test_legacy_demo_cookie_cannot_create_samples(app):
 def test_demo_quota_is_enforced_per_session(app, accounts, settings):
     demo = as_demo(app)
     sid_hash = auth_tools.digest("demo-sid-0001")
-    accounts.quota[sid_hash] = settings.demo_session_quota
+    app.state.repository.demo_quota_claimed[sid_hash] = settings.demo_session_quota
 
     response = demo.post("/api/v1/enterprises", json=ENTERPRISE_BODY)
 
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "DEMO_QUOTA_EXCEEDED"
     assert response.json()["error"]["details"]["limit"] == settings.demo_session_quota
+    # 名额用尽时连企业都不该建：占额失败发生在 INSERT 之前的同一个事务里。
+    assert app.state.repository.created == []
 
 
 def test_an_invalid_body_never_consumes_demo_quota(app, accounts):
@@ -236,25 +238,23 @@ def test_an_invalid_body_never_consumes_demo_quota(app, accounts):
     )
 
     assert response.status_code == 422
-    assert accounts.quota == {}
+    assert app.state.repository.demo_quota_claimed == {}
 
 
-def test_a_failed_insert_gives_the_quota_back(app, accounts, monkeypatch):
-    """先占额后落库：写库失败必须退还名额，否则一次冲突就永久吃掉一个样本。"""
+def test_a_failed_insert_never_keeps_the_quota(app, accounts):
+    """占额与建企业在同一个事务里：写库失败时名额跟着回滚，不会白扣一个样本。"""
 
     demo = as_demo(app)
     repository = app.state.repository
-
-    def boom(**kwargs):
-        raise RuntimeError("写库失败")
-
-    monkeypatch.setattr(repository, "create_enterprise", boom)
+    repository.enterprise_insert_error = RuntimeError("写库失败")
 
     response = demo.post("/api/v1/enterprises", json=ENTERPRISE_BODY)
 
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "INTERNAL_ERROR"
-    assert accounts.quota[auth_tools.digest("demo-sid-0001")] == 0
+    sid_hash = auth_tools.digest("demo-sid-0001")
+    assert repository.demo_quota_claimed.get(sid_hash, 0) == 0
+    assert repository.created == []
 
 
 # ------------------------------------------------------------------ 列表

@@ -177,33 +177,6 @@ class AccountsRepository:
                 (sid_hash, expires_at),
             )
 
-    def claim_demo_sample(
-        self, *, sid_hash: str, expires_at: datetime, limit: int
-    ) -> int | None:
-        """占用一个建样名额；返回占用后的计数，无名额（或已过期）时返回 ``None``。"""
-
-        with self._db.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO demo_quota (sid_hash, created, expires_at)
-                VALUES (%(sid)s, 1, %(expires)s)
-                ON CONFLICT (sid_hash) DO UPDATE
-                   SET created = demo_quota.created + 1
-                 WHERE demo_quota.created < %(limit)s
-                   AND demo_quota.expires_at > now()
-                RETURNING created
-                """,
-                {"sid": sid_hash, "expires": expires_at, "limit": limit},
-            )
-            row = cur.fetchone()
-        return None if row is None else int(row[0])
-
-    def release_demo_sample(self, *, sid_hash: str) -> None:
-        """退还一个名额（建样在占额之后失败时调用）：只减不增，不会把计数减到 0 以下。"""
-
-        with self._db.connection() as conn, conn.transaction():
-            conn.execute(
-                "UPDATE demo_quota SET created = created - 1 "
-                "WHERE sid_hash = %s AND created > 0",
-                (sid_hash,),
-            )
+    # 占额不在这里：它必须与「建企业」同事务，见
+    # ``PolicyRepository._claim_demo_sample``。先占后建、失败再退，会在进程
+    # 退出或退额本身失败时白扣一个名额（PR #61 复审 P2）。

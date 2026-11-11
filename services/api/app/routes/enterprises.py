@@ -15,11 +15,11 @@ from fastapi import APIRouter, Depends, Path, Query, Request, Response
 
 from ..access import require_enterprise_access
 from ..agents.profile import normalize_fact_update, normalize_profile
+from ..demo_quota import DemoQuota
 from ..errors import ApiProblem, trace_id_of
 from ..identity import (
     Identity,
-    claim_demo_sample,
-    release_demo_sample,
+    demo_quota_claim,
     require_csrf,
     require_public_identity,
     require_writable_demo,
@@ -83,24 +83,26 @@ def create_enterprise(
     identity = require_public_identity(request)
     # 先校验再占额：参数不合法不该消耗演示配额（占额是原子的、昂贵的）。
     profile = normalize_profile(body)
-    owner_user_id = _create_owner(request, identity)
-    try:
-        enterprise = request.app.state.repository.create_enterprise(
-            profile=profile, trace_id=trace_id_of(request), owner_user_id=owner_user_id
-        )
-    except BaseException:
-        # demo 先占额后写库：写库失败（含并发绑定撞唯一索引）时把名额退回去。
-        release_demo_sample(request, identity)
-        raise
+    owner_user_id, demo_quota = _create_owner(request, identity)
+    # 配额与企业在仓储的同一个事务里：任一步失败，企业没建成、名额也不会被扣。
+    enterprise = request.app.state.repository.create_enterprise(
+        profile=profile,
+        trace_id=trace_id_of(request),
+        owner_user_id=owner_user_id,
+        demo_quota=demo_quota,
+    )
     response.headers["ETag"] = f'"{enterprise.fact_version}"'
     return enterprise
 
 
-def _create_owner(request: Request, identity: Identity) -> UUID | None:
-    """建样本的归属：会话建自己的，demo 建无主的；两种写路径的校验不同。
+def _create_owner(
+    request: Request, identity: Identity
+) -> tuple[UUID | None, DemoQuota | None]:
+    """建样本的归属与配额：会话建自己的，demo 建无主的；两种写路径的校验不同。
 
     账号已经绑过企业时 409 而不是再建一家——``enterprise.owner_user_id`` 的部分唯一
     索引也会挡住，但那是并发兜底；正常情况下应该给一个说得清的错误。
+    配额只**解析成参数**，不在这里占用：占额与建企业必须同事务。
     """
 
     if identity.is_user:
@@ -112,10 +114,9 @@ def _create_owner(request: Request, identity: Identity) -> UUID | None:
                 {"enterpriseId": str(identity.enterprise_id)},
             )
         require_csrf(request, identity)
-        return identity.user_id
+        return identity.user_id, None
     require_writable_demo(request, identity)
-    claim_demo_sample(request, identity)
-    return None
+    return None, demo_quota_claim(request, identity)
 
 
 @router.get(

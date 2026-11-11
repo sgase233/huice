@@ -30,6 +30,7 @@ from uuid import UUID
 from fastapi import Request, Response
 
 from . import auth
+from .demo_quota import DemoQuota
 from .errors import ApiProblem
 from .security import (
     DEMO_SESSION_COOKIE,
@@ -297,41 +298,21 @@ def require_writable_demo(request: Request, identity: Identity) -> None:
     require_demo_write(request)
 
 
-def claim_demo_sample(request: Request, identity: Identity) -> int:
-    """占用一个「本次演示会话最多建 N 个样本」的名额；超额 → 429。
+def demo_quota_claim(request: Request, identity: Identity) -> DemoQuota | None:
+    """演示会话的建样配额参数；会话身份返回 ``None``（一个账号只能有一家企业）。
 
-    计数在数据库里原子完成（``demo_quota`` 的单条 upsert），并发下不会两个请求
-    同时拿到最后一个名额；限制值来自 ``DEMO_SESSION_QUOTA``。
+    **这里不占额**：名额与企业在仓储的同一个事务里创建，失败一起回滚。早先的
+    「先占后建、失败再退」在进程退出或退额本身失败时仍会白扣一个名额（PR #61 复审 P2）。
     """
 
+    if not identity.is_demo:
+        return None
     assert identity.demo_sid is not None and identity.expires_at is not None
-    settings = request.app.state.settings
-    accounts = request.app.state.accounts
-    used = accounts.claim_demo_sample(
+    return DemoQuota(
         sid_hash=auth.digest(identity.demo_sid),
         expires_at=identity.expires_at,
-        limit=settings.demo_session_quota,
+        limit=request.app.state.settings.demo_session_quota,
     )
-    if used is None:
-        raise ApiProblem(
-            429,
-            "DEMO_QUOTA_EXCEEDED",
-            "本次演示会话可创建的样本数已用完，请从演示入口重新进入。",
-            {"limit": settings.demo_session_quota},
-        )
-    return used
-
-
-def release_demo_sample(request: Request, identity: Identity) -> None:
-    """退还 ``claim_demo_sample`` 占下的名额：只在「占了额、样本没建成」时调用。
-
-    先占额后落库是必要的（并发下不能两个请求同时拿到最后一个名额），所以失败路径
-    必须显式退还，否则一次参数错误或数据库冲突就永久吃掉演示会话的配额。
-    """
-
-    if not identity.is_demo or identity.demo_sid is None:
-        return
-    request.app.state.accounts.release_demo_sample(sid_hash=auth.digest(identity.demo_sid))
 
 
 # ------------------------------------------------------------- Cookie 工具

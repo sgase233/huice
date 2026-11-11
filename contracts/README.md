@@ -4,6 +4,8 @@
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
+**`security` 与 `x-e1-gate` 是两个维度**（rc.10 起）：标准 `security` 只表达「要哪些凭证」（列表内 OR、对象内 AND）；部署模式相关的外层门禁逐操作写在 `x-e1-gate`（`local: none`；`restricted: DemoSession` 或 `exempt`），根级 `x-e1-gate-model` 给出判定顺序、豁免清单与两种模式的说明。restricted 下只有 `GET /health` 与 `POST /auth/logout` 豁免，连 `security: []` 的注册/登录也要先过门禁（403 `DEMO_SESSION_REQUIRED`）。运行时 `/openapi.json` 发布同一份口径，`tests/test_openapi_alignment.py` 逐操作比对两份文档，`tests/test_e1_gate_modes.py` 按文档驱动 restricted 模式的实际请求。
+
 ## #46—#48 扩展设计入口（2026-11-09）
 
 [扩展接口设计](../docs/EXTENSION_INTERFACES.md) 定义账号/会话/对象归属、发现配置/运行/候选审核、完整度/轨迹/趋势的建议请求与响应，以及迁移、幂等、权限和错误边界。新增端点目前**待评审、未实现**；现行 OpenAPI 保持 `1.0.0-rc.10` 与 16 个端点，未提前生成不存在的客户端能力。开发顺序和未决项见[开发计划](../docs/DEVELOPMENT_PLAN.md)。

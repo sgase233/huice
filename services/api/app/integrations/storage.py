@@ -31,6 +31,7 @@ from ..agents.profile import (
     to_wire_fact,
 )
 from ..db import Database
+from ..demo_quota import DemoQuota
 from ..domain import versioning
 from ..domain.rules import CriterionRule
 from ..domain.versioning import ChangedEvent, PolicyBoundary
@@ -970,10 +971,21 @@ class PolicyRepository:
         profile: NormalizedProfile,
         trace_id: str,
         owner_user_id: UUID | None = None,
+        demo_quota: DemoQuota | None = None,
     ) -> Enterprise:
+        """建一家企业；演示身份的配额与这家企业在**同一个事务**里。
+
+        ``demo_quota`` 非空时先占名额再 INSERT：任何一步失败（含并发绑定撞唯一索引）
+        整个事务回滚，名额也一起退回，不会出现「扣了名额、样本没建成」。占额仍是
+        ``INSERT … ON CONFLICT DO UPDATE … WHERE`` 的单条语句，并发下只会有一个请求
+        拿到最后一个名额。
+        """
+
         enterprise_id = uuid4()
         try:
             with self._db.connection() as conn, conn.transaction():
+                if demo_quota is not None:
+                    self._claim_demo_sample(conn, demo_quota)
                 insert_enterprise_profile(
                     conn,
                     enterprise_id=enterprise_id,
@@ -997,6 +1009,33 @@ class PolicyRepository:
             # 而不是漏成 500——「一家企业一个账号」的规则对并发一样成立。
             raise self._already_bound_problem(owner_user_id) from None
         return _enterprise_of(enterprise_id, profile.name_synthetic, profile.period_start, profile.period_end, facts)
+
+    def _claim_demo_sample(self, conn: Connection, quota: DemoQuota) -> None:
+        """在调用方的事务里占一个名额；无名额时抛 429，让整个事务回滚。
+
+        首建与计数是一条语句：两条（先查后插）在并发下会丢计数，上限就形同虚设。
+        """
+
+        row = self._fetchone(
+            conn,
+            """
+            INSERT INTO demo_quota (sid_hash, created, expires_at)
+            VALUES (%s, 1, %s)
+            ON CONFLICT (sid_hash) DO UPDATE
+               SET created = demo_quota.created + 1
+             WHERE demo_quota.created < %s
+               AND demo_quota.expires_at > now()
+            RETURNING created
+            """,
+            (quota.sid_hash, quota.expires_at, quota.limit),
+        )
+        if row is None:
+            raise ApiProblem(
+                429,
+                "DEMO_QUOTA_EXCEEDED",
+                "本次演示会话可创建的样本数已用完，请从演示入口重新进入。",
+                {"limit": quota.limit},
+            )
 
     def _already_bound_problem(self, owner_user_id: UUID | None) -> ApiProblem:
         bound_id = None
