@@ -1,8 +1,8 @@
 # 惠策协同：功能实现逻辑与接口协作约定
 
-> 初稿：2026-10-23；当前状态更新：2026-11-11，E1 后端实现已合入（PR #55 draft.4）；现行契约 `1.0.0-rc.10`。成员沿用 M1（后端）、M2（前端）、M3（政策与验收）。
+> 初稿：2026-10-23；当前状态更新：2026-11-11，E1 后端实现已合入，7 个 E1 操作已并入正式契约（`1.1.0-rc.1`）。成员沿用 M1（后端）、M2（前端）、M3（政策与验收）。
 >
-> 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[原开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及现有代码整理。后端已实现 **16 个端点**，前端六类业务页已接入，已有隔离库/真实 HTTP/合成数据的阶段浏览器记录；最终云端联合与业务验收仍按实际证据确认。第 8 节保留各日期历史验证，不代表本次重跑。后续范围和排期见[开发计划](DEVELOPMENT_PLAN.md)，新增账号、发现候选及图表接口见[扩展接口设计](EXTENSION_INTERFACES.md)，该设计待签收，不能替代现行 OpenAPI。
+> 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[原开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及现有代码整理。后端已实现 **23 个操作**（API-01—16 + AUTH-01—07），前端六类业务页已接入，已有隔离库/真实 HTTP/合成数据的阶段浏览器记录；最终云端联合与业务验收仍按实际证据确认。第 8 节保留各日期历史验证，不代表本次重跑。后续范围和排期见[开发计划](DEVELOPMENT_PLAN.md)，新增账号、发现候选及图表接口见[扩展接口设计](EXTENSION_INTERFACES.md)，该设计待签收，不能替代现行 OpenAPI。
 
 ## 1. 范围、依据和成功标准
 
@@ -16,7 +16,7 @@
 
 | 可验证标准 | 负责人/检查位置 |
 | --- | --- |
-| 16 个接口的字段、枚举、状态码、参数位置、权限和示例一致 | M1/M2；`contracts/openapi.yaml`、`src/api/types.ts`、`test_contract.py` |
+| 23 个操作的字段、枚举、状态码、参数位置、权限和示例一致 | M1/M2；`contracts/openapi.yaml`、`src/api/types.ts`、`test_contract.py` |
 | 数字方向抽错不能发布；未发布规则不能判断；缺事实不判满足 | M1/M3；`test_rules.py`、`test_agent_flow.py` |
 | 补答只影响相关条件；跳过不改事实；0 与 null 区分 | M1/M2；规则测试和浏览器用例 |
 | 政策或事实变化能指出依赖和失效原因，保留历史原文及结果 | M1；`test_invalidation.py` |
@@ -329,14 +329,14 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
 - 所有公开政策读取只含已审核版本。`version` 指定不存在/未发布版本时 404，不能回退到其他版本。后台 API-16 可读取未发布版本。
 - 非 2xx 统一 `{"error":{"code":"...","message":"中文可执行说明","details":{}},"traceId":"UUID"}`；FastAPI 默认 detail 数组必须转换。响应头 `X-Trace-Id` 与 body.traceId 一致；成功也返回追踪头。422 的 details 可放 fieldErrors/findings；409 放 currentVersion；不得含堆栈、密钥或连接串。
 - 状态码：400 请求语法/查询参数错误；401 未认证；403 已认证但权限不足；404 不存在；409 版本/幂等冲突；413 文件过大；415 文件类型不支持；422 业务或 body 校验失败；428 缺并发头；429 限流；500 未预期内部错误（脱敏）；503 必需依赖不可用。
-- **认证分两层（E1，#46）**：外层是**门禁**，内层是**身份/角色/归属**。`security.py` 只表达门禁（`require_demo_session`），身份与角色在 `identity.py`，对象归属在 `access.py`。判定顺序固定：门禁 → 身份 → 角色 → 对象归属 → CSRF/Origin。
+- **认证分两层（E1，#46）**：外层是**门禁**，内层是**身份/角色/归属**。`security.py` 只表达门禁（`require_demo_session`），身份与角色在 `identity.py`，对象归属在 `access.py`。判定顺序固定：门禁 → 请求体解析与字段校验 → 身份 → 角色 → 对象归属 → CSRF/Origin。门禁由路由类 `GatedRoute` 在**解析请求体之前**执行（`APIRouter(dependencies=[...])` 或写在 handler 里都会被 422 抢先），因此 restricted 下缺 demo cookie 时，请求体缺字段、类型不对、为空或不是 JSON 都先得到 403 `DEMO_SESSION_REQUIRED`；local 模式没有门禁，同样的请求才是 422。前端据此区分三种失败：403 `DEMO_SESSION_REQUIRED`（门禁失效，回演示入口重取）、422 `VALIDATION_ERROR`（表单字段问题）、401（会话失效，跳登录页）。
   - 门禁：`DEMO_ACCESS_MODE=restricted` 时业务接口都要 `huice_demo_session`（`HttpOnly/Secure/SameSite=Lax`，载荷 `v2.<过期秒>.<sid>.<HMAC>`；E1 前签发的 `v1.<过期秒>.<HMAC>` 仍验签通过但**只读**）；豁免只有 `GET /health` 与 `POST /auth/logout`；`local` 模式免。
   - 身份：会话 Cookie `huice_session` → 运维 `Authorization: Bearer <ADMIN_TOKEN>` → demo cookie，按真值表取**第一个「提供了且有效」**的凭证：只有未提供才轮到下一个，提供了但无效一律 401（`TOKEN_INVALID` / `SESSION_INVALID`），绝不降级到 demo。注册/登录/登出不消费会话 Cookie（浏览器删不掉 HttpOnly Cookie）。
   - 角色：凭证有效但角色不够 → 403 `ROLE_FORBIDDEN`。运维 Bearer 在 E1 后**只读**：可读后台政策与全部 run 轨迹，任何业务接口与写操作都 403。
   - 对象归属：他人企业与 run 一律 404，且与「不存在」**同码同文案**（`ENTERPRISE_NOT_FOUND` / `RUN_NOT_FOUND`），否则 404/403 的差别本身就是「他人对象是否存在」的探针。企业读：本人 / 审核员全部 / demo 仅无主；企业写：仅本人（审核员也只能改本人）；run 读同企业读口径。
   - CSRF/Origin：会话写请求要 `X-CSRF-Token`（登录返回的 `csrfToken`，等于 `sha256("huice-csrf:" + 会话令牌)[:32]`）；注册/登录/登出只校验 Origin；demo 写只校验 Origin（+Referer）；Bearer 不校验。两样都缺时先报 `ORIGIN_MISMATCH`。
 - 本地模式仅监听 loopback。**运维通道**（`Authorization: Bearer <ADMIN_TOKEN>`）只用于脚本/curl 读后台政策与轨迹：M1 在受控机器手动输入，M2 的 client 仅保存在内存，退出/刷新清空，不写 localStorage、URL 或 VITE 变量；E1 后浏览器里的后台写操作改用**审核员会话**，不再把 `ADMIN_TOKEN` 打进前端。没有凭证不展示后台数据。
-- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie，再交给后端做身份判定；后端自己校验 cookie 的 HMAC 签名与有效期（签发脚本 `infra/deploy/issue-session.py`，同时写 `demo_quota` 起始行）；签名密钥是独立的 `DEMO_SESSION_SECRET`（restricted 模式必填），**不由 `ADMIN_TOKEN` 派生**，因此持有 Bearer 的人不能自行签发会话，两层门禁相互独立。网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 里 `security` 只写身份，门禁逐操作写在 `x-e1-gate`（`contracts/openapi.yaml` 与运行时 `/openapi.json` 两份一致，含 `x-e1-gate-model` 的口径；草案 `openapi.e1-draft.yaml` 里另有门禁/身份真值表与请求样例）；local 模式免演示 cookie。健康检查无认证且不含连接详情。**rc.10 起发布的 `security` 与该判定逐条对齐**（M2 在 PR #61 的 P1）：业务接口 `UserSession` 或 `DemoSession`，后台读 `UserSession` 或 `AdminBearer`，后台写只有 `UserSession`（Bearer 只读），轨迹三类身份都可读——契约不再承诺后端一定会 403 的入口。
+- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie，再交给后端做身份判定；后端自己校验 cookie 的 HMAC 签名与有效期（签发脚本 `infra/deploy/issue-session.py`，同时写 `demo_quota` 起始行）；签名密钥是独立的 `DEMO_SESSION_SECRET`（restricted 模式必填），**不由 `ADMIN_TOKEN` 派生**，因此持有 Bearer 的人不能自行签发会话，两层门禁相互独立。网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 里 `security` 只写身份，门禁逐操作写在 `x-e1-gate`（`contracts/openapi.yaml` 与运行时 `/openapi.json` 两份一致，含 `x-e1-gate-model` 的口径与 `evaluation-order`；门禁先于请求体解析）；7 个 E1 操作自 `1.1.0-rc.1` 起已并入正式契约，`openapi.e1-draft.yaml` 保留为设计记录（门禁/身份真值表与请求样例）；local 模式免演示 cookie。健康检查无认证且不含连接详情。**rc.10 起发布的 `security` 与该判定逐条对齐**（M2 在 PR #61 的 P1）：业务接口 `UserSession` 或 `DemoSession`，后台读 `UserSession` 或 `AdminBearer`，后台写只有 `UserSession`（Bearer 只读），轨迹三类身份都可读——契约不再承诺后端一定会 403 的入口。
 - 跨源开发 fetch 使用 `credentials:'include'`，CORS 只允许确切前端源并允许 credentials。允许头 `Content-Type,Authorization,If-Match,Idempotency-Key,X-CSRF-Token`；暴露头 `ETag,X-Trace-Id,Content-Disposition`。M1 处理 OPTIONS；M2 不能以 no-cors 规避。
 
 ## 4. 端点与参数传递（路径均省略 /api/v1）
@@ -396,7 +396,7 @@ API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络�
 
 ### 4.4 账号与会话（E1 新增）
 
-契约草案是 `contracts/openapi.e1-draft.yaml`，实现见 `services/api/app/routes/auth.py`；判定顺序见 §3。
+契约在 `contracts/openapi.yaml`（`1.1.0-rc.1` 起并入），设计记录见 `contracts/openapi.e1-draft.yaml`，实现见 `services/api/app/routes/auth.py`；判定顺序见 §3。
 
 | ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
 | --- | --- | --- |

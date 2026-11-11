@@ -2,17 +2,19 @@
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约
-  version: 1.0.0-rc.10
-  description: "2026-11-11 候选冻结版（rc.10：security 与 E1 的实际授权对齐——后台写操作只接受 UserSession，运维 Bearer 从「可写」改为「只读」；业务接口是 UserSession 或 DemoSession，不再声称 Bearer 能读；轨迹三个身份都可读。新增 securitySchemes.UserSession（cookie huice_session）。应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」；rc.9 为 2026-11-06 版（rc.9：PreparationItem.status 的取值改为事实口径 facts_filled / facts_missing / manual_check / policy_closed。原来的 provided 会被读成「材料已提交」，而服务端只读企业事实、不读材料，`provided` 实际只说「这份材料要证明的事实都有取值」——名字比它能证明的多说了一层；`missing` 同理，它说的是事实缺项，不是「材料没交」。missing 布尔字段的语义不变（保守口径，manual_check 也算 true）。应答 M2 对 PR #40 的 P1）。rc.8 为 2026-11-06 版（PreparationItem 新增必填 materialId 与 status，把「资料缺失」拆成 provided / missing / manual_check / policy_closed 四种明确状态——没有事实键的材料（申请书等）本就判断不了，不能显示成「资料缺失」；政策已关闭时材料不再提交，也不能记成缺失。missing 保留且仍是保守口径（manual_check 也算 true），展示以 status 为准。应答 M2 对 PR #37 的 P1；其中 provided / missing 两个名字在 rc.9 改为 facts_filled / facts_missing）。rc.7 为 2026-11-05 版（ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。现行 API-01—API-16 均已有实现；最终联合验收仍须留证，M1/M2 复核后定版。2026-11-09 的 issue #46—#48 扩展设计见 docs/EXTENSION_INTERFACES.md；其中 7 个新端点已实现，目前仍只写在 contracts/openapi.e1-draft.yaml，并入本契约要等前端类型重新生成。restricted 模式需要网关会话；local 模式免 DemoSession，但业务接口仍需身份（UserSession 或 DemoSession），后台写操作只接受审核员 UserSession。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。每个操作另有 x-e1-gate：local 无门禁，restricted 部署要**先**过演示会话门禁（huice_demo_session），只有 GET /health 与 POST /auth/logout 豁免；标准 security 只表达身份，restricted 下的实际要求是「门禁 + 该操作的 security」，连 security 为空的注册/登录也不例外。语义/流程见 docs/IMPLEMENTATION_AND_INTERFACE.md。"
+  version: 1.1.0-rc.1
+  description: "2026-11-11 候选冻结版（1.1.0-rc.1：把 E1 的 7 个端点与账号/会话 schema 并入正式契约——AUTH-01 注册、AUTH-02 登录、AUTH-03 登出、AUTH-04 会话恢复、AUTH-05 改密，以及按身份与归属过滤的 AUTH-06 企业列表、AUTH-07 分析运行列表。版本从 1.0.0 升到 1.1.0 是因为这是**向后兼容的新增**（只加路径、操作与 components，既有 16 个操作的 schema 与 security 不变），但前端类型 `apps/web/src/api/types.ts` 必须重新生成，所以不是补丁级；生成脚本 `contracts/generate_types.py --check` 在类型重新生成前会红，这是本次并入的已知中间状态。rc.10 为 2026-11-11 版（rc.10：security 与 E1 的实际授权对齐——后台写操作只接受 UserSession，运维 Bearer 从「可写」改为「只读」；业务接口是 UserSession 或 DemoSession，不再声称 Bearer 能读；轨迹三个身份都可读。新增 securitySchemes.UserSession（cookie huice_session）。应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」；rc.9 为 2026-11-06 版（rc.9：PreparationItem.status 的取值改为事实口径 facts_filled / facts_missing / manual_check / policy_closed。原来的 provided 会被读成「材料已提交」，而服务端只读企业事实、不读材料，`provided` 实际只说「这份材料要证明的事实都有取值」——名字比它能证明的多说了一层；`missing` 同理，它说的是事实缺项，不是「材料没交」。missing 布尔字段的语义不变（保守口径，manual_check 也算 true）。应答 M2 对 PR #40 的 P1）。rc.8 为 2026-11-06 版（PreparationItem 新增必填 materialId 与 status，把「资料缺失」拆成 provided / missing / manual_check / policy_closed 四种明确状态——没有事实键的材料（申请书等）本就判断不了，不能显示成「资料缺失」；政策已关闭时材料不再提交，也不能记成缺失。missing 保留且仍是保守口径（manual_check 也算 true），展示以 status 为准。应答 M2 对 PR #37 的 P1；其中 provided / missing 两个名字在 rc.9 改为 facts_filled / facts_missing）。rc.7 为 2026-11-05 版（ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。现行 API-01—API-16 均已有实现；最终联合验收仍须留证，M1/M2 复核后定版。2026-11-09 的 issue #46—#48 扩展设计见 docs/EXTENSION_INTERFACES.md；7 个新端点自 1.1.0-rc.1 起已并入本契约，contracts/openapi.e1-draft.yaml 保留为设计记录（门禁/身份真值表、错误码与可复核请求样例）。restricted 模式需要网关会话；local 模式免 DemoSession，但业务接口仍需身份（UserSession 或 DemoSession），后台写操作只接受审核员 UserSession。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。每个操作另有 x-e1-gate：local 无门禁，restricted 部署要**先**过演示会话门禁（huice_demo_session），只有 GET /health 与 POST /auth/logout 豁免；标准 security 只表达身份，restricted 下的实际要求是「门禁 + 该操作的 security」，连 security 为空的注册/登录也不例外。门禁在**解析请求体之前**执行（服务端由路由类 GatedRoute 保证）：缺 cookie 时即使请求体缺字段、类型不对、为空或不是 JSON，也一律 403 DEMO_SESSION_REQUIRED，不会先回 422。前端约定：所有请求都带门禁 cookie；收到 403 DEMO_SESSION_REQUIRED 就回演示入口重取，不要把它当成「表单填错」或「登录失效」——前者是 422 VALIDATION_ERROR，后者是 401。语义/流程见 docs/IMPLEMENTATION_AND_INTERFACE.md。"
 servers:
 - url: /api/v1
 tags:
+- name: auth
 - name: public
 - name: admin
 x-e1-gate-model:
   standard-security-limitation: 标准 OpenAPI 3.1 的 security 只表达「这次请求需要哪些凭证」（列表内 OR、对象内 AND）；
     它无法表达随部署模式变化的外层门禁，因此门禁逐操作写在 x-e1-gate，服务端发布的文档与之一一对应。
-  evaluation-order: 门禁 → 身份 → 角色 → 对象归属 → CSRF/Origin
+  evaluation-order: 门禁 → 请求体解析与字段校验 → 身份 → 角色 → 对象归属 → CSRF/Origin
+  gate-before-validation: 门禁跑在请求体解析之前（路由类 GatedRoute 包装 get_route_handler 实现）。restricted 下缺 cookie 的请求不会因为请求体不合法先拿到 422：缺字段、错类型、空体、非 JSON 一律 403 DEMO_SESSION_REQUIRED。local 模式没有门禁，同样的请求才是 422。
   modes:
     local: 无门禁；身份仍按 security 判定（无效 demo cookie 在同一层回 401 DEMO_SESSION_INVALID）。
     restricted: 要求签名有效的 huice_demo_session（DemoSession）；缺失、格式/签名不对、已过期都回同一个
@@ -22,7 +24,7 @@ x-e1-gate-model:
   - POST /auth/logout
   exempt-note: 只有这两项。健康检查本来就公开；登出只撤销调用者自己出示的那一个会话——
     要求有效凭证会让过期会话再也清不掉 Cookie。
-  reference: contracts/openapi.e1-draft.yaml 的 x-e1-gate-model（门禁/身份真值表、错误码与可复核的请求样例）
+  reference: contracts/openapi.e1-draft.yaml 的 x-e1-gate-model（门禁/身份真值表、错误码与可复核的请求样例；该文件自 1.1.0-rc.1 起是设计记录，端点与 schema 已经并入本契约）
 paths:
   /health:
     get:
@@ -51,7 +53,7 @@ paths:
                 $ref: '#/components/schemas/HealthResponse'
               example:
                 status: ok
-                version: 1.0.0-rc.8
+                version: 1.1.0-rc.1
         default:
           $ref: '#/components/responses/ApiFailure'
         '400': &id004
@@ -100,7 +102,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/PublicStatus'
       - $ref: '#/components/parameters/PolicyType'
@@ -152,7 +154,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/Version'
@@ -243,7 +245,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters: []
       responses:
         '201':
@@ -349,7 +351,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/IfMatch'
@@ -399,7 +401,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/IfMatch'
@@ -443,7 +445,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/IfMatch'
@@ -475,6 +477,63 @@ paths:
             schema:
               $ref: '#/components/schemas/PublishPolicyInput'
   /enterprises:
+    get:
+      operationId: listEnterprises
+      summary: AUTH-06
+      tags:
+      - public
+      security:
+      - UserSession: []
+      - DemoSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: 门禁与身份是同一个 cookie；restricted 下只有门禁通过，DemoSession 才可能作为身份参与选择。
+      description: |
+        角色与归属过滤在**服务端**完成，不能靠前端隐藏：
+        - 企业用户：至多本人一条；
+        - 审核员：全部（含评测用途、`ownership=unowned` 的历史无主企业）；
+        - demo：仅无主企业；
+        - Bearer：403 `ROLE_FORBIDDEN`（E1 后只读范围不含业务列表）。
+        游标与该身份、筛选绑定；越权游标返回 400/422，不返回他人的下一页。
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 企业列表
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnterpriseSummaryList'
+              examples:
+                reviewer:
+                  value:
+                    items:
+                    - id: 11111111-1111-4111-8111-111111111111
+                      nameSynthetic: 合成企业A
+                      period:
+                        startDate: '2026-01-01'
+                        endDate: '2026-12-31'
+                      ownership: self
+                    - id: 66666666-6666-4666-8666-666666666666
+                      nameSynthetic: 评测样例企业
+                      period:
+                        startDate: '2026-01-01'
+                        endDate: '2026-12-31'
+                      ownership: unowned
+                    nextCursor: null
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '422': *id015
+        '429': *id016
+        '500': *id007
+        '503': *id008
+        default:
+          $ref: '#/components/responses/ApiFailure'
     post:
       operationId: createEnterprise
       summary: API-08
@@ -487,7 +546,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters: []
       responses:
         '201':
@@ -554,7 +613,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/enterpriseId'
       responses:
@@ -588,7 +647,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/enterpriseId'
       - $ref: '#/components/parameters/factKey'
@@ -621,6 +680,117 @@ paths:
             schema:
               $ref: '#/components/schemas/FactUpdate'
   /assessment-runs:
+    get:
+      operationId: listRuns
+      summary: AUTH-07
+      tags:
+      - public
+      security:
+      - UserSession: []
+      - DemoSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: 同 AUTH-06：先门禁后身份，403 与 401 不互换。
+      description: |
+        支持历史分析与报告导航，不能只依赖浏览器保存的 `runId`。归属过滤在服务端：
+        企业用户只看本人企业的 run，审核员看全部，demo 只看无主企业的 run，Bearer 403。
+
+        `enterpriseId` 只是筛选，**不放宽可见范围**（先定可见集，再在可见集里筛）：
+
+        | 身份 | 不传 `enterpriseId` | 传本人/可筛企业 | 传其他身份的企业 | 传不存在的 UUID |
+        | --- | --- | --- | --- | --- |
+        | 企业用户 | 本人企业的 run | 200 | 404 `ENTERPRISE_NOT_FOUND` | 404 `ENTERPRISE_NOT_FOUND` |
+        | 审核员 | 全部 run（含无主企业） | 200，该企业的 run | 200（审核员可筛任意企业） | 404 `ENTERPRISE_NOT_FOUND` |
+        | demo | 无主企业的 run | 200（仅无主企业） | 404 `ENTERPRISE_NOT_FOUND`（有主企业一律不可见） | 404 `ENTERPRISE_NOT_FOUND` |
+        | Bearer | — | — | — | 403 `ROLE_FORBIDDEN`（不进入筛选） |
+
+        「其他身份的企业」与「不存在的 UUID」返回**同一个** 404、同一文案，调用方无法据此判断企业是否存在；
+        传本人企业但本地无 run 时返回 `200` + 空 `items`，不是 404。
+
+        `status` 是 E1 新增的生命周期字段（D5.3）。**E1 只承诺四个取值**
+        `queued/running/succeeded/failed`，且 E1 不产生 `interrupted`：
+        - E1 之前的历史记录只可能是 `succeeded`（旧实现仅在成功后插行），旧数据按 `succeeded`
+          返回，不补造失败记录，也不把 `created_at == finished_at` 当成 0 毫秒耗时；
+        - `queued` 只出现在 E1 起的新写入路径上（受理即落行），E1 之前没有 `queued`。
+
+        **`interrupted` 是 E3b 的扩展，不在本草案的枚举里**：D5.3 的启动扫描（`running` 记录早于
+        运行上限、advisory lock 无人持有、原连接已断开，三者同时满足才置 `interrupted`）随 E3b 落地。
+        E1 不做启动扫描，进程崩溃留下的孤儿 `running` **保持 `running`**，不自动改写。
+
+        `enum` 是封闭集合（见 `RunStatus`），所以 E1 服务端**保证不产生**这四个值以外的字符串；
+        E3b 增加 `interrupted` 时必须同时升契约版本、重新生成前端类型并同窗发布，
+        不存在「后端先上新枚举、前端靠兜底接住」的允许组合。
+        前端仍建议对未识别值做防御性降级（不当作 `succeeded`、不给报告入口、不自动重跑），
+        但那只是滚动升级窗口的保险，不是契约承诺。
+
+        失败、未完成与被中断的 run **都可以出现在列表里**，但**不提供报告下载**。
+        是否给 `interrupted` 单列一个错误码（而不是复用 409 `RUN_NOT_COMPLETED`）留待共同评审，
+        见 `x-open-questions`。
+      parameters:
+        - name: enterpriseId
+          in: query
+          required: false
+          description: >-
+            只做筛选，不放宽可见范围：先按身份定可见集，再在可见集里筛。可筛范围见操作说明的表。
+            不在可筛范围内时一律 404 `ENTERPRISE_NOT_FOUND`（筛选对象是企业），**不区分「企业不存在」
+            与「不属于你」**，两种情况响应体与文案完全相同。
+          schema:
+            $ref: '#/components/schemas/UUID'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 运行列表
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunSummaryList'
+              examples:
+                mixed:
+                  value:
+                    items:
+                    - id: 55555555-5555-4555-8555-555555555555
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+                      asOf: '2026-10-23T10:00:00+08:00'
+                      createdAt: '2026-10-23T02:00:00Z'
+                      status: succeeded
+                      reportAvailable: true
+                    - id: 99999999-9999-4999-8999-999999999999
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+                      asOf: '2026-11-10T09:00:00+08:00'
+                      createdAt: '2026-11-10T01:00:00Z'
+                      status: failed
+                      reportAvailable: false
+                    nextCursor: null
+                reviewerFilteredByAnotherEnterprise:
+                  summary: 审核员用 ?enterpriseId=其他人的企业 —— 允许，只返回该企业的 run
+                  value:
+                    items:
+                    - id: 55555555-5555-4555-8555-555555555555
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+                      asOf: '2026-10-23T10:00:00+08:00'
+                      createdAt: '2026-10-23T02:00:00Z'
+                      status: succeeded
+                      reportAvailable: true
+                    nextCursor: null
+                enterpriseUserOwnEnterpriseEmpty:
+                  summary: 企业用户筛本人企业但还没有 run —— 200 + 空 items（不是 404）
+                  value:
+                    items: []
+                    nextCursor: null
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '422': *id015
+        '429': *id016
+        '500': *id007
+        '503': *id008
+        default:
+          $ref: '#/components/responses/ApiFailure'
     post:
       operationId: createRun
       summary: API-11
@@ -634,7 +804,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters: []
       responses:
         '200':
@@ -721,7 +891,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/runId'
       responses:
@@ -755,7 +925,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/runId'
       responses:
@@ -799,7 +969,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/runId'
       responses:
@@ -832,7 +1002,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/AdminStatus'
       - $ref: '#/components/parameters/PolicyType'
@@ -867,7 +1037,7 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
       parameters:
       - $ref: '#/components/parameters/policyId'
       - $ref: '#/components/parameters/Version'
@@ -889,6 +1059,354 @@ paths:
         '404': *id013
         '500': *id007
         '503': *id008
+  /auth/register:
+    post:
+      operationId: registerUser
+      summary: AUTH-01
+      tags:
+      - auth
+      security: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 下也要过门禁（没有邀请就不提供注册入口）；失败 403 DEMO_SESSION_REQUIRED。门禁先于请求体解析与字段校验：缺 cookie 时即使请求体缺字段/类型不对/为空/不是 JSON，也是 403 而不是 422。
+      description: |
+        事务内创建账号与（企业用户必填的）唯一企业，两者同成同败：任何一步失败都回滚，
+        不留下半个账号或半个企业。默认**不自动登录**，须再调 AUTH-02。
+
+        **注册不消费会话 Cookie**：浏览器会自动带上已有的 `huice_session`（HttpOnly，前端删不掉），
+        本操作**忽略**它——不校验、不撤销、也不因此返回 401（例外清单见 `info` 的判定顺序段）。
+        注册成功后当前会话保持不变（还是原来的账号）；要切到新账号，前端应先调 AUTH-03 再调 AUTH-02，
+        不能靠「直接再注册一次」切换。
+
+        `reviewerSignupKey` 与 `enterprise` 的组合（同一事务内判定，失败即回滚）：
+
+        | 请求 | 角色 | 响应 | 事务结果 |
+        | --- | --- | --- | --- |
+        | 不提供密钥，带 `enterprise` | enterprise | 201 | 建账号 + 建企业并绑定 |
+        | 不提供密钥，不带 `enterprise` | — | 422 `VALIDATION_ERROR` | 无任何写入 |
+        | 提供密钥但为空或短于 16 字符 | — | 422 `VALIDATION_ERROR`（schema 层拦截） | 无任何写入 |
+        | 提供长度合法但错误的密钥 | — | 403 `ROLE_FORBIDDEN` | 无任何写入，也不建企业 |
+        | 提供有效密钥，带 `enterprise` | reviewer | 201 | 建账号 + 建企业并绑定 |
+        | 提供有效密钥，不带 `enterprise` | reviewer | 201 | 只建账号，企业留到首次调用 API-08 时创建 |
+
+        - 密钥错误与「该部署根本没有配置密钥」返回**同一个** 403 与同一文案，不回显细节，
+          也不告诉调用方密钥是否正确。
+        - 不接受客户端指定 `role`：角色只由「是否提供有效密钥」决定，服务端裁定。
+        - **Origin 必须存在且与 `PUBLIC_ORIGIN` 同源**，缺失或不匹配一律 403 `ORIGIN_MISMATCH`（D1.6）。
+        - 限流：IP 维度 5 次/分钟；连续 20 次失败锁 15 分钟（只锁 IP，不锁用户名）。
+        - **本操作没有 401 分支**：不校验任何凭证，也不会因为「带了失效会话」而失败。
+          403 只来自门禁、Origin 与密钥，409 只来自用户名冲突（`USERNAME_TAKEN`）。
+      parameters:
+        - $ref: '#/components/parameters/OriginHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            examples:
+              enterpriseUser:
+                summary: 企业用户（必填企业信息）
+                value:
+                  username: acme-2026
+                  password: correct horse battery staple
+                  enterprise:
+                    nameSynthetic: 合成企业A
+                    period:
+                      startDate: '2026-01-01'
+                      endDate: '2026-12-31'
+                    facts:
+                    - key: region
+                      value: '440300'
+                      unit: code
+                      period:
+                        startDate: '2026-01-01'
+                        endDate: '2026-12-31'
+                      source: user_input
+                    - key: industry
+                      value: C39
+                      unit: code
+                      period:
+                        startDate: '2026-01-01'
+                        endDate: '2026-12-31'
+                      source: user_input
+              reviewer:
+                summary: 审核员（不带企业、带注册密钥）
+                value:
+                  username: reviewer-01
+                  password: correct horse battery staple
+                  reviewerSignupKey: <由部署方通过机密渠道提供，不在仓库与日志中出现>
+      responses:
+        '201':
+          description: 已创建；响应不含密码哈希、注册密钥或会话凭据
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+              examples:
+                ok:
+                  value:
+                    user:
+                      id: 77777777-7777-4777-8777-777777777777
+                      username: acme-2026
+                      role: enterprise
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+        '400': *id004
+        '403': *id006
+        '409': *id014
+        '422': *id015
+        '429': *id016
+        '500': *id007
+        '503': *id008
+        default:
+          $ref: '#/components/responses/ApiFailure'
+  /auth/login:
+    post:
+      operationId: loginUser
+      summary: AUTH-02
+      tags:
+      - auth
+      security: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 下也要过门禁；失败 403 DEMO_SESSION_REQUIRED，不进入凭据校验、不计入锁定计数，也不等请求体校验。
+      description: |
+        成功后下发会话 Cookie `huice_session`（`HttpOnly; Secure; SameSite=Lax; Path=/api`；
+        `APP_ENV=local` 时关闭 `Secure`），同时返回 `csrfToken`，后续写请求走 `X-CSRF-Token`。
+
+        **Origin 必须存在且与 `PUBLIC_ORIGIN` 同源**，缺失或不匹配一律 403 `ORIGIN_MISMATCH`
+        （D1.6 第一行：此时还没有已认证状态，所以不要求 CSRF，但只要 Origin）。这条与 AUTH-01 相同，
+        不因「登录本身不改变服务端状态」而省略——登录会下发会话 Cookie，属于 CSRF 的目标。
+
+        **登录也不消费会话 Cookie**：请求里带的**有效**会话会被撤销并换成新会话（同一浏览器不留两个
+        活会话，也避免会话固定）；**无效或已过期的会话直接忽略**，不会被当成「提供了无效凭证」而 401。
+        否则用户会话一过期就再也无法重新登录。因此本操作**没有 `SESSION_INVALID` / `TOKEN_INVALID`
+        分支**：401 只表示账号密码错误（`INVALID_CREDENTIALS`），Bearer 同样被忽略。
+
+        账号不存在与密码错误使用**同一个** 401 `INVALID_CREDENTIALS` 与同一提示文案，
+        响应不透露账号是否存在。限流与锁定同 AUTH-01（IP 维度，`username` 只计数不锁定，
+        避免他人恶意锁死某个账号）。
+
+        restricted 部署下，门禁先于凭据校验：没有有效 demo cookie 时直接 403
+        `DEMO_SESSION_REQUIRED`，不校验账号密码、也不消耗失败次数。
+      parameters:
+        - $ref: '#/components/parameters/OriginHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              enterpriseUser:
+                summary: 企业用户（浏览器同源请求，Origin 见参数）
+                value:
+                  username: acme-2026
+                  password: correct horse battery staple
+      responses:
+        '200':
+          description: 登录成功；`Set-Cookie` 下发 `huice_session`
+          headers:
+            X-Trace-Id: *id001
+            Set-Cookie:
+              description: >-
+                huice_session=<token>; HttpOnly; Secure; SameSite=Lax; Path=/api; Max-Age=<ttl>。
+                local 模式不带 Secure。令牌明文只出现在这里，服务端只存 sha256。
+              schema:
+                type: string
+            Cache-Control:
+              description: 响应禁止缓存。
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+              examples:
+                ok:
+                  value:
+                    user:
+                      id: 77777777-7777-4777-8777-777777777777
+                      username: acme-2026
+                      role: enterprise
+                      enterpriseId: 11111111-1111-4111-8111-111111111111
+                    expiresAt: '2026-11-10T22:00:00Z'
+                    csrfToken: 9f2c1d0e5b6a4c7d8e9f0a1b2c3d4e5f
+        '400': *id004
+        '401':
+          description: 凭据错误（账号不存在与密码错误不区分）
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                invalid:
+                  value:
+                    error:
+                      code: INVALID_CREDENTIALS
+                      message: 用户名或密码错误。
+                      details: {}
+                    traceId: 11111111-1111-4111-8111-111111111111
+        '403': *id006
+        '422': *id015
+        '429': *id016
+        '500': *id007
+        '503': *id008
+        default:
+          $ref: '#/components/responses/ApiFailure'
+  /auth/logout:
+    post:
+      operationId: logoutUser
+      summary: AUTH-03
+      tags:
+      - auth
+      security: []
+      x-e1-gate:
+        local: none
+        restricted: exempt
+        note: 豁免演示门禁；否则 demo cookie 一过期就无法登出、也清不掉 Cookie。
+      x-e1-credential-rule:
+        exception: 本操作不适用「提供但无效一律 401」；无效会话按「无会话」处理并返回 204。
+      description: |
+        撤销**调用者自己出示的那一个**会话并清除 Cookie，`204`，无响应体。
+        它不查询也不撤销其他会话，因此**无效会话也返回 204**，不返回 401——
+        这是全局「提供的凭证无效一律 401」的**显式例外**，只适用于本操作。
+
+        | 传入的 `huice_session` | 服务端动作 | `X-CSRF-Token` | `Origin` | 响应 |
+        | --- | --- | --- | --- | --- |
+        | 未提供 | 不查库、不修改任何行 | 不需要 | 不校验 | `204` + 清 Cookie |
+        | 提供但格式不对 / 不存在 / 已过期 / 已撤销 | 视同「无有效会话」：不查不到就不动，返回成功 | 不需要 | 不校验 | `204` + 清 Cookie |
+        | 有效 | 置 `revoked_at`，撤销这一个会话 | **必填**，缺失或不匹配 → `403 CSRF_REQUIRED` | 必须与 `PUBLIC_ORIGIN` 同源，否则 `403 ORIGIN_MISMATCH` | `204` + 清 Cookie |
+
+        - **清 Cookie**：三种情形都在响应里带 `Set-Cookie: huice_session=; Path=/api; Max-Age=0`
+          （local 模式无 `Secure`，与下发时一致），否则浏览器会继续带着死值重试。
+        - **CSRF 只在有效会话时需要**：没有有效会话时既没有可被冒用的状态、也没有可比的
+          `csrfToken`，此时强求 CSRF 只会让「会话过期后收尾」失败。有有效会话时缺 CSRF
+          → `403 CSRF_REQUIRED`，且**不撤销**任何东西（先校验后动作）。
+        - **不含 401**：本操作没有 401 分支；错误只可能来自 CSRF/Origin（403）或服务端（5xx）。
+        - **403 的优先级与副作用**：有效会话下若 `Origin` 与 `X-CSRF-Token` 同时不对，
+          先返回 `403 ORIGIN_MISMATCH`（Origin 说明请求根本不该到这里，先于令牌比对）；
+          只有在同源成立后才可能是 `403 CSRF_REQUIRED`。**403 时不撤销会话、不下发 `Set-Cookie`**：
+          被拒的请求不产生任何状态变化，「登出失败」不会顺手把用户踢下线。
+        - **与门禁的关系**：restricted 下本操作豁免 `DemoSession` 门禁；带 Bearer 或同时带
+          demo cookie 时不改变行为，也不撤销 Bearer 或 demo 所代表的任何东西。
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/OriginHeaderOptional'
+      responses:
+        '204':
+          description: 已登出；无论原本是否有效（无有效会话时不产生任何服务端改动）
+          headers:
+            X-Trace-Id: *id001
+            Set-Cookie:
+              description: huice_session=; Path=/api; Max-Age=0
+              schema:
+                type: string
+        '403': *id006
+        '500': *id007
+        '503': *id008
+        default:
+          $ref: '#/components/responses/ApiFailure'
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      summary: AUTH-04
+      tags:
+      - auth
+      security:
+      - UserSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 下先过门禁；门禁缺失是 403，会话无效才是 401，两者不互换。
+      description: |
+        刷新页面后恢复登录态与 `enterpriseId`；返回与 AUTH-02 相同的 `csrfToken`（首版不轮换）。
+        响应禁止缓存。会话过期或已撤销一律 401，不降级到 demo 或 Bearer。
+
+        **两种失败要分开处理**（restricted 部署）：
+        - `403 DEMO_SESSION_REQUIRED`：外层门禁失效——回演示入口重新拿 demo cookie，
+          **会话本身可能还有效**，不要直接清掉并跳登录页；
+        - `401 SESSION_INVALID` / `401 UNAUTHENTICATED`：会话本身失效——跳登录页，
+          登录（AUTH-02）会覆盖旧 Cookie，不需要前端先删。
+        local 部署没有门禁，只可能出现 401。
+      responses:
+        '200':
+          description: 当前会话
+          headers:
+            X-Trace-Id: *id001
+            Cache-Control:
+              description: 响应禁止缓存。
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+              examples:
+                reviewer:
+                  value:
+                    user:
+                      id: 88888888-8888-4888-8888-888888888888
+                      username: reviewer-01
+                      role: reviewer
+                      enterpriseId: null
+                    expiresAt: '2026-11-10T22:00:00Z'
+                    csrfToken: 9f2c1d0e5b6a4c7d8e9f0a1b2c3d4e5f
+        '401': *id005
+        '403': *id006
+        '500': *id007
+        '503': *id008
+        default:
+          $ref: '#/components/responses/ApiFailure'
+  /auth/password:
+    post:
+      operationId: changePassword
+      summary: AUTH-05
+      tags:
+      - auth
+      security:
+      - UserSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 下先过门禁，再验会话；缺 CSRF/Origin 是 403，会话无效是 401。门禁先于请求体解析：缺 cookie 时请求体不合法也是 403。
+      description: |
+        校验旧密码后更新哈希，并**立即撤销该账号的全部会话**（含当前会话），清 Cookie；
+        用户须重新登录。没有「替他人改密」的接口，审核员也不能重置他人密码。
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/OriginHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeRequest'
+      responses:
+        '204':
+          description: 已更新；全部会话已撤销
+          headers:
+            X-Trace-Id: *id001
+            Set-Cookie:
+              description: huice_session=; Path=/api; Max-Age=0
+              schema:
+                type: string
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '422': *id015
+        '500': *id007
+        '503': *id008
+        default:
+          $ref: '#/components/responses/ApiFailure'
 components:
   securitySchemes:
     DemoSession:
@@ -999,6 +1517,39 @@ components:
       required: false
       schema: &id035
         $ref: '#/components/schemas/Timestamp'
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: >-
+        **带有效会话 Cookie 的写请求**必填，缺失或与会话内 csrfToken 不一致返回 403 CSRF_REQUIRED；
+        有会话时同时校验 Origin 与 PUBLIC_ORIGIN 同源，不匹配 403 ORIGIN_MISMATCH。
+        写请求分四类（D1.6）：注册/登录只校验 Origin、不要求 CSRF；带会话的写请求两者都要；
+        带 demo cookie 的写请求要 Origin（+Referer）但不要求 CSRF；带 Bearer 或不带凭证的
+        CLI/curl 请求两者都不校验。AUTH-03 登出在没有有效会话时不要求 CSRF。
+      schema:
+        type: string
+        minLength: 16
+    OriginHeader:
+      name: Origin
+      in: header
+      required: true
+      description: >-
+        必须是 PUBLIC_ORIGIN 的确切源（scheme + host + port，不带路径与末尾斜杠）。
+        缺失或不匹配一律 403 ORIGIN_MISMATCH（D1.6）。浏览器会自动带上；curl/脚本需显式提供。
+      schema:
+        type: string
+        format: uri
+    OriginHeaderOptional:
+      name: Origin
+      in: header
+      required: false
+      description: >-
+        有有效会话时必填并校验同源（否则 403 ORIGIN_MISMATCH）；无有效会话时不校验。
+        仅用于 AUTH-03 登出这类「无效会话也成功」的操作。
+      schema:
+        type: string
+        format: uri
   responses:
     ApiFailure: *id007
   schemas:
@@ -2653,3 +3204,222 @@ components:
         properties:
           sourceSpans:
             minItems: 2
+    UserRole:
+      type: string
+      enum:
+      - enterprise
+      - reviewer
+    User:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - username
+      - role
+      - enterpriseId
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        role:
+          $ref: '#/components/schemas/UserRole'
+        enterpriseId:
+          description: 未绑定企业时为 null（审核员可以先不建企业）。
+          anyOf:
+          - $ref: '#/components/schemas/UUID'
+          - type: 'null'
+      description: 不返回密码哈希、注册密钥、会话令牌或任何密钥类字段。
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - username
+      - password
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+        enterprise:
+          $ref: '#/components/schemas/EnterpriseInput'
+        reviewerSignupKey:
+          type: string
+          minLength: 16
+          description: 仅审核员注册；出现即按审核员创建账号。
+      description: >-
+        企业用户必须提供 enterprise；审核员可省略。不接受客户端指定 role，
+        也不接受客户端提供的 owner/verified 归属字段。
+    RegisterResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - user
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - username
+      - password
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 64
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+    PasswordChangeRequest:
+      type: object
+      additionalProperties: false
+      required:
+      - currentPassword
+      - newPassword
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 128
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 128
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - user
+      - expiresAt
+      - csrfToken
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        expiresAt:
+          $ref: '#/components/schemas/Timestamp'
+        csrfToken:
+          type: string
+          minLength: 16
+          description: 与会话内保存的值相同；首版不轮换，登录响应与 AUTH-04 返回同一个值。
+    Ownership:
+      type: string
+      enum:
+      - self
+      - unowned
+      - other
+      description: >-
+        self=当前账号绑定的企业；unowned=评测/演示用途、owner_user_id IS NULL；
+        other=他人的企业（只有审核员会看到）。
+    EnterpriseSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - nameSynthetic
+      - period
+      - ownership
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        nameSynthetic:
+          type: string
+        period:
+          $ref: '#/components/schemas/Period'
+        ownership:
+          $ref: '#/components/schemas/Ownership'
+      description: 列表不返回 facts，避免一次拉全量事实；详情仍走 API-09。
+    EnterpriseSummaryList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnterpriseSummary'
+        nextCursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+    RunStatus:
+      type: string
+      enum:
+      - queued
+      - running
+      - succeeded
+      - failed
+      description: |
+        **封闭枚举，E1 只有这四个取值**：
+        - `queued`：已受理、尚未开始（E1 起的新写入从这里开始）；
+        - `running`：执行中；
+        - `succeeded`：完成且有结果快照；
+        - `failed`：执行失败，或依赖在重试后仍不可用。
+
+        E1 不产生也不扫描 `interrupted`；E3b 落地 D5.3 的启动扫描后才会新增该取值。
+
+        **新增取值不是「文字上的前向兼容」**：`enum` 是封闭集合，严格的 OpenAPI 校验器与
+        按本契约生成的客户端类型都会拒绝 `enum` 以外的值。因此：
+        - E1 的服务端**保证**不产生这四值以外的字符串，前端不需要靠兜底逻辑「接住」未知值；
+        - E3b 增加 `interrupted` 时，必须**同时**升契约版本（`1.1.x` → `1.2.x` 之类）、
+          重新生成 `apps/web/src/api/types.ts` 并随前端同窗发布；只升后端不升前端是**不允许的发布组合**；
+        - 前端仍建议对未识别值降级为「未完成」（`reportAvailable=false`、详情 409
+          `RUN_NOT_COMPLETED`、列表原样展示、不自动重跑），但这属于**滚动升级窗口的防御性处理**，
+          不是本契约承诺的前向兼容，也不能替代版本与类型同步。
+      x-e1-lifecycle:
+        e1: [queued, running, succeeded, failed]
+        e1-does-not-emit: [interrupted]
+        reserved: interrupted
+        addedBy: E3b（D5.3 启动扫描）
+        adding-a-value-requires: 契约版本升版 + 重新生成前端类型 + 同窗口发布（不允许后端单边先行）
+        e1-orphan-handling: '进程崩溃留下的 running 在 E1 保持 running，不自动改写'
+        consumer-fallback: 防御性处理，不是契约承诺
+    RunSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - enterpriseId
+      - asOf
+      - createdAt
+      - status
+      - reportAvailable
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        enterpriseId:
+          $ref: '#/components/schemas/UUID'
+        asOf:
+          $ref: '#/components/schemas/Timestamp'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        reportAvailable:
+          type: boolean
+          description: 只有 succeeded 且结果快照完整时为 true；未完成/失败的 run 不给报告下载。
+    RunSummaryList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RunSummary'
+        nextCursor:
+          anyOf:
+          - type: string
+          - type: 'null'

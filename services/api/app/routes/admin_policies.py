@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
@@ -58,7 +58,7 @@ from ..identity import (
     require_reviewer,
     require_reviewer_or_bearer,
 )
-from ..security import require_demo_session
+from ..security import GatedRoute
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/admin",
     tags=["admin"],
-    dependencies=[Depends(require_demo_session)],
+    route_class=GatedRoute,
 )
 
 _MAX_PART_KB = MAX_FILE_BYTES // 1024

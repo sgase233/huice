@@ -24,9 +24,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from collections.abc import Awaitable, Callable
 from typing import NamedTuple
 
-from fastapi import Request
+from fastapi import Request, Response
+from fastapi.routing import APIRoute
 
 from .errors import ApiProblem
 
@@ -119,6 +121,30 @@ def require_demo_session(request: Request) -> None:
     if settings.demo_access_mode != "restricted":
         return
     _check_session(request, settings)
+
+
+class GatedRoute(APIRoute):
+    """先过门禁、再读请求体与做字段校验的路由类（#61 复审 P1 的另一半）。
+
+    FastAPI 的请求体解析与 schema 校验发生在 path operation 的 handler 里，所以：
+    ``APIRouter(dependencies=[Depends(require_demo_session)])`` 拦得住路由级依赖，
+    但 **422 会先于依赖**——M2 指出的正是这一点（restricted 下不带 demo cookie、
+    请求体缺字段时，注册/登录/改密得到的是 422 而不是约定的 403）。在 handler 里
+    调门禁的写法，422 更是必然抢先。
+
+    ``get_route_handler`` 的包装跑在解析请求体之前，因此 restricted 下「门禁是第 1 层」
+    在**任何**请求上成立：缺 cookie 一律 403 ``DEMO_SESSION_REQUIRED``，不管请求体是否
+    合法、甚至不管是不是 JSON。local 模式门禁直接放行，422 仍是正常的字段校验错误。
+    """
+
+    def get_route_handler(self) -> Callable[[Request], Awaitable[Response]]:
+        handler = super().get_route_handler()
+
+        async def gate_first(request: Request) -> Response:
+            require_demo_session(request)
+            return await handler(request)
+
+        return gate_first
 
 
 def _check_session(request: Request, settings) -> None:

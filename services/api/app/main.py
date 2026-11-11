@@ -67,8 +67,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="惠策协同 HTTP API",
         version=APP_VERSION,
         description=(
-            "契约见 contracts/openapi.yaml；本服务实现契约全部 16 个端点（API-01—API-16），"
-            "以及 E1 的账号与会话接口 AUTH-01—AUTH-05（契约草案 contracts/openapi.e1-draft.yaml）。"
+            "契约见 contracts/openapi.yaml；本服务实现契约全部 23 个操作：API-01—API-16，"
+            "以及 E1 的 AUTH-01—AUTH-07（账号与会话 5 个、按身份与归属过滤的列表 2 个）。"
             "其中 API-13 报告与 API-14 轨迹只读既有历史，不重新求值。"
         ),
         lifespan=lifespan,
@@ -89,6 +89,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api = APIRouter()
     api.include_router(health.router)
     api.include_router(auth.router)
+    # 登出单独挂：它豁免演示门禁，不能跟着 ``route_class=GatedRoute`` 的 router 走。
+    api.include_router(auth.logout_router)
     api.include_router(policies.router)
     api.include_router(enterprises.router)
     api.include_router(assessment_runs.router)
@@ -159,7 +161,8 @@ _REVIEWER_WRITE_SECURITY = [{"UserSession": []}]
 _GATE_EXEMPT_PATHS = {f"{API_PREFIX}/health", f"{API_PREFIX}/auth/logout"}
 _GATE_REQUIRED_NOTE = (
     "restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）："
-    "缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED，先于身份判定。"
+    "缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，"
+    "先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。"
 )
 _GATE_EXEMPT_NOTE = (
     "门禁豁免（仅 GET /health 与 POST /auth/logout 两项）；"
@@ -170,7 +173,12 @@ _GATE_MODEL = {
         "标准 OpenAPI 3.1 的 security 只表达「这次请求需要哪些凭证」（列表内 OR、对象内 AND）；"
         "它无法表达随部署模式变化的外层门禁，因此门禁逐操作写在 x-e1-gate。"
     ),
-    "evaluation-order": "门禁 → 身份 → 角色 → 对象归属 → CSRF/Origin",
+    "evaluation-order": "门禁 → 请求体解析与字段校验 → 身份 → 角色 → 对象归属 → CSRF/Origin",
+    "gate-before-validation": (
+        "门禁跑在请求体解析之前（GatedRoute 包装 get_route_handler）。restricted 下缺 cookie 的请求"
+        "不会因为请求体不合法先拿到 422：缺字段、错类型、空体、非 JSON 一律 403 DEMO_SESSION_REQUIRED；"
+        "local 模式没有门禁，同样的请求才是 422。"
+    ),
     "modes": {
         "local": "无门禁；身份仍按 security 判定（无效 demo cookie 在同一层回 401 DEMO_SESSION_INVALID）。",
         "restricted": (
@@ -210,9 +218,9 @@ def _install_openapi(app: FastAPI) -> None:
 def _gate_for(path: str) -> dict[str, str]:
     """一个操作的外层门禁：门禁只按部署模式与路径决定，与身份无关。
 
-    ``security: []`` 的注册/登录在 restricted 下同样要过门禁——它们自己也在 handler
-    里显式调 ``require_demo_session``，只把 ``security`` 标成「无凭证要求」会让读者
-    以为这两个接口在任何部署下都能直接调。
+    ``security: []`` 的注册/登录在 restricted 下同样要过门禁——它们用的是
+    ``GatedRoute``，在**解析请求体之前**就调 ``require_demo_session``；只把 ``security``
+    标成「无凭证要求」会让读者以为这两个接口在任何部署下都能直接调。
     """
 
     if path in _GATE_EXEMPT_PATHS:

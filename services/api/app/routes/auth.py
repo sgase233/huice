@@ -37,9 +37,13 @@ from ..schemas import (
     SessionResponse,
     User,
 )
-from ..security import require_demo_session
+from ..security import GatedRoute
 
-router = APIRouter(tags=["auth"])
+#: 注册/登录/会话恢复/改密：restricted 下先过演示门禁，且**先于**请求体校验
+#: （``GatedRoute`` 在解析请求体之前跑；写在 handler 里会被 422 抢先，见 #61 复审）。
+router = APIRouter(tags=["auth"], route_class=GatedRoute)
+#: 登出豁免门禁：门禁过期后也要能清 Cookie（门禁豁免清单只有它与 GET /health）。
+logout_router = APIRouter(tags=["auth"])
 
 INVALID_CREDENTIALS_MESSAGE = "用户名或密码错误。"
 SIGNUP_KEY_REJECTED_MESSAGE = "审核员注册密钥无效。"
@@ -53,7 +57,6 @@ SIGNUP_KEY_REJECTED_MESSAGE = "审核员注册密钥无效。"
     summary="AUTH-01",
 )
 def register_user(request: Request, body: RegisterRequest) -> RegisterResponse:
-    require_demo_session(request)
     require_origin(request)
     settings = request.app.state.settings
     accounts = request.app.state.accounts
@@ -111,7 +114,6 @@ def register_user(request: Request, body: RegisterRequest) -> RegisterResponse:
     summary="AUTH-02",
 )
 def login_user(request: Request, response: Response, body: LoginRequest) -> SessionResponse:
-    require_demo_session(request)
     require_origin(request)
     settings = request.app.state.settings
     accounts = request.app.state.accounts
@@ -161,7 +163,7 @@ def login_user(request: Request, response: Response, body: LoginRequest) -> Sess
     )
 
 
-@router.post("/auth/logout", status_code=204, operation_id="logoutUser", summary="AUTH-03")
+@logout_router.post("/auth/logout", status_code=204, operation_id="logoutUser", summary="AUTH-03")
 def logout_user(request: Request) -> Response:
     # 豁免演示门禁：门禁过期后也要能登出并清 Cookie。
     accounts = request.app.state.accounts
@@ -197,7 +199,6 @@ def logout_user(request: Request) -> Response:
     summary="AUTH-04",
 )
 def get_current_user(request: Request, response: Response) -> SessionResponse:
-    require_demo_session(request)
     identity = require_user(request)
     response.headers["Cache-Control"] = "no-store"
     return SessionResponse(
@@ -214,7 +215,6 @@ def get_current_user(request: Request, response: Response) -> SessionResponse:
     summary="AUTH-05",
 )
 def change_password(request: Request, body: PasswordChangeRequest) -> Response:
-    require_demo_session(request)
     identity = require_user(request)
     require_csrf(request, identity)
     accounts = request.app.state.accounts

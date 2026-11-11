@@ -26,11 +26,19 @@ IMPLEMENTED = {
     ("get", "/assessment-runs/{runId}"): "getRun",
     ("get", "/assessment-runs/{runId}/report.md"): "downloadReport",
     ("get", "/assessment-runs/{runId}/trace"): "getTrace",
+    # E1（#46）的 7 个操作：自 1.1.0-rc.1 起已并入 contracts/openapi.yaml，
+    # 不再是「只在草案里」的集合。
+    ("post", "/auth/register"): "registerUser",
+    ("post", "/auth/login"): "loginUser",
+    ("post", "/auth/logout"): "logoutUser",
+    ("get", "/auth/me"): "getCurrentUser",
+    ("post", "/auth/password"): "changePassword",
+    ("get", "/enterprises"): "listEnterprises",
+    ("get", "/assessment-runs"): "listRuns",
 }
 
-#: E1（#46）新增、目前只写在 ``contracts/openapi.e1-draft.yaml`` 里的五个操作；
-#: 终版并入 ``openapi.yaml`` 后应并进 ``IMPLEMENTED``，不要长期两处并存。
-E1_DRAFT_OPERATIONS = {
+#: E1（#46）新增的 7 个操作。它们同时写在正式契约与设计记录里，两边都要对得上。
+E1_OPERATIONS = {
     ("post", "/auth/register"): "registerUser",
     ("post", "/auth/login"): "loginUser",
     ("post", "/auth/logout"): "logoutUser",
@@ -104,17 +112,31 @@ def test_gate_matches_the_contract(contract, schema):
     assert set(served_model["modes"]) == set(model["modes"]) == {"local", "restricted"}
 
 
-def test_gate_of_e1_operations_matches_the_draft(schema):
-    """七个 E1 操作还没并进正式契约，但门禁口径必须与草案逐条一致。"""
+def test_e1_operations_agree_across_contract_draft_and_server(contract, schema):
+    """七个 E1 操作在正式契约、设计记录与运行中的服务三处必须一致。
+
+    并入之后 ``contracts/openapi.e1-draft.yaml`` 只剩设计记录的职责（门禁/身份真值表、
+    错误码、可复核样例）；端点与 schema 以 ``openapi.yaml`` 为准。这里锁住三处的
+    operationId 与门禁，防止「改了正式契约、草案没回扫」这种两份文档各说一套。
+    """
 
     draft = yaml.safe_load(
         (CONTRACT_PATH.parent / "openapi.e1-draft.yaml").read_text(encoding="utf-8")
     )
-    for (method, path) in E1_DRAFT_OPERATIONS:
-        expected = draft["paths"][path][method]["x-e1-gate"]
-        actual = schema["paths"][f"{API_PREFIX}{path}"][method]["x-e1-gate"]
-        assert actual["local"] == expected["local"], (method, path)
-        assert actual["restricted"] == expected["restricted"], (method, path)
+    for (method, path), operation_id in E1_OPERATIONS.items():
+        declared = contract["paths"][path][method]
+        recorded = draft["paths"][path][method]
+        served = schema["paths"][f"{API_PREFIX}{path}"][method]
+
+        assert declared["operationId"] == recorded["operationId"] == served["operationId"], path
+        assert declared["operationId"] == operation_id, path
+        for field in ("local", "restricted"):
+            assert (
+                declared["x-e1-gate"][field]
+                == recorded["x-e1-gate"][field]
+                == served["x-e1-gate"][field]
+            ), (path, field)
+        assert declared["security"] == recorded["security"] == served["security"], path
 
 
 def test_the_gate_is_exempt_only_for_health_and_logout(schema):
@@ -161,7 +183,9 @@ def test_published_security_keeps_the_bearer_read_only(contract):
         assert "DemoSession" not in schemes or path.endswith("/trace"), path
 
     for method, path in IMPLEMENTED:
-        if path.startswith("/admin/") or path == "/health":
+        # 后台、自检与 AUTH-01—05 不适用「业务接口 = 会话或演示会话」这条口径：
+        # 注册/登录/登出没有身份要求，/auth/me 与 /auth/password 只要会话。
+        if path.startswith("/admin/") or path == "/health" or path.startswith("/auth/"):
             continue
         schemes = [next(iter(entry)) for entry in contract["paths"][path][method]["security"]]
         assert "DemoSession" in schemes and "UserSession" in schemes, path
@@ -173,18 +197,19 @@ def test_unimplemented_endpoints_are_not_served(schema):
         for path, operations in schema["paths"].items()
         for method in operations
     }
-    assert served == set(IMPLEMENTED) | set(E1_DRAFT_OPERATIONS)
+    assert served == set(IMPLEMENTED)
 
 
-def test_e1_operations_are_declared_in_the_draft(schema):
-    """五个 AUTH 操作不进 ``openapi.yaml``，但必须在 E1 草案里逐条写明 operationId。"""
+def test_e1_operations_are_declared_in_the_contract_and_the_draft(contract, schema):
+    """七个 E1 操作两边都要写明：正式契约是行为来源，草案是设计记录。"""
 
     draft_path = CONTRACT_PATH.parent / "openapi.e1-draft.yaml"
     draft = yaml.safe_load(draft_path.read_text(encoding="utf-8"))
-    for (method, path), operation_id in E1_DRAFT_OPERATIONS.items():
-        declared = draft["paths"].get(path, {}).get(method)
-        assert declared is not None, f"草案缺少 {method.upper()} {path}"
-        assert declared["operationId"] == operation_id
+    for (method, path), operation_id in E1_OPERATIONS.items():
+        for label, doc in (("正式契约", contract), ("设计记录", draft)):
+            declared = doc["paths"].get(path, {}).get(method)
+            assert declared is not None, f"{label}缺少 {method.upper()} {path}"
+            assert declared["operationId"] == operation_id
         actual = schema["paths"][f"{API_PREFIX}{path}"][method]
         assert actual["operationId"] == operation_id
 

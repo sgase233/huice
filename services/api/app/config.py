@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 #: **必须等于 ``contracts/openapi.yaml`` 的 ``info.version``**：它曾停在 rc.3，而契约
 #: 已经走到 rc.5，健康检查于是对外报了一个不存在的版本。``tests/test_openapi_alignment.py``
 #: 里有一条用例把两者锁死，改动任意一侧都会转红。
-APP_VERSION = "1.0.0-rc.10"
+APP_VERSION = "1.1.0-rc.1"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 

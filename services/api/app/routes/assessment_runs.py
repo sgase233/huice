@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Query, Request, Response
+from fastapi import APIRouter, Path, Query, Request, Response
 
 from ..access import require_enterprise_access, require_run_access
 from ..agents.contracts import AgentContext
@@ -35,11 +35,11 @@ from ..schemas import (
     RunSummaryList,
     TraceResponse,
 )
-from ..security import require_demo_session
+from ..security import GatedRoute
 
-router = APIRouter(tags=["public"], dependencies=[Depends(require_demo_session)])
+router = APIRouter(tags=["public"], route_class=GatedRoute)
 #: 轨迹接口的门禁与公开接口相同；身份放宽到「会话或运维 Bearer」，角色与归属在处理器里判。
-admin_router = APIRouter(tags=["admin"], dependencies=[Depends(require_demo_session)])
+admin_router = APIRouter(tags=["admin"], route_class=GatedRoute)
 
 
 @router.post(

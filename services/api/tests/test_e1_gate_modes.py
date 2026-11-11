@@ -31,17 +31,11 @@ SAMPLE_PATH_PARAMS = {
     "factKey": "industry",
 }
 
-#: 请求体由 handler 里显式调用门禁的操作：必须给出**能过 schema** 的体，否则 422
-#: 会先于门禁发生（那正是这组断言要排除的情况）。其余操作的请求体是路由级依赖先跑，
-#: 给空对象就够。
-SAMPLE_BODIES = {
-    "registerUser": {"username": "gate.user", "password": "gate-password-0001"},
-    "loginUser": {"username": "gate.user", "password": "gate-password-0001"},
-    "changePassword": {
-        "currentPassword": "gate-password-0001",
-        "newPassword": "gate-password-0002",
-    },
-}
+#: 门禁由 ``GatedRoute`` 在解析请求体之前执行，所以这里对每个操作的请求体都可以给
+#: 空对象——restricted 下缺 cookie 的请求**一律** 403，跟请求体是否合法无关。
+#: （门禁写在 handler 里的旧写法必须给能过 schema 的体，否则 422 抢先；那正是这组
+#: 断言要排除的顺序问题，见下面 ``test_the_gate_outranks_request_validation``。）
+SAMPLE_BODIES: dict[str, dict] = {}
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
 
@@ -137,6 +131,70 @@ def test_local_mode_never_publishes_or_returns_the_gate_error():
         if response.content:
             error = response.json().get("error") or {}
             assert error.get("code") != "DEMO_SESSION_REQUIRED", (method, path)
+
+
+#: 请求体有 schema 的三条公开 AUTH 操作。M2 在 #61 指出：这些接口的门禁若写在 handler
+#: 里，FastAPI 会先做请求体校验 → 缺 cookie 的请求拿到 422 而不是约定的 403。
+GATE_FIRST_OPERATIONS = [
+    "/api/v1/auth/register",
+    "/api/v1/auth/login",
+    "/api/v1/auth/password",
+]
+
+#: 故意让请求体**过不了** schema 的五种写法：缺字段、错类型、空体、非 JSON。
+#: 它们全都是「请求校验必然失败」的输入，正好用来判门禁与校验谁先跑。
+INVALID_BODIES = [
+    pytest.param({"json": {}}, id="empty-object"),
+    pytest.param({"json": {"username": "gate.user"}}, id="missing-fields"),
+    pytest.param({"json": {"username": 42, "password": ["x"]}}, id="wrong-types"),
+    pytest.param(
+        {"content": b"", "headers": {"Content-Type": "application/json"}},
+        id="empty-body",
+    ),
+    pytest.param(
+        {"content": b"<html>not json</html>", "headers": {"Content-Type": "application/json"}},
+        id="not-json",
+    ),
+]
+
+
+@pytest.mark.parametrize("path", GATE_FIRST_OPERATIONS)
+@pytest.mark.parametrize("request_kwargs", INVALID_BODIES)
+def test_the_gate_outranks_request_validation(path, request_kwargs):
+    """restricted 部署下门禁是第 1 层：缺 demo cookie 时**先** 403，不看请求体。
+
+    M2 的原话是「请增加缺门禁 cookie + 缺字段、错误字段类型等用例，确认实际优先级」。
+    这里的 5×3 组输入在请求校验上全部会失败；如果门禁晚于校验，答案就是 422。
+    """
+
+    client = build_client(app_env="demo", demo_access_mode="restricted")
+    response = client.post(path, **request_kwargs)
+
+    assert response.status_code == 403, (path, request_kwargs, response.text)
+    assert response.json()["error"]["code"] == "DEMO_SESSION_REQUIRED", (
+        path,
+        request_kwargs,
+        response.text,
+    )
+
+
+@pytest.mark.parametrize("path", GATE_FIRST_OPERATIONS)
+@pytest.mark.parametrize("request_kwargs", INVALID_BODIES)
+def test_without_the_gate_the_same_requests_are_422(path, request_kwargs):
+    """对照组：local 部署没有门禁，同样的请求体仍然是正常的 422 字段校验错误。
+
+    证明上面的 403 来自门禁而不是「这些请求本来就失败」，也锁住 local 模式不被误挡。
+    """
+
+    client = build_client(app_env="local", demo_access_mode="local")
+    response = client.post(path, **request_kwargs)
+
+    assert response.status_code == 422, (path, request_kwargs, response.text)
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR", (
+        path,
+        request_kwargs,
+        response.text,
+    )
 
 
 @pytest.mark.parametrize("path", ["/api/v1/health", "/api/v1/auth/logout"])

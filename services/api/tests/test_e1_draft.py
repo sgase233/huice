@@ -1,11 +1,12 @@
 """E1 草案的独立校验：结构（contracts/check_e1_draft.py）+ 与现行实现的对照。
 
-这里把两份文件放在一起对：``contracts/openapi.e1-draft.yaml`` 说「现行 16 个端点是什么样」，
+这里把两份文件放在一起对：``contracts/openapi.e1-draft.yaml`` 说「并入前的 16 个端点是什么样」，
 ``services/api`` 的 FastAPI 路由是事实。M2 在 #55 要求「逐端点核对门禁、身份、角色、对象归属、
 CSRF 与失败响应」；能机器判的部分（端点清单、外层门禁、发布出去的 security）在本文件里判，
-不能机器判的部分（角色/归属/CSRF 的**未来**口径）由草案正文与 PR 里的评审表负责。
+不能机器判的部分（角色/归属/CSRF 的口径）由草案正文与 PR 里的评审表负责。
 
-本文件不做实现验收：E1 尚未实现，「身份/角色/归属/CSRF」这些列描述的是 E1 目标行为。
+自 1.1.0-rc.1 起 E1 的 7 个操作已并入 ``openapi.yaml``，草案只剩设计记录的职责：
+``x-e1-impact`` 仍只写并入前那 16 个端点的改造，7 个新操作单独对照。
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ import yaml
 
 from app.main import API_PREFIX, create_app
 from app.config import Settings
-from app.routes import admin_policies, assessment_runs, enterprises, health, policies
+from app.routes import admin_policies, assessment_runs, auth, enterprises, health, policies
+from app.security import GatedRoute
 from support import ADMIN_TOKEN, DEMO_SESSION_SECRET
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -25,8 +27,9 @@ CONTRACTS = REPO_ROOT / "contracts"
 DRAFT_PATH = CONTRACTS / "openapi.e1-draft.yaml"
 BASE_PATH = CONTRACTS / "openapi.yaml"
 
-#: 草案 `x-e1-impact.gate.restricted` 的取值 → 现行实现里路由器级的门禁依赖。
-#: （`current` 一列描述的是 E1 之前的实现，已随 E1 落地变成历史说明。）
+#: 草案 `x-e1-impact.gate.restricted` 的取值 → 现行实现里该操作的**外层门禁**。
+#: 门禁由路由类 ``GatedRoute`` 承担（在解析请求体之前跑），不再是路由器级依赖；
+#: ``current`` 一列描述的是 E1 之前的实现，已随 E1 落地变成历史说明。
 GATE_FORMS = {
     "DemoSession": ["require_demo_session"],
     "none": [],
@@ -45,21 +48,29 @@ def _load_checker():
 
 
 def _mounted_operations() -> dict[str, list[str]]:
-    """operationId → 该操作的 router 级依赖名（门禁就是这一层）。
+    """operationId → 该操作的外层门禁依赖名（门禁就是这一层）。
+
+    门禁现在由路由类 ``GatedRoute`` 承担：它包在 ``get_route_handler`` 外面，比请求体
+    解析更早，因此不再出现在 ``dependant.dependencies`` 里（那里只剩身份类依赖）。
+    这里按路由类补回门禁，才和草案的 ``gate.restricted`` 可比。
 
     直接查模块级 APIRouter，而不是遍历 app.routes：FastAPI 0.161 起 include_router 会
     保留成 ``_IncludedRouter`` 惰性节点，逐层展开属于实现细节，这里只依赖稳定的
-    ``APIRouter.routes`` 与 ``APIRoute.dependant.dependencies``。
+    ``APIRouter.routes``、``APIRoute.route_class`` 与 ``APIRoute.dependant.dependencies``。
     """
 
     operations: dict[str, list[str]] = {}
-    for module in (health, policies, enterprises, assessment_runs, admin_policies):
-        for attr in ("router", "admin_router"):
+    for module in (health, policies, enterprises, assessment_runs, admin_policies, auth):
+        # 登出单独挂在 ``logout_router`` 上（它豁免门禁，不能跟着 GatedRoute 的 router）。
+        for attr in ("router", "admin_router", "logout_router"):
             router = getattr(module, attr, None)
             if router is None:
                 continue
             for route in router.routes:
-                callables = [
+                gated = (
+                    ["require_demo_session"] if isinstance(route, GatedRoute) else []
+                )
+                callables = gated + [
                     getattr(dep.call, "__name__", repr(dep.call))
                     for dep in route.dependant.dependencies
                 ]
@@ -87,9 +98,17 @@ def test_draft_validator_passes():
     assert counts["draft_operations"] == 7
 
 
-#: E1 新加、只写在草案里的操作；它们不在 ``x-e1-impact``（那一表只写现有 16 个端点
-#: 的改造）。并入 ``openapi.yaml`` 之后这些行应当删除或改写成「已落地」。
-E1_ONLY_OPERATIONS = {"listEnterprises", "listRuns"}
+#: E1 新加的 7 个操作：自 1.1.0-rc.1 起已并入 ``openapi.yaml``，且不在
+#: ``x-e1-impact`` 里（那一表只写并入前 16 个端点的改造）。
+E1_ONLY_OPERATIONS = {
+    "registerUser",
+    "loginUser",
+    "logoutUser",
+    "getCurrentUser",
+    "changePassword",
+    "listEnterprises",
+    "listRuns",
+}
 
 
 def test_impact_rows_cover_exactly_the_mounted_operations():
@@ -101,15 +120,24 @@ def test_impact_rows_cover_exactly_the_mounted_operations():
         if operation_id not in E1_ONLY_OPERATIONS
     }
 
-    assert set(baseline_mounted) == set(contract), (
+    # 契约里的 16 个基线操作（并入前的集合）；E1 的 7 个已并进契约，单独算。
+    baseline_contract = {
+        operation_id: endpoint
+        for operation_id, endpoint in contract.items()
+        if operation_id not in E1_ONLY_OPERATIONS
+    }
+
+    assert set(baseline_mounted) == set(baseline_contract), (
         "草案基线端点与 services/api 实际挂载的操作不一致："
-        f"只在契约里 {sorted(set(contract) - set(baseline_mounted))}，"
-        f"只在实现里 {sorted(set(baseline_mounted) - set(contract))}"
+        f"只在契约里 {sorted(set(baseline_contract) - set(baseline_mounted))}，"
+        f"只在实现里 {sorted(set(baseline_mounted) - set(baseline_contract))}"
     )
-    # E1 的两个列表接口必须真的挂上（草案写了、代码没有，是最容易漏的一项）。
+    # E1 的 7 个操作必须真的挂上，而且正式契约里也有（1.1.0-rc.1 起）。
     assert E1_ONLY_OPERATIONS <= set(mounted)
-    baseline = set(contract.values())
+    assert E1_ONLY_OPERATIONS <= set(contract)
+    baseline = set(baseline_contract.values())
     assert len(baseline) == 16
+    assert len(contract) == 23
 
     draft = yaml.safe_load(DRAFT_PATH.read_text(encoding="utf-8"))
     rows = {row["endpoint"] for row in draft["x-e1-impact"]}
@@ -121,7 +149,7 @@ def test_impact_gate_column_matches_router_dependencies():
 
     E1 之前的写法是「门禁 + 身份」压在一个路由器级依赖里（Bearer 或 demo cookie），
     所以 ``x-e1-impact.current`` 描述的是改造前的代码，已无法拿现在的实现对；
-    现在路由器上只剩门禁一层，身份与角色都在处理器里。
+    现在门禁只在 ``GatedRoute`` 里，身份与角色都在处理器里。
     """
 
     contract = _contract_operations(BASE_PATH)

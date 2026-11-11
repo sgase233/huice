@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Query, Request, Response
+from fastapi import APIRouter, Path, Query, Request, Response
 
 from ..access import require_enterprise_access
 from ..agents.profile import normalize_fact_update, normalize_profile
@@ -31,9 +31,9 @@ from ..schemas import (
     FactKey,
     FactUpdate,
 )
-from ..security import require_demo_session
+from ..security import GatedRoute
 
-router = APIRouter(tags=["public"], dependencies=[Depends(require_demo_session)])
+router = APIRouter(tags=["public"], route_class=GatedRoute)
 
 _FACT_VERSION_RE = re.compile(r"^[a-f0-9]{64}$")
 
