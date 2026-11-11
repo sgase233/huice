@@ -198,6 +198,8 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `DATABASE_URL` | `postgresql://root:<密码>@192.168.0.80:5432/huice` |
 | `REDIS_URL` | `redis://:<密码>@192.168.0.38:6379/0`（也可用控制台「连接地址」的域名形式 `redis://:<密码>@redis-4be07660-....dcs.myhuaweicloud.com:6379/0`；2026-10-26 在 ECS 上实测 `--askpass PING` → `PONG`） |
 | `CORS_ORIGINS` | 前端真实源；前端未部署前用 `http://139.9.33.46`，做了 §3.3 的同源站点后改用 `https://139.9.33.46`（同源请求不再走 CORS，填了也无害） |
+| `PUBLIC_ORIGIN` | E1 起建议显式写成用户实际访问的源：`https://139.9.33.46`（带 scheme、无尾斜杠、无路径）。留空时退回 `CORS_ORIGINS` 的第一项。**它必须与浏览器地址栏的源逐字相同**——登录/注册/登出与演示写操作都先校验 `Origin`，不等一律 403 `ORIGIN_MISMATCH`。2026-11-11 云端实测：只配 `CORS_ORIGINS=http://139.9.33.46` 而按 `https://` 访问，登录被挡；补一行 `PUBLIC_ORIGIN=https://139.9.33.46` 重启后通过 |
+| `REVIEWER_SIGNUP_KEY` | 可选，≥16 位且不得与 `ADMIN_TOKEN` 相同；配了才能用注册接口建审核员，未配时这类注册一律 403（与密钥错误同码，不回显是否配置）。首个审核员仍按 §3.4 从服务器上建 |
 | `DEMO_ACCESS_MODE` | `restricted`（`APP_ENV=demo` 时强制） |
 | `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用；只用于后台 Bearer |
 | `DEMO_SESSION_SECRET` | ≥32 位随机串，仅服务端使用；**必须与 `ADMIN_TOKEN` 不同**（取值相同同样启动失败），用于签发与校验演示会话 cookie。restricted 模式必填，缺失、过短或与 `ADMIN_TOKEN` 相同时启动失败并只报变量名 |
@@ -614,6 +616,8 @@ bash /opt/huice/app/infra/deploy/rollback.sh <X> --from-backup /root/app-before-
 | 登录后接口仍 403 `DEMO_SESSION_REQUIRED`，或 cookie 写进去就没了 | 会话 cookie 带 `Secure`，而页面在 `http://<EIP>`（非 localhost）下打开，浏览器不保存；或前端与 API 不同源，`SameSite=Lax` 不发送（§3.2 末段） | 走 §3.2 的 443 同源；临时演示按 §3.2 手工设置，注意 DevTools 新建 cookie 的 `HttpOnly` / `SameSite` 在新版 Chromium 里勾不动，退而用 `document.cookie` 写入就没有 `HttpOnly`——这是 §3.2 写的受限测试例外（合成数据、短有效期、验完清掉并轮换密钥），不是等价方案 |
 | `nginx -t` 通过，但 443 上的行为时好时坏（有时是旧配置、有时两份都对不上） | `/etc/nginx/conf.d/` 里同时存在两份 `listen 443` + `server_name _` 的配置：nginx 只打一条 `conflicting server name "_"` 警告，不报错，实际只生效一份 | `grep -rl "listen 443" /etc/nginx/conf.d/` 只应有一份（`huice-api-tls.conf`）；`enable-tls.sh` 靠「同一个文件名」避免并存，手工加过配置的机器要自己删掉多出来的那份 |
 | 接口偶发 **429**，但响应体是 HTML、不是 `{"error": {...}}` 信封 | 这是 nginx 的 `limit_req` 兜底（每 IP 20 r/s、突发 40，见 `nginx-huice.conf`），不是后端的 `ACCOUNT_LOCKED`。后端那个 429 带 JSON 信封与 `Retry-After`，按失败次数锁 | 确认是不是压测/共享出口 IP 造成：`grep limiting /var/log/nginx/huice-api.error.log`。演示现场被同一出口的多台设备一起访问时，可以临时调高 `rate`/`burst` 后 `nginx -t && systemctl reload nginx`；**不要**删掉这段兜底 |
+| 登录/注册/登出返回 **403 `ORIGIN_MISMATCH`**，`CORS_ORIGINS` 里明明有这个地址 | E1 起这三个接口先校验 `Origin`：取 `PUBLIC_ORIGIN`，没配就取 `CORS_ORIGINS` 的**第一项**；只写了 `http://<EIP>` 而用户按 `https://<EIP>` 访问，两者不相等 | 在 `/etc/huice/api.env` 加 `PUBLIC_ORIGIN=https://<EIP>`（带 scheme、无尾斜杠、无路径），`systemctl restart huice-api`。同源部署下 `CORS_ORIGINS` 那条可以留着不动 |
+| 不带演示 cookie 请求 `/api/v1/auth/login` 得到 **403 `DEMO_SESSION_REQUIRED`**，而不是 401 | **预期行为**：`restricted` 模式下整个 API 在演示门禁后面，登录接口也在其中；没有演示会话时轮不到账号密码校验 | 先按 §3.1 用 `issue-session.py` 签一份演示会话并在请求里带上 `Cookie: huice_demo_session=...`，再验登录 |
 
 ### 口令转义（连接串里的特殊字符）
 
