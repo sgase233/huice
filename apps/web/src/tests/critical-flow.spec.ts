@@ -72,6 +72,7 @@ test('mobile layout has no horizontal overflow and keyboard navigation works', a
 test('工作流程切换时播放过渡，减少动态效果时不播放', async ({ page }) => {
   for (const mode of ['/?mode=demo#enterprise', '/#enterprise']) {
     await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
     await page.route('**/api/v1/policies**', route => route.fulfill({ json: { items: [], nextCursor: null } }));
     await page.goto(mode);
     await page.evaluate(() => {
@@ -100,7 +101,8 @@ test('流程选中背景随导航移动并与当前项对齐', async ({ page }) 
   for (const width of [375, 1440]) {
     await page.setViewportSize({ width, height: 850 });
     for (const mode of ['/?mode=demo#enterprise', '/#enterprise']) {
-      await page.route('**/api/v1/policies**', route => route.fulfill({ json: { items: [], nextCursor: null } }));
+      await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+    await page.route('**/api/v1/policies**', route => route.fulfill({ json: { items: [], nextCursor: null } }));
       await page.goto(mode);
       const nav = page.getByRole('navigation', { name: '主导航' });
       const indicator = nav.locator('.workflow-indicator');
@@ -120,6 +122,7 @@ test('流程选中背景随导航移动并与当前项对齐', async ({ page }) 
 test('侧边栏收缩后保留导航、悬浮提示及键盘操作', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 850 });
   for (const mode of ['/?mode=demo#enterprise', '/#enterprise']) {
+    await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
     await page.route('**/api/v1/policies**', route => route.fulfill({ json: { items: [], nextCursor: null } }));
     await page.goto(mode);
     const nav = page.getByRole('navigation', { name: '主导航' });

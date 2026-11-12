@@ -6,7 +6,7 @@ import OpportunitiesPage from './pages/OpportunitiesPage';
 import PolicyDetailPage from './pages/PolicyDetailPage';
 import ReportPage from './pages/ReportPage';
 import AdminReviewPage from './pages/AdminReviewPage';
-import RealApp from './RealApp';
+import AuthApp from './AuthApp';
 import HomePage from './pages/HomePage';
 import WorkflowIcon from './components/WorkflowIcon';
 import MagnifyingDock from './components/MagnifyingDock';
@@ -24,7 +24,7 @@ const pageFromHash = (): PageId => {
   const name = location.hash.slice(1);
   return pages.some(page => page.id === name) ? name as PageId : 'enterprise';
 };
-const isWorkbench = (url: URL) => url.searchParams.get('mode') === 'demo' || ['#enterprise', '#opportunities', '#policy', '#report', '#trace', '#admin', '#real-main'].includes(url.hash);
+const isWorkbench = (url: URL) => url.searchParams.get('mode') === 'demo' || ['#enterprise', '#opportunities', '#policy', '#report', '#trace', '#admin', '#reviewer', '#real-main'].includes(url.hash);
 
 export default function App() {
   const [hash, setHash] = useState(location.hash);
@@ -99,7 +99,7 @@ export default function App() {
     return () => window.removeEventListener('hashchange', update);
   }, []);
   if (new URLSearchParams(location.search).get('mode') === 'demo') return <DemoApp />;
-  return ['#enterprise', '#opportunities', '#policy', '#report', '#trace', '#admin', '#real-main'].includes(hash) ? <RealApp /> : <HomePage />;
+  return ['#enterprise', '#opportunities', '#policy', '#report', '#trace', '#admin', '#reviewer', '#real-main'].includes(hash) ? <AuthApp /> : <HomePage />;
 }
 
 function DemoApp() {

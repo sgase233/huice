@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test';
 
+// These legacy workflow tests use an unbound reviewer session; endpoint fixtures below remain synthetic.
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+});
+
 const id = '11111111-1111-4111-8111-111111111111';
 const pid = '22222222-2222-4222-8222-222222222222';
 const rid = '33333333-3333-4333-8333-333333333333';
@@ -11,6 +16,7 @@ const run = { id: rid, enterpriseId: id, period, asOf: '2026-10-30T00:00:00Z', c
 
 test('跳到主要内容不会退出工作台', async ({ page }) => {
   await page.goto('/#enterprise');
+  await expect(page.getByRole('link', { name: '跳到主要内容' })).toBeAttached();
   await page.keyboard.press('Tab');
   await expect(page.getByRole('link', { name: '跳到主要内容' })).toBeFocused();
   await page.keyboard.press('Enter');
@@ -23,6 +29,7 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
   let enterprise: object = {};
   let detailUrl = '';
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const request = route.request(); const url = new URL(request.url());
     const json = (value: object, headers = {}) => route.fulfill({ json: value, headers });
     if (url.pathname.endsWith('/enterprises') && request.method() === 'POST') {
@@ -122,6 +129,7 @@ for (const [state, label] of [['satisfied', '条件初步满足'], ['insufficien
     const snapshot = { ...run, assessments: [evaluated] };
     let enterprise: object = {};
     await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
       const req = route.request(); const url = new URL(req.url());
       if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise }); }
       if (url.pathname.endsWith(`/enterprises/${id}`)) return route.fulfill({ json: enterprise });
@@ -176,6 +184,7 @@ test('未保存画像切换页面后保留，提交期间禁止重复操作', as
 test('列表 403 和版本详情 404 明确显示，不回退到样例', async ({ page }) => {
   let denied = true;
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/policies')) return denied ? route.fulfill({ status: 403, json: { error: { code: 'FORBIDDEN', message: '无访问权限' }, traceId: 'trace-403' } }) : route.fulfill({ json: { items: [policy], nextCursor: null } });
     if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ status: 404, json: { error: { code: 'POLICY_NOT_FOUND', message: '政策版本不存在' }, traceId: 'trace-404' } });
@@ -195,6 +204,7 @@ test('刷新运行失败不展示旧结论，错误政策版本不能充当快�
   let runReadFails = true;
   let wrongVersion = true;
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const req = route.request(); const url = new URL(req.url());
     if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise }); }
     if (url.pathname.endsWith(`/enterprises/${id}`)) return route.fulfill({ json: enterprise });
@@ -294,6 +304,7 @@ test('较早的列表响应不会覆盖更新的请求', async ({ page }) => {
 test('分析网络中断不自动重试，401 显示错误且不生成结论', async ({ page }) => {
   let attempts = 0;
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const req = route.request(); const url = new URL(req.url());
     if (url.pathname.endsWith('/enterprises')) { const body = req.postDataJSON(); return route.fulfill({ json: { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) } }); }
     if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
@@ -322,6 +333,7 @@ test('人工核查条件保持证据不足并展示后端理由', async ({ page 
   const result = { ...assessment, result: 'insufficient_evidence', validity: 'current', staleReasons: [], criteriaResults: [{ ...assessment.criteriaResults[0], result: 'insufficient_evidence', reason: '需人工核查法人资格', factRefs: [] }] };
   const snapshot = { ...run, assessments: [result] };
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const req = route.request(); const url = new URL(req.url());
     if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise }); }
     if (url.pathname.endsWith(`/enterprises/${id}`)) return route.fulfill({ json: enterprise });
@@ -353,6 +365,7 @@ test('补问写入事实并重算，跳过不修改事实，报告按版本下�
   const third = { ...second, id: thirdId, supersedesRunId: secondId, assessments: [{ ...second.assessments[0], nextQuestion: null }] };
   let enterprise: any; let creates = 0; let patches = 0; let failReport = false; let reportSnapshot: object = third;
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const req = route.request(); const url = new URL(req.url());
     if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise, headers: { ETag: '"abc"', 'Access-Control-Expose-Headers': 'ETag' } }); }
     if (url.pathname.endsWith('/facts/taxableIncome')) { patches++; expect(req.headers()['if-match']).toBe('"abc"'); expect(req.postDataJSON()).toEqual({ value: '0', unit: 'CNY', period, source: 'user_input' }); enterprise = { ...enterprise, factVersion: 'def', facts: [...enterprise.facts, { key: 'taxableIncome', ...req.postDataJSON(), verified: false }] }; return route.fulfill({ json: enterprise, headers: { ETag: '"def"', 'Access-Control-Expose-Headers': 'ETag' } }); }
@@ -378,7 +391,7 @@ test('补问写入事实并重算，跳过不修改事实，报告按版本下�
   await expect(page.getByLabel('回答（元）')).toBeFocused(); await expect(page.getByLabel('回答（元）')).toHaveAttribute('aria-invalid', 'true');
   expect(patches).toBe(0);
   await page.getByLabel('回答（元）').fill('0'); await page.getByRole('button', { name: '保存并重新分析' }).click();
-  await expect(page.getByText('诚信记录是否良好')).toBeVisible(); await page.getByRole('button', { name: '跳过（未知或不确定）' }).click();
+  await expect(page.getByRole('paragraph').filter({ hasText: '诚信记录是否良好' })).toBeVisible(); await page.getByRole('button', { name: '跳过（未知或不确定）' }).click();
   await expect(page.getByText(/当前没有需要补充的问题/)).toBeVisible(); expect(patches).toBe(1);
   await page.getByLabel('本次会话的分析历史').selectOption(rid);
   await expect(page.getByText('依据已失效，待复核', { exact: true })).toBeVisible();
@@ -418,6 +431,7 @@ test('补问冲突保留输入并读取当前画像；重算失败只重试分�
   const next = { ...first, id: '66666666-6666-4666-8666-666666666666', assessments: [{ ...first.assessments[0], nextQuestion: null }] };
   let enterprise: any; let patches = 0; let creates = 0; let reads = 0;
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const req = route.request(); const path = new URL(req.url()).pathname;
     const headers = { ETag: '"version"', 'Access-Control-Expose-Headers': 'ETag' };
     if (path.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise, headers }); }
@@ -439,6 +453,7 @@ test('补问写入网络中断后先读取画像且不自动重发', async ({ pa
   const snapshot = { ...run, assessments: [{ ...assessment, result: 'insufficient_evidence', nextQuestion: question }] };
   let enterprise: any; let patches = 0; let reads = 0; let runReads = 0;
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const req = route.request(); const path = new URL(req.url()).pathname;
     const headers = { ETag: '"updated"', 'Access-Control-Expose-Headers': 'ETag' };
     if (path.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) }; return route.fulfill({ json: enterprise, headers }); }
@@ -476,6 +491,7 @@ test('历史切换保留各运行跳过记录，报告加载失败提示不可�
   const second = { ...first, id: otherId, assessments: [{ ...first.assessments[0], nextQuestion: q(ref2, '第二问') }] };
   let posts = 0; let failRun = false; let lastSkipped: unknown;
   await page.route('**/api/v1/**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const req = route.request(); const path = new URL(req.url()).pathname;
     if (path.endsWith('/enterprises') && req.method() === 'POST') { const body = req.postDataJSON(); return route.fulfill({ json: { ...body, id, factVersion: 'abc', facts: body.facts.map((f: object) => ({ ...f, verified: false })) } }); }
     if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
@@ -501,6 +517,7 @@ test('结果分布按完整 run 四态计数，筛选不改变范围且刷新失
   const snapshot = { ...run, policyVersionMap: Object.fromEntries(policyIds.map(policyId => [policyId, 'v1'])), assessments: states.map((result, index) => ({ ...assessment, policyId: policyIds[index], result, validity: index < 2 ? 'stale' : 'current' })) };
   let refreshMode: 'ok' | 'wrong-id' | 'error' = 'ok';
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const request = route.request(); const path = new URL(request.url()).pathname;
     if (path.endsWith('/enterprises')) { const body = request.postDataJSON(); return route.fulfill({ json: { ...body, id, factVersion: 'abc', facts: body.facts.map((fact: object) => ({ ...fact, verified: false })) } }); }
     if (path.endsWith('/policies')) return route.fulfill({ json: { items: [...policyIds.map((policyId, index) => ({ ...policy, id: policyId, title: `分析政策 ${index + 1}` })), { ...policy, id: '22222222-2222-4222-8222-222222222225', title: '未分析候选' }], nextCursor: null } });
@@ -539,6 +556,7 @@ test('结果分布按完整 run 四态计数，筛选不改变范围且刷新失
 test('空分析结果与未知结果状态不会误显示分布', async ({ page }) => {
   let scenario: 'empty' | 'unknown' | 'duplicate' = 'empty';
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const request = route.request(); const path = new URL(request.url()).pathname;
     if (path.endsWith('/enterprises')) { const body = request.postDataJSON(); return route.fulfill({ json: { ...body, id, factVersion: 'abc', facts: body.facts.map((fact: object) => ({ ...fact, verified: false })) } }); }
     if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
@@ -572,6 +590,7 @@ test('政策规则结构展示各类型与数值，未知节点不伪造结构',
     { op: 'quarterly_average', metric: 'assets', period: 'assessment', comparator: 'lte', value: '300', unit: 'person' },
   ];
   await page.route('**/api/v1/**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
     if (path.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: expressions.map((expression, index) => ({ id: `criterion-${index}`, title: `条件 ${index + 1}`, expression, sourceSpans: [ref] })) } });
@@ -600,6 +619,7 @@ for (const theme of ['light', 'dark']) test(`窄屏下深层资格规则可阅�
   let expression: object = { op: 'manual_review', reason: '请核对企业提交的证明材料' };
   for (let i = 0; i < 20; i++) expression = { op: 'not', child: expression };
   await page.route('**/api/v1/**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
     if (path.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: [{ id: 'deep', title: '嵌套条件', expression, sourceSpans: [ref] }] } });
@@ -626,6 +646,7 @@ for (const theme of ['light', 'dark']) test(`窄屏下嵌套分支保留规则�
   const leaf = (reason: string) => ({ op: 'manual_review', reason });
   const expression = { op: 'and', children: [leaf('外层条件一'), { op: 'or', children: [leaf('第二层条件一'), { op: 'and', children: [leaf('第三层条件一'), { op: 'or', children: [leaf('第四层条件一'), leaf('第四层条件二')] }] }, leaf('第二层条件三')] }, leaf('外层条件三')] };
   await page.route('**/api/v1/**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
     if (path.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: [{ id: 'branch', title: '嵌套分支', expression, sourceSpans: [ref] }] } });
@@ -646,6 +667,7 @@ test('历史分析的政策版本缺失时明确提示且不替换当前版本',
   let enterprise: object = {};
   let requestedVersion: string | null = null;
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const request = route.request(); const url = new URL(request.url());
     if (url.pathname.endsWith('/enterprises') && request.method() === 'POST') { const body = request.postDataJSON(); enterprise = { ...body, id, factVersion: 'abc', facts: body.facts.map((fact: object) => ({ ...fact, verified: false })) }; return route.fulfill({ json: enterprise }); }
     if (url.pathname.endsWith(`/enterprises/${id}`)) return route.fulfill({ json: enterprise });
@@ -668,6 +690,7 @@ test('重新分析进行中不把旧分布显示为本次结果', async ({ page 
   let release!: () => void;
   const pending = new Promise<void>(resolve => { release = resolve; });
   await page.route('**/api/v1/**', async route => {
+    if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const request = route.request(); const path = new URL(request.url()).pathname;
     if (path.endsWith('/enterprises')) { const body = request.postDataJSON(); return route.fulfill({ json: { ...body, id, factVersion: 'abc', facts: body.facts.map((fact: object) => ({ ...fact, verified: false })) } }); }
     if (path.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });

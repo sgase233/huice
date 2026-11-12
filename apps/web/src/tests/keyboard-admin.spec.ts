@@ -2,6 +2,9 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 const testSource = { id: 'test-source', title: '合成来源', text: '合成引文', sourceUrl: 'https://www.gov.cn/' };
 const testSpan = { sourceId: 'test-source', sourceUrl: 'https://www.gov.cn/', sourceVersion: 'v1', page: 1, section: null, quote: '合成引文', textHash: 'hash' };
 test.use({ locale: 'zh-CN' });
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+});
 
 async function tabTo(page: Page, target: Locator) {
   for (let i = 0; i < 160; i++) {
@@ -21,7 +24,7 @@ async function expectLabels(page: Page) {
   expect(missing).toEqual([]);
 }
 
-test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取', async ({ page }) => {
+test('审核员仅用键盘完成草稿编辑、保存和发布', async ({ page }) => {
   const id = '11111111-1111-4111-8111-111111111111';
   const criterion = { id: '22222222-2222-4222-8222-222222222222', title: '原条件', expression: { op: 'manual_review', reason: '人工核查' }, sourceSpans: [testSpan], reviewFinding: 'none', validationStatus: 'passed' };
   const draft = { id, version: 'v1', title: '键盘草稿', issuer: '演示', type: 'tax', region: '440300', revision: id, status: 'pending_review', sources: [testSource], criteria: [criterion], validationFindings: [] };
@@ -36,13 +39,8 @@ test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取',
     if (new URL(request.url()).pathname.endsWith('/policies')) return route.fulfill({ json: { items: [draft], nextCursor: null } });
     return route.fulfill({ headers: { ETag: '"old"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft });
   });
-  await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [{ sequence: 1, stage: 'evaluation', status: 'ok', inputSummary: '输入', outputSummary: '输出', objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'test', elapsedMs: 1, errorCode: null, humanAction: null }] } }));
   await page.goto('/#admin');
-  const token = page.getByLabel('管理令牌');
-  await tabTo(page, token);
-  expect(await token.evaluate(element => { const style = getComputedStyle(element); return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2; })).toBe(true);
-  await page.keyboard.insertText('test-token');
-  await tabTo(page, page.getByRole('button', { name: '使用令牌' })); await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: '读取草稿' })).toBeVisible();
   await tabTo(page, page.getByRole('button', { name: '读取草稿' })); await page.keyboard.press('Enter');
   const openDraft = page.getByRole('button', { name: /键盘草稿/ });
   await expect(openDraft).toBeVisible(); await tabTo(page, openDraft); await page.keyboard.press('Enter');
@@ -76,13 +74,7 @@ test('仅用键盘完成授权、草稿编辑、保存、发布与轨迹读取',
   const publish = page.getByRole('button', { name: '确认发布' });
   await expect(publish).toBeEnabled(); await tabTo(page, publish); await page.keyboard.press('Enter');
   await expect(page.getByRole('status')).toContainText('发布请求已成功'); await expect(page.getByRole('alert')).toHaveCount(0); expect(published).toBe(true);
-  const traceNav = page.getByRole('button', { name: '处理轨迹' });
-  await tabTo(page, traceNav); await page.keyboard.press('Enter');
-  const run = page.getByLabel('分析记录编号');
-  await expect(run).toBeVisible(); await tabTo(page, run); await page.keyboard.insertText(id);
-  await expectLabels(page);
-  await tabTo(page, page.getByRole('button', { name: '读取轨迹' })); await page.keyboard.press('Enter');
-  await expect(page.getByRole('heading', { name: '1. 规则判断 · 完成' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '处理轨迹' })).toHaveCount(0);
 });
 
 test('键盘可以填写导入表单、选择正文并抽取', async ({ page }) => {
@@ -95,8 +87,7 @@ test('键盘可以填写导入表单、选择正文并抽取', async ({ page }) 
     return route.fulfill({ headers: { ETag: '"old"', 'Access-Control-Expose-Headers': 'ETag' }, json: draft });
   });
   await page.goto('/#admin');
-  await tabTo(page, page.getByLabel('管理令牌')); await page.keyboard.insertText('test-token');
-  await tabTo(page, page.getByRole('button', { name: '使用令牌' })); await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: '导入草稿' })).toBeVisible();
   await expectLabels(page);
   for (const [label, value] of [['版本', 'v1'], ['标题', '键盘导入'], ['发布机关', '演示机关'], ['地区', '440300']] as const) {
     await tabTo(page, page.getByLabel(label, { exact: true })); await page.keyboard.insertText(value);
