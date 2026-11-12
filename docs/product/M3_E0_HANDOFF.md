@@ -16,9 +16,9 @@
 | UI | 完整度/趋势展示规则 | [UI_BRIEF.md](../ui/UI_BRIEF.md) §5 | 待 M2 复核 | M2 |
 | 估工 | E1—E4 M3 初步估工 | 本文 §4 | 初步，不代替负责人排期 | 负责人、M1、M2 |
 | E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-12；仅执行旧版环境的部分匿名探测，联合验收未执行；未签收 | M1（环境/账号）、M2（#60 前端）、M3（执行） |
-| E3a | 结果分布、资格逻辑树、轨迹展示业务复核 | [E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) | M3 静态评审输入，2026-11-12；对象为 PR #60 head `9caa1e0`，未入 `main`、未执行；未签收 | M2（展示/交互）、M1（轨迹与版本数据）、负责人（时间线范围） |
+| E3a | 结果分布、资格逻辑树、轨迹展示业务复核 | [E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) | M3 静态评审输入，2026-11-12；对象为 PR #60 head `9caa1e0`；#60 已于 2026-11-12T10:01:57Z 合并到 `main`（`05982a5`），但未验证同版部署、未执行；未签收 | M2（展示/交互）、M1（轨迹与版本数据）、负责人（时间线范围） |
 
-> **2026-11-12 状态更新：** `origin/main` 已由 `ea44ae0` 前进到 `5d1adeb`（合并 PR #63，仅 M3 文档）；#61 的后端与候选契约 `1.1.0-rc.1`、迁移 `009_users_sessions.sql` 仍在 `main`。E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，PR #62 已并入 M2 工作分支但 PR #60 仍 open、未入 `main`。D3/D4/D5 仍按本文状态待评审，不因 #61/#62/#63 合并而签收；本轮 D3 新增 2026 年度研发费用资助申请指南的官方原文核对（见 [DISCOVERY_SOURCES](DISCOVERY_SOURCES.md) §3.7 与 [POLICY_SCOPE](POLICY_SCOPE.md)），但**未写入 `source_register`/评测输入**（日期型字段无法表达 18:00 截止，待 M1/M2 确认）。D4 本轮没有新的实现或数据证据；D5 只依据 Hya-555 复核修正 API-12 的 404 事实，METRICS_SPEC 仍为草案。E3a 的静态复核见新文档，不代表 E3a 验收通过。
+> **2026-11-12 状态更新（20:52）：** `origin/main` 已由 `ea44ae0` → `5d1adeb` → `05982a5`（2026-11-12T10:01:57Z 合并 PR #60；此前 #63 仅 M3 文档）；#61 的后端与候选契约 `1.1.0-rc.1`、迁移 `009_users_sessions.sql` 仍在 `main`。E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，**#60 已合并但同版部署、隔离环境与账号仍未确认**。D3/D4/D5 仍按本文状态待评审，不因 #60/#61/#63 合并而签收；本轮 D3 新增 2026 年度研发费用资助申请指南的官方原文核对（见 [DISCOVERY_SOURCES](DISCOVERY_SOURCES.md) §3.7 与 [POLICY_SCOPE](POLICY_SCOPE.md)），但**未写入 `source_register`/评测输入**（来源登记 CSV 的日期字段无法表达 18:00 截止；正式契约 `ApplicationWindow` 用 `Timestamp`，可表达时间，待 M1/M2 确认承载与消费）。D4 本轮没有新的实现或数据证据；D5 依据 Hya-555 二次复核再次修正 API-12 的 404 事实，METRICS_SPEC 仍为草案。E3a 的静态复核见新文档，不代表 E3a 验收通过。
 
 ## 2. D3/D4/D5 已明确与仍待确认
 
@@ -49,11 +49,15 @@
 
 **仍待 M3 补**
 
-- 高企培育年度申请指南（含窗口）**未取得**；研发投入补助 **2026 年度**指南已于 2026-11-12 补取（2026-06-05 发布，窗口 2026-06-10 至 07-09 18:00），后续年度指南仍未取得。**该窗口暂未写入 `source_register`/评测输入**：日期型字段无法表达 18:00，待 M1/M2 确认精确时间承载。
+- 高企培育年度申请指南（含窗口）**未取得**；研发投入补助 **2026 年度**指南已于 2026-11-12 补取（2026-06-05 发布，窗口 2026-06-10 至 07-09 18:00），后续年度指南仍未取得。**该窗口暂未写入 `source_register`/评测输入**：来源登记 CSV 的日期字段与现有消融管线无法表达 18:00（会补成 23:59:59）；正式契约 `ApplicationWindow` 用 `Timestamp` 可表达时间，待 M1/M2 确认承载与消费。
 - 智能终端附件 2/3、PDF 全文；专精特新 3 个 DOCX 逐条；绿色制造 `.doc` 完整逐条条件。
 - 双人复核与真实抓取器验证。
 
-> **2026-11-12 观察（未评审）：** M1 已为分支 `m1/e2-policy-discovery`（head `0005c88`）开 **PR #64**（open、base `main`、mergeable），内容为迁移 010、6 个发现/候选端点、`python -m app.discovery` CLI 与 systemd timer；**尚未合入 `main`**。M3 只做了静态浏览：其 `discovery/metadata.py` 的候选元数据字段包含 `publishedAt/effectiveFrom` 等必填项，**未看到** `effectiveTo`、`opensAt/closesAt`、`documentDate/pagePublishedAt` 或多窗口字段。该 PR 不构成本轮交付或验收结论；上述差异需 M1 确认是否为候选阶段的人工补录范围。M3 不在本文把它判为缺陷。**合入后需同步**：E1 清单中“DISC-* 未实现”改为“已实现待签收”；`schema_migration` 从九行变为十行（010 未执行）；候选权限仍需另测。
+> **2026-11-12 观察（未评审，20:52 核对）：** M1 的 **PR #64**（`m1/e2-policy-discovery`，open、base `main`）包含迁移 010、**8 个**发现/候选端点（DISC-01—08）、`python -m app.discovery` CLI 与 systemd timer；20:52 拉取 head 为 `45d4c5c`（M2 复审时记录为 `9791978`，其后又有提交）；**尚未合入 `main`，迁移 010 未在任何环境执行**。
+>
+> **候选元数据更正：** 我此前只看了抽取层 `discovery/metadata.py`，那里只摘原文写着的 `publishedAt/effectiveFrom`；候选模型 `CandidateMetadata` 实际有 `effective_to`、`application_window`（`schemas.py:718-719`），DISC-06 PATCH 可写并校验 `effective_to >= effective_from`，提交时原样带进草稿。**抽取器不代填，留给审核员补**，不是字段缺失。M1 决定本轮不收紧必填，提交仍只要求 `REQUIRED_FIELDS` 的 9 项；是否在下一版契约收紧，需在 E2 契约签收前决定。
+>
+> **合入后需同步**：E1 清单中“DISC-* 未实现”改为“已实现待签收”；`schema_migration` 从九行变为十行（010 未执行）；候选权限仍需另测。该 PR 不构成本轮交付或验收结论。
 
 ### 2.2 D4 完整度
 
@@ -108,6 +112,7 @@
 - 采集前 `total/succeeded` 返回“已记录数 + partial”还是整日 `null`。
 - 当前日暂计数返回还是整日 `null`。
 - 指标级 `availability` 与 `reason` 的契约表达。
+- **API-12 事实（2026-11-12 二次复核）：** `get_run()` 在 `assessment_run` 行不存在**或行存在但无 `assessment` 行**时均返回 404；`AssessmentRun.assessments` 有 `min_length=1`，空数组/200 不可表达；`save_run()` 只成功落行且写 `succeeded`，失败 run 与不存在 run 都可能 404；“已落行但未完成”样本需直接 SQL/历史数据。API-12 的稳定错误码仍待 M1 定，AUTH-AT-03 的 409 断言必须用该样本。
 
 ### 2.4 依据等级：哪些是负责人已明确、M1 提案或 M3 建议
 

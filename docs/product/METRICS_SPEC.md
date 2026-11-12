@@ -295,7 +295,7 @@
 2. **2026-11-12 核实：** #61 已把发布写操作改为审核员 `UserSession`（运维 Bearer 只读），但迁移 009 未包含 `review_event`，发布路径也未见 `actor_user_id` 写入。请 M1 明确 `review_event` 是否仍按 D5 提案落地，以及旧 Bearer/脚本发布是否一律归 `legacy_unknown` 且不计完成。
 3. `policy_version.imported_at` 的历史覆盖起点；是否有清理/迁移导致缺口。
 4. `assessment_run` 是否有明确 `startedAt`；若只用 `created_at`，跨午夜与“实际开始”的误差如何说明。
-5. **2026-11-12 核实（含 Hya-555 复核修正）：** API-13 已在 #61 明确为 `409 RUN_NOT_COMPLETED`；API-12 尚未在契约中规定未完成语义。`get_run()` 只在 `assessment_run` 行本身不存在时返回 `404 RUN_NOT_FOUND`；run 存在但没有 assessment 行会返回 **200 + 空 `assessments`**。`save_run()` 只在成功路径落行（`agents/orchestrator.py:186`），失败分析不落行，因此失败 run 与不存在 run 都可能 404，调用方无法区分。请 M1 定 API-12 的稳定错误码，说明 `queued/running` 是否实际落行，以及 `interrupted` 仍归 E3b 的启动扫描。
+5. **2026-11-12 核实（含 Hya-555 二次复核修正）：** API-13 已在 #61 明确为 `409 RUN_NOT_COMPLETED`；API-12 尚未在契约中规定未完成语义。`get_run()` 在两种情况下都返回 `404 RUN_NOT_FOUND`：`assessment_run` 行本身不存在，**或行存在但没有任何 `assessment` 行**（`storage.py:1738-1739`；`main` 同位置约 1692 行，文案“该判断运行没有结果”）。`AssessmentRun.assessments` 是 `Field(min_length=1)`（`schemas.py:435`），空数组/200 不可表达。`save_run()` 只在成功路径落行（`agents/orchestrator.py:186`）且写 `succeeded`，失败分析不落行，因此失败 run 与不存在 run 都可能 404，调用方无法区分；“已落行但未完成”的样本只能用直接 SQL 或历史数据构造。请 M1 定 API-12 的稳定错误码，说明 `queued/running` 是否实际落行，以及 `interrupted` 仍归 E3b 的启动扫描。
 6. 指标级 `availability`（`available/partial/not_collected`）能否按日、按指标返回；缺测原因能否带 `reason`。
 7. 当天未结束的暂计数是否可返回；`pendingAtEndOfDay` 是否强制 `null`。
 8. 历史旧记录（`created_at=finished_at`）是否按“不可信耗时”排除；是否保留原记录。
