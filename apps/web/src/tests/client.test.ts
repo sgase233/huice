@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiRequestError, setAdminToken, validExpression } from '../api/client';
+import { api, ApiRequestError, invalidateRequests, setCsrfToken, validExpression } from '../api/client';
 
-afterEach(() => { vi.unstubAllGlobals(); setAdminToken(null); });
+afterEach(() => { vi.unstubAllGlobals(); setCsrfToken(null); });
 
 const response = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'X-Trace-Id': 'trace-1', ...extra } });
 
 describe('HTTP contract boundary', () => {
+  it('rejects an enterprise different from the requested identity', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'other', facts: [] })));
+    await expect(api.getEnterprise('expected')).rejects.toThrow('返回的企业与请求不一致');
+  });
   it('rejects a different run returned for the requested id', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'other', policyVersionMap: {}, assessments: [] })));
     await expect(api.getRun('requested')).rejects.toThrow('返回的分析记录与请求不一致');
@@ -79,7 +83,7 @@ describe('HTTP contract boundary', () => {
     expect(fetcher.mock.calls[0][1].credentials).toBe('include');
   });
 
-  it('keeps If-Match, body period, and runtime-only bearer in their distinct positions', async () => {
+  it('keeps If-Match and body period in their distinct positions', async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ id: 'e1', facts: [] }, 200, { ETag: '"version-2"' }));
     vi.stubGlobal('fetch', fetcher);
     const result = await api.updateFact('e1', 'taxableIncome', { value: '0', unit: 'CNY', period: { startDate: '2026-01-01', endDate: '2026-12-31' }, source: 'user_input' }, '"version-1"');
@@ -88,10 +92,36 @@ describe('HTTP contract boundary', () => {
     expect((init.headers as Headers).get('If-Match')).toBe('"version-1"');
     expect(JSON.parse(init.body as string).value).toBe('0');
     expect(result.etag).toBe('"version-2"');
-    setAdminToken('runtime-token');
+    setCsrfToken('runtime-csrf-token');
     fetcher.mockResolvedValueOnce(response({ items: [], nextCursor: null }));
     await api.listAdminPolicies();
-    expect((fetcher.mock.calls[1][1].headers as Headers).get('Authorization')).toBe('Bearer runtime-token');
+    expect((fetcher.mock.calls[1][1].headers as Headers).has('Authorization')).toBe(false);
+    expect((fetcher.mock.calls[1][1].headers as Headers).has('X-CSRF-Token')).toBe(false);
+  });
+
+  it('uses CSRF on session writes and accepts an empty 204 response', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetcher);
+    setCsrfToken('runtime-csrf-token');
+    await api.changePassword({ currentPassword: 'old-password', newPassword: 'new-password-123' });
+    const init = fetcher.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Headers).get('X-CSRF-Token')).toBe('runtime-csrf-token');
+    expect(init.credentials).toBe('include');
+    expect((init.headers as Headers).has('Authorization')).toBe(false);
+  });
+
+  it('rejects a malformed session before granting a role', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ user: { id: '1', username: 'a', role: 'owner', enterpriseId: null }, csrfToken: '1234567890123456', expiresAt: 'now' })));
+    await expect(api.currentSession()).rejects.toThrow('账号信息无效');
+  });
+
+  it('rejects a response from before an account change', async () => {
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>(done => { resolve = done; })));
+    const pending = api.getEnterprise('old');
+    invalidateRequests();
+    resolve(response({ id: 'old', facts: [] }));
+    await expect(pending).rejects.toMatchObject({ code: 'STALE_REQUEST' });
   });
 
   it('does not set a JSON content type on multipart uploads', async () => {

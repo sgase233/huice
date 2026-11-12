@@ -5,7 +5,7 @@ import type { TraceStep } from '../api/types';
 const stageLabels: Record<TraceStep['stage'], string> = { ingestion: '政策导入', extraction: '条款抽取', citation_validation: '引用校验', human_review: '人工审核', profile: '企业画像', retrieval: '政策检索', evaluation: '规则判断', questioning: '补充提问', explanation: '结果解释' };
 const statusLabels: Record<TraceStep['status'], string> = { ok: '完成', needs_review: '需要审核', retryable_error: '可重试错误', fatal_error: '处理失败' };
 
-/** Render only after the restricted session and admin token have been supplied. */
+/** The caller restricts this view to reviewer sessions. */
 export default function TracePage({ runId, onUnauthorized }: { runId: string | null; onUnauthorized: (status: number) => void }) {
   const [id, setId] = useState(runId ?? '');
   const [steps, setSteps] = useState<TraceStep[] | null>(null);

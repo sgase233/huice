@@ -2,15 +2,20 @@ import type {
   AssessmentInput, AssessmentRun, Enterprise, EnterpriseInput, Expression, ExtractPolicyInput,
   ExtractionResult, FactKey, FactUpdate, HealthResponse, PolicyDetail, PolicyDraft,
   PolicyDraftList, PolicyImportMetadata, PolicyList, PublishPolicyInput,
-  SaveCriteriaInput, SaveCriteriaResult, TraceResponse,
+  SaveCriteriaInput, SaveCriteriaResult, TraceResponse, RegisterRequest, RegisterResponse,
+  LoginRequest, PasswordChangeRequest, SessionResponse, EnterpriseSummaryList, RunSummaryList,
 } from './types';
 import { factUnits } from '../demo';
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1').replace(/\/$/, '');
-let adminToken: string | null = null;
+let csrfToken: string | null = null;
+let requestGeneration = 0;
 
-export function setAdminToken(token: string | null) {
-  adminToken = token;
+export function invalidateRequests() { requestGeneration++; }
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+  invalidateRequests();
 }
 
 export class ApiRequestError extends Error {
@@ -63,6 +68,19 @@ const safeFinding = (finding: unknown) => isObject(finding) && typeof finding.co
 function assertShape(value: unknown, kind: string): void {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`接口契约错误：${kind} 不是对象`);
   const record = value as Record<string, unknown>;
+  if (kind === 'SessionResponse' || kind === 'RegisterResponse') {
+    const user = record.user;
+    if (!isObject(user) || typeof user.id !== 'string' || typeof user.username !== 'string' || !['enterprise', 'reviewer'].includes(String(user.role)) || !(user.enterpriseId === null || typeof user.enterpriseId === 'string')) throw new Error('接口契约错误：账号信息无效');
+    if (kind === 'SessionResponse' && (typeof record.csrfToken !== 'string' || record.csrfToken.length < 16 || typeof record.expiresAt !== 'string')) throw new Error('接口契约错误：会话信息无效');
+  }
+  if (kind === 'EnterpriseSummaryList' || kind === 'RunSummaryList') {
+    if (!Array.isArray(record.items) || !(record.nextCursor === null || typeof record.nextCursor === 'string')) throw new Error(`接口契约错误：${kind} 列表无效`);
+    for (const item of record.items) {
+      if (!isObject(item) || typeof item.id !== 'string') throw new Error(`接口契约错误：${kind} 条目无效`);
+      if (kind === 'EnterpriseSummaryList' && (typeof item.nameSynthetic !== 'string' || !['self', 'other', 'unowned'].includes(String(item.ownership)) || !isObject(item.period) || typeof item.period.startDate !== 'string' || typeof item.period.endDate !== 'string')) throw new Error('接口契约错误：企业列表条目无效');
+      if (kind === 'RunSummaryList' && (typeof item.enterpriseId !== 'string' || typeof item.status !== 'string' || typeof item.reportAvailable !== 'boolean' || typeof item.createdAt !== 'string' || typeof item.asOf !== 'string')) throw new Error('接口契约错误：运行列表条目无效');
+    }
+  }
   if (kind === 'PolicyList' || kind === 'PolicyDraftList' || kind === 'TraceResponse') {
     if (!Array.isArray(kind === 'TraceResponse' ? record.steps : record.items)) throw new Error(`接口契约错误：${kind} 缺少列表`);
   }
@@ -125,8 +143,9 @@ function assertShape(value: unknown, kind: string): void {
 }
 
 async function request<T>(path: string, kind: string, init: RequestInit = {}): Promise<ApiResponse<T>> {
+  const generation = requestGeneration;
   const headers = new Headers(init.headers);
-  if (adminToken && (path.startsWith('/admin/') || path.endsWith('/trace'))) headers.set('Authorization', `Bearer ${adminToken}`);
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes((init.method || 'GET').toUpperCase())) headers.set('X-CSRF-Token', csrfToken);
   if (typeof init.body === 'string') headers.set('Content-Type', 'application/json');
   let response: Response;
   try {
@@ -134,6 +153,7 @@ async function request<T>(path: string, kind: string, init: RequestInit = {}): P
   } catch {
     throw new ApiRequestError(0, 'NETWORK_ERROR', '无法连接服务，请检查网络或稍后重试。', null);
   }
+  if (generation !== requestGeneration) throw new ApiRequestError(0, 'STALE_REQUEST', '请求已被账号切换替代。', null);
   const traceId = response.headers.get('X-Trace-Id');
   const etag = response.headers.get('ETag');
   const contentType = response.headers.get('Content-Type') || '';
@@ -141,15 +161,21 @@ async function request<T>(path: string, kind: string, init: RequestInit = {}): P
     let error: unknown;
     try { error = await response.json(); } catch { /* Malformed errors still remain visible. */ }
     const body = error as { error?: { code?: string; message?: string; details?: Record<string, unknown> }; traceId?: string } | undefined;
+    if (generation !== requestGeneration) throw new ApiRequestError(0, 'STALE_REQUEST', '请求已被账号切换替代。', null);
+    if (path !== '/auth/me' && typeof window !== 'undefined' && (body?.error?.code === 'SESSION_INVALID' || body?.error?.code === 'UNAUTHENTICATED' || body?.error?.code === 'DEMO_SESSION_REQUIRED' || body?.error?.code === 'DEMO_SESSION_INVALID')) window.dispatchEvent(new CustomEvent('huice-auth-error', { detail: body.error.code }));
     throw new ApiRequestError(response.status, body?.error?.code || 'INVALID_ERROR_RESPONSE', body?.error?.message || `服务返回 ${response.status}，错误格式不符合契约。`, body?.traceId || traceId, body?.error?.details || {});
   }
+  if (response.status === 204 && kind === 'empty') return { data: undefined as T, etag, traceId };
   if (kind === 'markdown') {
     if (!contentType.includes('text/markdown')) throw new Error('接口契约错误：报告不是 Markdown');
-    return { data: await response.text() as T, etag, traceId };
+    const data = await response.text();
+    if (generation !== requestGeneration) throw new ApiRequestError(0, 'STALE_REQUEST', '请求已被账号切换替代。', null);
+    return { data: data as T, etag, traceId };
   }
   if (!contentType.includes('application/json')) throw new Error('接口契约错误：响应不是 JSON');
   let data: unknown;
   try { data = await response.json(); } catch { throw new Error('接口契约错误：JSON 无法解析'); }
+  if (generation !== requestGeneration) throw new ApiRequestError(0, 'STALE_REQUEST', '请求已被账号切换替代。', null);
   assertShape(data, kind);
   return { data: data as T, etag, traceId };
 }
@@ -158,14 +184,28 @@ const json = (value: unknown) => JSON.stringify(value);
 const match = (etag: string) => ({ 'If-Match': etag });
 
 export const api = {
+  register: (input: RegisterRequest) => request<RegisterResponse>('/auth/register', 'RegisterResponse', { method: 'POST', body: json(input) }),
+  login: (input: LoginRequest) => request<SessionResponse>('/auth/login', 'SessionResponse', { method: 'POST', body: json(input) }),
+  logout: () => request<void>('/auth/logout', 'empty', { method: 'POST' }),
+  currentSession: () => request<SessionResponse>('/auth/me', 'SessionResponse'),
+  changePassword: (input: PasswordChangeRequest) => request<void>('/auth/password', 'empty', { method: 'POST', body: json(input) }),
+  listEnterprises: (cursor?: string) => request<EnterpriseSummaryList>(`/enterprises${query({ cursor })}`, 'EnterpriseSummaryList'),
+  listRuns: (enterpriseId?: string, cursor?: string) => request<RunSummaryList>(`/assessment-runs${query({ enterpriseId, cursor })}`, 'RunSummaryList'),
   getHealth: () => request<HealthResponse>('/health', 'HealthResponse'),
   listPolicies: (filters: { status?: 'published' | 'closed'; type?: 'tax' | 'grant'; region?: string; asOf?: string; cursor?: string; limit?: number } = {}) =>
     request<PolicyList>(`/policies${query(filters)}`, 'PolicyList'),
   getPolicy: (policyId: string, version?: string) => request<PolicyDetail>(`/policies/${segment(policyId)}${query({ version })}`, 'PolicyDetail'),
   createEnterprise: (input: EnterpriseInput) => request<Enterprise>('/enterprises', 'Enterprise', { method: 'POST', body: json(input) }),
-  getEnterprise: (enterpriseId: string) => request<Enterprise>(`/enterprises/${segment(enterpriseId)}`, 'Enterprise'),
-  updateFact: (enterpriseId: string, key: FactKey, input: FactUpdate, etag: string) =>
-    request<Enterprise>(`/enterprises/${segment(enterpriseId)}/facts/${segment(key)}`, 'Enterprise', { method: 'PATCH', headers: match(etag), body: json(input) }),
+  getEnterprise: async (enterpriseId: string) => {
+    const response = await request<Enterprise>(`/enterprises/${segment(enterpriseId)}`, 'Enterprise');
+    if (response.data.id.toLowerCase() !== enterpriseId.toLowerCase()) throw new Error('接口契约错误：返回的企业与请求不一致');
+    return response;
+  },
+  updateFact: async (enterpriseId: string, key: FactKey, input: FactUpdate, etag: string) => {
+    const response = await request<Enterprise>(`/enterprises/${segment(enterpriseId)}/facts/${segment(key)}`, 'Enterprise', { method: 'PATCH', headers: match(etag), body: json(input) });
+    if (response.data.id.toLowerCase() !== enterpriseId.toLowerCase()) throw new Error('接口契约错误：返回的企业与请求不一致');
+    return response;
+  },
   createRun: (input: AssessmentInput) => request<AssessmentRun>('/assessment-runs', 'AssessmentRun', { method: 'POST', body: json(input) }),
   getRun: async (runId: string) => {
     const response = await request<AssessmentRun>(`/assessment-runs/${segment(runId)}`, 'AssessmentRun');

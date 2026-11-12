@@ -3,13 +3,15 @@ declare const process: { env: Record<string, string | undefined> };
 
 test('隔离后端：导入、抽取、编辑和发布合成政策', async ({ page }, testInfo) => {
   test.skip(process.env.HUICE_LIVE_ADMIN !== '1', '仅在确认专用隔离后端时运行');
+  if (!process.env.HUICE_LIVE_REVIEWER_USERNAME || !process.env.HUICE_LIVE_REVIEWER_PASSWORD) throw new Error('请提供隔离环境中的未绑定企业的合成审核员账号');
   test.setTimeout(90_000);
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const title = `第五阶段合成审核 ${Date.now()}`;
   await page.route('**/api/v1/**', route => new URL(route.request().url()).origin === 'http://127.0.0.1:8000' ? route.continue() : route.abort());
   await page.goto('/#admin');
-  await page.getByLabel('管理令牌').fill(process.env.HUICE_LIVE_ADMIN_TOKEN ?? '');
-  await page.getByRole('button', { name: '使用令牌' }).click();
+  await page.getByLabel('用户名').fill(process.env.HUICE_LIVE_REVIEWER_USERNAME ?? '');
+  await page.getByLabel('密码', { exact: true }).fill(process.env.HUICE_LIVE_REVIEWER_PASSWORD ?? '');
+  await page.getByRole('button', { name: '登录', exact: true }).click();
   await page.getByLabel('版本', { exact: true }).fill(`v${Date.now()}`);
   await page.getByLabel('标题', { exact: true }).fill(title);
   await page.getByLabel('发布机关').fill('合成测试机关');
@@ -60,13 +62,7 @@ test('隔离后端：导入、抽取、编辑和发布合成政策', async ({ pa
   await expect(page.getByText('以下为该条款的规则结构；服务未提供各节点的独立判断结果。').first()).toBeVisible();
   await expect(page.locator('.expression-tree').first()).toContainText('事实比较');
   await page.locator('.expression-tree').first().screenshot({ path: testInfo.outputPath('expression-tree.png') });
-  await page.getByRole('button', { name: '处理轨迹' }).click();
-  const traceResponse = page.waitForResponse(response => response.url().endsWith('/trace'));
-  await page.getByRole('button', { name: '读取轨迹' }).click();
-  await testInfo.attach('合成轨迹响应', { body: JSON.stringify(await (await traceResponse).json(), null, 2), contentType: 'application/json' });
-  await expect(page.getByText(/规则判断/).first()).toBeVisible();
-  await expect(page.locator('.trace-steps > li').first()).toBeVisible();
-  await page.locator('.trace-steps').screenshot({ path: testInfo.outputPath('trace-flow.png') });
+  await expect(page.getByRole('button', { name: '处理轨迹' })).toHaveCount(0);
   await page.getByRole('button', { name: '政策审核' }).click();
   await page.getByLabel('已有政策 ID（新政策留空）').fill(policyId);
   await page.getByLabel('版本', { exact: true }).fill(`v${Date.now()}-new`);

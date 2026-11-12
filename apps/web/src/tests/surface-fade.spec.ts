@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+test.beforeEach(async ({ page }) => { await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } })); });
 
 for (const entry of [{ link: '开始使用工作台', target: /#enterprise$/ }, { link: '先体验固定样例', target: /mode=demo#enterprise$/ }]) {
   test(`首页与工作台之间淡出淡入：${entry.link}`, async ({ page }) => {
@@ -39,8 +40,6 @@ test('减少动态效果时直接切换首页与工作台', async ({ page }) => 
 
 test('审核未保存内容时取消返回，不播放淡出', async ({ page }) => {
   await page.goto('/#admin');
-  await page.getByLabel('管理令牌').fill('test-token');
-  await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByLabel('标题', { exact: true }).fill('尚未保存');
   page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('link', { name: '惠策协同首页' }).click();
@@ -51,8 +50,6 @@ test('审核未保存内容时取消返回，不播放淡出', async ({ page }) 
 
 test('审核未保存内容时确认一次后返回首页', async ({ page }) => {
   await page.goto('/#admin');
-  await page.getByLabel('管理令牌').fill('test-token');
-  await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByLabel('标题', { exact: true }).fill('尚未保存');
   let dialogs = 0;
   page.on('dialog', dialog => { dialogs++; void dialog.accept(); });
