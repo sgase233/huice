@@ -732,6 +732,8 @@ class CandidateSummary(WireModel):
     policy_type: PolicyType | None = Field(default=None, alias="type")
     issuer: str | None
     missing_fields: list[str]
+    #: 页面上的附件数量：列表页据此标出「必须打开附件核对」的候选。
+    attachment_count: int = Field(ge=0)
     duplicate_of: UUID | None
     existing_policy_id: UUID | None
     existing_version: str | None

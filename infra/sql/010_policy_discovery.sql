@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS policy_candidate (
     effective_to        date,
     application_window  jsonb,
     official_entry_url  text,
-    -- 原始页面里找到、但首版未纳入抽取范围的附件链接（PDF 已抽取，其余记在这里）
+    -- 页面上找到的附件链接（https）；首版只记录、不下载、不解析，内容需人工核对
     attachment_urls     jsonb NOT NULL DEFAULT '[]'::jsonb,
     -- 提交前仍缺哪些必填字段：前端据此高亮，服务端提交时再校验一次
     missing_fields      jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -210,6 +210,11 @@ CREATE INDEX IF NOT EXISTS policy_candidate_url_idx
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS policy_candidate_fingerprint (
     content_hash        text PRIMARY KEY CHECK (content_hash ~ '^[0-9a-f]{64}$'),
+    -- 与导航/页脚无关的正文指纹（长句集合的哈希）：同一公告被不同站点转载时整页
+    -- 哈希不同，这个指纹相同；句子太少的页面为空，退回 content_hash 判重。
+    body_fingerprint    text CHECK (
+                            body_fingerprint IS NULL OR body_fingerprint ~ '^[0-9a-f]{64}$'
+                        ),
     canonical_url       text NOT NULL,
     first_seen_at       timestamptz NOT NULL,
     last_seen_at        timestamptz NOT NULL,
@@ -220,6 +225,11 @@ CREATE TABLE IF NOT EXISTS policy_candidate_fingerprint (
     candidate_id        uuid,
     submitted_policy_id uuid
 );
+
+-- 换 URL 同内容是按正文指纹查的；旧行该列为空，只在新写入时补上。
+CREATE INDEX IF NOT EXISTS idx_policy_candidate_fingerprint_body
+    ON policy_candidate_fingerprint (body_fingerprint)
+    WHERE body_fingerprint IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- 网址 → 上次内容哈希：识别「同一链接内容变了」

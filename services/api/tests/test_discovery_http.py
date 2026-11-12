@@ -380,6 +380,9 @@ def test_the_attachment_note_survives_editing_and_reaches_the_draft(
         item["code"] for item in body["validationFindings"]
     ]
 
+    listed = reviewer["client"].get("/api/v1/admin/policy-candidates").json()["items"]
+    assert [item["attachmentCount"] for item in listed] == [1], "列表页要能看出哪些候选带附件"
+
     edited = reviewer["client"].patch(
         f"/api/v1/admin/policy-candidates/{candidate['id']}",
         headers=_headers(reviewer, revision=etag),

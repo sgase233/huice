@@ -45,9 +45,11 @@ from .fetch import (
     FetchError,
     FetchedPage,
     Fetcher,
+    body_fingerprint,
     canonicalize_url,
     estimate_tokens,
     extract_links,
+    looks_like_article,
 )
 from .metadata import extract_metadata
 
@@ -257,6 +259,18 @@ class DiscoveryRunner:
 
             links = extract_links(page.markup or "", page.url) if page.markup else []
             if not links:
+                if not looks_like_article(page.text):
+                    # 框架页 / 跳转页：页面 200 但正文为空或只有几个字。老逻辑会把
+                    # 它当单篇正文，产出一条 extraction_failed 伪候选；这里按来源级
+                    # 失败记，提示改配能列出政策链接的栏目页或真正的正文页。
+                    entry.update(
+                        status="failed",
+                        errorCategory="unsupported_list",
+                        message="页面没有可列取的链接，内容也不像单篇正文（疑似框架页或入口页）。",
+                    )
+                    counts.failed_sources += 1
+                    source_status.append(entry)
+                    continue
                 # 单篇正文入口：这一页本身就是候选来源。
                 links = [canonicalize_url(page.url) or page.url]
             entry["links"] = len(links)
@@ -303,6 +317,17 @@ class DiscoveryRunner:
                     )
                     continue
 
+                if not looks_like_article(article.text):
+                    # 列表页/跳转页被当成正文抓下来（例如栏目页里唯一的链接指向
+                    # 「本期目录」）：不生成候选，记成正文失败，让来源状态如实反映。
+                    article_failures += 1
+                    article_categories.add("unsupported_list")
+                    counts.failed_articles += 1
+                    logger.warning(
+                        "发现运行命中非正文页面 run=%s url=%s", run_id, link
+                    )
+                    continue
+
                 canonical = canonicalize_url(article.url) or article.url
                 content_hash = article.content_hash
 
@@ -319,6 +344,17 @@ class DiscoveryRunner:
                     counts.duplicates += 1
                     self._touch_page(conn, canonical, content_hash, fingerprint["candidate_id"], run_id, now)
                     continue
+                # 换 URL 同内容：整页文本（含导航、页脚）哈希不同，但正文条款逐字相同。
+                # 按长句集合指纹再比一次，跨站转载不会被当成新政策再推荐一遍。
+                body_fp = body_fingerprint(article.text)
+                if body_fp is not None:
+                    twin = self._repository.find_fingerprint_by_body(conn, body_fp)
+                    if twin is not None:
+                        counts.duplicates += 1
+                        self._touch_page(
+                            conn, canonical, content_hash, twin["candidate_id"], run_id, now
+                        )
+                        continue
                 seen_hashes.add(content_hash)
 
                 version_changed = page_row is not None
@@ -368,6 +404,7 @@ class DiscoveryRunner:
                     article=article,
                     canonical=canonical,
                     content_hash=content_hash,
+                    body_fp=body_fp,
                     outcome=outcome,
                     version_changed=version_changed,
                     prior_candidate_id=prior_candidate_id,
@@ -426,6 +463,7 @@ class DiscoveryRunner:
         article: FetchedPage,
         canonical: str,
         content_hash: str,
+        body_fp: str | None,
         outcome: CandidateExtraction,
         version_changed: bool,
         prior_candidate_id: UUID | None,
@@ -473,6 +511,7 @@ class DiscoveryRunner:
                 self._repository.record_fingerprint(
                     conn,
                     content_hash=content_hash,
+                    body_fingerprint=body_fp,
                     canonical_url=canonical,
                     now=now,
                     outcome="pending",

@@ -23,8 +23,9 @@ httpx 自己解析域名、自己跟重定向，我们拿不到「这次实际�
 
 # 不做什么
 
-不执行正文里的任何指令（正文只是数据）、不跟随 JS 跳转、不解 doc/docx/zip 附件，
-也不保存 Cookie。附件里的 PDF 会抽取文字；其余格式只记录链接留给审核员。
+不执行正文里的任何指令（正文只是数据）、不跟随 JS 跳转、也不保存 Cookie。
+**附件一律不下载、不解析**，只在候选上记录 https 链接留给审核员人工核对；只有把
+PDF 地址本身配置成正文来源（或页面正文直接就是 PDF）时，才按 PDF 抽取文字。
 """
 
 from __future__ import annotations
@@ -526,10 +527,72 @@ def normalize_text(text: str) -> str:
 
     lines = []
     for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        collapsed = re.sub(r"[ \t　\xa0]+", " ", line).strip()
+        # ``\s`` 覆盖全角空格与 U+2002 之类的排版空格：不同站点用不同空白字符分隔
+        # 同一句话时，规范化后必须得到同一个字符串，否则跨站判重会因不可见字符失效。
+        collapsed = re.sub(r"\s+", " ", line).strip()
         if collapsed:
             lines.append(collapsed)
     return "\n".join(lines).strip()
+
+
+#: 「像正文」的最短规范化文本。栏目页、框架页、跳转页通常只有几个字甚至没有正文；
+#: 政策正文再短也明显超过这个长度。按长度而不是关键词判断，避免把某类政策漏掉。
+MIN_ARTICLE_CHARS = 60
+
+#: 计算正文指纹时只看这么多字以上的句子：导航、面包屑、页脚一般很短，条款一般较长。
+#: 阈值取 40 是为了把「一、……」「二、……」这类完整条款留在集合里，同时滤掉页脚。
+_FINGERPRINT_SENTENCE_CHARS = 40
+
+#: 正文指纹至少要有几句长句才可靠；少于这个数（例如只有一句话的通知）退回整页哈希。
+_FINGERPRINT_MIN_SENTENCES = 2
+
+#: 页脚、备案、版权这类「长但 Everybody 都一样或各站不同」的句子不进正文指纹。
+#: 只排除明确的站点样板文字，不做关键词联想：正文里出现这些词的概率极低。
+_CHROME_MARKERS = (
+    "ICP备",
+    "公网安备",
+    "网站标识码",
+    "版权所有",
+    "主办单位",
+    "承办单位",
+    "技术支持",
+    "网站地图",
+    "主办：",
+    "承办：",
+    "地址：",
+    "邮编：",
+)
+
+
+def looks_like_article(text: str) -> bool:
+    """正文长度粗判。
+
+    首批栏目里有把框架页直接配成来源的情况：页面 200、正文为空或只有「点击跳转」，
+    老逻辑会把它当单篇正文，产出一条 ``extraction_failed`` 伪候选。这个判断只用于
+    **拦截明显不是正文的页面**，不替代人工核对；阈值以下不判失败，只是不当作正文。
+    """
+
+    return len(text.strip()) >= MIN_ARTICLE_CHARS
+
+
+def body_fingerprint(text: str) -> str | None:
+    """与导航、页脚无关的正文指纹：长句集合去重排序后取 SHA-256。
+
+    同一个公告被不同站点转载时，整页文本（导航、页脚各不相同）哈希不同，但正文
+    条款逐字相同。按「长句集合」比对能把这类跨站转载认成同一份内容。句子太少或
+    太短时无法可靠区分，返回 ``None``，调用方退回整页文本哈希判重。
+    """
+
+    sentences = {
+        item.strip()
+        for item in re.split(r"[。！？；\n]", text)
+        if len(item.strip()) >= _FINGERPRINT_SENTENCE_CHARS
+        and not any(marker in item for marker in _CHROME_MARKERS)
+    }
+    if len(sentences) < _FINGERPRINT_MIN_SENTENCES:
+        return None
+    payload = "\n".join(sorted(sentences))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def extract_links(markup: str, base_url: str) -> list[str]:
@@ -563,7 +626,12 @@ def extract_links(markup: str, base_url: str) -> list[str]:
 
 
 def find_attachments(markup: str, base_url: str) -> tuple[str, ...]:
-    """页面上指向附件的链接：首版只处理 PDF，其余留给审核员人工打开。"""
+    """页面上指向附件的链接：只记录、不下载，留给审核员人工打开。
+
+    只保留 **https** 链接：契约里的 ``OfficialUrl`` 要求 https，页面上的 ``http://``
+    附件地址若原样带进候选，详情响应就会不符合契约。首版不抓附件，因此这里只需过滤，
+    不需要逐跳复检（将来真下载附件时必须补上与正文相同的 SSRF 防护）。
+    """
 
     parser = _LinkParser()
     try:
@@ -576,6 +644,8 @@ def find_attachments(markup: str, base_url: str) -> tuple[str, ...]:
         absolute = urljoin(base_url, href)
         canonical = canonicalize_url(absolute)
         if canonical is None or not _is_official(canonical):
+            continue
+        if urlsplit(canonical).scheme != "https":
             continue
         if not urlsplit(canonical).path.lower().endswith(_ATTACHMENT_SUFFIXES):
             continue

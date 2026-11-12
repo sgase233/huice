@@ -15,11 +15,13 @@ from app.discovery.fetch import (
     Fetcher,
     FetchError,
     HttpResponse,
+    body_fingerprint,
     canonicalize_url,
     estimate_tokens,
     extract_links,
     find_attachments,
     html_to_text,
+    looks_like_article,
     normalize_text,
     require_official_url,
     resolve_public_addresses,
@@ -318,6 +320,45 @@ def test_find_attachments_caps_at_twenty():
     markup = "".join(f'<a href="/f/{i}.pdf">f</a>' for i in range(30))
     found = find_attachments(f"<html><body>{markup}</body></html>", "https://www.gov.cn/")
     assert len(found) == 20
+
+
+def test_find_attachments_keeps_only_https_links():
+    """契约里的 OfficialUrl 只接受 https：页面上的 http 附件地址不能进候选。"""
+
+    markup = (
+        '<a href="http://www.gov.cn/f/1.pdf">http</a>'
+        '<a href="/f/2.pdf">relative</a>'
+    )
+    found = find_attachments(f"<html><body>{markup}</body></html>", "https://www.gov.cn/")
+    assert found == ("https://www.gov.cn/f/2.pdf",)
+
+
+#: 两段足够长的条款句：正文指纹至少要能认出两句长句。
+LONG_BODY = (
+    "一、企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，再按照实际发生额的100%在税前加计扣除。"
+    "\n"
+    "二、企业享受研发费用加计扣除政策的其他政策口径和管理要求，按照现行规定以及本公告第三条执行。"
+)
+
+
+def test_cross_site_copies_share_a_body_fingerprint():
+    """同一份公告被两个站点转载：整页文本不同，正文长句集合相同。"""
+
+    first = normalize_text("首页 > 政策 > 文件库\n" + LONG_BODY + "\n主办单位：国务院办公厅")
+    second = normalize_text("税务公报\n" + LONG_BODY + "\n网站标识码：bm29000002")
+    assert body_fingerprint(first) is not None
+    assert body_fingerprint(first) == body_fingerprint(second)
+
+
+def test_a_page_with_one_short_sentence_has_no_body_fingerprint():
+    text = normalize_text("关于某政策的通知\n一、符合条件的，给予补助。")
+    assert body_fingerprint(text) is None, "句子不够多时退回整页哈希，不硬猜"
+
+
+def test_only_pages_with_real_text_look_like_articles():
+    assert not looks_like_article("")
+    assert not looks_like_article("点击跳转")
+    assert looks_like_article("政策正文" * 20)
 
 
 def test_gb18030_page_is_decoded():

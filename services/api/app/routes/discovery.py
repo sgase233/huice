@@ -515,6 +515,7 @@ def _candidate_summary(row: dict[str, Any]) -> CandidateSummary:
         policy_type=row["policy_type"],
         issuer=row["issuer"],
         missing_fields=list(row["missing_fields"] or []),
+        attachment_count=len(row["attachment_urls"] or []),
         duplicate_of=row["duplicate_of"],
         existing_policy_id=row["existing_policy_id"],
         existing_version=row["existing_version"],
@@ -546,8 +547,10 @@ def _attachment_finding(row: dict[str, Any]) -> dict[str, Any] | None:
         "criterionId": None,
         "code": ATTACHMENT_NOT_EXTRACTED,
         "message": (
-            f"该页面另有 {len(attachments)} 个附件（如 PDF/DOCX），本轮未下载、未纳入抽取；"
-            "条件若写在附件里，请在保存条件时人工补录。"
+            f"该页面另有 {len(attachments)} 个附件（如 PDF/DOCX），本版不下载、不解析，"
+            "附件内容也不能作为候选草稿的引用来源。条件若只写在附件里，请先离线转换附件，"
+            "再走人工导入（仅接受可复制文本的 PDF 或 UTF-8 文本；DOC/DOCX/ZIP 需先转换），"
+            "不要把只覆盖了正文的草稿当作完整政策发布。"
         ),
         "sourceSpans": [],
     }

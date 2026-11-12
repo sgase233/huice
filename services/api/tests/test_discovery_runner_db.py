@@ -557,3 +557,131 @@ def test_run_budget_is_enforced_across_candidates(db, discovery, database_url_sc
     assert (status, reason) == ("partial_failed", "budget_exceeded")
     assert 0 < new < len(articles), "预算用尽前抽到的候选要保留"
     assert llm.calls == new
+
+
+# ------------------------------------------------- 框架页、跨站同文与内容变化
+
+
+def test_a_frame_page_is_a_source_failure_not_a_pseudo_candidate(
+    db, discovery, database_url_schema
+):
+    """首批 D 组根页：200、正文为空、没有链接。不能当单篇正文入库。
+
+    老逻辑把「没有链接」等同于「单篇正文入口」，框架页会变成一条 extraction_failed
+    伪候选；现在按来源级失败记 ``unsupported_list``，整轮如实报失败。
+    """
+
+    configure(discovery)
+    frame = page(LIST_URL, "", markup="<html><body><div id='frame'></div></body></html>")
+    outcome = make_runner(db, discovery, FakeFetcher({LIST_URL: frame})).run(trigger="timer")
+
+    status, reason, new, _duplicates, failed_sources, *_ = _run_row(
+        database_url_schema, outcome.run_id
+    )
+    assert (status, reason) == ("failed", "fetch_failed")
+    assert new == 0 and failed_sources == 1
+    source_status = query_one(
+        database_url_schema,
+        "SELECT source_status FROM discovery_run WHERE id = %s",
+        (outcome.run_id,),
+    )[0]
+    assert source_status[0]["errorCategory"] == "unsupported_list"
+    assert _candidates(database_url_schema) == []
+
+
+def test_a_frame_page_link_to_an_empty_issue_page_is_an_article_failure(
+    db, discovery, database_url_schema
+):
+    """首批 F 组根页：只有一个「本期目录」链接。它抓下来也是空页，不能当正文。"""
+
+    configure(discovery)
+    issue_url = "https://www.gov.cn/gongbao/currentissue.htm"
+    root = page(
+        LIST_URL, "点击跳转", markup=f'<html><body><a href="{issue_url}">本期目录</a></body></html>'
+    )
+    empty = page(issue_url, "", markup="<html><body></body></html>")
+    outcome = make_runner(db, discovery, FakeFetcher({LIST_URL: root, issue_url: empty})).run(
+        trigger="timer"
+    )
+
+    status, reason, new, _duplicates, failed_sources, *_ = _run_row(
+        database_url_schema, outcome.run_id
+    )
+    assert (status, reason) == ("failed", "fetch_failed")
+    assert new == 0 and failed_sources == 1
+    run = query_one(
+        database_url_schema,
+        "SELECT failed_articles, source_status FROM discovery_run WHERE id = %s",
+        (outcome.run_id,),
+    )
+    assert run[0] == 1
+    assert run[1][0]["articleFailures"] == 1
+    assert _candidates(database_url_schema) == []
+
+
+#: 两段足够长的条款句；两站只差导航、页脚，正文逐字相同。
+CROSS_SITE_BODY = (
+    "一、企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，"
+    "再按照实际发生额的100%在税前加计扣除。\n"
+    "二、企业享受研发费用加计扣除政策的其他政策口径和管理要求，按照现行规定以及本公告第三条执行。\n"
+)
+
+
+def test_the_same_policy_on_another_site_is_a_duplicate(db, discovery, database_url_schema):
+    """换 URL 同内容（DISC-AT-04）：S01/S10 那种跨站转载只能产生一条候选。"""
+
+    configure(discovery)
+    first = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    second = "https://www.chinatax.gov.cn/chinatax/n810765/content_2.html"
+    pages = {
+        LIST_URL: page(
+            LIST_URL,
+            "政策文件列表",
+            markup=f'<html><body><a href="{first}">一</a><a href="{second}">二</a></body></html>',
+        ),
+        first: page(first, "首页 > 政策 > 文件库\n" + CROSS_SITE_BODY + "\n主办单位：国务院办公厅"),
+        second: page(second, "税务公报\n" + CROSS_SITE_BODY + "\n网站标识码：bm29000002"),
+    }
+    outcome = make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm()).run(trigger="timer")
+
+    status, reason, new, duplicates, *_ = _run_row(database_url_schema, outcome.run_id)
+    assert (status, reason) == ("succeeded", "completed")
+    assert new == 1 and duplicates == 1
+    assert len(_candidates(database_url_schema)) == 1
+
+
+def test_a_changed_page_is_a_new_candidate_marked_version_changed(
+    db, discovery, database_url_schema
+):
+    """同 URL 内容变化：识别成新候选并标版本变化，而不是静默当成重复。"""
+
+    configure(discovery)
+    pages, _links = article_pages(1)
+    article_url = next(url for url in pages if url != LIST_URL)
+    holder = {"now": NOW}
+    make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm(), holder=holder).run(
+        trigger="timer"
+    )
+    first_id = query_one(database_url_schema, "SELECT id FROM policy_candidate")[0]
+
+    changed = page(
+        article_url,
+        BODY + "附表 1\n三、本通知自2026年12月1日起施行，原有关规定同时废止。",
+    )
+    # 第二轮必须排到计划时间之后，否则会被 ``not_due`` 拦下、根本不写运行记录。
+    holder["now"] = NOW + timedelta(days=1)
+    second_pages = {LIST_URL: pages[LIST_URL], article_url: changed}
+    outcome = make_runner(
+        db, discovery, FakeFetcher(second_pages), llm=FakeLlm(), holder=holder
+    ).run(trigger="timer")
+
+    status, reason, new, *_ = _run_row(database_url_schema, outcome.run_id)
+    assert (status, reason) == ("succeeded", "completed")
+    assert new == 1
+    version_changed, duplicate_of = query_one(
+        database_url_schema,
+        "SELECT version_changed, duplicate_of FROM policy_candidate "
+        "ORDER BY created_at DESC LIMIT 1",
+    )
+    assert version_changed is True
+    assert str(duplicate_of) == str(first_id)

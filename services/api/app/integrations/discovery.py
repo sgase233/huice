@@ -286,6 +286,25 @@ class DiscoveryRepository:
             )
             return cur.fetchone()
 
+    def find_fingerprint_by_body(
+        self, conn: Connection, body_fingerprint: str
+    ) -> dict[str, Any] | None:
+        """按「正文长句集合」指纹找已经见过的内容（换 URL 同内容判重）。
+
+        与 ``content_hash`` 不同，这个指纹不含导航、页脚，因此同一份公告被不同站点
+        转载时仍然相同。旧数据（此列加入前写入的指纹行）为 NULL，不参与匹配。
+        """
+
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT content_hash, canonical_url, outcome, candidate_id, "
+                "submitted_policy_id, first_seen_at, last_seen_at "
+                "FROM policy_candidate_fingerprint WHERE body_fingerprint = %s "
+                "ORDER BY first_seen_at LIMIT 1",
+                (body_fingerprint,),
+            )
+            return cur.fetchone()
+
     def record_fingerprint(
         self,
         conn: Connection,
@@ -296,18 +315,22 @@ class DiscoveryRepository:
         outcome: str,
         candidate_id: UUID | None,
         submitted_policy_id: UUID | None = None,
+        body_fingerprint: str | None = None,
     ) -> None:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO policy_candidate_fingerprint "
-                "(content_hash, canonical_url, first_seen_at, last_seen_at, outcome, "
-                " candidate_id, submitted_policy_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "(content_hash, body_fingerprint, canonical_url, first_seen_at, last_seen_at, "
+                " outcome, candidate_id, submitted_policy_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (content_hash) DO UPDATE SET "
                 "last_seen_at = EXCLUDED.last_seen_at, outcome = EXCLUDED.outcome, "
-                "candidate_id = EXCLUDED.candidate_id",
+                "candidate_id = EXCLUDED.candidate_id, "
+                "body_fingerprint = COALESCE("
+                "EXCLUDED.body_fingerprint, policy_candidate_fingerprint.body_fingerprint)",
                 (
                     content_hash,
+                    body_fingerprint,
                     canonical_url,
                     now,
                     now,

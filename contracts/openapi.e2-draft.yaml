@@ -476,6 +476,7 @@ paths:
                   existingPolicyId: null
                   existingVersion: null
                   versionChanged: false
+                  attachmentCount: 0
                   submittedPolicyId: null
                   submittedVersion: null
                   createdAt: '2026-11-12T01:00:12Z'
@@ -696,6 +697,11 @@ paths:
         ATTACHMENT_NOT_EXTRACTED：附件首版不下载、不解析，提示必须跟着草稿走到发布复核。
         它是来源级结论，后续 API-05 重新抽取、API-06 保存条款整体替换 findings 时由服务端保留，
         不会因某条条件被改好而消失，也不会重复累积。
+
+        附件内容**不是草稿来源**：本版不能把附件文本作为引用，DISC-06/API-06 里摘录附件原文
+        会得到 SPAN_QUOTE_NOT_FOUND。条件只写在附件里的来源应走人工导入（API-04 仅接受
+        可复制文本的 PDF 或 UTF-8 文本；DOC/DOCX/ZIP 需离线转换后导入），不要用只覆盖正文的
+        草稿冒充完整政策。该提示只是复核提示：**不阻断发布**，也不表示附件已经核对过。
 
         候选条件里的 sourceSpans.sourceVersion 在提交时由 "candidate" 改挂为新建的版本号、
         sourceId 改挂为新来源 id——引文与 textHash 不变，证据不被改写。
@@ -1139,6 +1145,7 @@ components:
       - title
       - issuer
       - missingFields
+      - attachmentCount
       - duplicateOf
       - existingPolicyId
       - existingVersion
@@ -1181,6 +1188,11 @@ components:
           items:
             type: string
             minLength: 1
+        attachmentCount:
+          type: integer
+          minimum: 0
+          description: 页面上的附件数量。大于 0 时该候选的 validationFindings 必带
+            ATTACHMENT_NOT_EXTRACTED；列表页据此标出「必须打开附件人工核对」的候选。
         duplicateOf:
           anyOf:
           - $ref: ./openapi.yaml#/components/schemas/UUID
@@ -1279,10 +1291,10 @@ components:
           items:
             $ref: ./openapi.yaml#/components/schemas/OfficialUrl
           description: >-
-            页面上识别到的附件地址，首版不下载、不解析。非空时 validationFindings 必然附带一条
-            ATTACHMENT_NOT_EXTRACTED（criterionId 为 null）：候选侧由本字段派生、不写候选的
-            validationFindings 列，所以保存 criteriaDrafts 之后仍在；提交后它作为来源级 finding
-            随草稿落库，API-05/06 重算时不丢失。
+            页面上识别到的附件地址（只收 https），首版不下载、不解析，附件内容不作为草稿来源。
+            非空时 validationFindings 必然附带一条 ATTACHMENT_NOT_EXTRACTED（criterionId 为 null）：
+            候选侧由本字段派生、不写候选的 validationFindings 列，所以保存 criteriaDrafts 之后仍在；
+            提交后它作为来源级 finding 随草稿落库，API-05/06 重算时不丢失。
         missingFields:
           type: array
           items:
