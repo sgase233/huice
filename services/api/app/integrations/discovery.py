@@ -39,8 +39,8 @@ _SETTINGS_COLUMNS = (
 
 _RUN_COLUMNS = (
     "id, trigger, started_at, finished_at, status, terminal_reason, sources_checked, "
-    "links_seen, duplicates, new_candidates, failed_sources, tokens_used, tokens_unknown, "
-    "late_by_seconds, source_status, detail"
+    "links_seen, duplicates, new_candidates, failed_sources, failed_articles, tokens_used, "
+    "tokens_unknown, late_by_seconds, source_status, detail"
 )
 
 _CANDIDATE_COLUMNS = (
@@ -242,6 +242,7 @@ class DiscoveryRepository:
         duplicates: int,
         new_candidates: int,
         failed_sources: int,
+        failed_articles: int,
         tokens_used: int,
         tokens_unknown: bool,
         source_status: list[dict[str, Any]],
@@ -251,7 +252,8 @@ class DiscoveryRepository:
             cur.execute(
                 "UPDATE discovery_run SET status = %s, terminal_reason = %s, "
                 "finished_at = %s, sources_checked = %s, links_seen = %s, duplicates = %s, "
-                "new_candidates = %s, failed_sources = %s, tokens_used = %s, "
+                "new_candidates = %s, failed_sources = %s, failed_articles = %s, "
+                "tokens_used = %s, "
                 "tokens_unknown = %s, source_status = %s, detail = %s "
                 "WHERE id = %s",
                 (
@@ -263,6 +265,7 @@ class DiscoveryRepository:
                     duplicates,
                     new_candidates,
                     failed_sources,
+                    failed_articles,
                     tokens_used,
                     tokens_unknown,
                     json.dumps(source_status, ensure_ascii=False),

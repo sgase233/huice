@@ -306,30 +306,36 @@ def submit_policy_candidate(
     policies = request.app.state.repository
     fingerprint = _submit_fingerprint(candidateId, expected_revision)
 
-    replayed = policies.read_idempotent(SUBMIT_SCOPE, idempotency_key)
-    if replayed is not None:
-        if replayed["fingerprint"] != fingerprint:
-            raise ApiProblem(
-                409,
-                "IDEMPOTENCY_KEY_REUSED",
-                "同一个 Idempotency-Key 已用于另一次提交，请换一个新的键。",
-            )
-        draft = PolicyDraft.model_validate(replayed["response"])
-        response.headers["ETag"] = f'"{draft.revision}"'
-        return draft
-
-    row = _load_candidate(request, candidateId)
-    _ensure_submittable(row, expected_revision)
-
-    contents = row["body_text"].encode("utf-8")
-    storage_key = request.app.state.object_store.put(contents, suffix=".txt")
+    storage_key: str | None = None
     try:
         with request.app.state.db.connection() as conn, conn.transaction():
-            # 幂等命中之后才锁行：D3.5 的顺序是「先查键、再锁候选」，重放不该等锁。
+            # 查键、锁候选、写结果必须在同一把键锁下，否则并发重试会绕过幂等：
+            # 后到的请求在候选行锁上等到的是「已提交」状态，直接变成 409 而不是重放。
+            policies.lock_idempotency_key(conn, SUBMIT_SCOPE, idempotency_key)
+            replayed = policies.read_idempotent(
+                SUBMIT_SCOPE, idempotency_key, connection=conn
+            )
+            if replayed is not None:
+                if replayed["fingerprint"] != fingerprint:
+                    raise ApiProblem(
+                        409,
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "同一个 Idempotency-Key 已用于另一次提交，请换一个新的键。",
+                    )
+                draft = PolicyDraft.model_validate(replayed["response"])
+                response.headers["ETag"] = f'"{draft.revision}"'
+                return draft
+
             locked = discovery.lock_candidate(conn, candidateId)
             if locked is None:
                 raise _not_found()
             _ensure_submittable(locked, expected_revision)
+
+            # 正文落盘放在事务里：重放路径在写之前就返回了，不会留下没人引用的对象。
+            # 演示环境是本地磁盘写入，长度可忽略；对象存储模式下一次 PUT 会占住这个
+            # 事务，但提交候选是低频管理操作，换来的是幂等与草稿严格同事务。
+            contents = locked["body_text"].encode("utf-8")
+            storage_key = request.app.state.object_store.put(contents, suffix=".txt")
 
             metadata = _policy_metadata(locked)
             sources = [
@@ -381,7 +387,9 @@ def submit_policy_candidate(
             )
     except BaseException:
         # 事务没提交（或提交失败）：刚写的正文没有任何草稿引用它，就地删掉。
-        _delete_object(request, storage_key)
+        # 重放/校验失败发生在落盘之前，此时没有对象可删。
+        if storage_key is not None:
+            _delete_object(request, storage_key)
         raise
 
     response.headers["ETag"] = f'"{saved.revision}"'
@@ -425,7 +433,15 @@ def discard_policy_candidate(
 
 # ------------------------------------------------------------------ 读模型
 
-_SOURCE_FIELDS = ("url", "status", "links", "candidates", "errorCategory", "message")
+_SOURCE_FIELDS = (
+    "url",
+    "status",
+    "links",
+    "candidates",
+    "articleFailures",
+    "errorCategory",
+    "message",
+)
 
 
 def _settings_of(row: dict[str, Any]) -> DiscoverySettings:
@@ -451,6 +467,7 @@ def _run_of(row: dict[str, Any]) -> DiscoveryRun:
         duplicates=row["duplicates"],
         new_candidates=row["new_candidates"],
         failed_sources=row["failed_sources"],
+        failed_articles=row["failed_articles"],
         tokens_used=row["tokens_used"],
         tokens_unknown=row["tokens_unknown"],
         late_by_seconds=row["late_by_seconds"],

@@ -668,6 +668,8 @@ class DiscoverySourceStatus(WireModel):
     status: Literal["ok", "failed", "skipped"]
     links: int = 0
     candidates: int = 0
+    #: 该来源下正文页抓取失败的篇数；栏目页成功、正文全挂时用它区分「无新政」。
+    article_failures: int = 0
     error_category: str | None = None
     message: str | None = None
 
@@ -683,6 +685,7 @@ class DiscoveryRun(WireModel):
     duplicates: int
     new_candidates: int
     failed_sources: int
+    failed_articles: int
     tokens_used: int
     tokens_unknown: bool
     late_by_seconds: int | None

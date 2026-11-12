@@ -88,11 +88,15 @@ CREATE TABLE IF NOT EXISTS discovery_run (
     duplicates      integer NOT NULL DEFAULT 0,
     new_candidates  integer NOT NULL DEFAULT 0,
     failed_sources  integer NOT NULL DEFAULT 0,
+    -- 正文级失败：栏目页抓到了、单篇正文没抓到。与 failed_sources 分开，
+    -- 因为「栏目页打不开」和「栏目页里的正文全下不来」是两种不同的故障。
+    failed_articles integer NOT NULL DEFAULT 0,
     tokens_used     integer NOT NULL DEFAULT 0,
     tokens_unknown  boolean NOT NULL DEFAULT false,
     -- 停机补跑时记「比计划晚了多少秒」；正常到点运行为空。
     late_by_seconds integer,
-    -- 每个来源的结果：{url, status, links, error, errorCategory}，错误不放堆栈。
+    -- 每个来源的结果：{url, status, links, candidates, articleFailures, errorCategory, message}，
+    -- 错误不放堆栈。articleFailures 记该来源下正文抓取失败的篇数。
     source_status   jsonb NOT NULL DEFAULT '[]'::jsonb,
     -- 给人看的一句话结论（不含 URL 之外的用户数据）。
     detail          text,

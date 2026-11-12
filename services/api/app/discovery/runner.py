@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Sequence
 from uuid import UUID, uuid4
@@ -60,6 +60,13 @@ UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('huice.discovery'))"
 #: 单次运行 50,000 token、单候选 8,000 token（D3.3 初始值，待 M3 用真实页面校准）。
 RUN_TOKEN_BUDGET = 50_000
 CANDIDATE_TOKEN_BUDGET = 8_000
+
+#: 抽取调用本身允许的最大输出（与 :mod:`app.agents.extraction` 的 ``max_tokens`` 一致）。
+#: 预算只按正文估算输入是不够的：余额刚好够输入时仍会发出调用，再往上加最多这么多次
+#: 输出 token，整轮就越过上限了。
+MAX_COMPLETION_TOKENS = 2_048
+#: 系统提示与 JSON 包装的保守余量（实际分词随模型而异，取整留足）。
+PROMPT_OVERHEAD_TOKENS = 1_000
 
 #: 单轮最多下载多少个正文页。新候选另有 50 条上限；这个更宽的值用来兜住「反复命中
 #: 重复链接」的情形，避免一轮把大量时间花在同一个站点的历史页面上。
@@ -235,6 +242,7 @@ class DiscoveryRunner:
                 "status": "ok",
                 "links": 0,
                 "candidates": 0,
+                "articleFailures": 0,
                 "errorCategory": None,
                 "message": None,
             }
@@ -253,6 +261,10 @@ class DiscoveryRunner:
                 links = [canonicalize_url(page.url) or page.url]
             entry["links"] = len(links)
             counts.links_seen += len(links)
+
+            article_attempts = 0
+            article_failures = 0
+            article_categories: set[str] = set()
 
             for link in links:
                 if aborted:
@@ -273,10 +285,22 @@ class DiscoveryRunner:
                     break
 
                 article_fetches += 1
+                article_attempts += 1
+                counts.articles_attempted += 1
                 try:
                     article = self._fetcher.fetch(link)
-                except FetchError:
-                    # 单篇正文抓不到不算来源页失败；链接已计入 links_seen，下一轮会重试。
+                except FetchError as exc:
+                    # 单篇正文抓不到不立刻算来源页失败（下一轮会重试），但**必须留痕**：
+                    # 不计入这里的话，栏目页成功、正文全挂的一轮会被报成「没有新政策」。
+                    article_failures += 1
+                    article_categories.add(exc.category)
+                    counts.failed_articles += 1
+                    logger.warning(
+                        "发现运行正文抓取失败 run=%s url=%s category=%s",
+                        run_id,
+                        link,
+                        exc.category,
+                    )
                     continue
 
                 canonical = canonicalize_url(article.url) or article.url
@@ -310,9 +334,13 @@ class DiscoveryRunner:
 
                 candidate_id = uuid4()
                 estimate = estimate_tokens(article.text)
+                # 发调用的前提是「这一篇最多可能花多少」还装得下：正文估算 + 系统提示
+                # 余量 + 输出上限。只看输入的话，余额刚好够输入时仍会发请求，再叠上
+                # 最多 MAX_COMPLETION_TOKENS 的输出就把整轮顶过上限。
+                reserve = estimate + PROMPT_OVERHEAD_TOKENS + MAX_COMPLETION_TOKENS
                 if estimate > CANDIDATE_TOKEN_BUDGET:
                     outcome = _budget_failed(estimate, CANDIDATE_TOKEN_BUDGET)
-                elif tokens_used + estimate > RUN_TOKEN_BUDGET:
+                elif tokens_used + reserve > RUN_TOKEN_BUDGET:
                     aborted = "budget"
                     abort_detail = "本轮模型预算已用尽，剩余候选留待下一轮。"
                     break
@@ -331,6 +359,9 @@ class DiscoveryRunner:
                         abort_detail = (
                             "模型未返回可用的用量，已标记 tokensUnknown 并停止本轮后续抽取。"
                         )
+
+                if article.attachments:
+                    outcome = _note_unextracted_attachments(outcome, article.attachments)
 
                 stored = self._store_candidate(
                     conn,
@@ -358,6 +389,19 @@ class DiscoveryRunner:
                         # 模型层面出错：继续调用只会把一次故障放大成几十次。
                         aborted = "model"
                         abort_detail = "抽取调用失败，已停止本轮后续模型调用。"
+
+            entry["articleFailures"] = article_failures
+            if article_failures and article_failures == article_attempts:
+                # 这条来源的正文一篇都没下来：按来源失败记，否则整轮会被报成
+                # 「没有新政策」（DISC-AT-07 要求全失败与无新政策可区分）。
+                entry["status"] = "failed"
+                entry["errorCategory"] = (
+                    next(iter(article_categories))
+                    if len(article_categories) == 1
+                    else "fetch_failed"
+                )
+                entry["message"] = "该来源的正文页全部抓取失败。"
+                counts.failed_sources += 1
 
             source_status.append(entry)
 
@@ -546,6 +590,7 @@ class DiscoveryRunner:
                 duplicates=counts.duplicates,
                 new_candidates=counts.new_candidates,
                 failed_sources=counts.failed_sources,
+                failed_articles=counts.failed_articles,
                 tokens_used=tokens_used,
                 tokens_unknown=tokens_unknown,
                 source_status=source_status,
@@ -560,6 +605,10 @@ class _Counts:
     duplicates: int = 0
     new_candidates: int = 0
     failed_sources: int = 0
+    #: 真正发起过的正文下载次数与其中失败的次数。栏目页打不开和「栏目页打不开正文」
+    #: 是两种故障，后者过去被 `continue` 吞掉，整轮会被报成 no_new_policy（DISC-AT-07）。
+    articles_attempted: int = 0
+    failed_articles: int = 0
 
 
 def _skipped(url: str, message: str) -> dict[str, Any]:
@@ -568,6 +617,7 @@ def _skipped(url: str, message: str) -> dict[str, Any]:
         "status": "skipped",
         "links": 0,
         "candidates": 0,
+        "articleFailures": 0,
         "errorCategory": None,
         "message": message,
     }
@@ -604,9 +654,39 @@ def _verdict(
             "partial_failed",
             f"{len(failed)} 个来源抓取失败，其余来源已处理。",
         )
+    if counts.failed_articles:
+        # 栏目页都拿到了，但有正文没下来：既不是全失败，也不能说「没有新政策」。
+        return (
+            "partial_failed",
+            "partial_failed",
+            f"{counts.failed_articles} 篇正文抓取失败"
+            f"（共 {counts.articles_attempted} 篇），其余已处理。",
+        )
     if counts.new_candidates:
         return "succeeded", "completed", abort_detail
     return "succeeded", "no_new_policy", abort_detail
+
+
+def _note_unextracted_attachments(
+    outcome: CandidateExtraction, attachments: Sequence[str]
+) -> CandidateExtraction:
+    """页面有附件时留一条明确的复核提示。
+
+    首版只从正文抽条件，不下载也不解析附件（PDF/DOCX/压缩包）。政策的关键条件常常
+    恰好写在附件里，所以「有一条候选、但条件不全」必须让审核员看见，而不是让他以为
+    正文里已经没有别的条件了。
+    """
+
+    note = {
+        "criterionId": None,
+        "code": "ATTACHMENT_NOT_EXTRACTED",
+        "message": (
+            f"该页面另有 {len(attachments)} 个附件（如 PDF/DOCX），本轮未下载、未纳入抽取；"
+            "条件若写在附件里，请在保存条件时人工补录。"
+        ),
+        "sourceSpans": [],
+    }
+    return replace(outcome, findings=[*outcome.findings, note])
 
 
 def _budget_failed(estimate: int, budget: int) -> CandidateExtraction:

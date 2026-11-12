@@ -179,6 +179,8 @@ def test_runtime_limits_match_the_code(draft):
 
     assert model["token-budget"]["run"] == runner_module.RUN_TOKEN_BUDGET
     assert model["token-budget"]["per-candidate"] == runner_module.CANDIDATE_TOKEN_BUDGET
+    assert model["token-budget"]["completion-reserve"] == runner_module.MAX_COMPLETION_TOKENS
+    assert model["token-budget"]["prompt-overhead"] == runner_module.PROMPT_OVERHEAD_TOKENS
     assert model["run-deadline"].strip().startswith(
         f"单轮墙钟上限 {runner_module.MAX_RUN_SECONDS // 60} 分钟"
     )

@@ -15,6 +15,7 @@ E2 的退出门槛在 HTTP 层的对应断言：
 from __future__ import annotations
 
 from dataclasses import replace
+from threading import Event, Lock, Thread
 from uuid import uuid4
 
 import psycopg
@@ -401,6 +402,160 @@ def test_resubmitting_with_the_same_key_replays_the_same_draft(
     assert first.status_code == 201 and second.status_code == 201
     assert first.json()["id"] == second.json()["id"]
     assert first.json()["revision"] == second.json()["revision"]
+    assert _policy_counts(database_url_schema) == (1, 1, 1)
+
+
+def _second_reviewer(app_db, reviewer) -> TestClient:
+    """同一会话的第二个连接。
+
+    不能重新登录一次：登录会撤销该账号仍有效的旧会话（E1 语义），把第一个连接踢下线。
+    """
+
+    client = TestClient(app_db)
+    client.cookies.update(reviewer["client"].cookies)
+    return client
+
+
+def _run_two_submits(app_db, reviewer, monkeypatch, requests_) -> list:
+    """让两个提交真正重叠：第一个请求卡在事务里，等第二个请求进来后再放行。
+
+    第一个请求在 ``put``（现在是提交事务内的一步）上停住，从而把事务敞开；
+    第二个请求要么在键锁上排队（修复后），要么直接读到空键继续往下走（旧顺序，
+    它会卡在候选行锁上）——两种情况都由 :func:`_hold_first_until_second_arrives`
+    用一个事件区分，不靠 sleep 赌时序。
+    """
+
+    store = app_db.state.object_store
+    policies = app_db.state.repository
+    original_put = store.put
+    original_read = policies.read_idempotent
+    inside = Event()
+    second_arrived = Event()
+    reads: list[int] = []
+
+    def slow_put(*args, **kwargs):
+        inside.set()
+        # 旧顺序下第二个请求会很快走到读键；键锁版下它根本读不到键，所以等超时就放行。
+        second_arrived.wait(timeout=2)
+        return original_put(*args, **kwargs)
+
+    def counting_read(*args, **kwargs):
+        reads.append(1)
+        if len(reads) == 2:
+            second_arrived.set()
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(store, "put", slow_put)
+    monkeypatch.setattr(policies, "read_idempotent", counting_read)
+
+    results: list = []
+    lock = Lock()
+
+    def call(index: int) -> None:
+        payload = requests_[index]
+        response = payload["client"].post(
+            f"/api/v1/admin/policy-candidates/{payload['candidate']}/submit",
+            headers=_headers(reviewer, revision=payload["revision"], key=payload["key"]),
+        )
+        with lock:
+            results.append((index, response))
+
+    first = Thread(target=call, args=(0,), daemon=True)
+    first.start()
+    assert inside.wait(timeout=5), "第一个请求没有进入事务"
+
+    second = Thread(target=call, args=(1,), daemon=True)
+    second.start()
+    first.join(timeout=30)
+    second.join(timeout=30)
+
+    assert len(results) == 2, "两个请求都应有响应"
+    return [response for _index, response in sorted(results)]
+
+
+def test_concurrent_submits_with_one_key_replay_instead_of_conflicting(
+    app_db, reviewer, database_url_schema, monkeypatch
+):
+    """同一个键的两个并发请求：都拿到同一份草稿，不是「一个 201、一个 409」。
+
+    #64 评审 P1 的回归用例。旧顺序是「事务外查键 → 事务内锁候选」：后到的请求读到
+    空键，然后在候选行锁上等到「已提交」，返回 ``CANDIDATE_STATE_CONFLICT``——
+    合法的并发重试被当成了状态冲突，幂等形同虚设。
+    """
+
+    _seed_run(app_db)
+    [candidate] = _candidates(database_url_schema)
+    revision = _etag(_confirm(reviewer, candidate, candidate["revision"]))
+    key = uuid4()
+
+    other = _second_reviewer(app_db, reviewer)
+    first, second = _run_two_submits(
+        app_db,
+        reviewer,
+        monkeypatch,
+        [
+            {
+                "client": reviewer["client"],
+                "candidate": candidate["id"],
+                "revision": revision,
+                "key": key,
+            },
+            {
+                "client": other,
+                "candidate": candidate["id"],
+                "revision": revision,
+                "key": key,
+            },
+        ],
+    )
+
+    assert [first.status_code, second.status_code] == [201, 201], (
+        first.text + second.text
+    )
+    assert first.json()["id"] == second.json()["id"], "重放必须返回同一份草稿"
+    assert first.json()["revision"] == second.json()["revision"]
+    assert _policy_counts(database_url_schema) == (1, 1, 1)
+
+
+def test_concurrent_submits_with_one_key_on_two_candidates_create_one_draft(
+    app_db, reviewer, database_url_schema, monkeypatch
+):
+    """同一个键并发提交两个候选：只建一份草稿，另一个明确报「键已用于另一次提交」。
+
+    旧实现里两个请求各建一份草稿，``save_idempotent`` 的 ``ON CONFLICT DO NOTHING``
+    只留下一条记录，另一个客户端拿到的是没有幂等记录的结果。
+    """
+
+    _seed_run(app_db, count=2)
+    candidates = _candidates(database_url_schema)
+    revisions = [_etag(_confirm(reviewer, item, item["revision"])) for item in candidates]
+    key = uuid4()
+
+    other = _second_reviewer(app_db, reviewer)
+    first, second = _run_two_submits(
+        app_db,
+        reviewer,
+        monkeypatch,
+        [
+            {
+                "client": reviewer["client"],
+                "candidate": candidates[0]["id"],
+                "revision": revisions[0],
+                "key": key,
+            },
+            {
+                "client": other,
+                "candidate": candidates[1]["id"],
+                "revision": revisions[1],
+                "key": key,
+            },
+        ],
+    )
+
+    statuses = sorted([first.status_code, second.status_code])
+    assert statuses == [201, 409], first.text + second.text
+    rejected = first if first.status_code == 409 else second
+    assert rejected.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
     assert _policy_counts(database_url_schema) == (1, 1, 1)
 
 

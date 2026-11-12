@@ -72,10 +72,13 @@ x-e2-runtime-model:
   token-budget:
     run: 50000
     per-candidate: 8000
+    completion-reserve: 2048
+    prompt-overhead: 1000
     estimator: int(len(text)/1.5)+64
     note: >-
-      估算口径偏保守。单候选超预算落 extraction_failed（人工补齐后仍可提交）；整轮超预算
-      中止后续候选，本轮记 failed 或 partial_failed + budget_exceeded。
+      估算口径偏保守。发调用前按「正文估算 + 系统提示余量 + 输出上限」预留，只按输入
+      判断会让最后一次调用把整轮顶过上限。单候选超预算落 extraction_failed（人工补齐后
+      仍可提交）；整轮超预算中止后续候选，本轮记 failed 或 partial_failed + budget_exceeded。
   fetch-guards:
     allowed-hosts: gov.cn 及其子域
     per-request-timeout-seconds: 15
@@ -362,6 +365,7 @@ paths:
                   duplicates: 5
                   newCandidates: 0
                   failedSources: 0
+                  failedArticles: 0
                   tokensUsed: 0
                   tokensUnknown: false
                   lateBySeconds: null
@@ -370,12 +374,14 @@ paths:
                     status: ok
                     links: 20
                     candidates: 0
+                    articleFailures: 0
                     errorCategory: null
                     message: null
                   - url: https://www.most.gov.cn/kjbgz/
                     status: ok
                     links: 17
                     candidates: 0
+                    articleFailures: 0
                     errorCategory: null
                     message: null
                   detail: 全部来源已是最新，没有新政策。
@@ -389,6 +395,7 @@ paths:
                   duplicates: 0
                   newCandidates: 0
                   failedSources: 2
+                  failedArticles: 0
                   tokensUsed: 0
                   tokensUnknown: false
                   lateBySeconds: null
@@ -397,12 +404,14 @@ paths:
                     status: failed
                     links: 0
                     candidates: 0
+                    articleFailures: 0
                     errorCategory: timeout
                     message: 单页请求超时。
                   - url: https://www.most.gov.cn/kjbgz/
                     status: failed
                     links: 0
                     candidates: 0
+                    articleFailures: 0
                     errorCategory: network
                     message: 连接被对方重置。
                   detail: 2 个来源全部失败。
@@ -913,6 +922,9 @@ components:
         candidates:
           type: integer
           minimum: 0
+        articleFailures:
+          type: integer
+          minimum: 0
         errorCategory:
           anyOf:
           - type: string
@@ -937,6 +949,7 @@ components:
       - duplicates
       - newCandidates
       - failedSources
+      - failedArticles
       - tokensUsed
       - tokensUnknown
       - lateBySeconds
@@ -984,6 +997,9 @@ components:
           type: integer
           minimum: 0
         failedSources:
+          type: integer
+          minimum: 0
+        failedArticles:
           type: integer
           minimum: 0
         tokensUsed:

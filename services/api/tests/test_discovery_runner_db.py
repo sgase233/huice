@@ -24,9 +24,14 @@ from uuid import uuid4
 import psycopg
 import pytest
 
+from app.discovery import runner as runner_module
 from app.discovery.extraction import CODE_NO_CRITERIA
-from app.discovery.fetch import FetchError
-from app.discovery.runner import CANDIDATE_TOKEN_BUDGET
+from app.discovery.fetch import FetchError, estimate_tokens
+from app.discovery.runner import (
+    CANDIDATE_TOKEN_BUDGET,
+    MAX_COMPLETION_TOKENS,
+    PROMPT_OVERHEAD_TOKENS,
+)
 from app.integrations.discovery import DiscoveryRepository
 from db_support import query_all, query_one
 from discovery_support import (
@@ -282,6 +287,87 @@ def test_one_failed_source_among_ok_ones_is_partial_failure(
     assert new == 1, "失败来源不影响其它来源的结果"
 
 
+def test_every_article_failing_is_a_failure_not_no_new_policy(
+    db, discovery, database_url_schema
+):
+    """栏目页拿到了、正文一篇都没下来：必须是失败，不能报「没有新政策」。
+
+    DISC-AT-07 要求「无新政策」与「全失败」有各自可分辨的真实反馈。过去正文抓取的
+    ``FetchError`` 被 ``continue`` 直接吞掉，这种轮次会记成 ``succeeded/no_new_policy``
+    ——审核员看到的是「今天没有新政」，实际上是抓取链路整体不通。
+    """
+
+    configure(discovery)
+    pages, _links = article_pages(2)
+    article_urls = sorted(url for url in pages if url != LIST_URL)
+    fetcher = FakeFetcher(
+        {LIST_URL: pages[LIST_URL]},
+        errors={url: FetchError("timeout", "正文页请求超时。") for url in article_urls},
+    )
+    outcome = make_runner(db, discovery, fetcher, llm=FakeLlm()).run(trigger="timer")
+
+    status, reason, new, _duplicates, failed_sources, *_ = _run_row(
+        database_url_schema, outcome.run_id
+    )
+    assert (status, reason) == ("failed", "timeout")
+    assert new == 0
+    assert failed_sources == 1, "正文全挂的来源按失败来源记"
+
+    run = query_one(
+        database_url_schema,
+        "SELECT failed_articles, source_status FROM discovery_run WHERE id = %s",
+        (outcome.run_id,),
+    )
+    assert run[0] == 2
+    assert run[1][0]["articleFailures"] == 2
+    assert run[1][0]["status"] == "failed"
+    assert _candidates(database_url_schema) == []
+
+
+def test_some_articles_failing_is_partial_failure_with_the_rest_kept(
+    db, discovery, database_url_schema
+):
+    """部分正文失败：其余照常入库，整轮记 partial_failed，失败篇数可读出来。"""
+
+    configure(discovery)
+    pages, _links = article_pages(2)
+    article_urls = sorted(url for url in pages if url != LIST_URL)
+    fetcher = FakeFetcher(
+        pages, errors={article_urls[1]: FetchError("network", "连接被重置。")}
+    )
+    outcome = make_runner(db, discovery, fetcher, llm=FakeLlm()).run(trigger="timer")
+
+    status, reason, new, *_ = _run_row(database_url_schema, outcome.run_id)
+    assert (status, reason) == ("partial_failed", "partial_failed")
+    assert new == 1, "抓到的另一篇照常成为候选"
+
+    run = query_one(
+        database_url_schema,
+        "SELECT failed_articles, source_status FROM discovery_run WHERE id = %s",
+        (outcome.run_id,),
+    )
+    assert run[0] == 1
+    assert run[1][0]["status"] == "ok", "只有部分正文失败时来源本身不算失败"
+    assert run[1][0]["articleFailures"] == 1
+
+
+def test_a_clean_run_reports_zero_article_failures(db, discovery, database_url_schema):
+    configure(discovery)
+    fetcher = FakeFetcher({LIST_URL: LIST_PAGE, ARTICLE_URL: ARTICLE_PAGE})
+    outcome = make_runner(db, discovery, fetcher, llm=FakeLlm()).run(trigger="timer")
+
+    status, reason, *_ = _run_row(database_url_schema, outcome.run_id)
+    assert (status, reason) == ("succeeded", "completed")
+    assert (
+        query_one(
+            database_url_schema,
+            "SELECT failed_articles FROM discovery_run WHERE id = %s",
+            (outcome.run_id,),
+        )[0]
+        == 0
+    )
+
+
 def test_an_empty_source_list_records_one_quiet_round(db, discovery, database_url_schema):
     """已启用但没配来源：记一条成功的空轮次并推进 next_run_at，不让 timer 反复重试。"""
 
@@ -318,6 +404,60 @@ def test_a_single_oversized_page_fails_only_that_candidate(db, discovery, databa
     )
     assert row[0] == "extraction_failed"
     assert row[1]["failureCode"] == "EXTRACTION_BUDGET_EXCEEDED"
+
+
+def test_the_run_budget_reserves_the_completion_upper_bound(
+    db, discovery, database_url_schema, monkeypatch
+):
+    """余额只够输入时不该发调用：输出上限也算进这一篇的预留。
+
+    #64 评审 P1 的回归用例。旧实现只比 ``tokens_used + estimate``，把调用放出去之后
+    实际还会消耗最多 ``max_tokens`` 的输出，整轮因此能越过上限。
+    """
+
+    configure(discovery)
+    estimate = estimate_tokens(ARTICLE_PAGE.text)
+    # 预算刚好装下输入，但装不下「输入 + 提示余量 + 输出上限」。
+    monkeypatch.setattr(
+        runner_module,
+        "RUN_TOKEN_BUDGET",
+        estimate + PROMPT_OVERHEAD_TOKENS + MAX_COMPLETION_TOKENS - 1,
+    )
+
+    llm = FakeLlm()
+    outcome = make_runner(
+        db,
+        discovery,
+        FakeFetcher({LIST_URL: LIST_PAGE, ARTICLE_URL: ARTICLE_PAGE}),
+        llm=llm,
+    ).run(trigger="timer")
+
+    assert llm.calls == 0, "预留装不下时不应发出模型调用"
+    status, reason, _new, *_ = _run_row(database_url_schema, outcome.run_id)
+    assert (status, reason) == ("failed", "budget_exceeded")
+    assert query_one(database_url_schema, "SELECT count(*) FROM policy_candidate")[0] == 0
+
+
+def test_a_page_with_attachments_carries_an_explicit_review_note(
+    db, discovery, database_url_schema
+):
+    """附件首版不抓取，就必须在候选上写明——不能让审核员以为正文里已经没有条件了。"""
+
+    configure(discovery)
+    attachment = "https://www.gov.cn/zhengce/content/2026-11/12/shouce.pdf"
+    pages = {
+        LIST_URL: LIST_PAGE,
+        ARTICLE_URL: page(ARTICLE_URL, BODY, attachments=(attachment,)),
+    }
+    make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm()).run(trigger="timer")
+
+    findings, urls = query_one(
+        database_url_schema, "SELECT validation_findings, attachment_urls FROM policy_candidate"
+    )
+    assert [item["code"] for item in findings] == ["ATTACHMENT_NOT_EXTRACTED"]
+    assert findings[0]["criterionId"] is None
+    assert "附件" in findings[0]["message"]
+    assert urls == [attachment], "附件地址仍要留档，供人工打开"
 
 
 def test_extraction_without_criteria_stages_an_explicit_failure(

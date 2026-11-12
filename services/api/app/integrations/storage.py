@@ -931,10 +931,21 @@ class PolicyRepository:
 
     # ------------------------------------------------------------ idempotency
 
-    def read_idempotent(self, scope: str, key: UUID) -> dict[str, Any] | None:
-        """取回同一作用域下同键的已完成结果；没有则返回 ``None``。"""
+    def read_idempotent(
+        self,
+        scope: str,
+        key: UUID,
+        *,
+        connection: Connection | None = None,
+    ) -> dict[str, Any] | None:
+        """取回同一作用域下同键的已完成结果；没有则返回 ``None``。
 
-        with self._db.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        传入 ``connection`` 时在调用方的事务里读，看到的是该事务此刻的快照——
+        候选提交要在**同一把键锁**下先读后写，不能各读各的连接（见
+        :meth:`lock_idempotency_key`）。
+        """
+
+        with self._transaction(connection) as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT request_fingerprint, response, revision, usage_semantics "
                 "FROM idempotency_record WHERE scope = %s AND idempotency_key = %s",
@@ -949,6 +960,22 @@ class PolicyRepository:
             "revision": row["revision"],
             "usage_semantics": row["usage_semantics"],
         }
+
+    def lock_idempotency_key(self, conn: Connection, scope: str, key: UUID) -> None:
+        """按 (scope, key) 取事务级 advisory lock，串行化同键请求。
+
+        幂等要求「读记录 → 决定重放还是执行 → 写记录」是一个原子动作。只在事务外
+        先读一次不够：两个并发请求会同时读到空，各自把活干完，而 ``save_idempotent``
+        的 ``ON CONFLICT DO NOTHING`` 只保留其中一条——另一个客户端拿到的结果没有任何
+        幂等记录，重试时会变成「键被复用」。
+
+        锁随事务结束自动释放，等待方拿到锁时前者已提交，随后的一次读就能看到那条记录。
+        """
+
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (scope, str(key)),
+        )
 
     def save_idempotent(
         self,
