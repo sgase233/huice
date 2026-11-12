@@ -6,6 +6,8 @@
 >
 > **同日早先记录保留：** 第一次核对时 `origin/main` 为 `ea44ae0`、PR #62 尚 open（head `4ed6bee`、base 为 M2 工作分支）。该次结论只对应当时基线，不因后续 PR #62 合并到 M2 分支而改写；`#62 merged` 仍不等于 E1 前端已进入 `main` 或已部署。
 >
+> **2026-11-12 晚 PR #65 复审整改：** 按 sgase233/Hya-555 的复审意见，撤回 `source_register.csv` 的 RD-SUBSIDY 窗口/状态修改（日期型字段会把 18:00 截止补成 23:59:59，且不改变评测输入）；修正 API-12 的 404 机制；把评估期间文案改为使用 run 的实际 `period`；补充迁移 009 的仓库证据出处与 PR #64/E2 状态。**E1 联合验收仍未执行，结论不变。**
+>
 > **边界：** 本文只写准备、步骤、预期与证据形式；实际结果一律回填 [ACCEPTANCE.md](ACCEPTANCE.md) 的执行记录表。没有真实账号、同版环境和证据时，保持“未执行/阻塞”，不用 mock、作者自述、CI 通过或另一版本环境冒充联合验收。本文不写任何真实口令、演示 cookie、审核员密钥或连接串。
 
 ## 1. 本轮已核对的事实与未决状态
@@ -14,7 +16,7 @@
 | --- | --- | --- |
 | 代码基线 | `origin/main` `5d1adeb`（合并 PR #63；此前 `ea44ae0` 合并 PR #61）；PR #61 的合并提交三项 CI 检查 success | 只能证明该提交通过自动检查，不等于 E1 联合验收 |
 | 正式契约 | `1.1.0-rc.1`；AUTH-01—07 七个端点已并入；`x-e1-gate` 与 `x-e1-gate-model` 明确“门禁 → 请求体解析与字段校验 → 身份 → 角色 → 对象归属 → CSRF/Origin” | 验收按此顺序判错误码；候选版本最终口径仍需 M1/M2 确认 |
-| 迁移 | `009_users_sessions.sql`：`app_user`、`user_session`、`demo_quota`；`enterprise.owner_user_id` 部分唯一索引；`assessment_run.user_id`；历史数据保持无主。脚本已入 `main`；PR #61 自述在本地 PostgreSQL 与云端 RDS 实跑过 009，但 M3 不能登录云端库复核，且当前部署仍是 `rc.10`，故“当前同版验收库已执行 009”仍为**尚未确认** | 验收环境必须由 M1 现场证明 009 已执行；空库与旧库升级都要留证。不能用 PR 自述代替 M3 的环境核对 |
+| 迁移 | `009_users_sessions.sql`：`app_user`、`user_session`、`demo_quota`；`enterprise.owner_user_id` 部分唯一索引；`assessment_run.user_id`；历史数据保持无主。脚本已入 `main`；仓库记录见 `infra/README.md` §3（009 段）与 `docs/devlog/M1.md` 2026-11-11 云端部署条：本地 PostgreSQL 16 三种起跑线、云端 RDS 只应用 009、`schema_migration` 九行。M3 不能登录云端库复核，且当前部署仍是 `rc.10`，故“当前同版验收库已执行 009”仍为**尚未确认** | 验收环境必须由 M1 现场证明 009 已执行；空库与旧库升级都要留证。不能用仓库自述代替 M3 的现场核对；Hya-555 可提供只读核验查询，由负责人在 ECS 执行后脱敏回贴 |
 | PR #62 | **已合并到 M2 工作分支** `m2/frontend-work-plan-1110`（PR #60 的 head `9caa1e0` 是 `Merge pull request #62`）；**PR #60 仍 open，未进入 `main`，也未部署**。PR 自述浏览器回归使用内存仓储做合成账号真实 HTTP，未验证 PostgreSQL 事务、正式部署或完整真库审核发布流程 | 前端登录、账号切换、缓存清理、错误态仍不能按 `main` 同版验收；必须等 #60 合入 `main` 并部署同版后再做联合验证 |
 | PR #60 | open；head `9caa1e0`；base `main`；包含 #62 的 4 个提交及其合并提交，但整个 PR 尚未合入 `main` | 不能把 #62 的合并当成前端已进入主线；同版前端仍明确未就绪 |
 | issue #59 | open；0 条评论；指派 `Hya-555`。启动条件中的“隔离环境、两个合成企业账号和一个审核员账号”没有仓库内证据 | 是 M3 执行 AUTH-AT 的主要外部阻塞；不因 issue 旧文案或 PR 合并推断环境可用 |
@@ -30,7 +32,7 @@
 | --- | --- | --- | --- |
 | 可供验收的后端代码与正式契约 | **有证据已就绪**（仅代码/契约层） | `origin/main` `5d1adeb`；`contracts/openapi.yaml` `1.1.0-rc.1`；2026-11-12 本地 `git log`/文件核对 | 后端和契约在 `main`；是否已部署为同版是另一项，不能混同 |
 | 可供验收的同版前端 | **明确未就绪** | PR #62 已并入 `m2/frontend-work-plan-1110`；PR #60 open、head `9caa1e0`、未入 `main`；2026-11-12 GitHub PR 页面与本地 ref 核对 | 等 #60 合入 `main` 并部署；在此之前不做账号切换/缓存清理的联合判定 |
-| 迁移 009 的实际执行状态 | **尚未确认** | 脚本在 `main`；PR #61 自述本地 PostgreSQL 16 与云端 RDS 已执行 009；M3 无云端库访问，当前 `/health` 仍 `rc.10`；2026-11-12 匿名探测 | 由 M1 提供隔离库 `information_schema`/`pg_indexes` 查询结果和迁移版本号；不以 PR 自述代替现场核对 |
+| 迁移 009 的实际执行状态 | **尚未确认** | 脚本在 `main`；`infra/README.md` §3（009 段）与 `docs/devlog/M1.md` 2026-11-11 云端部署条记录：本地 PostgreSQL 16 三种起跑线、云端 RDS 只应用 009、`schema_migration` 九行；M3 无云端库访问，当前 `/health` 仍 `rc.10`；2026-11-12 匿名探测 | 由 M1/负责人在 ECS 执行只读核验（`schema_migration` 行、`information_schema.columns`、`pg_indexes`），脱敏回贴；不以仓库自述代替现场核对 |
 | 同版隔离环境与数据范围 | **尚未确认** | issue #59 open、0 评论；仓库内无环境地址/库 schema/数据范围交付记录；2026-11-12 核对。**不因 issue 未勾选单独推断环境不可用**，只认为没有可执行证据 | 需要 M1/负责人给出环境地址、库/schema、数据范围、清理与回滚方式 |
 | 两个合成企业账号 | **尚未确认** | 无账号 ID/企业 ID/口令交付记录；issue #59 启动条件未体现交付；2026-11-12 核对 | 由 M1 通过机密渠道创建并交付；M3 不在仓库记录口令 |
 | 一个审核员账号与演示门禁 | **尚未确认**（账号与有效 demo 票据均无交付证据） | `create-admin.py`、`issue-session.py` 代码在 `main`；2026-11-12 匿名探测只能证明匿名时门禁生效，不能证明存在可用 reviewer 账号或有效 demo cookie | 由 M1 在受控窗口签发 demo cookie 和 reviewer 账号；M3 只记录“已提供/已撤销”，不贴明文 |
@@ -106,7 +108,7 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | --- | --- |
 | 前置条件 | E1-A、E1-B 各自已有企业、画像、成功 run、报告；E1-R 可登录；HIST-U 无主样本存在；M1 可查归属列 |
 | 合成账号/样本 | E1-A、E1-B、E1-R、HIST-U；每账号的 enterpriseId/runId/report URL；一个不存在的 UUID 作为“同码同文案”对照 |
-| 操作步骤 | 1. A 登录，`GET /enterprises` 只返回 A；`GET /enterprises/{A}` 200；`GET /enterprises/{B}` 404；`PATCH /enterprises/{B}/facts/{key}` 404；`POST /assessment-runs` 指向 B 的企业 404；`GET /assessment-runs/{B-run}`、`/report.md`、`/trace` 均 404。2. A 的 `GET /assessment-runs` 只返回 A 的 run；用 B 的游标续页 → 400/422；用不存在的 enterpriseId 筛选 → 404。3. B 对称执行，确认 B 也看不到 A。4. A 下载自己的报告 → 200；下载 B 的报告 → 404；若 E1-A-NR 存在，下载非成功 run 的报告 → 409 `RUN_NOT_COMPLETED`，`details.status` 为真实状态。5. E1-R 登录：`GET /enterprises` 含全部（含 HIST-U）；读取 A/B/HIST-U 的企业、run、报告、轨迹 → 200；`PATCH` A 或 HIST-U 的事实 → 404；对他人企业发起 run → 404。6. 核对 A/B/HIST-U 的 `owner_user_id`/`user_id` 未被读取动作改变。 |
+| 操作步骤 | 1. A 登录，`GET /enterprises` 只返回 A；`GET /enterprises/{A}` 200；`GET /enterprises/{B}` 404；`PATCH /enterprises/{B}/facts/{key}` 404；`POST /assessment-runs` 指向 B 的企业 404；`GET /assessment-runs/{B-run}`、`/report.md`、`/trace` 均 404。2. A 的 `GET /assessment-runs` 只返回 A 的 run；用 B 的游标续页 → 400/422；用不存在的 enterpriseId 筛选 → 404。3. B 对称执行，确认 B 也看不到 A。4. A 下载自己的报告 → 200；下载 B 的报告 → 404；若 E1-A-NR 存在，下载**已落行但未完成** run 的报告 → 409 `RUN_NOT_COMPLETED`，`details.status` 为真实状态；若用一次失败分析且其未落行，则可能是 404，不能当作 409 样本。5. E1-R 登录：`GET /enterprises` 含全部（含 HIST-U）；读取 A/B/HIST-U 的企业、run、报告、轨迹 → 200；`PATCH` A 或 HIST-U 的事实 → 404；对他人企业发起 run → 404。6. 核对 A/B/HIST-U 的 `owner_user_id`/`user_id` 未被读取动作改变。 |
 | 预期结果 | 企业账号只能读/写本人企业及本人 run；越权与不存在同码同文案；审核员可全局读，但不能因读权修改他人事实；报告只对成功 run 提供；无主数据不被自动认领；分页游标不越权 |
 | 证据形式 | 两组账号的请求矩阵（方法/路径/状态码/错误码/traceId）；响应体中的错误码与文案；数据库归属前后对比；报告下载文件哈希或截图（合成内容） |
 | 主执行/复核 | M1（API）/ M2（#62 页面，待 #60 入 `main`）/ M3（业务复核） |
@@ -130,11 +132,11 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | --- | --- |
 | 前置条件 | E1-A/E1-B/E1-R；一个成功 run 的轨迹；HIST-U 无主 run 轨迹；运维 Bearer（若仍保留）；restricted 演示 cookie |
 | 合成账号/样本 | A 的 run、B 的 run、HIST-U run；**当前已存在**的后台政策列表/导入/抽取/保存/发布端点；`/assessment-runs/{runId}/trace`。候选（DISC-*）与统计（VIS-04/05）另列后续阶段，不作为本轮样本要求 |
-| 操作步骤 | 1. A 登录：当前后台政策接口（`GET /admin/policies`、导入/抽取/保存/发布）→ 403 `ROLE_FORBIDDEN`；`GET` 自己的 trace → 200（**仅在 M1/M2 确认本人轨迹边界后执行**；否则标“边界待确认”）；读 B/HIST-U 的 trace → 404。2. E1-R：当前后台读 → 200；当前后台写/发布（在隔离测试政策上）→ 允许；A/B/HIST-U 的 trace → 200；`PATCH` 他人事实 → 404。3. 运维 Bearer：后台读 → 200；业务接口 → 403；后台写 → 403；轨迹 → 200（按契约当前口径）。4. E1-DEMO：后台 → 403；无主企业/run/trace → 200；有主企业/run/trace → 404。5. 检查 trace 响应只含阶段、状态、摘要、版本、错误与 `{type,id}` 对象引用；不得含提示词、密钥、真实原文或他人企业事实值；`objectRefs` 不得当政策引文。6. 候选与统计接口（DISC-*、VIS-04/05）当前未实现/未签收，本轮**不调用、不判权限**；待 E2/E3b 实现并签收后另测。 |
+| 操作步骤 | 1. A 登录：当前后台政策接口（`GET /admin/policies`、导入/抽取/保存/发布）→ 403 `ROLE_FORBIDDEN`；`GET` 自己的 trace → 200（**仅在 M1/M2 确认本人轨迹边界后执行**；否则标“边界待确认”）；读 B/HIST-U 的 trace → 404。2. E1-R：当前后台读 → 200；当前后台写/发布（在隔离测试政策上）→ 允许；A/B/HIST-U 的 trace → 200；`PATCH` 他人事实 → 404。3. 运维 Bearer：后台读 → 200；业务接口 → 403；后台写 → 403；轨迹 → 200（按契约当前口径）。4. E1-DEMO：后台 → 403；无主企业/run/trace → 200；有主企业/run/trace → 404。5. 检查 trace 响应只含阶段、状态、摘要、版本、错误与 `{type,id}` 对象引用；不得含提示词、密钥、真实原文或他人企业事实值；`objectRefs` 不得当政策引文。6. 候选与统计接口（DISC-*、VIS-04/05）：`main` 当前未实现；M1 的 PR #64（`m1/e2-policy-discovery`，open）已提出 6 个发现/候选端点与迁移 010，但未合入/未签收，本轮**不调用、不判权限**；合入后只把 DISC-* 改为“已实现待签收”，权限仍需另测。VIS-04/05 仍属 E3b，未实现。 |
 | 预期结果 | 当前后台政策接口的角色矩阵与契约一致；企业账号不能进后台；审核员可读全部但写入仍受归属限制；Bearer 只读且不读业务；demo 只读无主；本人轨迹边界未确认前不扩大开放；轨迹脱敏。候选/统计接口未实现时不作为权限缺陷，待实现并签收后另测 |
 | 证据形式 | 角色×端点矩阵表（状态码/错误码/traceId）；trace 响应字段清单与脱敏检查；截图 |
 | 主执行/复核 | M1（API）/ M2（页面）/ M3（业务语义） |
-| 依赖/阻塞 | 本人轨迹脱敏投影边界仍未在 #59/PR #61 复审中定案；M2 PR #62 明确“本人轨迹入口保持关闭”；该项不得自行扩大。候选/统计接口依赖 E2/E3b，当前未实现，不纳入本轮。当前未执行 |
+| 依赖/阻塞 | 本人轨迹脱敏投影边界仍未在 #59/PR #61 复审中定案；M2 PR #62 明确“本人轨迹入口保持关闭”；该项不得自行扩大。DISC-* 在 `main` 未实现，PR #64 已提出但未合入/未签收；VIS-04/05 属 E3b。当前未执行 |
 
 ### AUTH-AT-06 旧通道、历史无主与账号切换
 
@@ -156,7 +158,7 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | AUTH-AT-02 | `infra/deploy/create-admin.py`、部署手册 §3.4、契约密钥错误口径已核对 | 未执行 | 缺服务器 root/机密渠道/隔离环境 |
 | AUTH-AT-03 | `access.py` 的读写归属、`tests/test_e1_access.py` 的越权用例已核对 | 未执行 | 缺两账号、一审核员、隔离库；页面需 #62 随 #60 入 `main` |
 | AUTH-AT-04 | 契约门禁模型、`identity.py` 真值表、`GatedRoute`、限流实现已核对 | **仅匿名门禁探测**（rc.10，非 1.1.0-rc.1 同版） | 不能判通过/失败；见 [ACCEPTANCE.md](ACCEPTANCE.md) 2026-11-12 记录 |
-| AUTH-AT-05 | 当前后台政策接口的角色矩阵、`require_reviewer*`、轨迹 `require_run_access` 已核对；候选/统计接口尚未实现 | 未执行 | 本人轨迹边界待确认；候选/统计待 E2/E3b；缺账号/环境 |
+| AUTH-AT-05 | 当前后台政策接口的角色矩阵、`require_reviewer*`、轨迹 `require_run_access` 已核对；DISC-* 在 `main` 未实现（PR #64 open），VIS-04/05 未实现 | 未执行 | 本人轨迹边界待确认；DISC-* 待 #64 合入并签收，VIS-* 属 E3b；缺账号/环境 |
 | AUTH-AT-06 | 旧 v1 demo 只读、Bearer 只读、历史无主迁移设计已核对 | 未执行 | #62 已并入 M2 分支但 #60 未入 `main`；缺同版前端/环境 |
 
 **统计：** 0 个用例完成联合验收；1 个用例只有门禁层的部分匿名探测，且环境版本不一致；其余未执行。任何“CI 通过”“作者本地测试通过”“#62 内存仓储联调”都不能填成 M3 的通过记录。
@@ -177,7 +179,7 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 1. **隔离环境与账号交付：** 哪个环境、哪个库/schema、何时可用；两个企业账号、一个审核员如何创建；口令/密钥/cookie 如何通过机密渠道交付；验收后如何撤销和清理。不要把口令写进仓库、文档、命令行参数或日志。
 2. **同版部署：** 当前 `https://139.9.33.46` 的 `/health` 是 `1.0.0-rc.10`，而本轮契约是 `1.1.0-rc.1`；请明确何时部署同版、迁移 009 是否已执行、部署 commit/指纹和回滚方式。M3 不在旧版本上冒充新契约验收。
 3. **`queued` 生命周期：** 契约 AUTH-07 写“`queued` 只出现在 E1 起的新写入路径（受理即落行）”，但 `save_run()` 当前只在成功时插入 `status='succeeded'`，代码中没有 `queued` 写入路径。请确认：E1 是否实际产生 `queued`；若不产生，是改契约描述还是补实现。对应地，METRICS_SPEC 的运行三态/未完成口径要按实际实现更新。
-4. **API-12 未完成语义：** API-13 已明确未成功 run 返回 `409 RUN_NOT_COMPLETED`；API-12 尚未在契约中规定。当前 `get_run()` 在 run 没有 assessment 行时返回 `404 RUN_NOT_FOUND`（“该判断运行没有结果”）。请定 API-12 对 `failed`/`queued`/`running`/无结果记录的稳定错误码，并补契约与测试。
+4. **API-12 未完成语义：** API-13 已明确未成功 run 返回 `409 RUN_NOT_COMPLETED`；API-12 尚未在契约中规定。**2026-11-12 按 Hya-555 复核修正事实**：`get_run()` 只在 `assessment_run` 行本身不存在时返回 `404 RUN_NOT_FOUND`；run 存在但没有 assessment 行会返回 **200 + 空 `assessments`**。`save_run()` 只在成功路径落行（`agents/orchestrator.py:186`），失败分析不落行，因此“跑失败的 run”和“根本不存在的 run ID”都可能表现为 404，调用方无法区分。请定 API-12 对 `failed`/`queued`/`running`/无结果记录的稳定错误码，并补契约与测试；AUTH-AT-03 的 `409 RUN_NOT_COMPLETED` 断言必须使用**已落行但未完成**的 run，失败的 run 若未落行会得到 404，不能混记。
 5. **本人轨迹边界：** API-14 当前允许企业会话读取本人 run 的轨迹，响应结构只含阶段/状态/摘要/`{type,id}` 引用；但 PR #61 复审与 issue #59 仍把“本人轨迹脱敏投影边界”列为未完成，#62 明确“本人轨迹入口保持关闭”。请 M1/M2/M3 共同确认：API 是否继续允许企业会话读本人 trace、前端何时开放入口、脱敏字段清单是什么。未确认前 M3 不扩大访问范围。
 6. **历史无主数据清单：** 提供 HIST-U 的企业 ID、run ID、报告 ID、`owner_user_id`/`user_id=NULL` 的核对结果，以及“注册不认领”的验证方法。
 7. **契约/文档同步：** `docs/README.md`（仍写 rc.9 / 16 端点）、`docs/DEVELOPMENT_PLAN.md`（基线 `807e1bb`）、`docs/EXTENSION_INTERFACES.md`（仍写新增端点未实现）与 `contracts/openapi.yaml` 1.1.0-rc.1 不一致；这些文件由 M1/项目负责人维护，请按实际状态更新，M3 不代改。
@@ -203,8 +205,8 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | 事项 | 最新状态 | 依据（日期/位置） | 决策人/影响范围 | M3 当前动作 |
 | --- | --- | --- | --- | --- |
 | 本人轨迹脱敏投影边界 | **未解决** | PR #61 复审（2026-11-11/12）多次列为“仍需分别确认”；PR #62 说明“本人轨迹入口保持关闭”、改为审核员专属入口；issue #59 仍 open | M1/M2/负责人共同定；影响 AUTH-AT-05、VIS-AT-05、API-14 的前端开放范围 | 不开放企业本人轨迹入口；审核员轨迹按当前实现只读；AUTH-AT-05 中涉及本人轨迹的步骤标“边界待确认” |
-| `queued` 运行生命周期 | **未解决（未实现）** | PR #61 作者自述（2026-11-11/12）：`save_run()` 只在成功时写 `succeeded`，没有 `queued` 写入路径；契约 `RunStatus` 已含 `queued`；METRICS_SPEC 2026-11-12 已记录“枚举存在不等于已采集” | M1 定是否补实现或改契约；影响 VIS-AT-07、E3b 运行趋势、API-12 状态语义 | 不把 `queued` 当作已记录状态；验收样本若需要 `queued`，标“M1 未提供/未实现” |
-| API-12 未完成状态语义 | **未解决** | PR #61 复审：API-13 已明确 `409 RUN_NOT_COMPLETED`；API-12 尚未在契约规定；`get_run()` 在无 assessment 行时返回 `404 RUN_NOT_FOUND` | M1 定 API-12 对 `failed/queued/running/无结果` 的稳定错误码；影响报告/轮询、AUTH-AT-03 的 409 断言 | 不以 404 推断“未完成”；AUTH-AT-03 的非成功 run 步骤保持“待 M1 提供样本和错误码” |
+| `queued` 运行生命周期 | **未解决（未实现）** | PR #61 作者自述（2026-11-11/12）；Hya-555 2026-11-12 复核确认：`save_run()` 只在成功时写 `succeeded`，全仓没有 `queued` 写入点，`create_run` 是同步 200；契约 `RunStatus` 已含 `queued`；METRICS_SPEC 2026-11-12 已记录“枚举存在不等于已采集” | M1 定是否补实现或改契约；影响 VIS-AT-07、E3b 运行趋势、API-12 状态语义 | 不把 `queued` 当作已记录状态；验收样本若需要 `queued`，标“M1 未提供/未实现” |
+| API-12 未完成状态语义 | **未解决（事实已修正）** | Hya-555 2026-11-12 复核：`get_run()` 只在 `assessment_run` 行不存在时 404；run 存在无 assessment 行返回 200 + 空数组；`save_run()` 只成功落行，失败分析不落行，失败 run 与不存在 run 都可能 404。PR #61 复审：API-13 已明确 409，API-12 未规定 | M1 定 API-12 对 `failed/queued/running/无结果` 的稳定错误码；影响报告/轮询、AUTH-AT-03 的 409 断言 | 不以 404 推断“未完成”；AUTH-AT-03 的 409 断言只用已落行但未完成的 run；失败分析可能 404，不混记 |
 | 审核员注册密钥轮换 | **部分实现，流程未定案** | PR #61 自述：注册密钥已实现、错误/未配置同码同文案、密钥不进日志；但“改名与轮换的操作流程”仍需评审定稿；本次未找到轮换完成记录 | M1/负责人定轮换与旧密钥失效流程；影响 AUTH-AT-02、运维部署 | AUTH-AT-02 只核对已实现部分；轮换旧密钥失效步骤保持“未定案/未执行” |
 
 ## 8. 本轮明确不做

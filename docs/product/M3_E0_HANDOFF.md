@@ -18,7 +18,7 @@
 | E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-12；仅执行旧版环境的部分匿名探测，联合验收未执行；未签收 | M1（环境/账号）、M2（#60 前端）、M3（执行） |
 | E3a | 结果分布、资格逻辑树、轨迹展示业务复核 | [E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) | M3 静态评审输入，2026-11-12；对象为 PR #60 head `9caa1e0`，未入 `main`、未执行；未签收 | M2（展示/交互）、M1（轨迹与版本数据）、负责人（时间线范围） |
 
-> **2026-11-12 状态更新：** `origin/main` 已由 `ea44ae0` 前进到 `5d1adeb`（合并 PR #63，仅 M3 文档）；#61 的后端与候选契约 `1.1.0-rc.1`、迁移 `009_users_sessions.sql` 仍在 `main`。E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，PR #62 已并入 M2 工作分支但 PR #60 仍 open、未入 `main`。D3/D4/D5 仍按本文状态待评审，不因 #61/#62/#63 合并而签收；本轮 D3 新增 2026 年度研发费用资助申请指南的官方原文核对（见 [DISCOVERY_SOURCES](DISCOVERY_SOURCES.md) §3.7 与 [POLICY_SCOPE](POLICY_SCOPE.md)）。D4/D5 本轮没有新的实现或数据证据，COMPLETENESS_SPEC/METRICS_SPEC 维持草案；E3a 的静态复核见新文档，不代表 E3a 验收通过。
+> **2026-11-12 状态更新：** `origin/main` 已由 `ea44ae0` 前进到 `5d1adeb`（合并 PR #63，仅 M3 文档）；#61 的后端与候选契约 `1.1.0-rc.1`、迁移 `009_users_sessions.sql` 仍在 `main`。E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，PR #62 已并入 M2 工作分支但 PR #60 仍 open、未入 `main`。D3/D4/D5 仍按本文状态待评审，不因 #61/#62/#63 合并而签收；本轮 D3 新增 2026 年度研发费用资助申请指南的官方原文核对（见 [DISCOVERY_SOURCES](DISCOVERY_SOURCES.md) §3.7 与 [POLICY_SCOPE](POLICY_SCOPE.md)），但**未写入 `source_register`/评测输入**（日期型字段无法表达 18:00 截止，待 M1/M2 确认）。D4 本轮没有新的实现或数据证据；D5 只依据 Hya-555 复核修正 API-12 的 404 事实，METRICS_SPEC 仍为草案。E3a 的静态复核见新文档，不代表 E3a 验收通过。
 
 ## 2. D3/D4/D5 已明确与仍待确认
 
@@ -49,11 +49,11 @@
 
 **仍待 M3 补**
 
-- 高企培育年度申请指南（含窗口）**未取得**；研发投入补助 **2026 年度**指南已于 2026-11-12 补取（2026-06-05 发布，窗口 2026-06-10 至 07-09 18:00），后续年度指南仍未取得。
+- 高企培育年度申请指南（含窗口）**未取得**；研发投入补助 **2026 年度**指南已于 2026-11-12 补取（2026-06-05 发布，窗口 2026-06-10 至 07-09 18:00），后续年度指南仍未取得。**该窗口暂未写入 `source_register`/评测输入**：日期型字段无法表达 18:00，待 M1/M2 确认精确时间承载。
 - 智能终端附件 2/3、PDF 全文；专精特新 3 个 DOCX 逐条；绿色制造 `.doc` 完整逐条条件。
 - 双人复核与真实抓取器验证。
 
-> **2026-11-12 观察（未评审）：** 远程出现 M1 分支 `origin/m1/e2-policy-discovery`（head `0005c88`，提交“接口：实现 E2 政策发现、候选暂存与后台配置”），尚未看到对应 PR，也未合入 `main`。M3 只做了静态浏览：其 `discovery/metadata.py` 的候选元数据字段包含 `publishedAt/effectiveFrom` 等必填项，**未看到** `effectiveTo`、`opensAt/closesAt`、`documentDate/pagePublishedAt` 或多窗口字段。该分支不构成本轮交付或验收结论；上述差异需 M1 确认是否为候选阶段的人工补录范围。M3 不在本文把它判为缺陷。
+> **2026-11-12 观察（未评审）：** M1 已为分支 `m1/e2-policy-discovery`（head `0005c88`）开 **PR #64**（open、base `main`、mergeable），内容为迁移 010、6 个发现/候选端点、`python -m app.discovery` CLI 与 systemd timer；**尚未合入 `main`**。M3 只做了静态浏览：其 `discovery/metadata.py` 的候选元数据字段包含 `publishedAt/effectiveFrom` 等必填项，**未看到** `effectiveTo`、`opensAt/closesAt`、`documentDate/pagePublishedAt` 或多窗口字段。该 PR 不构成本轮交付或验收结论；上述差异需 M1 确认是否为候选阶段的人工补录范围。M3 不在本文把它判为缺陷。**合入后需同步**：E1 清单中“DISC-* 未实现”改为“已实现待签收”；`schema_migration` 从九行变为十行（010 未执行）；候选权限仍需另测。
 
 ### 2.2 D4 完整度
 
