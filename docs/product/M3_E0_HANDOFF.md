@@ -15,7 +15,7 @@
 | 验收 | 来源可用性复核记录 | [ACCEPTANCE.md](ACCEPTANCE.md)「2026-11-10 来源可用性复核」 | 只记录实际访问，不构成验收通过 | 全组 |
 | UI | 完整度/趋势展示规则 | [UI_BRIEF.md](../ui/UI_BRIEF.md) §5 | 待 M2 复核 | M2 |
 | 估工 | E1—E4 M3 初步估工 | 本文 §4 | 初步，不代替负责人排期 | 负责人、M1、M2 |
-| E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-12；未执行、未签收 | M1（环境/账号）、M2（#62 前端）、M3（执行） |
+| E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-12；仅执行旧版环境的部分匿名探测，联合验收未执行；未签收 | M1（环境/账号）、M2（#62 前端）、M3（执行） |
 
 > **2026-11-12 状态更新：** #61 已合并到 `origin/main` `ea44ae0`，正式契约升到候选版 `1.1.0-rc.1`，迁移 `009_users_sessions.sql` 已入库；E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，PR #62 仍 open。D3/D4/D5 仍按本文状态待评审，不因 #61 合并而签收。本次复核 COMPLETENESS_SPEC、DISCOVERY_SOURCES、POLICY_SCOPE 后未发现因 #61 需要改写的业务口径；METRICS_SPEC 只补了 `queued` 生命周期与 API-12 的已核实事实，仍为草案。
 

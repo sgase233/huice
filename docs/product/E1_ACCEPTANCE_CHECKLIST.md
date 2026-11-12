@@ -42,7 +42,7 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | --- | --- | --- | --- | --- |
 | E1-A | enterprise 账号 | 合成企业 A：`nameSynthetic` 明确标注合成；期间 2026-01-01—2026-12-31；至少 `region=440300`、`industry=C39`；一条成功 run 与可下载报告 | 企业 A 的本人画像、run、报告；越权访问的“他人对象” | M1 创建，M3 使用 |
 | E1-B | enterprise 账号 | 合成企业 B：同期间；与 A 不同的合成名称/事实值；一条成功 run 与可下载报告 | 企业 B 的本人画像、run、报告；与 A 互测 | M1 创建，M3 使用 |
-| E1-R | reviewer 账号 | 不绑定企业（或按 M1 保底初始化建出的审核员）；可读全部业务数据 | 全局读取、只读边界、发布/候选权限 | M1 按 `create-admin.py` 或密钥注册创建 |
+| E1-R | reviewer 账号 | 不绑定企业（或按 M1 保底初始化建出的审核员）；可读全部业务数据 | 全局读取、只读边界、当前后台政策发布权限（候选/统计另列后续阶段） | M1 按 `create-admin.py` 或密钥注册创建 |
 | E1-DEMO | demo 访客 | 有效 `huice_demo_session`（restricted 模式） | 门禁层、demo 仅无主数据、与账号会话分层 | M1 用 `issue-session.py` 在受控窗口签发 |
 | HIST-U | 历史无主样本 | 现有 6 家合成企业及其历史 run/报告，`owner_user_id`/`user_id` 为 `NULL` | 历史无主数据不自动归新账号；审核员可读、企业账号不可见、demo 仅无主 | 现有库数据，不新建/不改归属 |
 | E1-A-NR | 非成功 run（可选） | 若 M1 能提供 `failed`/`queued`/`running` 的 run 及无结果记录 | 报告 409、运行列表状态、API-12 未完成语义 | M1 提供；若当前实现不产生，则该项标阻塞并在契约/实现间提差异 |
@@ -63,8 +63,8 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | --- | --- |
 | 前置条件 | 隔离环境已执行迁移 009；restricted 下已取得有效 demo cookie；`PUBLIC_ORIGIN` 与请求 `Origin` 同源；M1 可查隔离库计数；`REVIEWER_SIGNUP_KEY` 已配置（测审核员密钥分支时） |
 | 合成账号/样本 | 新用户名 `e1-ent-a`、`e1-ent-b`（占位）；重复用户名；错误/正确审核员密钥；并发同名注册 |
-| 操作步骤 | 1. 注册 A（带企业四要素）→ 记录 201 与 `enterpriseId`。2. 注册 B → 记录 201。3. 用同一用户名再注册 → 期望 409 `USERNAME_TAKEN`。4. 不提供密钥且不带 `enterprise` → 期望 422。5. 提供错误密钥 → 期望 403 `ROLE_FORBIDDEN`。6. 提供正确密钥、不带企业 → 期望 201 reviewer、`enterpriseId=null`。7. 两个并发请求注册同一新用户名 → 期望一个 201、一个 409，库里只有一行。8. 在请求体塞 `role: reviewer`（无密钥）→ 期望角色仍为 enterprise 或被 schema 拒绝，不能提权。9. 核对账号/企业/会话计数，确认没有半个账号或第二家企业。 |
-| 预期结果 | 成功路径账号＋企业同事务提交；失败路径无账号、无企业、无会话；重复用户名 409；普通注册不能自选 reviewer；响应不含密码哈希、注册密钥、会话凭据；错误响应带 `X-Trace-Id` |
+| 操作步骤 | 1. 注册 A（带企业四要素）→ 记录 201 与 `enterpriseId`。2. 注册 B → 记录 201。3. 用同一用户名再注册 → 期望 409 `USERNAME_TAKEN`。4. 不提供密钥且不带 `enterprise` → 期望 422。5. 提供错误密钥 → 期望 403 `ROLE_FORBIDDEN`。6. 提供正确密钥、不带企业 → 期望 201 reviewer、`enterpriseId=null`。7. 两个并发请求注册同一新用户名 → 期望一个 201、一个 409，库里只有一行。8. 在请求体塞 `role: reviewer`（无密钥）→ 期望角色仍为 enterprise 或被 schema 拒绝，不能提权。9. 核对注册事务后的账号、企业与归属，确认没有半个账号或第二家企业；注册本身不建立登录会话，响应只有 `user`，不下发 `huice_session`。10. A/B 的登录、会话创建与 `/auth/me` 恢复放到 AUTH-AT-04 执行，不并入注册用例。 |
+| 预期结果 | 成功路径账号＋企业同事务提交；注册本身不创建登录会话（登录会话在 AUTH-AT-02/04 验证）；失败请求不得新增账号、企业或归属（已存在的账号不因重复注册被改写）；重复用户名 409；普通注册不能自选 reviewer；响应不含密码哈希、注册密钥、会话凭据；错误响应带 `X-Trace-Id` |
 | 证据形式 | 每个请求的方法/路径/状态码/错误码/traceId；隔离库前后计数与用户名查询结果（M1 提供）；并发测试的两次响应；截图只截合成数据 |
 | 主执行/复核 | M1（主）/ M2、M3（复核） |
 | 依赖/阻塞 | 隔离环境、迁移 009、有效 demo 门禁、M1 数据库查询；当前未提供，未执行 |
@@ -99,8 +99,8 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | --- | --- |
 | 前置条件 | restricted 环境；有效 demo cookie；E1-A/E1-B；可控制会话过期/撤销（DB 或短 TTL 配置）；#62 前端用于浏览器步骤 |
 | 合成账号/样本 | E1-DEMO、E1-A、E1-B；过期/撤销/格式错误的 `huice_session`；错误 CSRF/Origin 请求 |
-| 操作步骤 | **门禁层：** 1. 不带 demo cookie：`GET /enterprises` → 403 `DEMO_SESSION_REQUIRED`；`POST /auth/login` 用 `{}`、错类型、空体、非 JSON → 均 403（门禁先于请求体校验）；`GET /health` 200；`POST /auth/logout` 204。2. 损坏/过期 demo cookie → 同样 403。**身份层：** 3. 有效 demo cookie、无用户会话：`GET /auth/me` → 403 `ROLE_FORBIDDEN`；`GET /enterprises` → 200 且仅无主数据。4. 登录 A（带有效 demo）→ 200，检查 `Set-Cookie: huice_session` 的 HttpOnly/SameSite/Path/Secure（local 例外）；`/auth/me` 返回同一 `enterpriseId` 与 csrfToken。5. 刷新页面 → 会话恢复；`/auth/me` 不得缓存。6. 登出（带 CSRF+Origin）→ 204；重放旧 cookie → 401 `SESSION_INVALID`；再次登出 → 204。7. 修改密码 → 204；A 的所有旧会话 → 401；旧密码登录 → 401；新密码登录 → 200。8. 使会话过期（DB 改 `expires_at` 或空闲超时）→ 401 `SESSION_INVALID`；同时带有效 demo cookie 仍为 401，不掉回 demo。9. 缺 CSRF/Origin 的写请求 → 403 `CSRF_REQUIRED`/`ORIGIN_MISMATCH`；连续错误登录 → 429。 |
-| 预期结果 | 门禁失败、身份失败、角色不足、CSRF/Origin 失败分别可辨；登出只撤销当前会话；改密撤销该账号全部会话；无效会话不降级；Cookie 属性符合契约；限流生效 |
+| 操作步骤 | **门禁层：** 1. 不带 demo cookie：`GET /enterprises` → 403 `DEMO_SESSION_REQUIRED`；`POST /auth/login` 用 `{}`、错类型、空体、非 JSON → 均 403（门禁先于请求体校验）；`GET /health` 200；`POST /auth/logout` 204。2. 损坏/过期 demo cookie → 同样 403。**身份层：** 3. 有效 demo cookie、无用户会话：`GET /auth/me` → 403 `ROLE_FORBIDDEN`；`GET /enterprises` → 200 且仅无主数据。4. 登录 A（带有效 demo）→ 200，检查 `Set-Cookie: huice_session` 的 HttpOnly/SameSite/Path/Secure（local 例外）；`/auth/me` 返回同一 `enterpriseId` 与 csrfToken。5. 刷新页面 → 会话恢复；`/auth/me` 不得缓存。6. 登出（带 CSRF+Origin）→ 204；重放旧 cookie → 401 `SESSION_INVALID`；再次登出 → 204。7. **重新登录 A** 建立新会话；再在另一个独立客户端/浏览器上下文登录 A，建立第二个独立会话（两个不同 `session_id`；同一浏览器登录会撤销其出示的有效旧会话，不能在同一 cookie jar 里制造两个会话）。8. 在第一个会话上修改密码 → 204；分别重放改密前的两个旧 cookie → 均 401 `SESSION_INVALID`；旧密码登录 → 401；新密码登录 → 200。9. 使会话过期（DB 改 `expires_at` 或空闲超时）→ 401 `SESSION_INVALID`；同时带有效 demo cookie 仍为 401，不掉回 demo。10. 缺 CSRF/Origin 的写请求 → 403 `CSRF_REQUIRED`/`ORIGIN_MISMATCH`；连续错误登录 → 429。 |
+| 预期结果 | 门禁失败、身份失败、角色不足、CSRF/Origin 失败分别可辨；登出只撤销当前会话；改密撤销该账号全部会话（含当前会话与另一个独立会话）；无效会话不降级；Cookie 属性符合契约；限流生效 |
 | 证据形式 | 每条请求的 Cookie/Origin/CSRF 头摘要（不贴明文 cookie）、状态码/错误码/traceId、Set-Cookie 属性、数据库 `user_session.revoked_at/expires_at` 行、浏览器网络面板截图（脱敏） |
 | 主执行/复核 | M1（API）/ M2（浏览器）/ M3（业务语义复核） |
 | 依赖/阻塞 | restricted 同版环境、有效 demo cookie、会话过期控制、#62；当前仅对 rc.10 做了匿名门禁探测，未执行账号步骤 |
@@ -110,12 +110,12 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | 项 | 内容 |
 | --- | --- |
 | 前置条件 | E1-A/E1-B/E1-R；一个成功 run 的轨迹；HIST-U 无主 run 轨迹；运维 Bearer（若仍保留）；restricted 演示 cookie |
-| 合成账号/样本 | A 的 run、B 的 run、HIST-U run；后台政策列表/候选/统计端点；`/assessment-runs/{runId}/trace` |
-| 操作步骤 | 1. A 登录：`GET /admin/policies`、后台写/候选/统计接口 → 403 `ROLE_FORBIDDEN`；`GET` 自己的 trace → 200（**仅在 M1/M2 确认本人轨迹边界后执行**；否则标“边界待确认”）；读 B/HIST-U 的 trace → 404。2. E1-R：后台读 → 200；后台写/发布（在隔离测试政策上）→ 允许；统计接口 → 200；A/B/HIST-U 的 trace → 200；`PATCH` 他人事实 → 404。3. 运维 Bearer：后台读 → 200；业务接口 → 403；后台写 → 403；轨迹 → 200（按契约当前口径）。4. E1-DEMO：后台 → 403；无主企业/run/trace → 200；有主企业/run/trace → 404。5. 检查 trace 响应只含阶段、状态、摘要、版本、错误与 `{type,id}` 对象引用；不得含提示词、密钥、真实原文或他人企业事实值；`objectRefs` 不得当政策引文。 |
-| 预期结果 | 角色矩阵与契约一致；企业账号不能进后台；审核员可读全部但写入仍受归属限制；Bearer 只读且不读业务；demo 只读无主；本人轨迹边界未确认前不扩大开放；轨迹脱敏 |
+| 合成账号/样本 | A 的 run、B 的 run、HIST-U run；**当前已存在**的后台政策列表/导入/抽取/保存/发布端点；`/assessment-runs/{runId}/trace`。候选（DISC-*）与统计（VIS-04/05）另列后续阶段，不作为本轮样本要求 |
+| 操作步骤 | 1. A 登录：当前后台政策接口（`GET /admin/policies`、导入/抽取/保存/发布）→ 403 `ROLE_FORBIDDEN`；`GET` 自己的 trace → 200（**仅在 M1/M2 确认本人轨迹边界后执行**；否则标“边界待确认”）；读 B/HIST-U 的 trace → 404。2. E1-R：当前后台读 → 200；当前后台写/发布（在隔离测试政策上）→ 允许；A/B/HIST-U 的 trace → 200；`PATCH` 他人事实 → 404。3. 运维 Bearer：后台读 → 200；业务接口 → 403；后台写 → 403；轨迹 → 200（按契约当前口径）。4. E1-DEMO：后台 → 403；无主企业/run/trace → 200；有主企业/run/trace → 404。5. 检查 trace 响应只含阶段、状态、摘要、版本、错误与 `{type,id}` 对象引用；不得含提示词、密钥、真实原文或他人企业事实值；`objectRefs` 不得当政策引文。6. 候选与统计接口（DISC-*、VIS-04/05）当前未实现/未签收，本轮**不调用、不判权限**；待 E2/E3b 实现并签收后另测。 |
+| 预期结果 | 当前后台政策接口的角色矩阵与契约一致；企业账号不能进后台；审核员可读全部但写入仍受归属限制；Bearer 只读且不读业务；demo 只读无主；本人轨迹边界未确认前不扩大开放；轨迹脱敏。候选/统计接口未实现时不作为权限缺陷，待实现并签收后另测 |
 | 证据形式 | 角色×端点矩阵表（状态码/错误码/traceId）；trace 响应字段清单与脱敏检查；截图 |
 | 主执行/复核 | M1（API）/ M2（页面）/ M3（业务语义） |
-| 依赖/阻塞 | 本人轨迹脱敏投影边界仍未在 #59/PR #61 复审中定案；M2 PR #62 明确“本人轨迹入口保持关闭”；该项不得自行扩大。当前未执行 |
+| 依赖/阻塞 | 本人轨迹脱敏投影边界仍未在 #59/PR #61 复审中定案；M2 PR #62 明确“本人轨迹入口保持关闭”；该项不得自行扩大。候选/统计接口依赖 E2/E3b，当前未实现，不纳入本轮。当前未执行 |
 
 ### AUTH-AT-06 旧通道、历史无主与账号切换
 
@@ -137,7 +137,7 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | AUTH-AT-02 | `infra/deploy/create-admin.py`、部署手册 §3.4、契约密钥错误口径已核对 | 未执行 | 缺服务器 root/机密渠道/隔离环境 |
 | AUTH-AT-03 | `access.py` 的读写归属、`tests/test_e1_access.py` 的越权用例已核对 | 未执行 | 缺两账号、一审核员、隔离库；页面需 #62 |
 | AUTH-AT-04 | 契约门禁模型、`identity.py` 真值表、`GatedRoute`、限流实现已核对 | **仅匿名门禁探测**（rc.10，非 1.1.0-rc.1 同版） | 不能判通过/失败；见 [ACCEPTANCE.md](ACCEPTANCE.md) 2026-11-12 记录 |
-| AUTH-AT-05 | 角色矩阵、后台 `require_reviewer*`、轨迹 `require_run_access` 已核对 | 未执行 | 本人轨迹边界待确认；缺账号/环境 |
+| AUTH-AT-05 | 当前后台政策接口的角色矩阵、`require_reviewer*`、轨迹 `require_run_access` 已核对；候选/统计接口尚未实现 | 未执行 | 本人轨迹边界待确认；候选/统计待 E2/E3b；缺账号/环境 |
 | AUTH-AT-06 | 旧 v1 demo 只读、Bearer 只读、历史无主迁移设计已核对 | 未执行 | #62 未合并；缺同版前端/环境 |
 
 **统计：** 0 个用例完成联合验收；1 个用例只有门禁层的部分匿名探测，且环境版本不一致；其余未执行。任何“CI 通过”“作者本地测试通过”“#62 内存仓储联调”都不能填成 M3 的通过记录。
