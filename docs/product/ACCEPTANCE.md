@@ -27,6 +27,8 @@
 口径依据：[开发计划](../DEVELOPMENT_PLAN.md)和[扩展接口设计](../EXTENSION_INTERFACES.md)。全部用例当前为**待实现后执行**；模拟接口、合成业务验证与真实联网/云端验证分别记账。自动化不能替代 M3 的政策来源与业务语义复核。
 
 > **E1 执行准备（2026-11-12）：** AUTH-AT-01—06 的前置条件、合成账号/样本、操作步骤、预期结果、证据形式、执行/复核人与阻塞见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。该清单沿用本矩阵编号，不改变验收标准；实际结果只回填下方执行记录表，未执行项保持未执行。
+>
+> **E3a 业务复核（2026-11-12）：** 对 PR #60 head `9caa1e0` 的结果分布、资格逻辑树、轨迹与时间线静态核对见 [E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md)。PR #60 已于 2026-11-12T10:01:57Z 合并到 `main`（`05982a5`），但同版部署未确认。该文是评审输入，不是 VIS-AT-01/03/04/05 的实际执行或通过记录；时间线在 #60 中未交付，轨迹离线/在线未分组。
 
 | ID / 工作包 | 场景与预期 | 主执行 / 复核 |
 | --- | --- | --- |
@@ -59,7 +61,8 @@
 | 实际日期 | 用例 ID | 代码/契约/迁移版本 | 环境与样本/数据快照 | 预期与实际 | runId/请求/截图等证据 | 缺陷及复测 | 执行/复核 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-11-12 | AUTH-AT-04（仅门禁层，部分） | 核对基线：代码 `origin/main` `ea44ae0`、契约 `1.1.0-rc.1`、迁移 `009_users_sessions`；被测部署实际为 `1.0.0-rc.10`，迁移 009 是否执行未确认 | `https://139.9.33.46`；`GET /api/v1/health` 返回 `1.0.0-rc.10`；无合成账号，仅匿名请求 | 预期（1.1.0-rc.1）：restricted 下缺 `huice_demo_session` 时门禁先于请求体校验，`POST /auth/login` 即使请求体为 `{}` 也应 403 `DEMO_SESSION_REQUIRED`。实际：`GET /auth/me` 403 `DEMO_SESSION_REQUIRED`；`GET /enterprises` 403 同码；`POST /auth/logout` 204；`GET /health` 200；`POST /auth/login` `{}` 返回 422 `VALIDATION_ERROR` | traceId：`15fc3f10-f947-4409-bf2b-f7a24c47a10d`（/auth/me）、`86f3d97c-b296-4637-ab8a-2dd1e7640512`（/enterprises）、`e505aab9-ad28-4539-8cf5-b5b01d91d78d`（logout）、`c7e331f8-4038-4ce5-8a28-621d673ed816`（health）、`b76b6c5f-2f72-408b-9f51-d373610d0126`（login） | 被测部署为 rc.10 而非契约 1.1.0-rc.1，`/auth/login` 的 422 说明该环境未体现“门禁先于请求体校验”；不能据此判 AUTH-AT-04 通过或失败。待 M1 部署同版并完成 009 后复测 | M3（本次执行）/ 复核人待定 |
+| 2026-11-12（17:29 +0800 复测） | AUTH-AT-04（仅门禁层，部分） | 核对基线：代码 `origin/main` `5d1adeb`（合并 #63）、契约 `1.1.0-rc.1`、迁移 `009_users_sessions`；被测部署仍为 `1.0.0-rc.10`，迁移 009 的当前执行状态未由 M1 现场证明 | `https://139.9.33.46`；自签名证书，命令行使用 `curl -k`；无合成账号，仅匿名请求；`/openapi.json` 返回前端 SPA HTML，未取得部署端 OpenAPI（原因是 `infra/deploy/nginx-huice-site.conf` 只反代 `/api/v1/`，其余路径回退 `index.html`，不是后端缺陷；验收比对用仓库 `contracts/openapi.yaml`） | 预期（1.1.0-rc.1）：`GET /health` 200；缺 demo 门禁时 `/auth/me`、`/enterprises` 均 403 `DEMO_SESSION_REQUIRED`；`POST /auth/login` 空体应因门禁先于请求体校验返回 403，而不是字段 422。实际：`GET /api/v1/health` 200 `version=1.0.0-rc.10`；`GET /api/v1/auth/me` 403 `DEMO_SESSION_REQUIRED`；`GET /api/v1/enterprises` 403 同码；`POST /api/v1/auth/login` `{}` 返回 422 `VALIDATION_ERROR`（`username`/`password` Field required） | traceId：`5e27abc4-0f99-4a31-9b54-86586476f6e5`（health）、`ca4ff8ad-1c5d-4882-bd5a-30bc59da7d23`（auth/me）、`05a542c2-560e-4946-82b9-4d84eb734a0e`（enterprises）、`a960a784-fed7-4c70-bd39-b181bd226e84`（login） | 与同日早先探测一致：部署版本不是 `1.1.0-rc.1`，登录空体先返回 422，未体现“门禁先于请求体校验”；不能据此判通过/失败，也不证明账号、会话、迁移 009 或越权链路。待 M1 部署同版并提供隔离库/账号后复测 | M3（本次执行）/ 复核人待定；M1 需提供同版部署与 009 证据 |
 
-**E1 执行状态（2026-11-12）：** AUTH-AT-01、02、03、05、06 未执行（缺隔离环境、两个企业账号、审核员账号、#62 同版前端）；AUTH-AT-04 只有上述门禁层部分探测，且被测部署版本不一致。E1 六个用例均**未完成联合验收**，上表不产生“通过”项。
+**E1 执行状态（2026-11-12 20:52）：** AUTH-AT-01、02、03、05、06 未执行：前端代码已随 PR #60 进入 `main`（merge `05982a5`，2026-11-12T10:01:57Z），但**同版部署尚未确认**；隔离环境、两个企业账号、审核员账号**尚未确认/未提供**（不因 issue 旧状态单独推断不可用）。AUTH-AT-04 只有上述两次匿名门禁层部分探测，且被测部署版本不一致（`1.0.0-rc.10` 对 `1.1.0-rc.1`）。E1 六个用例均**未完成联合验收**，上表不产生“通过”项。
 
 发布签收必须同时覆盖原 FR-01—FR-09 与本轮全部纳入项。#48 第 6 项、头像及找回密码不计为本轮缺陷；完整度和两张趋势图仅后批实施，不能当作取消。没有真实 conflict 来源时继续如实写未覆盖，不用构造政策替代真实来源验收。
