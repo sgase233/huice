@@ -77,6 +77,9 @@ router = APIRouter(prefix="/admin", tags=["admin"], route_class=GatedRoute)
 #: 提交候选的幂等作用域。与抽取（``extract``）分开：同一个键在两条链路上互不干扰。
 SUBMIT_SCOPE = "policy-candidate-submit"
 
+#: 附件未纳入抽取的复核提示码。由 ``attachment_urls`` 派生，不落库（见 ``_attachment_finding``）。
+ATTACHMENT_FINDING_CODE = "ATTACHMENT_NOT_EXTRACTED"
+
 MIN_INTERVAL_MINUTES = 360
 MAX_INTERVAL_MINUTES = 43_200
 MAX_SOURCE_URLS = 20
@@ -523,9 +526,49 @@ def _candidate_summary(row: dict[str, Any]) -> CandidateSummary:
     )
 
 
+def _attachment_finding(row: dict[str, Any]) -> dict[str, Any] | None:
+    """页面有附件时按 ``attachment_urls`` 派生一条复核提示。
+
+    这条提示**不落库**。``validation_findings`` 那一列放的是条件级结论，DISC-06 保存
+    ``criteriaDrafts`` 时会整体重算，存进去的副本第一次编辑就没了，提交时也带不进草稿
+    （DISC-07 只从 ``criteria`` 重新打包）。附件清单本身写入后不再变化，由它派生出来的
+    提示因此编辑不掉、也不会与库里那份漂移。
+    """
+
+    attachments = list(row["attachment_urls"] or [])
+    if not attachments:
+        return None
+    return {
+        "criterionId": None,
+        "code": ATTACHMENT_FINDING_CODE,
+        "message": (
+            f"该页面另有 {len(attachments)} 个附件（如 PDF/DOCX），本轮未下载、未纳入抽取；"
+            "条件若写在附件里，请在保存条件时人工补录。"
+        ),
+        "sourceSpans": [],
+    }
+
+
+def _draft_level_findings(row: dict[str, Any]) -> list[FindingRecord]:
+    """草稿里的非条件级提示：与候选详情看到的是同一条，来源同样是 ``attachment_urls``。"""
+
+    note = _attachment_finding(row)
+    if note is None:
+        return []
+    return [
+        FindingRecord(
+            criterion_id=None,
+            code=note["code"],
+            message=note["message"],
+            spans=[],
+        )
+    ]
+
+
 def _candidate_detail(row: dict[str, Any]) -> CandidateDetail:
     extraction = row["extraction"] or {}
     usage = extraction.get("usage")
+    notes = [_attachment_finding(row)]
     return CandidateDetail(
         id=row["id"],
         run_id=row["run_id"],
@@ -541,7 +584,8 @@ def _candidate_detail(row: dict[str, Any]) -> CandidateDetail:
         body_text=row["body_text"],
         criteria=[Criterion.model_validate(item) for item in row["criteria"] or []],
         validation_findings=[
-            ValidationFinding.model_validate(item) for item in row["validation_findings"] or []
+            ValidationFinding.model_validate(item)
+            for item in [*(row["validation_findings"] or []), *(n for n in notes if n)]
         ],
         usage=ModelUsage.model_validate(usage) if usage else None,
         duplicate_of=row["duplicate_of"],
@@ -824,7 +868,8 @@ def _criteria_for_draft(
                 spans=item.spans,
             )
             for item in findings
-        ],
+        ]
+        + _draft_level_findings(row),
     )
 
 

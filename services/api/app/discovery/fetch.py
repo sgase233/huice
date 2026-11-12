@@ -374,8 +374,15 @@ class Fetcher:
                 markup = decoded
                 text = html_to_text(decoded)
                 attachments = find_attachments(decoded, url)
-            else:
+            elif _is_textual(content_type) and not _looks_binary(raw):
                 text = decoded
+            else:
+                # DOCX/ZIP/图片解出来是乱码：硬当正文会在候选里堆垃圾，还会白烧一次模型。
+                # 明确判失败，让来源状态与 failed_articles 把「类型不支持」如实记出来。
+                raise FetchError(
+                    "unsupported_content",
+                    f"不支持的内容类型 {content_type or '（未声明）'}；本版只解析 HTML、纯文本与 PDF。",
+                )
         normalized = normalize_text(text)
         return FetchedPage(
             url=url,
@@ -396,6 +403,25 @@ def _is_html(content_type: str, sample: str) -> bool:
         return True
     head = sample.lstrip()[:512].lower()
     return head.startswith("<!doctype html") or head.startswith("<html")
+
+
+#: 可以**按文本**当正文解析的类型。其余类型只有在嗅探确认是 HTML/PDF 时才放行：
+#: 政府栏目的链接偶尔直接指向 .docx 或压缩包，二进制硬解出来只会污染候选。
+_TEXTUAL_TYPES = frozenset(
+    {"application/xhtml+xml", "application/xml", "application/json", "application/rss+xml"}
+)
+
+
+def _is_textual(content_type: str) -> bool:
+    base = content_type.split(";")[0].strip()
+    # 没声明类型时不拦：很多政府站点省略 content-type，凭 NUL 字节判二进制更可靠。
+    return not base or base.startswith("text/") or base in _TEXTUAL_TYPES
+
+
+def _looks_binary(raw: bytes) -> bool:
+    """二进制嗅探：正常网页没有 NUL 字节，DOCX/ZIP/图片一定在头部附近就有。"""
+
+    return b"\x00" in raw[:2048]
 
 
 def _decode(raw: bytes, content_type: str) -> str:

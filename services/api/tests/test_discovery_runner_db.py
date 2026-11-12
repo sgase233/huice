@@ -438,10 +438,14 @@ def test_the_run_budget_reserves_the_completion_upper_bound(
     assert query_one(database_url_schema, "SELECT count(*) FROM policy_candidate")[0] == 0
 
 
-def test_a_page_with_attachments_carries_an_explicit_review_note(
+def test_a_page_with_attachments_records_the_urls_without_storing_a_note(
     db, discovery, database_url_schema
 ):
-    """附件首版不抓取，就必须在候选上写明——不能让审核员以为正文里已经没有条件了。"""
+    """附件地址要留档；「附件未抽取」的提示由它派生，不落库。
+
+    存一份提示会与条件级 findings 抢同一个字段：DISC-06 保存条件时会把这一列整体
+    重算，副本第一次编辑就没了。派生出来的提示编辑不掉（见 HTTP 用例）。
+    """
 
     configure(discovery)
     attachment = "https://www.gov.cn/zhengce/content/2026-11/12/shouce.pdf"
@@ -454,10 +458,10 @@ def test_a_page_with_attachments_carries_an_explicit_review_note(
     findings, urls = query_one(
         database_url_schema, "SELECT validation_findings, attachment_urls FROM policy_candidate"
     )
-    assert [item["code"] for item in findings] == ["ATTACHMENT_NOT_EXTRACTED"]
-    assert findings[0]["criterionId"] is None
-    assert "附件" in findings[0]["message"]
     assert urls == [attachment], "附件地址仍要留档，供人工打开"
+    assert "ATTACHMENT_NOT_EXTRACTED" not in [
+        item["code"] for item in findings
+    ], "提示是派生的，不该再存一份会被编辑覆盖的副本"
 
 
 def test_extraction_without_criteria_stages_an_explicit_failure(

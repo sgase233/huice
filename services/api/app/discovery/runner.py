@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Sequence
 from uuid import UUID, uuid4
@@ -360,9 +360,6 @@ class DiscoveryRunner:
                             "模型未返回可用的用量，已标记 tokensUnknown 并停止本轮后续抽取。"
                         )
 
-                if article.attachments:
-                    outcome = _note_unextracted_attachments(outcome, article.attachments)
-
                 stored = self._store_candidate(
                     conn,
                     candidate_id=candidate_id,
@@ -665,28 +662,6 @@ def _verdict(
     if counts.new_candidates:
         return "succeeded", "completed", abort_detail
     return "succeeded", "no_new_policy", abort_detail
-
-
-def _note_unextracted_attachments(
-    outcome: CandidateExtraction, attachments: Sequence[str]
-) -> CandidateExtraction:
-    """页面有附件时留一条明确的复核提示。
-
-    首版只从正文抽条件，不下载也不解析附件（PDF/DOCX/压缩包）。政策的关键条件常常
-    恰好写在附件里，所以「有一条候选、但条件不全」必须让审核员看见，而不是让他以为
-    正文里已经没有别的条件了。
-    """
-
-    note = {
-        "criterionId": None,
-        "code": "ATTACHMENT_NOT_EXTRACTED",
-        "message": (
-            f"该页面另有 {len(attachments)} 个附件（如 PDF/DOCX），本轮未下载、未纳入抽取；"
-            "条件若写在附件里，请在保存条件时人工补录。"
-        ),
-        "sourceSpans": [],
-    }
-    return replace(outcome, findings=[*outcome.findings, note])
 
 
 def _budget_failed(estimate: int, budget: int) -> CandidateExtraction:

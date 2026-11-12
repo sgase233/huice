@@ -261,6 +261,42 @@ def test_pdf_response_is_decoded_as_pdf():
 # ------------------------------------------------------------------ 解析
 
 
+def test_a_binary_article_fails_visibly_instead_of_becoming_garbage_text():
+    """栏目页偶尔直接链到 .docx 或压缩包。
+
+    二进制硬解出来是一屏乱码：既会生成一条谁也看不懂的候选，又要白烧一次模型调用。
+    类型不支持必须落成一个可见的失败类别，而不是「抓到了、正文没意义」。
+    """
+
+    opener = _opener_returning(
+        body=b"PK\x03\x04\x00\x00binary-payload",
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+    )
+    with pytest.raises(FetchError) as exc:
+        _fetcher(opener=opener).fetch("https://www.gov.cn/zhengce/content/a.docx")
+    assert exc.value.category == "unsupported_content"
+    assert "内容类型" in exc.value.message
+
+
+def test_html_under_a_wrong_content_type_is_still_parsed():
+    """政府站点常把 HTML 标成 octet-stream：嗅探到 doctype 就照常当正文。"""
+
+    body = "<!doctype html><html><body><p>小微企业优惠政策</p></body></html>".encode()
+    opener = _opener_returning(body=body, content_type="application/octet-stream")
+    page = _fetcher(opener=opener).fetch("https://www.gov.cn/a")
+    assert "小微企业优惠政策" in page.text
+
+
+def test_plain_text_is_accepted_as_body():
+    opener = _opener_returning(
+        body="政策正文".encode("utf-8"), content_type="text/plain; charset=utf-8"
+    )
+    page = _fetcher(opener=opener).fetch("https://www.gov.cn/a")
+    assert page.text == "政策正文"
+
+
 def test_extract_links_keeps_only_official_articles():
     links = extract_links(HTML_PAGE, "https://www.gov.cn/zhengce/zuixin/")
     assert "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm" in links

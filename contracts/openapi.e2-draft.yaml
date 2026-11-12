@@ -686,9 +686,14 @@ paths:
 
         幂等：同一个 Idempotency-Key 对同一候选同一修订号重放时，直接返回首次创建的草稿
         （201 语义按重放返回 200 的旧版式并不存在——响应码仍为 201，body 与 ETag 与首次一致）；
-        同键不同候选/不同修订号返回 409 IDEMPOTENCY_KEY_REUSED。候选一旦已是 submitted，
-        无论带不带幂等键都返回 409 CANDIDATE_STATE_CONFLICT 并带上已提交的 policyId/version，
-        不重复建版本。
+        同键不同候选/不同修订号返回 409 IDEMPOTENCY_KEY_REUSED。作用域按**操作**划分（与
+        API-03 的 extract 一致），不含操作者：候选是全体审核员共享的资源，另一个审核员撞上同一
+        个键时，同候选同修订号拿到的是同一份草稿，换候选则明确 409，不会悄悄建出第二份。
+        候选一旦已是 submitted，无论带不带幂等键都返回 409 CANDIDATE_STATE_CONFLICT 并带上
+        已提交的 policyId/version，不重复建版本。
+
+        候选的 attachmentUrls 非空时，草稿的 validationFindings 里会多一条 criterionId 为 null 的
+        ATTACHMENT_NOT_EXTRACTED：附件首版不下载、不解析，提示必须跟着草稿走到发布复核。
 
         候选条件里的 sourceSpans.sourceVersion 在提交时由 "candidate" 改挂为新建的版本号、
         sourceId 改挂为新来源 id——引文与 textHash 不变，证据不被改写。
@@ -1271,6 +1276,10 @@ components:
           type: array
           items:
             $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+          description: >-
+            页面上识别到的附件地址，首版不下载、不解析。非空时 validationFindings 必然附带一条
+            ATTACHMENT_NOT_EXTRACTED（criterionId 为 null）：它由本字段派生、不落库，所以保存
+            criteriaDrafts 之后仍在，提交出的草稿里也带同一条。
         missingFields:
           type: array
           items:

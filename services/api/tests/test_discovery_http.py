@@ -26,6 +26,7 @@ from app import auth as auth_tools
 from app.main import create_app
 from db_support import query_all, query_one
 from discovery_support import (
+    BODY,
     EmptyLlm,
     FakeFetcher,
     FakeLlm,
@@ -33,6 +34,7 @@ from discovery_support import (
     article_pages,
     configure,
     make_runner,
+    page,
 )
 
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
@@ -138,6 +140,51 @@ def _seed_run(app_db, *, count: int = 1, llm=None) -> None:
         FakeFetcher(pages),
         llm=llm if llm is not None else FakeLlm(),
     ).run(trigger="timer")
+
+
+#: 附件不进正文、也不下载，但只要它在页面上，候选就必须带着「附件未抽取」的提示。
+ATTACHMENT_URL = "https://www.gov.cn/zhengce/content/2026-11/12/shouce.pdf"
+
+
+def _seed_run_with_attachment(app_db) -> None:
+    """跑一轮，唯一那篇文章带一个附件。"""
+
+    configure(app_db.state.discovery)
+    pages, _links = article_pages(1)
+    article_url = next(url for url in pages if url != LIST_URL)
+    pages[article_url] = page(article_url, BODY, attachments=(ATTACHMENT_URL,))
+    make_runner(
+        app_db.state.db, app_db.state.discovery, FakeFetcher(pages), llm=FakeLlm()
+    ).run(trigger="timer")
+
+
+def _another_reviewer(app_db) -> dict:
+    """第二个审核员账号。
+
+    幂等键要不要按操作者分作用域，得有两个人才测得出来；同一账号另开一个连接不行
+    ——登录会撤销该账号的旧会话。
+    """
+
+    username = "reviewer.discovery.second"
+    app_db.state.accounts.register(
+        username=username,
+        password_hash=auth_tools.hash_password(PASSWORD),
+        role="reviewer",
+        profile=None,
+    )
+    client = TestClient(app_db)
+    origin = app_db.state.settings.effective_public_origin
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": username, "password": PASSWORD},
+        headers={"Origin": origin},
+    )
+    assert response.status_code == 200, response.text
+    return {
+        "client": client,
+        "csrf": response.json()["csrfToken"],
+        "origin": origin,
+    }
 
 
 def _candidates(dsn: str) -> list[dict[str, str]]:
@@ -310,6 +357,49 @@ def test_a_staged_candidate_is_listed_but_not_in_the_policy_library(
 
     # 退出门槛 1：候选只在暂存区。
     assert _policy_counts(database_url_schema) == (0, 0, 0)
+
+
+def test_the_attachment_note_survives_editing_and_reaches_the_draft(
+    app_db, reviewer, database_url_schema
+):
+    """附件没被抽取这件事，编辑条件之后仍要看得见，提交出的草稿里也要有。
+
+    #64 复审 P1：DISC-06 保存 ``criteriaDrafts`` 会整体重算条件级 findings，存进
+    ``validation_findings`` 的提示副本第一次编辑就没了；DISC-07 又只从 ``criteria``
+    重新打包，草稿里从来就没有这条。现在提示由 ``attachmentUrls`` 派生，编辑不掉。
+    """
+
+    _seed_run_with_attachment(app_db)
+    [candidate] = _candidates(database_url_schema)
+
+    body, etag = _detail(reviewer, candidate["id"])
+    assert body["attachmentUrls"] == [ATTACHMENT_URL]
+    assert "ATTACHMENT_NOT_EXTRACTED" in [
+        item["code"] for item in body["validationFindings"]
+    ]
+
+    edited = reviewer["client"].patch(
+        f"/api/v1/admin/policy-candidates/{candidate['id']}",
+        headers=_headers(reviewer, revision=etag),
+        json={
+            "metadata": {**FULL_METADATA, "officialEntryUrl": candidate["source_url"]},
+            "criteriaDrafts": [
+                {key: value for key, value in item.items() if key != "validationStatus"}
+                for item in body["criteria"]
+            ],
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    assert "ATTACHMENT_NOT_EXTRACTED" in [
+        item["code"] for item in edited.json()["validationFindings"]
+    ], "编辑条件后附件提示不能消失"
+
+    submitted = _submit(reviewer, candidate["id"], _etag(edited))
+    assert submitted.status_code == 201, submitted.text
+    assert "ATTACHMENT_NOT_EXTRACTED" in [
+        item["code"] for item in submitted.json()["validationFindings"]
+    ], "草稿是审核员最终看到的东西，附件未覆盖不能只留在候选上"
+    assert _policy_counts(database_url_schema) == (1, 1, 1)
 
 
 def test_patch_requires_if_match_and_rejects_stale_or_unordered_metadata(
@@ -594,6 +684,34 @@ def test_the_same_key_on_another_candidate_is_rejected(app_db, reviewer, databas
 
     assert reused.status_code == 409
     assert reused.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    assert _policy_counts(database_url_schema) == (1, 1, 1)
+
+
+def test_one_key_is_scoped_to_the_operation_not_the_reviewer(
+    app_db, reviewer, database_url_schema
+):
+    """幂等键按「操作」分作用域，不按操作者——与既有的 ``extract`` 口径一致。
+
+    候选是全体审核员共享的资源，所以另一个审核员撞上同一个键时只有两种结果：同候选
+    同修订拿到**同一份**草稿；换候选则明确 409。任何情况下都不会悄悄建出第二份草稿。
+    """
+
+    _seed_run(app_db, count=2)
+    candidates = _candidates(database_url_schema)
+    revisions = [_etag(_confirm(reviewer, item, item["revision"])) for item in candidates]
+    key = uuid4()
+    other = _another_reviewer(app_db)
+
+    first = _submit(reviewer, candidates[0]["id"], revisions[0], key=key)
+    assert first.status_code == 201, first.text
+
+    replay = _submit(other, candidates[0]["id"], revisions[0], key=key)
+    assert replay.status_code == 201, replay.text
+    assert replay.json()["id"] == first.json()["id"], "重放给同行的是同一份草稿"
+
+    conflict = _submit(other, candidates[1]["id"], revisions[1], key=key)
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
     assert _policy_counts(database_url_schema) == (1, 1, 1)
 
 
