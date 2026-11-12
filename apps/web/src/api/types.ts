@@ -471,3 +471,69 @@ export type PublishedCriterion = {
   reviewFinding: "none" | "conflict";
   validationStatus: "passed";
 };
+
+export type UserRole = "enterprise" | "reviewer";
+
+export type User = {
+  id: UUID;
+  username: string;
+  role: UserRole;
+  enterpriseId: (UUID) | (null);
+};
+
+export type RegisterRequest = {
+  username: string;
+  password: string;
+  enterprise?: EnterpriseInput;
+  reviewerSignupKey?: string;
+};
+
+export type RegisterResponse = {
+  user: User;
+};
+
+export type LoginRequest = {
+  username: string;
+  password: string;
+};
+
+export type PasswordChangeRequest = {
+  currentPassword: string;
+  newPassword: string;
+};
+
+export type SessionResponse = {
+  user: User;
+  expiresAt: Timestamp;
+  csrfToken: string;
+};
+
+export type Ownership = "self" | "unowned" | "other";
+
+export type EnterpriseSummary = {
+  id: UUID;
+  nameSynthetic: string;
+  period: Period;
+  ownership: Ownership;
+};
+
+export type EnterpriseSummaryList = {
+  items: Array<EnterpriseSummary>;
+  nextCursor: (string) | (null);
+};
+
+export type RunStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type RunSummary = {
+  id: UUID;
+  enterpriseId: UUID;
+  asOf: Timestamp;
+  createdAt: Timestamp;
+  status: RunStatus;
+  reportAvailable: boolean;
+};
+
+export type RunSummaryList = {
+  items: Array<RunSummary>;
+  nextCursor: (string) | (null);
+};
