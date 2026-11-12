@@ -1,5 +1,7 @@
 # M2 E1 消费者逐端点初审
 
+> **历史评审记录：**以下 rc.9 和 draft.1—draft.4 为 2026-11-11 的基线与当时结论；[#61](https://github.com/sgase233/huice/pull/61) 后正式 OpenAPI 候选版本已更新为 `1.1.0-rc.1`。当前进度及仍未解决的事项见 [M2 工作计划第 20 节](M2_WORK_PLAN.md#20-e1-对接与评审答复2026-11-12)，不能将旧问题直接视作当前阻塞。
+
 审查日期：2026-11-11；[PR #55](https://github.com/sgase233/huice/pull/55) head `4d145b9b670292a00648cb521ef0cd4cef64b70c`，草案 `contracts/openapi.e1-draft.yaml` / `1.1.0-rc.1-draft.1`，以现行 `openapi.yaml` rc.9 为基线。下表是**静态初审，非签收**；E0 提案、扩展设计和草案不一致处需 M1/M2/M3 共同确认。已有 [M2 评论](https://github.com/sgase233/huice/pull/55#issuecomment-6783599370) 要求修订后再逐项复核；本文件未发送、不冒充新评审反馈。
 
 ## AUTH-01—07
@@ -99,6 +101,8 @@
 | AUTH-07 运行列表 | 四态、reportAvailable 和审核员筛选范围已写；前端必须同时依据状态及 reportAvailable，不自动重跑。跨身份或筛选变化后的游标错误也需明确，并验证旧成功 run 与空列表。 |
 
 **跨操作迁移问题**：当前客户端使用 `credentials: include`，但 `request` 对所有成功结果要求 JSON，且写操作没有 CSRF 头；不能直接用于 AUTH-03/05。现有本机开发前端与 API 分别位于 5173/8000，属于跨源；现行 `services/api/app/main.py` 的 CORS 允许头不含 `X-CSRF-Token`，因此跨源会话写请求的预检需随 E1 后端配置调整。草案要求 Origin 等于 `PUBLIC_ORIGIN`；应确认它取浏览器前端源及部署反向代理策略，同源生产和跨源开发分别实测；不据现行后端推定草案实现已具备。
+
+> **2026-11-12 复核：**上述是 rc.9 基线的历史判断。[#61](https://github.com/sgase233/huice/pull/61) 合并后，后端 `ALLOWED_REQUEST_HEADERS` 已包含 `X-CSRF-Token`，#62 客户端已处理 204 与会话 CSRF；该 CORS 请求头缺口已修复。实际部署的 Origin、代理与 Cookie 仍需在同版环境验证。
 
 旧 16 操作的影响矩阵已复看：健康检查、政策两读、四个审核写、两个审核读、企业创建/读取/事实修改、运行创建/读取/报告/轨迹分别有身份及迁移方向；其中轨迹缺口见上节。当前客户端对 `/admin/` 和 `/trace` 自动带 Bearer，E1 审核写需会话与 CSRF，因此必须同窗替换旧入口；现有 ETag、幂等键、历史版本和错误恢复仍须保留。此为矩阵和客户端的静态核对，**并非逐字段/所有错误示例或真实服务的完整验证**。
 
