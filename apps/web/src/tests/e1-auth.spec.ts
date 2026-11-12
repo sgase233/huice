@@ -162,6 +162,17 @@ test('enterprise account cannot open reviewer view by hash', async ({ page }) =>
   await expect(page.getByRole('button', { name: '读取企业列表' })).toHaveCount(0);
 });
 
+test('valid demo identity can enter demo after session restoration is forbidden', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 403, json: error('ROLE_FORBIDDEN') }));
+  await page.route('**/api/v1/auth/logout', route => route.fulfill({ status: 204 }));
+  await page.goto('/#enterprise');
+  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+  await expect(page.getByText('请登录账号，或进入服务端演示。')).toBeVisible();
+  await expect(page.getByText('会话已失效，请重新登录。')).toHaveCount(0);
+  await page.getByRole('button', { name: '进入服务端演示' }).click();
+  await expect(page.getByText('服务端演示', { exact: true })).toBeVisible();
+});
+
 test('gate failure stays distinct from an expired session', async ({ page }) => {
   let calls = 0;
   await page.route('**/api/v1/auth/me', route => {
