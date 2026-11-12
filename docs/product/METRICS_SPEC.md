@@ -160,6 +160,8 @@
 - 运行中断恢复：只有同时满足“超过运行上限、锁未被持有、原连接已断开”才可置 `interrupted`；不能把仍在运行的任务误标。
 - `failed`/`unfinished` 的运行不能序列化成完整报告；API-12/13 应返回明确未完成错误，而不是 500。
 
+> **2026-11-12 核实（E1 #61）：** 正式契约 `1.1.0-rc.1` 的 `RunStatus` 已包含 `queued/running/succeeded/failed`，并写明 E1 不产生 `interrupted`；但当前 `save_run()` 仍只在成功时插入 `status='succeeded'`，代码中没有 `queued` 写入路径。枚举存在不等于运行生命周期已采集：趋势接口不能因为契约有 `queued` 就把未实现的状态当作已记录；`queued` 是否实际落行、API-12 对未完成 run 的稳定错误码，仍待 M1 确认（见 §8.1 第 5 项）。
+
 ### 4.2 归日与状态更新
 
 - 按 `startedAt` 归日；若契约只有 `created_at`，首版以 `created_at` 作为开始时间，但 M1 应在生命周期采集中补明确的 `startedAt`。
@@ -290,10 +292,10 @@
 ### 8.1 M1
 
 1. `review_event` 的唯一键、`actor_kind` 三值、`review_revision` 规则是否按 D5 提案实现；发布与事件是否同事务；幂等重放是否不新增。
-2. 当前发布端点只有 `ADMIN_TOKEN`，E1 后如何确保 `actor_user_id` 来自审核员会话；旧 Bearer/脚本发布是否一律归 `legacy_unknown` 且不计完成。
+2. **2026-11-12 核实：** #61 已把发布写操作改为审核员 `UserSession`（运维 Bearer 只读），但迁移 009 未包含 `review_event`，发布路径也未见 `actor_user_id` 写入。请 M1 明确 `review_event` 是否仍按 D5 提案落地，以及旧 Bearer/脚本发布是否一律归 `legacy_unknown` 且不计完成。
 3. `policy_version.imported_at` 的历史覆盖起点；是否有清理/迁移导致缺口。
 4. `assessment_run` 是否有明确 `startedAt`；若只用 `created_at`，跨午夜与“实际开始”的误差如何说明。
-5. 运行终态 `failed`/`unfinished`/`interrupted` 的写入与恢复规则；API-12/13 对未完成运行返回什么错误。
+5. **2026-11-12 核实：** API-13 已在 #61 明确为 `409 RUN_NOT_COMPLETED`；API-12 尚未在契约中规定未完成语义，`get_run()` 在 run 没有 assessment 行时返回 `404 RUN_NOT_FOUND`（“该判断运行没有结果”），与 409 不同。请 M1 定 API-12 的稳定错误码，说明 `queued/running` 是否实际落行，以及 `interrupted` 仍归 E3b 的启动扫描。
 6. 指标级 `availability`（`available/partial/not_collected`）能否按日、按指标返回；缺测原因能否带 `reason`。
 7. 当天未结束的暂计数是否可返回；`pendingAtEndOfDay` 是否强制 `null`。
 8. 历史旧记录（`created_at=finished_at`）是否按“不可信耗时”排除；是否保留原记录。
