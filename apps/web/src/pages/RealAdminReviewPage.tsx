@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { api, ApiRequestError } from '../api/client';
 import { criteriaIssue } from '../components/criteriaValidation';
 import CriterionEditor, { withQuoteHashes } from '../components/CriterionEditor';
@@ -38,7 +38,7 @@ export default function RealAdminReviewPage({ onUnauthorized, onDirtyChange }: {
   const errorSummary = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error) errorSummary.current?.focus(); }, [error]);
   useEffect(() => () => { request.current++; }, []);
-  useEffect(() => { onDirtyChange(dirty || importDirty || busy || localBackup.length > 0); return () => onDirtyChange(false); }, [dirty, importDirty, busy, localBackup.length, onDirtyChange]);
+  useLayoutEffect(() => { onDirtyChange(dirty || importDirty || busy || localBackup.length > 0); return () => onDirtyChange(false); }, [dirty, importDirty, busy, localBackup.length, onDirtyChange]);
   useEffect(() => { const warn = (event: BeforeUnloadEvent) => { if (dirty || importDirty || localBackup.length > 0) { event.preventDefault(); event.returnValue = ''; } }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn); }, [dirty, importDirty, localBackup.length]);
   function assertIdentity(value: PolicyDraft, id: string, version: string) { if (value.id !== id || value.version !== version) throw new Error('返回的数据有误：草稿身份或版本不匹配。'); }
   function strongEtag(value: string | null) { return value && /^\"[^\"]+\"$/.test(value) ? value : null; }

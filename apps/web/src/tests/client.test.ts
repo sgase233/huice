@@ -1,12 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiRequestError, setAdminToken } from '../api/client';
+import { api, ApiRequestError, invalidateRequests, setCsrfToken, validExpression } from '../api/client';
 
-afterEach(() => { vi.unstubAllGlobals(); setAdminToken(null); });
+afterEach(() => { vi.unstubAllGlobals(); setCsrfToken(null); });
 
 const response = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'X-Trace-Id': 'trace-1', ...extra } });
 
 describe('HTTP contract boundary', () => {
+  it('rejects an enterprise different from the requested identity', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'other', facts: [] })));
+    await expect(api.getEnterprise('expected')).rejects.toThrow('返回的企业与请求不一致');
+  });
+  it('rejects a different run returned for the requested id', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'other', policyVersionMap: {}, assessments: [] })));
+    await expect(api.getRun('requested')).rejects.toThrow('返回的分析记录与请求不一致');
+  });
+  it('rejects missing or duplicate policy identities before counting results', async () => {
+    const item = { policyId: 'policy-1', result: 'satisfied', validity: 'current', criteriaResults: [], missingFacts: [], staleReasons: [], warnings: [] };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response({ id: 'run', policyVersionMap: {}, assessments: [{ ...item, policyId: '' }] })).mockResolvedValueOnce(response({ id: 'run', policyVersionMap: {}, assessments: [item, { ...item, policyId: 'POLICY-1' }] })));
+    await expect(api.getRun('run')).rejects.toThrow('政策标识缺失或重复');
+    await expect(api.getRun('run')).rejects.toThrow('政策标识缺失或重复');
+  });
   it('accepts typed trace object references and rejects malformed references', async () => {
     const step = { sequence: 1, stage: 'profile', status: 'ok', inputSummary: '', outputSummary: '', policyId: null, policyVersion: null, modelOrRuleVersion: 'v1', elapsedMs: 0, errorCode: null, humanAction: null };
     const ref = { type: 'enterprise', id: '11111111-1111-4111-8111-111111111111' };
@@ -16,8 +30,23 @@ describe('HTTP contract boundary', () => {
     await expect(api.getTrace('run')).rejects.toThrow('轨迹步骤无效');
     await expect(api.getTrace('run')).rejects.toThrow('轨迹步骤无效');
   });
+  it('rejects quarterly rules with incompatible metric and unit', () => {
+    const rule = { op: 'quarterly_average', metric: 'assets', period: 'assessment', comparator: 'lte', value: '100', unit: 'CNY' };
+    expect(validExpression(rule)).toBe(true);
+    expect(validExpression({ ...rule, unit: 'person' })).toBe(false);
+    expect(validExpression({ ...rule, metric: 'employeeCount', unit: 'person' })).toBe(true);
+    expect(validExpression({ ...rule, metric: 'employeeCount' })).toBe(false);
+  });
+  it('rejects trace sequence and duration outside the contract', async () => {
+    const step = { sequence: 1, stage: 'profile', status: 'ok', inputSummary: '', outputSummary: '', objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'v1', elapsedMs: 0, errorCode: null, humanAction: null };
+    const invalid = [{ sequence: 0 }, { sequence: 1.5 }, { elapsedMs: -1 }, { elapsedMs: 0.5 }];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve(response({ steps: [{ ...step, ...invalid.shift() }] }))));
+    for (let i = 0; i < 4; i++) await expect(api.getTrace('run')).rejects.toThrow('轨迹步骤无效');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ steps: [step] })));
+    expect((await api.getTrace('run')).data.steps[0].elapsedMs).toBe(0);
+  });
   it('rejects a question with an unknown fact key', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'r', policyVersionMap: {}, assessments: [{ result: 'insufficient_evidence', validity: 'current', criteriaResults: [], missingFacts: [], staleReasons: [], warnings: [], nextQuestion: { prompt: '问题', reason: '理由', rank: 1, factRef: { key: 'notAKey', period: { startDate: '2026-01-01', endDate: '2026-12-31' } } } }] })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'r', policyVersionMap: {}, assessments: [{ policyId: 'p', result: 'insufficient_evidence', validity: 'current', criteriaResults: [], missingFacts: [], staleReasons: [], warnings: [], nextQuestion: { prompt: '问题', reason: '理由', rank: 1, factRef: { key: 'notAKey', period: { startDate: '2026-01-01', endDate: '2026-12-31' } } } }] })));
     await expect(api.getRun('r')).rejects.toThrow('优先问题无效');
   });
   it('rejects malformed restricted responses before rendering', async () => {
@@ -54,7 +83,7 @@ describe('HTTP contract boundary', () => {
     expect(fetcher.mock.calls[0][1].credentials).toBe('include');
   });
 
-  it('keeps If-Match, body period, and runtime-only bearer in their distinct positions', async () => {
+  it('keeps If-Match and body period in their distinct positions', async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ id: 'e1', facts: [] }, 200, { ETag: '"version-2"' }));
     vi.stubGlobal('fetch', fetcher);
     const result = await api.updateFact('e1', 'taxableIncome', { value: '0', unit: 'CNY', period: { startDate: '2026-01-01', endDate: '2026-12-31' }, source: 'user_input' }, '"version-1"');
@@ -63,10 +92,36 @@ describe('HTTP contract boundary', () => {
     expect((init.headers as Headers).get('If-Match')).toBe('"version-1"');
     expect(JSON.parse(init.body as string).value).toBe('0');
     expect(result.etag).toBe('"version-2"');
-    setAdminToken('runtime-token');
+    setCsrfToken('runtime-csrf-token');
     fetcher.mockResolvedValueOnce(response({ items: [], nextCursor: null }));
     await api.listAdminPolicies();
-    expect((fetcher.mock.calls[1][1].headers as Headers).get('Authorization')).toBe('Bearer runtime-token');
+    expect((fetcher.mock.calls[1][1].headers as Headers).has('Authorization')).toBe(false);
+    expect((fetcher.mock.calls[1][1].headers as Headers).has('X-CSRF-Token')).toBe(false);
+  });
+
+  it('uses CSRF on session writes and accepts an empty 204 response', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetcher);
+    setCsrfToken('runtime-csrf-token');
+    await api.changePassword({ currentPassword: 'old-password', newPassword: 'new-password-123' });
+    const init = fetcher.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Headers).get('X-CSRF-Token')).toBe('runtime-csrf-token');
+    expect(init.credentials).toBe('include');
+    expect((init.headers as Headers).has('Authorization')).toBe(false);
+  });
+
+  it('rejects a malformed session before granting a role', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ user: { id: '1', username: 'a', role: 'owner', enterpriseId: null }, csrfToken: '1234567890123456', expiresAt: 'now' })));
+    await expect(api.currentSession()).rejects.toThrow('账号信息无效');
+  });
+
+  it('rejects a response from before an account change', async () => {
+    let resolve!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>(done => { resolve = done; })));
+    const pending = api.getEnterprise('old');
+    invalidateRequests();
+    resolve(response({ id: 'old', facts: [] }));
+    await expect(pending).rejects.toMatchObject({ code: 'STALE_REQUEST' });
   });
 
   it('does not set a JSON content type on multipart uploads', async () => {
@@ -99,7 +154,7 @@ describe('HTTP contract boundary', () => {
   });
 
   it('rejects unknown criterion states instead of rendering an unlabelled result', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'run1', policyVersionMap: {}, assessments: [{ result: 'satisfied', validity: 'current', missingFacts: [], staleReasons: [], warnings: [], criteriaResults: [{ result: 'maybe', factRefs: [], evidenceRefs: [] }] }] })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'run1', policyVersionMap: {}, assessments: [{ policyId: 'p', result: 'satisfied', validity: 'current', missingFacts: [], staleReasons: [], warnings: [], criteriaResults: [{ result: 'maybe', factRefs: [], evidenceRefs: [] }] }] })));
     await expect(api.getRun('run1')).rejects.toThrow('条件结果无效');
   });
 

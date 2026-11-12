@@ -9,12 +9,13 @@ test('首页轮播加载三张图片', async ({ page }) => {
 });
 
 test('首页可浏览介绍并进入真实工作台或固定样例', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: { error: { code: 'UNAUTHENTICATED', message: '需要登录', details: {} } } }));
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /看懂政策/ })).toBeVisible();
   await page.getByRole('link', { name: '使用流程' }).click();
   await expect(page.getByRole('heading', { name: '把复杂政策，拆成清晰的步骤' })).toBeVisible();
   await page.getByRole('link', { name: /开始使用工作台/ }).click();
-  await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
   await page.goto('/');
   await page.getByRole('link', { name: /先体验固定样例/ }).click();
   await expect(page.getByText('静态合成演示 · 未进行真实资格判断')).toBeVisible();

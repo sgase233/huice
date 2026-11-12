@@ -1,14 +1,17 @@
 import { expect, test } from '@playwright/test';
 declare const process: { env: Record<string, string | undefined> };
 
-test('隔离后端：导入、抽取、编辑和发布合成政策', async ({ page }) => {
+test('隔离后端：导入、抽取、编辑和发布合成政策', async ({ page }, testInfo) => {
   test.skip(process.env.HUICE_LIVE_ADMIN !== '1', '仅在确认专用隔离后端时运行');
+  if (!process.env.HUICE_LIVE_REVIEWER_USERNAME || !process.env.HUICE_LIVE_REVIEWER_PASSWORD) throw new Error('请提供隔离环境中的未绑定企业的合成审核员账号');
   test.setTimeout(90_000);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   const title = `第五阶段合成审核 ${Date.now()}`;
   await page.route('**/api/v1/**', route => new URL(route.request().url()).origin === 'http://127.0.0.1:8000' ? route.continue() : route.abort());
   await page.goto('/#admin');
-  await page.getByLabel('管理令牌').fill(process.env.HUICE_LIVE_ADMIN_TOKEN ?? '');
-  await page.getByRole('button', { name: '使用令牌' }).click();
+  await page.getByLabel('用户名').fill(process.env.HUICE_LIVE_REVIEWER_USERNAME ?? '');
+  await page.getByLabel('密码', { exact: true }).fill(process.env.HUICE_LIVE_REVIEWER_PASSWORD ?? '');
+  await page.getByRole('button', { name: '登录', exact: true }).click();
   await page.getByLabel('版本', { exact: true }).fill(`v${Date.now()}`);
   await page.getByLabel('标题', { exact: true }).fill(title);
   await page.getByLabel('发布机关').fill('合成测试机关');
@@ -39,11 +42,27 @@ test('隔离后端：导入、抽取、编辑和发布合成政策', async ({ pa
   await page.getByRole('button', { name: '机会列表' }).click();
   const policy = page.locator('article').filter({ hasText: title });
   await policy.getByRole('checkbox').check();
+  const analysisResponse = page.waitForResponse(response => response.url().endsWith('/assessment-runs') && response.request().method() === 'POST');
   await page.getByRole('button', { name: '分析所选政策' }).click();
+  const analysis = await (await analysisResponse).json() as { id: string; assessments: Array<{ policyId: string; result: string; validity: string }> };
+  await testInfo.attach('合成分析响应', { body: JSON.stringify(analysis, null, 2), contentType: 'application/json' });
+  expect(analysis.assessments).toHaveLength(1);
+  expect(analysis.assessments[0].policyId).toBe(policyId);
+  const labels: Record<string, string> = { satisfied: '条件初步满足', not_satisfied: '不满足条件', insufficient_evidence: '还缺资料', conflict: '条款待人工核对' };
+  const chart = page.getByRole('region', { name: '本次分析结果分布' });
+  await expect(chart).toContainText('本次分析的 1 项政策');
+  await expect(chart).toContainText(`${labels[analysis.assessments[0].result]}：1 项`);
+  await expect(chart).toContainText(analysis.assessments[0].validity === 'stale' ? '其中 1 项依据已失效' : '没有标记为依据失效');
+  await chart.screenshot({ path: testInfo.outputPath('result-distribution.png') });
   await expect(policy.getByText(/还缺资料|满足条件|不满足条件/)).toBeVisible();
-  await page.getByRole('button', { name: '处理轨迹' }).click();
-  await page.getByRole('button', { name: '读取轨迹' }).click();
-  await expect(page.getByText(/规则判断/).first()).toBeVisible();
+  const detailResponse = page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/policies/${policyId}`));
+  await policy.getByRole('button', { name: '查看详情' }).click();
+  await testInfo.attach('合成政策详情响应', { body: JSON.stringify(await (await detailResponse).json(), null, 2), contentType: 'application/json' });
+  await page.getByText('查看资格逻辑结构').first().click();
+  await expect(page.getByText('以下为该条款的规则结构；服务未提供各节点的独立判断结果。').first()).toBeVisible();
+  await expect(page.locator('.expression-tree').first()).toContainText('事实比较');
+  await page.locator('.expression-tree').first().screenshot({ path: testInfo.outputPath('expression-tree.png') });
+  await expect(page.getByRole('button', { name: '处理轨迹' })).toHaveCount(0);
   await page.getByRole('button', { name: '政策审核' }).click();
   await page.getByLabel('已有政策 ID（新政策留空）').fill(policyId);
   await page.getByLabel('版本', { exact: true }).fill(`v${Date.now()}-new`);

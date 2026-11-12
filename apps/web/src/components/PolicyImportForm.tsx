@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { PolicyImportMetadata } from '../api/types';
 
 export default function PolicyImportForm({ busy, onImport, onDirtyChange }: { busy: boolean; onDirtyChange: (dirty: boolean) => void; onImport: (metadata: PolicyImportMetadata, files: File[]) => void }) {
@@ -8,7 +8,7 @@ export default function PolicyImportForm({ busy, onImport, onDirtyChange }: { bu
   const [error, setError] = useState('');
   const [errorField, setErrorField] = useState('');
   const errorId = useId();
-  useEffect(() => { onDirtyChange(Object.entries(data).some(([key, value]) => key !== 'type' && value !== '') || body !== null || attachments.length > 0 || data.type !== 'tax'); return () => onDirtyChange(false); }, [data, body, attachments, onDirtyChange]);
+  useLayoutEffect(() => { onDirtyChange(Object.entries(data).some(([key, value]) => key !== 'type' && value !== '') || body !== null || attachments.length > 0 || data.type !== 'tax'); return () => onDirtyChange(false); }, [data, body, attachments, onDirtyChange]);
   const errorSummary = useRef<HTMLParagraphElement>(null);
   const form = useRef<HTMLFormElement>(null);
   function report(message: string, field: string) { setErrorField(field); setError(message); requestAnimationFrame(() => form.current?.querySelector<HTMLElement>(`[data-error-field="${field}"]`)?.focus()); }

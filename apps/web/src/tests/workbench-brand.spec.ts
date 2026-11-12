@@ -1,4 +1,7 @@
 import { expect, test } from '@playwright/test';
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+});
 
 for (const url of ['/?mode=demo#enterprise', '/#enterprise']) {
   test(`工作台标识返回首页：${url}`, async ({ page }) => {
@@ -14,8 +17,6 @@ for (const url of ['/?mode=demo#enterprise', '/#enterprise']) {
 
 test('审核内容未保存时取消从标识返回首页', async ({ page }) => {
   await page.goto('/#admin');
-  await page.getByLabel('管理令牌').fill('test-token');
-  await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByLabel('标题', { exact: true }).fill('尚未保存');
   page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('link', { name: '惠策协同首页' }).click();
