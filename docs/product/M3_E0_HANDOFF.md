@@ -15,9 +15,10 @@
 | 验收 | 来源可用性复核记录 | [ACCEPTANCE.md](ACCEPTANCE.md)「2026-11-10 来源可用性复核」 | 只记录实际访问，不构成验收通过 | 全组 |
 | UI | 完整度/趋势展示规则 | [UI_BRIEF.md](../ui/UI_BRIEF.md) §5 | 待 M2 复核 | M2 |
 | 估工 | E1—E4 M3 初步估工 | 本文 §4 | 初步，不代替负责人排期 | 负责人、M1、M2 |
-| E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-12；仅执行旧版环境的部分匿名探测，联合验收未执行；未签收 | M1（环境/账号）、M2（#62 前端）、M3（执行） |
+| E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-12；仅执行旧版环境的部分匿名探测，联合验收未执行；未签收 | M1（环境/账号）、M2（#60 前端）、M3（执行） |
+| E3a | 结果分布、资格逻辑树、轨迹展示业务复核 | [E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) | M3 静态评审输入，2026-11-12；对象为 PR #60 head `9caa1e0`，未入 `main`、未执行；未签收 | M2（展示/交互）、M1（轨迹与版本数据）、负责人（时间线范围） |
 
-> **2026-11-12 状态更新：** #61 已合并到 `origin/main` `ea44ae0`，正式契约升到候选版 `1.1.0-rc.1`，迁移 `009_users_sessions.sql` 已入库；E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，PR #62 仍 open。D3/D4/D5 仍按本文状态待评审，不因 #61 合并而签收。本次复核 COMPLETENESS_SPEC、DISCOVERY_SOURCES、POLICY_SCOPE 后未发现因 #61 需要改写的业务口径；METRICS_SPEC 只补了 `queued` 生命周期与 API-12 的已核实事实，仍为草案。
+> **2026-11-12 状态更新：** `origin/main` 已由 `ea44ae0` 前进到 `5d1adeb`（合并 PR #63，仅 M3 文档）；#61 的后端与候选契约 `1.1.0-rc.1`、迁移 `009_users_sessions.sql` 仍在 `main`。E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，PR #62 已并入 M2 工作分支但 PR #60 仍 open、未入 `main`。D3/D4/D5 仍按本文状态待评审，不因 #61/#62/#63 合并而签收；本轮 D3 新增 2026 年度研发费用资助申请指南的官方原文核对（见 [DISCOVERY_SOURCES](DISCOVERY_SOURCES.md) §3.7 与 [POLICY_SCOPE](POLICY_SCOPE.md)）。D4/D5 本轮没有新的实现或数据证据，COMPLETENESS_SPEC/METRICS_SPEC 维持草案；E3a 的静态复核见新文档，不代表 E3a 验收通过。
 
 ## 2. D3/D4/D5 已明确与仍待确认
 
@@ -48,9 +49,11 @@
 
 **仍待 M3 补**
 
-- 高企培育、研发投入补助的年度申请指南（含窗口）**未取得**。
+- 高企培育年度申请指南（含窗口）**未取得**；研发投入补助 **2026 年度**指南已于 2026-11-12 补取（2026-06-05 发布，窗口 2026-06-10 至 07-09 18:00），后续年度指南仍未取得。
 - 智能终端附件 2/3、PDF 全文；专精特新 3 个 DOCX 逐条；绿色制造 `.doc` 完整逐条条件。
 - 双人复核与真实抓取器验证。
+
+> **2026-11-12 观察（未评审）：** 远程出现 M1 分支 `origin/m1/e2-policy-discovery`（head `0005c88`，提交“接口：实现 E2 政策发现、候选暂存与后台配置”），尚未看到对应 PR，也未合入 `main`。M3 只做了静态浏览：其 `discovery/metadata.py` 的候选元数据字段包含 `publishedAt/effectiveFrom` 等必填项，**未看到** `effectiveTo`、`opensAt/closesAt`、`documentDate/pagePublishedAt` 或多窗口字段。该分支不构成本轮交付或验收结论；上述差异需 M1 确认是否为候选阶段的人工补录范围。M3 不在本文把它判为缺陷。
 
 ### 2.2 D4 完整度
 
@@ -141,7 +144,7 @@
 **未单列/未知**
 
 - 智能终端、专精特新、绿色制造的“政策有效期”原文未单列；登记表的 `effective_from/to` 等于申报窗口，不能当政策有效期。
-- 高企培育、研发投入补助的年度申请指南（含窗口）未取得。
+- 高企培育年度申请指南（含窗口）未取得；研发投入补助 2026 年度指南已取得（窗口 2026-06-10 至 07-09 18:00），后续年度指南未取得。
 - 7 号公告“长期实施”不在公告正文，外部依据未取得。
 
 **原有验收状态（未因本次工作改变）**
