@@ -41,6 +41,7 @@ MIGRATIONS=(
     007_idempotency_usage_semantics
     008_material_requirements
     009_users_sessions
+    010_policy_discovery
 )
 
 # 只报变量名与原因：连接串里有口令，绝不能回显。

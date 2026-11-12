@@ -244,6 +244,17 @@ class Settings:
         )
 
 
+def cursor_secret(settings: "Settings") -> str:
+    """分页游标的签名键：从 ``ADMIN_TOKEN`` 派生，不新增一个需要保管的机密。
+
+    发现 CLI 与 API 进程必须算出**同一个**值，否则两边签发的游标互不认。
+    """
+
+    import hashlib
+
+    return hashlib.sha256(f"huice-cursor:{settings.admin_token}".encode("utf-8")).hexdigest()
+
+
 def _text(env: dict[str, str], name: str, default: str) -> str:
     value = env.get(name)
     if value is None:

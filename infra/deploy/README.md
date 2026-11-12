@@ -111,7 +111,7 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 
 ### 2.1 数据库结构必须先于服务启动（硬前提）
 
-代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），`1.0.0-rc.8` 起判断运行会读材料要求（`008_material_requirements.sql` 建 `material_requirement` / `material_requirement_policy`），**服务启动前云 RDS 必须已执行 001—008 全部迁移**。
+代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），`1.0.0-rc.8` 起判断运行会读材料要求（`008_material_requirements.sql` 建 `material_requirement` / `material_requirement_policy`），E1 的账号与会话见 `009_users_sessions.sql`（`app_user` / `user_session` / `demo_quota`），E2 的政策发现见 `010_policy_discovery.sql`（`discovery_settings` / `discovery_run` / `policy_candidate` / `policy_candidate_fingerprint` / `discovery_page`），**服务启动前云 RDS 必须已执行 001—010 全部迁移**。
 
 **取值交给 `migrate.sh`，不要 `source` 整个文件，也不要自己解析。** `systemd` 的 `EnvironmentFile` 不是 shell——不做变量展开、不执行命令，只处理引号、转义与续行。`set -a; . /etc/huice/api.env; set +a` 会让 shell 按 shell 规则解析**整个文件**：口令或密钥里出现 `$`、反引号、`!`、未配对引号时，读到的值可能和 systemd 实际传给服务进程的不一样（迁移就打到错的库），甚至把文件内容当命令执行。
 
@@ -156,7 +156,7 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 要 **root** 执行：读 `/proc/<PID>/environ` 与调用 `systemd-run` 都需要（`huice` 用户读不到别人的进程环境）。
 
-脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—008 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对八个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
+脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—010 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对十个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
 
 **为什么不是「从 001 全量重放」**：迁移文件各自幂等，但**幂等不等于能跳过中间状态**。库已到 `008` 时重放 `005`，事实字典约束会被收回到 16 键，撞上库里已有的 `specificMarketSince` 行而报错（2026-11-06 云端实测）。所以「有新序号就重跑脚本」在旧版里根本推不动，新版按登记表判断。
 
@@ -176,7 +176,7 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 缺 `008` 的表现更靠前：服务启动与 `/health` 都正常，但**任何判断运行**（`POST /api/v1/assessment-runs`）会因 `material_requirement` 不存在而 500——判断链路每次都要读材料要求，不是可选路径。政策导入、企业画像读写不受影响，故障容易只落在「跑判断」这一个动作上。
 
-云端已于 2026-11-06 提前补跑 008（`schema_migration` 八行，见 [../README.md](../README.md) §4.1），所以 `migrate.sh` 重跑 008 是 no-op，`INSERT 0 0`。**核对表数时按清单比对**：云 RDS 上另有一张手工备份表 `zz_backup_drafts_20261104`（2026-11-04 清理草稿前的快照，不由迁移创建），因此云端 `public` 基础表是 **17 张**，本地是 16 张，两个数都正常——`material_requirement`、`material_requirement_policy` 在不在才是判据。
+云端已于 2026-11-06 提前补跑 008（`schema_migration` 八行，见 [../README.md](../README.md) §4.1），所以 `migrate.sh` 重跑 008 是 no-op，`INSERT 0 0`。**核对表时按清单比名字，不比总数**：云 RDS 上另有一张手工备份表 `zz_backup_drafts_20261104`（2026-11-04 清理草稿前的快照，不由迁移创建），所以云端永远比本地多一张，总数对不上不是问题。判据是几个关键表在不在：`material_requirement` / `material_requirement_policy`（008）、`app_user` / `user_session` / `demo_quota`（009）、`discovery_settings` / `discovery_run` / `policy_candidate` / `policy_candidate_fingerprint` / `discovery_page`（010）。
 
 > **用 bundle 更新代码前，先删掉手工放进去的迁移文件。** 008 是 scp 进 `/opt/huice/app/infra/sql/` 的未跟踪文件，而分支合并后那个路径是**受版本控制**的：`git fetch` + 检出新提交时会报 `error: Untracked working tree files would be overwritten by checkout` 并停下（同一份内容也一样，git 不比内容）。先 `rm /opt/huice/app/infra/sql/008_material_requirements.sql` 再更新，随后它会随分支一起回来；迁移已入库，重跑任何迁移都是 no-op。
 
@@ -365,6 +365,24 @@ shred -u /run/huice-create-admin.env
 - 创建后立刻用该账号登录（前端登录页 → `POST /auth/login`），并按 AUTH-05 改一次口令。之后要加更多审核员，用 `REVIEWER_SIGNUP_KEY` + 注册接口即可，不必再上服务器。
 - 这一步与演示会话（§3.1）无关：演示身份能建无主样本，但建不了审核员，也进不了后台写接口。
 
+### 3.5 政策发现的定时器（E2）
+
+`provision.sh` 会把 `huice-discovery.service` 与 `huice-discovery.timer` 一起装好并 enable **timer**。装好不等于开始抓：后台「启用自动发现」（`PUT /admin/discovery/settings`）是关闭状态时，每次唤醒都在第一行返回，不写运行记录。
+
+```bash
+systemctl list-timers huice-discovery.timer        # 下次唤醒时间（每 15 分钟一次）
+systemctl start huice-discovery.service            # 手工立刻跑一轮（不看 nextRunAt）
+journalctl -u huice-discovery -n 50 --no-pager     # 每轮一行结论
+```
+
+- **唤醒 ≠ 运行**。唤醒频率固定 15 分钟，跑不跑由库里的 `discovery_settings.next_run_at` 决定；抓取周期在后台上配（默认 1440 分钟，允许 360—43200），改周期不用重启任何服务。CLI 的退出码：`0` 成功或无需运行，`1` 本轮失败/部分失败，`2` 配置不合法（只报变量名）。
+- **补跑只补一次**。timer 用 `Persistent=true`：停机期间错过的唤醒，开机后只补一次，运行记录里带 `lateBySeconds`，不会按错过的轮数连着追。
+- **并发上限 1 有两道**：同一 unit 在 active 时不会被 systemd 再启动一次；库层还有 `pg_try_advisory_lock(hashtext('huice.discovery'))`，与手工 `python -m app.discovery` 或另一台机器互斥。锁跟着连接走，进程被杀（包括 `TimeoutStartSec=35min` 到点）即释放；下一轮持锁后会把遗留的 `running` 运行收成 `failed` / `lock_lost`。
+- **单轮墙钟 30 分钟**是运行器自己的截止线（到点收尾并记 `timeout`），unit 的 35 分钟只是兜底——真被 systemd 杀掉时，收尾由下一轮完成。
+- 手工跑时用 HTTPS 白名单内的来源；抓取器的单页超时 15 秒、响应上限 2 MiB、同站间隔 ≥2 秒、单轮最多 50 条新候选 / 200 篇正文，这些值在契约草案 `contracts/openapi.e2-draft.yaml` 的 `x-e2-runtime-model` 里，并由 `services/api/tests/test_e2_draft.py` 与代码常量为准互校。
+- 未做迁移 010 时，定时器能起来但每一次运行都会因 `discovery_settings` 不存在而失败——先按 §2.1 跑 `migrate.sh`。
+- **`MODEL_MODE=fixture` 下抓到的候选会全部落 `extraction_failed`**：fixture 客户端返回固定示例文本，抽不出结构化条件。这是有意的——宁可让审核员看到「这条没抽出来、请人工录入」，也不生成看起来完整的假条件。要让抽取真正工作，切到 `MODEL_MODE=deepseek` 并填好 `DEEPSEEK_*`。
+
 ## 4. 验证
 
 分三批跑，对应 §0.3 的步骤，不要求在第 6 步一次过完：
@@ -417,6 +435,13 @@ journalctl -u huice-api -n 200 --no-pager | grep -Eci -e 'sk-' -e 'password' -e 
 #     ②MODEL_MODE=deepseek、③本次部署后真的跑过一次抽取或判断。
 #     三条缺一条就记「不适用/待验」，别把它当成部署通关条件
 journalctl -u huice-api --since today | grep model_call
+
+# 12) 政策发现的定时器（E2）：装好了、且不会空转刷日志
+systemctl list-timers huice-discovery.timer --no-pager
+systemctl is-active huice-discovery.timer
+#     手工跑一轮看结论；后台未启用时输出应是「本轮未运行：disabled」，退出码 0
+systemctl start huice-discovery.service
+journalctl -u huice-discovery -n 20 --no-pager
 ```
 
 | # | 检查 | 通过标准 |
@@ -432,6 +457,7 @@ journalctl -u huice-api --since today | grep model_call
 | 9 | 同源站点 | 200，返回 `index.html` |
 | 10 | 日志不泄露 | 0（命中按缺陷处理） |
 | 11 | 模型调用有记录（有前提，见右） | 前提：部署了含 `model_call` 的版本（PR #34 起，日志级别由应用自己在 `create_app` 里配置）、`MODEL_MODE=deepseek`、部署后跑过一次真实的抽取或判断。字段口径见 `infra/README.md` §4.3；任一前提不满足记「不适用/待验」 |
+| 12 | 政策发现定时器 | `is-active` 为 `active`，`list-timers` 有下次唤醒时间；手工 `start` 的服务退出码 0（后台未启用时结论为「本轮未运行：disabled」）。没有「`discovery_settings` 不存在」这类报错——有就说明 010 没跑 |
 
 健康检查内部会对 RDS 执行 `SELECT 1`，**返回 200 即证明应用→RDS 的内网链路通**；返回 503 `DEPENDENCY_UNAVAILABLE` 说明数据库连不上，先看 `journalctl -u huice-api`（日志不含连接串）。第 4 项 200 而第 8 项不通，问题在 443 那份配置或安全组，不在应用。
 

@@ -2,7 +2,7 @@
 
 > 初稿：2026-10-23；当前状态更新：2026-11-11，E1 后端实现已合入，7 个 E1 操作已并入正式契约（`1.1.0-rc.1`）。成员沿用 M1（后端）、M2（前端）、M3（政策与验收）。
 >
-> 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[原开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及现有代码整理。后端已实现 **23 个操作**（API-01—16 + AUTH-01—07），前端六类业务页已接入，已有隔离库/真实 HTTP/合成数据的阶段浏览器记录；最终云端联合与业务验收仍按实际证据确认。第 8 节保留各日期历史验证，不代表本次重跑。后续范围和排期见[开发计划](DEVELOPMENT_PLAN.md)，新增账号、发现候选及图表接口见[扩展接口设计](EXTENSION_INTERFACES.md)，该设计待签收，不能替代现行 OpenAPI。
+> 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[原开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及现有代码整理。后端已实现 **31 个操作**：已发布的 **23 个**（API-01—16 + AUTH-01—07）加 E2 的 **8 个**发现/候选操作（DISC-01—08，只在 `contracts/openapi.e2-draft.yaml` 里，见 §4.5），前端六类业务页已接入，已有隔离库/真实 HTTP/合成数据的阶段浏览器记录；最终云端联合与业务验收仍按实际证据确认。第 8 节保留各日期历史验证，不代表本次重跑。后续范围和排期见[开发计划](DEVELOPMENT_PLAN.md)，新增账号、发现候选及图表接口见[扩展接口设计](EXTENSION_INTERFACES.md)，该设计待签收，不能替代现行 OpenAPI。
 
 ## 1. 范围、依据和成功标准
 
@@ -417,6 +417,38 @@ API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络�
 只有 401/403（密码错、注册密钥错）算失败；数据库故障等 5xx 只释放名额，故障期间不会把整片 IP 锁死。**成功不清零失败记录**，只释放自己的名额——否则握有一个有效账号的人可以靠反复登录把失败计数刷掉，再接着猜别的账号。纯字段校验（422）在限流块之外，不消耗失败次数。计数在进程内：`huice-api.service` 是单 worker，重启清零；`nginx-huice.conf` 另有一层每 IP 20 r/s（突发 40）的粗粒度 `limit_req` 兜瞬时洪峰，它看不到密码对不对，替代不了上面的按失败次数锁定。
 
 **保底审核员**：E1 起后台写操作只接受审核员会话（Bearer 只读），而注册接口建审核员要配置 `REVIEWER_SIGNUP_KEY`。全新部署用 `infra/deploy/create-admin.py` 由持 root 的人在 ECS 上写库建第一个审核员（只从环境读 `DATABASE_URL`/`ADMIN_INIT_USERNAME`/`ADMIN_INIT_PASSWORD`，不覆盖既有账号），流程见 `infra/deploy/README.md` §3.4。
+
+### 4.5 政策发现与候选（E2 新增）
+
+**契约位置**：`contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`）。这 8 个操作已在跑，但**尚未并入** `contracts/openapi.yaml`——草案评审通过前不构成对外承诺，前端类型也不据此生成。自检两条：`python contracts/check_e2_draft.py`（草案结构、权限、错误码、运行时模型、样例校验）与 `pytest services/api/tests/test_e2_draft.py`（草案与服务实际发布的操作/组件/常量逐项对照）。
+
+**实现位置**：`app/discovery/{fetch,metadata,extraction,runner}.py`（抓取、元数据启发式、结构化抽取、一轮运行）、`app/integrations/discovery.py`（仓储）、`app/routes/discovery.py`（HTTP）、迁移 `010_policy_discovery.sql`、部署件 `huice-discovery.{service,timer}`。
+
+| ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
+| --- | --- | --- |
+| DISC-01 `GET /admin/discovery/settings` | 审核员会话或运维 Bearer | 200 `{enabled,sourceUrls,intervalMinutes,timeZone,nextRunAt,limits}` + `ETag`；`limits` 回显服务端允许范围，前端据此禁用非法输入 |
+| DISC-02 `PUT /admin/discovery/settings` | 替换语义，`If-Match` 必填（强 ETag）；`enabled` 为真时至少要一个来源；每个来源必须是 HTTPS 且落在 `OFFICIAL_HOST_SUFFIXES`（gov.cn 及其子域）内，逐条解析 DNS 排除内网地址；周期 360—43200 分钟，最多 20 个来源，时区需可解析 | 200 同 DISC-01（新 `ETag`）；缺 `If-Match` 428 `MISSING_IF_MATCH`，弱校验/`*` 400 `INVALID_IF_MATCH`，修订号过期 409 `VERSION_CONFLICT`，字段问题 422 `VALIDATION_ERROR`（`details.fieldErrors[].field` 精确到 `sourceUrls[0]`） |
+| DISC-03 `GET /admin/discovery/runs` | `cursor`/`limit`（1—50，默认 20） | 200 `{items,nextCursor}`；每条含 `status`（`running/succeeded/partial_failed/failed`）与 `terminalReason`（8 个终态码） |
+| DISC-04 `GET /admin/policy-candidates` | `status` 过滤 + `cursor`/`limit` | 200 `{items: CandidateSummary[],nextCursor}`；`missingFields` 是**准确**的待补清单 |
+| DISC-05 `GET /admin/policy-candidates/{candidateId}` | 路径参数 | 200 `CandidateDetail`（元数据、正文、条件、取证字段、用量）+ `ETag`；不存在 404 `CANDIDATE_NOT_FOUND` |
+| DISC-06 `PATCH /admin/policy-candidates/{candidateId}` | `If-Match` 必填；`metadata` 是**整体替换**（缺的字段按空处理），`criteriaDrafts` 可选 | 200 同 DISC-05；日期/申报窗口顺序不合法 422；状态不可编辑或修订号过期 409（`CANDIDATE_STATE_CONFLICT` / `VERSION_CONFLICT`） |
+| DISC-07 `POST /admin/policy-candidates/{candidateId}/submit` | `If-Match` + `Idempotency-Key` 必填 | 201 `PolicyDraft` + `ETag`；缺幂等键 400，同键异议 409 `IDEMPOTENCY_KEY_REUSED`，元数据未补齐/无条件 422，已提交/已丢弃/已过期/抽取失败 409 `CANDIDATE_STATE_CONFLICT`（附 `currentStatus`，已提交时带 `submittedPolicyId`/`submittedVersion`） |
+| DISC-08 `POST /admin/policy-candidates/{candidateId}/discard` | `If-Match` 必填；body 可选 `{reason}`（≤500 字） | 200 `CandidateDetail`（`status=discarded`）；再次丢弃 409 |
+
+**运行时口径**（契约 `x-e2-runtime-model`，由 `tests/test_e2_draft.py` 与代码常量互校）：
+
+1. **唤醒 ≠ 运行**。timer 每 15 分钟唤醒一次，CLI 只看 `discovery_settings.next_run_at`；没到点直接退出且**不写运行记录**（否则列表会被空转淹没）。周期按「现在 + interval」推进，不是「距上次运行」。
+2. **并发上限 1** 有两道：同一 systemd unit 不会被并发启动；库层 `pg_try_advisory_lock(hashtext('huice.discovery'))`，**锁与所有数据库写入共用同一条专用连接**，进程退出即释放。拿不到锁时本轮返回 `locked` 且不推进 `next_run_at`。进程崩溃留下的 `running` 行由下一轮持锁后收成 `failed/lock_lost`。
+3. **轮换与启动在一个事务里**：置上一轮未提交候选为 `expired` → 插运行行 → 推进 `next_run_at`。已提交（`submitted`）与已丢弃（`discarded`）是终态，不会被轮转带走。
+4. **预算两级**：单候选 8,000 token（`int(len(text)/1.5)+64` 估算，估算前就超的不发模型请求，候选直接落 `extraction_failed/EXTRACTION_BUDGET_EXCEEDED`）；整轮 50,000 token，用尽即停止后续候选并记 `partial_failed/budget_exceeded`。
+5. **抓取护栏**：单页 15 秒、响应 ≤2 MiB、同站间隔 ≥2 秒、并发 1、单轮最多 50 条新候选 / 200 篇正文、重定向 ≤5 跳且**逐跳**复检主机。
+6. **失败与「没有新政策」可分辨**：`succeeded/completed`（有新候选）、`succeeded/no_new_policy`（跑了但没新的）、`failed/fetch_failed|timeout|oversize`、`partial_failed/partial_failed|budget_exceeded`、`failed/lock_lost` 是互不相同的组合，不需要解析 `detail` 文案。
+
+**候选与政策库的关系**：`policy_candidate` 与 `policy` 不共表，候选阶段只写暂存区；DISC-07 才在**一个事务**里建草稿（`create_policy_version`）→ 改挂引用片段版本并重校验（`save_criteria`）→ 标记候选已提交 → 写幂等记录，全部一起提交或一起回滚；对象存储的正文在事务之外写，失败即删。所以「未提交候选不进入政策库」是结构上的事实，不靠前端不显示。幂等作用域是 `policy-candidate-submit`（与抽取的 `extract` 分开），指纹是 `sha256(candidateId:revision)`：同键同候选重放返回**同一份**草稿，同键换候选 409。
+
+**元数据抽取只摘原文写着的**（`app/discovery/metadata.py`）：版本号与适用主体永不代填；区划只按来源域名查登记表；发布日期只认带标签的日期，生效日期只认「自……起施行」句式。抽到的字段不会出现在 `missingFields` 里——抽取侧与接口侧共用 `FIELD_COLUMNS` / `missing_fields_of`，避免「清单说缺、库里其实有」。
+
+**已核对的本地结果（2026-11-12）**：`pytest` 全量 1290 项通过（含 `-m db`），其中 E2 新增 `test_discovery_fetch.py` 31 项、`test_discovery_runner_db.py` 16 项、`test_discovery_http.py` 17 项、`test_discovery_metadata.py` 11 项、`test_e2_draft.py` 8 项；`contracts/check_e1_draft.py` 与 `check_e2_draft.py` 均 OK。**云端尚未部署 E2、云端库尚未执行 010**。
 
 ## 5. 一次完整联调如何传参
 

@@ -1,0 +1,1338 @@
+# E2 契约草案：政策发现、运行记录与候选暂存（DISC-01—08）。
+#
+# 这不是现行契约，也不替换 contracts/openapi.yaml：
+#   - 基线是 contracts/openapi.yaml@1.1.0-rc.1（APP_VERSION 与评测指纹锁定的那一版）；
+#   - 不参与 contracts/generate_types.py 的类型生成，不影响 APP_VERSION，也不改冻结指纹；
+#   - 复用现有 schema 一律用相对 ``$ref`` 指向 ./openapi.yaml#/components/...，本文件不复制
+#     它们，以免草案与正式契约各写一份、日后漂移；
+#   - 8 个操作**已经实现**（services/api/app/routes/discovery.py），但尚未并入正式契约，
+#     与 E1 的做法一致：草案独立评审，合并后再进 openapi.yaml。
+#
+# 评审路径：M2 逐端点核对 security、必填字段、错误码、候选状态机与旧消费者兼容性 →
+# 版本号与切换安排共同签收 → 并入 openapi.yaml 并重新生成前端类型。
+#
+# 修订记录
+#   draft.1（2026-11-12）：首版，8 个新增操作。#47 与 M2 对齐的四条硬要求（审核员可配
+#     启用/周期/网址列表；防重入并留运行记录、能区分「没有新政策」与「抓取失败」；首版提交
+#     草稿前必须抽结构化条件；候选保存到下一次自动抓取前）分别落在 DISC-02、DISC-03/运行时
+#     模型、DISC-07、候选状态机；原手动导入（API-04—API-07）一字未动。
+
+openapi: 3.1.0
+info:
+  title: 惠策协同 HTTP 协作契约（E2 草案：政策发现）
+  version: 0.2.0-draft.1
+  description: >-
+    政策发现的三个对象：**配置**（审核员手动维护启用开关、抓取周期与来源网址列表）、
+    **运行记录**（每轮抓取一条，终态码区分「没有新政策」与「抓取失败」）、
+    **候选暂存区**（抓到的政策先落这里，人工确认元数据与结构化条件后才提交成草稿）。
+    候选不是政策：在本草案里没有任何一条路径能让未经人工提交的候选进入政策库——提交
+    （DISC-07）是唯一入口，它复用 API-04—API-07 的落库链路（同一事务写政策版本、来源、
+    条件与幂等记录）。原手动导入保持不变，发现只是多了一个入口。
+
+    候选的取证字段（来源 URL、抓取时间、原文哈希、规范化正文）由抓取器写入且**只读**：
+    人工只能改「确认过的元数据」与「结构化条件」，不能改证据。每个候选在提交前必须带上
+    至少一条结构化的资格条件；缺必填字段的候选会被 422 拦下并列出缺什么（missingFields）。
+
+    运行时口径（周期、上限、锁、预算、终态码）见顶层 x-e2-runtime-model；错误码汇总见
+    x-e2-errors。身份与门禁口径沿用 1.1.0-rc.1：读操作接受审核员会话或只读运维 Bearer，
+    写操作只接受审核员会话（Bearer 只读），restricted 部署另需先过演示门禁。
+servers:
+- url: /api/v1
+tags:
+- name: admin
+security: []
+
+#: 发现引擎的运行契约。这不是 HTTP 语义，但审核员在后台看到的每一次运行都按它发生，
+#: 所以与端点写在同一份草案里，避免「接口说能停，运行时其实不会停」。
+x-e2-runtime-model:
+  scheduler: >-
+    systemd timer（infra/deploy/huice-discovery.timer）每 15 分钟唤醒一次 python -m app.discovery
+    --trigger timer。唤醒只回答一个问题：discovery_settings.next_run_at 是否已到。没到点就
+    直接退出（DiscoveryOutcome.reason = not_due），**不写运行记录**——把每次唤醒都记一条会让
+    「最近成功」被 96 条空转淹没。
+  interval:
+    default-minutes: 1440
+    min-minutes: 360
+    max-minutes: 43200
+    note: >-
+      库层 CHECK、接口校验与这里同值。周期改动在下一轮开始推进 next_run_at 时生效，
+      不会把正在跑的一轮掐掉。
+  run-deadline: >-
+    单轮墙钟上限 30 分钟。超时后本轮按 failed/timeout 收口，已入库的候选保留。进程异常退出
+    会在表里留下 status=running 的行；下一轮拿到锁之后先把它收成 failed/lock_lost（此刻持锁
+    即可断定没有别的进程在跑），所以「running」不会永久悬挂。
+  lock: >-
+    PostgreSQL 会话级 advisory lock：SELECT pg_try_advisory_lock(hashtext('huice.discovery'))。
+    锁与本轮**全部**数据库写入共用同一条专用连接（app/db.py dedicated_connection，不走连接池）：
+    连接一断、进程一退，锁由服务端释放，因此不存在「已经失锁却还在提交」的窗口。拿不到锁
+    直接返回 locked，不排队、不等待。
+  catch-up: >-
+    机器停机导致错过了多个周期时，最多补跑一次，并把实际迟到秒数写进 lateBySeconds；
+    不补跑历史每一轮——那只会让下一轮立刻再跑一次。
+  token-budget:
+    run: 50000
+    per-candidate: 8000
+    estimator: int(len(text)/1.5)+64
+    note: >-
+      估算口径偏保守。单候选超预算落 extraction_failed（人工补齐后仍可提交）；整轮超预算
+      中止后续候选，本轮记 failed 或 partial_failed + budget_exceeded。
+  fetch-guards:
+    allowed-hosts: gov.cn 及其子域
+    per-request-timeout-seconds: 15
+    max-body-bytes: 2097152
+    min-host-interval-seconds: 2
+    concurrency: 1
+    max-new-candidates-per-run: 50
+    max-article-fetches-per-run: 200
+    max-redirects: 5
+    redirect-note: >-
+      逐跳复检：每一跳都重新做「官方域 + 解析出的公网地址」校验，最后一跳也过同一套检查。
+      落盘与候选里的来源 URL 一律是规范化（canonicalize_url）后的最终地址。
+  dedup: >-
+    三重判重按顺序：本轮已见过的正文哈希 → discovery_page 里同 URL 已见哈希 → 候选指纹
+    （内容哈希 + 来源）。命中即记 duplicates，不重复建候选。同一政策换了正文（版本变更）时
+    新候选带 versionChanged=true 与既有 policyId/version，供审核员决定是新建还是追加版本。
+  candidate-lifecycle:
+    states:
+    - pending_review
+    - extraction_failed
+    - submitted
+    - discarded
+    - expired
+    editable: [pending_review, extraction_failed]
+    transitions:
+      pending_review: [submitted, discarded, expired]
+      extraction_failed: [pending_review, submitted, discarded, expired]
+      submitted: []
+      discarded: []
+      expired: []
+    note: >-
+      expired 由下一轮开始时轮转产生（把上一轮及更早的 pending_review / extraction_failed
+      置为 expired）；submitted 与 discarded 是终态，轮转不碰它们，因此已提交草稿的取证
+      不会因为一次定时任务而消失。transitions 里 extraction_failed 的 submitted 只在该次
+      提交同时补齐条件与元数据时成立，实际上走的是「先 PATCH 成 pending_review，再 submit」
+      两步；直接 submit 一定 422。
+  terminal-reasons:
+    completed: 本轮成功，且有新候选入库。
+    no_new_policy: 本轮成功，但没有新政策（全部重复、来源没更新或没有来源）。**不是失败**。
+    fetch_failed: 全部来源都抓取失败，本轮没有可判定的结果。
+    partial_failed: 部分来源失败、或中途超预算/超时，但本轮已有可用的候选。
+    budget_exceeded: 模型 token 预算用尽，本轮中止。
+    oversize: 响应体超过 2 MiB。
+    timeout: 单页请求超时或整轮 30 分钟超时。
+    lock_lost: 运行期间专用连接断开，锁随之丢失；本轮所有写入都已随事务回滚。
+  distinction: >-
+    「没有新政策」与「抓取失败」是两个字段而不是一句文案：run.status=succeeded 且
+    terminalReason=no_new_policy 与 status=failed 且 terminalReason=fetch_failed 不可能混。
+    后台列表按 status 过滤即可，不需要解析 detail。
+
+x-e2-errors:
+  note: >-
+    错误体一律是 openapi.yaml#/components/schemas/ApiError（error.code / message / details、
+    traceId）。下表只列 E2 新增或语义被 E2 用到的码。
+  codes:
+  - code: MISSING_IF_MATCH
+    status: 428
+    when: 写操作没带 If-Match。取自上一步响应的 ETag 原样回传。
+  - code: INVALID_IF_MATCH
+    status: 400
+    when: If-Match 是 * 或弱 ETag（W/），或不是合法的修订号 UUID。
+  - code: MISSING_IDEMPOTENCY_KEY
+    status: 400
+    when: DISC-07 没带 Idempotency-Key。
+  - code: INVALID_IDEMPOTENCY_KEY
+    status: 400
+    when: Idempotency-Key 不是 UUID。
+  - code: IDEMPOTENCY_KEY_REUSED
+    status: 409
+    when: 同一个 Idempotency-Key 已用于**另一次**提交（候选或修订号不同）。
+  - code: VERSION_CONFLICT
+    status: 409
+    when: If-Match 的修订号与当前不符（配置或候选都适用），details.currentRevision 给出当前值。
+  - code: CANDIDATE_STATE_CONFLICT
+    status: 409
+    when: 候选处于 submitted / discarded / expired，或 extraction_failed 直接提交。
+    details: 带 currentStatus；已提交时另带 submittedPolicyId 与 submittedVersion。
+  - code: CANDIDATE_NOT_FOUND
+    status: 404
+    when: 候选不存在（或被清理）。
+  - code: VALIDATION_ERROR
+    status: 422
+    when: 字段不合法；提交前还有必填字段未确认；提交时没有结构化条件。
+    details: fieldErrors[{field, message}]。
+  - code: INVALID_QUERY
+    status: 400
+    when: 分页游标无效（换了过滤条件也会失效），从第一页重新开始。
+  - code: DEMO_SESSION_REQUIRED
+    status: 403
+    when: restricted 部署缺门禁 cookie（先于字段校验与身份判定）。
+  - code: CSRF_REQUIRED
+    status: 403
+    when: 带审核员会话的写请求缺 X-CSRF-Token 或与会话内值不一致。
+  - code: ORIGIN_MISMATCH
+    status: 403
+    when: 写请求的 Origin 与 PUBLIC_ORIGIN 不同源。
+
+paths:
+  /admin/discovery/settings:
+    get:
+      operationId: getDiscoverySettings
+      summary: DISC-01
+      description: >-
+        读取发现配置与可配置范围。200 带 ETag（值即配置修订号 revision），下一次 PUT 必须
+        原样回传。limits 让前端禁用非法输入，而不是写死一份和后台不同步的文案。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      - AdminBearer: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
+      parameters: []
+      responses:
+        '200':
+          description: 成功
+          headers: &e200_headers
+            X-Trace-Id: &e_trace
+              description: 请求 trace UUID；错误体用的是同一个值。
+              schema:
+                $ref: ./openapi.yaml#/components/schemas/UUID
+            ETag: &e_etag
+              description: 强 ETag，值为该资源的修订号 UUID（带引号）。写操作原样回传 If-Match。
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoverySettings'
+              example:
+                enabled: true
+                sourceUrls:
+                - https://www.gov.cn/zhengce/zuixin/
+                - https://www.most.gov.cn/kjbgz/
+                intervalMinutes: 1440
+                timeZone: Asia/Shanghai
+                nextRunAt: '2026-11-13T01:00:00Z'
+                limits:
+                  minIntervalMinutes: 360
+                  maxIntervalMinutes: 43200
+                  maxSourceUrls: 20
+                  maxCandidatesPerRun: 50
+                  runTimeoutMinutes: 30
+                  runTokenBudget: 50000
+                  candidateTokenBudget: 8000
+                  maxResponseBytes: 2097152
+                  minHostIntervalSeconds: 2
+                  maxRedirects: 5
+        '401': &e401
+          description: 未认证（无会话且无 Bearer，或凭据无效）
+          content:
+            application/json:
+              schema: &e_error
+                $ref: ./openapi.yaml#/components/schemas/ApiError
+          headers: &e_err_headers
+            X-Trace-Id: *e_trace
+        '403': &e403
+          description: 身份不是审核员，或门禁/CSRF/Origin 未通过
+          content:
+            application/json:
+              schema: *e_error
+          headers: *e_err_headers
+        '500': &e500
+          description: 内部错误（脱敏）
+          content:
+            application/json:
+              schema: *e_error
+          headers: *e_err_headers
+        '503': &e503
+          description: 依赖不可用
+          content:
+            application/json:
+              schema: *e_error
+          headers: *e_err_headers
+    put:
+      operationId: updateDiscoverySettings
+      summary: DISC-02
+      description: >-
+        修改启用开关、来源网址列表、抓取周期与时区。整个配置是**替换**语义（不是局部合并）：
+        没传的网址就等于删除。校验口径与库层 CHECK 一致：周期 360—43200 分钟、来源最多 20
+        个、网址必须是官方域（gov.cn 及其子域）且不能重复；启用时至少要有一个来源。
+        成功后 nextRunAt 可能保持或前移，由运行器在下一轮开始时推进——本接口不直接改它。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
+      parameters:
+      - $ref: ./openapi.yaml#/components/parameters/IfMatch
+      - $ref: ./openapi.yaml#/components/parameters/CsrfToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscoverySettingsUpdate'
+            example:
+              enabled: true
+              sourceUrls:
+              - https://www.gov.cn/zhengce/zuixin/
+              intervalMinutes: 720
+              timeZone: Asia/Shanghai
+      responses:
+        '200':
+          description: 已保存
+          headers: *e200_headers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoverySettings'
+        '400': &e400
+          description: 请求语法错误（含 If-Match 不是强 ETag 或不是合法修订号）
+          content:
+            application/json:
+              schema: *e_error
+          headers: *e_err_headers
+        '401': *e401
+        '403': *e403
+        '409': &e409
+          description: 修订号冲突（VERSION_CONFLICT）
+          content:
+            application/json:
+              schema: *e_error
+          headers: *e_err_headers
+        '422': &e422
+          description: 字段不合法（VALIDATION_ERROR，details.fieldErrors 指出哪一项）
+          content:
+            application/json:
+              schema: *e_error
+          headers: *e_err_headers
+        '428': &e428
+          description: 缺少 If-Match（MISSING_IF_MATCH）
+          content:
+            application/json:
+              schema: *e_error
+          headers: *e_err_headers
+        '500': *e500
+        '503': *e503
+
+  /admin/discovery/runs:
+    get:
+      operationId: listDiscoveryRuns
+      summary: DISC-03
+      description: >-
+        运行记录，按 startedAt 倒序。**没有新政策**是 status=succeeded 且
+        terminalReason=no_new_policy；**抓取失败**是 status=failed，两者可据此直接区分。
+        sourceStatus 逐个来源给出结果（ok / failed / skipped）与失败类别，失败来源不影响
+        其它来源的结果。只读，不触发运行：手动触发走 CLI（python -m app.discovery）。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      - AdminBearer: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
+      parameters:
+      - $ref: ./openapi.yaml#/components/parameters/Cursor
+      - $ref: ./openapi.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *e_trace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryRunList'
+              example:
+                items:
+                - id: 55555555-5555-4555-8555-555555555555
+                  startedAt: '2026-11-12T01:00:03Z'
+                  finishedAt: '2026-11-12T01:00:41Z'
+                  status: succeeded
+                  terminalReason: no_new_policy
+                  sourcesChecked: 2
+                  linksSeen: 37
+                  duplicates: 5
+                  newCandidates: 0
+                  failedSources: 0
+                  tokensUsed: 0
+                  tokensUnknown: false
+                  lateBySeconds: null
+                  sourceStatus:
+                  - url: https://www.gov.cn/zhengce/zuixin/
+                    status: ok
+                    links: 20
+                    candidates: 0
+                    errorCategory: null
+                    message: null
+                  - url: https://www.most.gov.cn/kjbgz/
+                    status: ok
+                    links: 17
+                    candidates: 0
+                    errorCategory: null
+                    message: null
+                  detail: 全部来源已是最新，没有新政策。
+                - id: 66666666-6666-4666-8666-666666666666
+                  startedAt: '2026-11-11T01:00:02Z'
+                  finishedAt: '2026-11-11T01:00:09Z'
+                  status: failed
+                  terminalReason: fetch_failed
+                  sourcesChecked: 2
+                  linksSeen: 0
+                  duplicates: 0
+                  newCandidates: 0
+                  failedSources: 2
+                  tokensUsed: 0
+                  tokensUnknown: false
+                  lateBySeconds: null
+                  sourceStatus:
+                  - url: https://www.gov.cn/zhengce/zuixin/
+                    status: failed
+                    links: 0
+                    candidates: 0
+                    errorCategory: timeout
+                    message: 单页请求超时。
+                  - url: https://www.most.gov.cn/kjbgz/
+                    status: failed
+                    links: 0
+                    candidates: 0
+                    errorCategory: network
+                    message: 连接被对方重置。
+                  detail: 2 个来源全部失败。
+                nextCursor: null
+        '400': *e400
+        '401': *e401
+        '403': *e403
+        '500': *e500
+        '503': *e503
+
+  /admin/policy-candidates:
+    get:
+      operationId: listPolicyCandidates
+      summary: DISC-04
+      description: >-
+        候选列表，按抓取时间倒序。status 可筛选候选状态（缺省=全部非终态之外的都返回，
+        分页游标与筛选条件绑定：换条件后旧游标失效，返回 400 INVALID_QUERY）。
+        missingFields 直接给出「提交前还缺什么」，前端不需要自己推。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      - AdminBearer: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
+      parameters:
+      - name: status
+        in: query
+        required: false
+        description: 按候选状态筛选。
+        schema:
+          $ref: '#/components/schemas/CandidateStatus'
+      - $ref: ./openapi.yaml#/components/parameters/Cursor
+      - $ref: ./openapi.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *e_trace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CandidateList'
+              example:
+                items:
+                - id: 77777777-7777-4777-8777-777777777777
+                  runId: 55555555-5555-4555-8555-555555555555
+                  revision: 88888888-8888-4888-8888-888888888888
+                  status: pending_review
+                  sourceUrl: https://www.gov.cn/zhengce/content/2026-11/12/content_0000001.htm
+                  fetchedAt: '2026-11-12T01:00:12Z'
+                  contentHash: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                  title: 关于进一步支持小微企业发展的若干措施
+                  type: grant
+                  issuer: 国务院
+                  missingFields:
+                  - version
+                  - applicableEntities
+                  duplicateOf: null
+                  existingPolicyId: null
+                  existingVersion: null
+                  versionChanged: false
+                  submittedPolicyId: null
+                  submittedVersion: null
+                  createdAt: '2026-11-12T01:00:12Z'
+                nextCursor: null
+        '400': *e400
+        '401': *e401
+        '403': *e403
+        '500': *e500
+        '503': *e503
+
+  /admin/policy-candidates/{candidateId}:
+    get:
+      operationId: getPolicyCandidate
+      summary: DISC-05
+      description: >-
+        候选详情：确认过的元数据、规范化正文、抽取出的结构化条件与校验发现。200 带 ETag
+        （值为候选修订号 revision），PATCH / submit / discard 都要原样回传。
+        正文用于人工核对引文——criteria 的 sourceSpans 引文必须能在 bodyText 里找到。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      - AdminBearer: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
+      parameters:
+      - $ref: '#/components/parameters/CandidateId'
+      responses:
+        '200':
+          description: 成功
+          headers: *e200_headers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CandidateDetail'
+              example:
+                id: 77777777-7777-4777-8777-777777777777
+                runId: 55555555-5555-4555-8555-555555555555
+                revision: 88888888-8888-4888-8888-888888888888
+                status: pending_review
+                sourceUrl: https://www.gov.cn/zhengce/content/2026-11/12/content_0000001.htm
+                fetchedAt: '2026-11-12T01:00:12Z'
+                contentHash: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+                rawHash: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+                metadata:
+                  version: null
+                  policyId: null
+                  title: 关于进一步支持小微企业发展的若干措施
+                  type: grant
+                  issuer: 国务院
+                  region: '110000'
+                  documentNumber: 国办发〔2026〕12号
+                  applicableEntities: null
+                  publishedAt: '2026-11-10'
+                  effectiveFrom: '2026-12-01'
+                  effectiveTo: null
+                  applicationWindow: null
+                  officialEntryUrl: https://www.gov.cn/zhengce/content/2026-11/12/content_0000001.htm
+                attachmentUrls: []
+                missingFields:
+                - version
+                - applicableEntities
+                bodyText: 一、对符合条件的小微企业，按年度应纳税所得额不超过 300 万元的部分减按 5% 计入应纳税所得额。
+                criteria:
+                - id: 99999999-9999-4999-8999-999999999999
+                  title: 小微企业减计应纳税所得额
+                  expression:
+                    op: industry_exclusion
+                    factKey: industry
+                    period: assessment
+                    excluded:
+                    - '03'
+                    - '04'
+                  sourceSpans:
+                  - sourceId: 77777777-7777-4777-8777-777777777777
+                    sourceUrl: https://www.gov.cn/zhengce/content/2026-11/12/content_0000001.htm
+                    sourceVersion: candidate
+                    page: null
+                    section: 一
+                    quote: 对符合条件的小微企业，按年度应纳税所得额不超过 300 万元的部分减按 5% 计入应纳税所得额。
+                    textHash: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+                  reviewFinding: none
+                  validationStatus: passed
+                validationFindings: []
+                usage:
+                  mode: deepseek
+                  modelVersion: deepseek-chat
+                  inputTokens: 3210
+                  outputTokens: 640
+                  elapsedMs: 8400
+                duplicateOf: null
+                existingPolicyId: null
+                existingVersion: null
+                versionChanged: false
+                submittedPolicyId: null
+                submittedVersion: null
+                discardReason: null
+                createdAt: '2026-11-12T01:00:12Z'
+                updatedAt: '2026-11-12T01:02:00Z'
+        '400': *e400
+        '401': *e401
+        '403': *e403
+        '404': &e404
+          description: 候选不存在（CANDIDATE_NOT_FOUND）
+          content:
+            application/json:
+              schema: *e_error
+          headers: *e_err_headers
+        '500': *e500
+        '503': *e503
+    patch:
+      operationId: updatePolicyCandidate
+      summary: DISC-06
+      description: >-
+        人工确认元数据（必填）与结构化条件（可选）。metadata 是替换语义：与 PolicyImportMetadata
+        字段同名，但**全部可空**——原文没给的字段留 null 并进 missingFields，不猜。
+        另有两项只在候选阶段有意义：version（政策版本号，提交时必填）与 policyId
+        （提交到既有政策；null=新建一条）。
+
+        传了 criteriaDrafts 就整组替换结构化条件，并按与 API-06 相同的引用 / 表达式 / 合取为空
+        校验重算 validationStatus；校验不通过的条款照样保存（人工还能再改），但提交会被 422 拦下。
+        extraction_failed 的候选在补齐条件后自动转为 pending_review。
+        取证字段（sourceUrl / fetchedAt / contentHash / rawHash / bodyText）不可改，传了也会被忽略。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
+      parameters:
+      - $ref: '#/components/parameters/CandidateId'
+      - $ref: ./openapi.yaml#/components/parameters/IfMatch
+      - $ref: ./openapi.yaml#/components/parameters/CsrfToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CandidateUpdate'
+            example:
+              metadata:
+                version: 国办发〔2026〕12号
+                policyId: null
+                title: 关于进一步支持小微企业发展的若干措施
+                type: grant
+                issuer: 国务院
+                region: '110000'
+                documentNumber: 国办发〔2026〕12号
+                applicableEntities:
+                - 小型微利企业
+                publishedAt: '2026-11-10'
+                effectiveFrom: '2026-12-01'
+                effectiveTo: null
+                applicationWindow: null
+                officialEntryUrl: https://www.gov.cn/zhengce/content/2026-11/12/content_0000001.htm
+              criteriaDrafts:
+              - id: 99999999-9999-4999-8999-999999999999
+                title: 小微企业减计应纳税所得额
+                expression:
+                  op: industry_exclusion
+                  factKey: industry
+                  period: assessment
+                  excluded:
+                  - '03'
+                  - '04'
+                sourceSpans:
+                - sourceId: 77777777-7777-4777-8777-777777777777
+                  sourceUrl: https://www.gov.cn/zhengce/content/2026-11/12/content_0000001.htm
+                  sourceVersion: candidate
+                  page: null
+                  section: 一
+                  quote: 对符合条件的小微企业，按年度应纳税所得额不超过 300 万元的部分减按 5% 计入应纳税所得额。
+                  textHash: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+                reviewFinding: none
+      responses:
+        '200':
+          description: 已保存
+          headers: *e200_headers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CandidateDetail'
+        '400': *e400
+        '401': *e401
+        '403': *e403
+        '404': *e404
+        '409': *e409
+        '422': *e422
+        '428': *e428
+        '500': *e500
+        '503': *e503
+
+  /admin/policy-candidates/{candidateId}/submit:
+    post:
+      operationId: submitPolicyCandidate
+      summary: DISC-07
+      description: >-
+        把候选提交为**政策草稿**（status=pending_review，不走自动发布）。这是候选进入政策库的
+        唯一入口，且复用 API-04—API-07 的落库链路：同一事务内写政策版本与来源、写条件与校验
+        结果、标记候选 submitted、写幂等记录；任一步失败整体回滚并删除刚写入的对象存储。
+
+        前置条件（任一不满足即拒绝，不落任何数据）：候选为 pending_review、修订号与 If-Match
+        一致、missingFields 为空、至少一条结构化条件通过校验。
+
+        幂等：同一个 Idempotency-Key 对同一候选同一修订号重放时，直接返回首次创建的草稿
+        （201 语义按重放返回 200 的旧版式并不存在——响应码仍为 201，body 与 ETag 与首次一致）；
+        同键不同候选/不同修订号返回 409 IDEMPOTENCY_KEY_REUSED。候选一旦已是 submitted，
+        无论带不带幂等键都返回 409 CANDIDATE_STATE_CONFLICT 并带上已提交的 policyId/version，
+        不重复建版本。
+
+        候选条件里的 sourceSpans.sourceVersion 在提交时由 "candidate" 改挂为新建的版本号、
+        sourceId 改挂为新来源 id——引文与 textHash 不变，证据不被改写。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
+      parameters:
+      - $ref: '#/components/parameters/CandidateId'
+      - $ref: ./openapi.yaml#/components/parameters/IfMatch
+      - $ref: ./openapi.yaml#/components/parameters/IdempotencyKey
+      - $ref: ./openapi.yaml#/components/parameters/CsrfToken
+      requestBody:
+        required: false
+        description: 无请求体。候选的身份由路径给出，修订号由 If-Match 给出。
+      responses:
+        '201':
+          description: 已创建草稿（重放同一幂等键也返回 201，body 与 ETag 与首次一致）
+          headers: *e200_headers
+          content:
+            application/json:
+              schema:
+                $ref: ./openapi.yaml#/components/schemas/PolicyDraft
+        '400': *e400
+        '401': *e401
+        '403': *e403
+        '404': *e404
+        '409': *e409
+        '422': *e422
+        '428': *e428
+        '500': *e500
+        '503': *e503
+
+  /admin/policy-candidates/{candidateId}/discard:
+    post:
+      operationId: discardPolicyCandidate
+      summary: DISC-08
+      description: >-
+        丢弃候选（终态）。只对 pending_review / extraction_failed 有效；可带一条原因。
+        丢弃后不进入政策库，也不会被下一轮轮转改状态。响应体是丢弃后的候选详情。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定——缺 cookie 时请求体不合法同样是 403，不是 422。
+      parameters:
+      - $ref: '#/components/parameters/CandidateId'
+      - $ref: ./openapi.yaml#/components/parameters/IfMatch
+      - $ref: ./openapi.yaml#/components/parameters/CsrfToken
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscardCandidateInput'
+            example:
+              reason: 与既有政策重复，不需要新建版本。
+      responses:
+        '200':
+          description: 已丢弃
+          headers: *e200_headers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CandidateDetail'
+        '400': *e400
+        '401': *e401
+        '403': *e403
+        '404': *e404
+        '409': *e409
+        '422': *e422
+        '428': *e428
+        '500': *e500
+        '503': *e503
+
+components:
+  securitySchemes:
+    UserSession:
+      type: apiKey
+      in: cookie
+      name: huice_session
+      description: 账号会话。E1 起是唯一可写的身份；E2 的四条写操作只接受它。
+    DemoSession:
+      type: apiKey
+      in: cookie
+      name: huice_demo_session
+      description: restricted 部署的外层门禁；local 模式没有门禁。
+    AdminBearer:
+      type: http
+      scheme: bearer
+      description: ADMIN_TOKEN，E1 后只读。E2 的 DISC-01/03/04/05 可读，写操作一律 403。
+  parameters:
+    CandidateId:
+      name: candidateId
+      in: path
+      required: true
+      description: 候选 id。
+      schema:
+        $ref: ./openapi.yaml#/components/schemas/UUID
+  schemas:
+    DiscoveryLimits:
+      type: object
+      additionalProperties: false
+      required:
+      - minIntervalMinutes
+      - maxIntervalMinutes
+      - maxSourceUrls
+      - maxCandidatesPerRun
+      - runTimeoutMinutes
+      - runTokenBudget
+      - candidateTokenBudget
+      - maxResponseBytes
+      - minHostIntervalSeconds
+      - maxRedirects
+      properties:
+        minIntervalMinutes:
+          type: integer
+          minimum: 360
+        maxIntervalMinutes:
+          type: integer
+          maximum: 43200
+        maxSourceUrls:
+          type: integer
+          minimum: 1
+        maxCandidatesPerRun:
+          type: integer
+          minimum: 1
+        runTimeoutMinutes:
+          type: integer
+          minimum: 1
+        runTokenBudget:
+          type: integer
+          minimum: 1
+        candidateTokenBudget:
+          type: integer
+          minimum: 1
+        maxResponseBytes:
+          type: integer
+          minimum: 1
+        minHostIntervalSeconds:
+          type: integer
+          minimum: 0
+        maxRedirects:
+          type: integer
+          minimum: 0
+      description: 服务端口径，回显给前端用于禁用非法输入；与库层 CHECK 和运行器常量同源。
+    DiscoverySettings:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      - sourceUrls
+      - intervalMinutes
+      - timeZone
+      - nextRunAt
+      - limits
+      properties:
+        enabled:
+          type: boolean
+        sourceUrls:
+          type: array
+          maxItems: 20
+          items:
+            $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+        intervalMinutes:
+          type: integer
+          minimum: 360
+          maximum: 43200
+        timeZone:
+          type: string
+          minLength: 1
+        nextRunAt:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/Timestamp
+          - type: 'null'
+        limits:
+          $ref: '#/components/schemas/DiscoveryLimits'
+      description: 发现配置。nextRunAt 由运行器推进，只读；未启用时为 null。
+    DiscoverySettingsUpdate:
+      type: object
+      additionalProperties: false
+      required:
+      - enabled
+      - sourceUrls
+      - intervalMinutes
+      - timeZone
+      properties:
+        enabled:
+          type: boolean
+        sourceUrls:
+          type: array
+          maxItems: 20
+          description: 替换语义：没列出来的网址就等于删除。必须是官方域且不能重复。
+          items:
+            $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+        intervalMinutes:
+          type: integer
+          minimum: 360
+          maximum: 43200
+          description: 360—43200 分钟；默认 1440。
+        timeZone:
+          type: string
+          minLength: 1
+          description: IANA 时区名（例如 Asia/Shanghai），决定下一次运行的时间落点。
+      description: 整份配置的替换体；启用时必须至少有一个来源网址。
+    DiscoverySourceStatus:
+      type: object
+      additionalProperties: false
+      required:
+      - url
+      - status
+      properties:
+        url:
+          $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+        status:
+          type: string
+          enum:
+          - ok
+          - failed
+          - skipped
+        links:
+          type: integer
+          minimum: 0
+        candidates:
+          type: integer
+          minimum: 0
+        errorCategory:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+      description: 单个来源在本轮的结果。skipped 表示本轮因预算/时限提前收手，不算失败。
+    DiscoveryRun:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - startedAt
+      - finishedAt
+      - status
+      - terminalReason
+      - sourcesChecked
+      - linksSeen
+      - duplicates
+      - newCandidates
+      - failedSources
+      - tokensUsed
+      - tokensUnknown
+      - lateBySeconds
+      - sourceStatus
+      - detail
+      properties:
+        id:
+          $ref: ./openapi.yaml#/components/schemas/UUID
+        startedAt:
+          $ref: ./openapi.yaml#/components/schemas/Timestamp
+        finishedAt:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/Timestamp
+          - type: 'null'
+        status:
+          type: string
+          enum:
+          - running
+          - succeeded
+          - partial_failed
+          - failed
+        terminalReason:
+          anyOf:
+          - type: string
+            enum:
+            - completed
+            - no_new_policy
+            - fetch_failed
+            - partial_failed
+            - budget_exceeded
+            - oversize
+            - timeout
+            - lock_lost
+          - type: 'null'
+        sourcesChecked:
+          type: integer
+          minimum: 0
+        linksSeen:
+          type: integer
+          minimum: 0
+        duplicates:
+          type: integer
+          minimum: 0
+        newCandidates:
+          type: integer
+          minimum: 0
+        failedSources:
+          type: integer
+          minimum: 0
+        tokensUsed:
+          type: integer
+          minimum: 0
+        tokensUnknown:
+          type: boolean
+        lateBySeconds:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+        sourceStatus:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoverySourceStatus'
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+      description: >-
+        一次运行。running 只会在运行中或进程异常退出后短暂出现（下一轮持锁后收成
+        failed/lock_lost）；终态行不会再变。
+    DiscoveryRunList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoveryRun'
+        nextCursor:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+    CandidateStatus:
+      type: string
+      enum:
+      - pending_review
+      - extraction_failed
+      - submitted
+      - discarded
+      - expired
+      description: >-
+        候选状态。pending_review / extraction_failed 可编辑；submitted / discarded / expired
+        是终态。expired 只由下一轮轮转产生，已提交与已丢弃的候选不受轮转影响。
+    CandidateMetadata:
+      type: object
+      additionalProperties: false
+      description: >-
+        候选元数据：字段名与 PolicyImportMetadata 一致，但全部可空——原文没给的字段留空并
+        进 missingFields，不由抓取器猜。比导入多两项：version（提交时必填）与 policyId
+        （提交到既有政策；null 表示新建一条）。
+      properties:
+        version:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        policyId:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+        title:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        type:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/PolicyType
+          - type: 'null'
+        issuer:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        region:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        documentNumber:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        applicableEntities:
+          anyOf:
+          - type: array
+            items:
+              type: string
+              minLength: 1
+          - type: 'null'
+        publishedAt:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/Date
+          - type: 'null'
+        effectiveFrom:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/Date
+          - type: 'null'
+        effectiveTo:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/Date
+          - type: 'null'
+        applicationWindow:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/ApplicationWindow
+          - type: 'null'
+        officialEntryUrl:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+          - type: 'null'
+    CandidateSummary:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - runId
+      - revision
+      - status
+      - sourceUrl
+      - fetchedAt
+      - contentHash
+      - title
+      - issuer
+      - missingFields
+      - duplicateOf
+      - existingPolicyId
+      - existingVersion
+      - versionChanged
+      - submittedPolicyId
+      - submittedVersion
+      - createdAt
+      properties:
+        id:
+          $ref: ./openapi.yaml#/components/schemas/UUID
+        runId:
+          $ref: ./openapi.yaml#/components/schemas/UUID
+        revision:
+          $ref: ./openapi.yaml#/components/schemas/UUID
+        status:
+          $ref: '#/components/schemas/CandidateStatus'
+        sourceUrl:
+          $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+        fetchedAt:
+          $ref: ./openapi.yaml#/components/schemas/Timestamp
+        contentHash:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        title:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        type:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/PolicyType
+          - type: 'null'
+        issuer:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        missingFields:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        duplicateOf:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+        existingPolicyId:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+        existingVersion:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        versionChanged:
+          type: boolean
+        submittedPolicyId:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+        submittedVersion:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        createdAt:
+          $ref: ./openapi.yaml#/components/schemas/Timestamp
+    CandidateList:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - nextCursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CandidateSummary'
+        nextCursor:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+    CandidateDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - runId
+      - revision
+      - status
+      - sourceUrl
+      - fetchedAt
+      - contentHash
+      - rawHash
+      - metadata
+      - attachmentUrls
+      - missingFields
+      - bodyText
+      - criteria
+      - validationFindings
+      - usage
+      - duplicateOf
+      - existingPolicyId
+      - existingVersion
+      - versionChanged
+      - submittedPolicyId
+      - submittedVersion
+      - discardReason
+      - createdAt
+      - updatedAt
+      properties:
+        id:
+          $ref: ./openapi.yaml#/components/schemas/UUID
+        runId:
+          $ref: ./openapi.yaml#/components/schemas/UUID
+        revision:
+          $ref: ./openapi.yaml#/components/schemas/UUID
+        status:
+          $ref: '#/components/schemas/CandidateStatus'
+        sourceUrl:
+          $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+        fetchedAt:
+          $ref: ./openapi.yaml#/components/schemas/Timestamp
+        contentHash:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+        rawHash:
+          anyOf:
+          - type: string
+            pattern: ^[a-f0-9]{64}$
+          - type: 'null'
+        metadata:
+          $ref: '#/components/schemas/CandidateMetadata'
+        attachmentUrls:
+          type: array
+          items:
+            $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+        missingFields:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        bodyText:
+          type: string
+        criteria:
+          type: array
+          items:
+            $ref: ./openapi.yaml#/components/schemas/Criterion
+        validationFindings:
+          type: array
+          items:
+            $ref: ./openapi.yaml#/components/schemas/ValidationFinding
+        usage:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/ModelUsage
+          - type: 'null'
+        duplicateOf:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+        existingPolicyId:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+        existingVersion:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        versionChanged:
+          type: boolean
+        submittedPolicyId:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+        submittedVersion:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+        discardReason:
+          anyOf:
+          - type: string
+          - type: 'null'
+        createdAt:
+          $ref: ./openapi.yaml#/components/schemas/Timestamp
+        updatedAt:
+          $ref: ./openapi.yaml#/components/schemas/Timestamp
+      description: >-
+        候选详情。取证字段（sourceUrl / fetchedAt / contentHash / rawHash / bodyText /
+        attachmentUrls）只读：人工不能改证据，只能改确认过的元数据与结构化条件。
+    CandidateUpdate:
+      type: object
+      additionalProperties: false
+      required:
+      - metadata
+      properties:
+        metadata:
+          $ref: '#/components/schemas/CandidateMetadata'
+        criteriaDrafts:
+          anyOf:
+          - type: array
+            items:
+              $ref: ./openapi.yaml#/components/schemas/CriterionDraft
+          - type: 'null'
+      description: >-
+        metadata 是替换语义（整份覆盖）；传 criteriaDrafts 则整组替换结构化条件。
+        不传 criteriaDrafts 表示不改条件。
+    DiscardCandidateInput:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+      description: 丢弃原因，可选，最长 500 字。

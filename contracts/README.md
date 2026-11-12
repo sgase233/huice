@@ -10,7 +10,7 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 
 [扩展接口设计](../docs/EXTENSION_INTERFACES.md) 定义账号/会话/对象归属、发现配置/运行/候选审核、完整度/轨迹/趋势的建议请求与响应，以及迁移、幂等、权限和错误边界。其中账号/会话/对象权限（E1）的 7 个端点已实现并并入 `openapi.yaml`（`1.1.0-rc.1`）；其余部分仍待评审、未实现，契约不提前声明不存在的客户端能力。开发顺序和未决项见[开发计划](../docs/DEVELOPMENT_PLAN.md)。
 
-M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实现 PR 将已签收部分同步进 OpenAPI、后端 schema、M2 生成类型/客户端及成功失败示例。鉴权改造必须附旧门禁/脚本和新账号数据隔离迁移方案。迁移当前到 `008`，实施前核查最新序号再追加；不修改已部署 SQL。
+M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实现 PR 将已签收部分同步进 OpenAPI、后端 schema、M2 生成类型/客户端及成功失败示例。鉴权改造必须附旧门禁/脚本和新账号数据隔离迁移方案。迁移当前到 `010`（`009_users_sessions` E1、`010_policy_discovery` E2），实施前核查最新序号再追加；不修改已部署 SQL。
 
 ## E1 契约草案（2026-11-10）
 
@@ -20,6 +20,16 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 - 写法：复用的现有 schema 一律 `$ref: './openapi.yaml#/components/...'`，草案不复制它们；两份文件在同一个目录，工具可直接解析。
 - 自检（可复跑，只读两份契约）：`python contracts/check_e1_draft.py`。检查 `$ref` 可解析、7 个操作都有 `x-e1-gate`、`x-e1-impact` 16 行与基线端点一一对应（比较基线时排除已并入的 7 个 E1 操作）、错误码唯一且被引用、样例按 schema 通过。`services/api/tests/test_e1_draft.py` 再把 16 行的门禁与 FastAPI 路由的 `GatedRoute`／依赖对一遍，并逐操作比对正式契约、草案与服务端三处的 operationId、`security` 与 `x-e1-gate`。
 - 流程：M2 逐端点评审 → 版本号与切换安排共同签收 → 并入 `openapi.yaml`（已完成，`1.1.0-rc.1`）→ M2 重新生成 `types.ts`。
+
+## E2 契约草案（2026-11-12）
+
+[`openapi.e2-draft.yaml`](openapi.e2-draft.yaml) 是 #47 政策发现（DISC-01—08）的**评审草案**（`0.2.0-draft.1`）。这 8 个操作已在 `services/api` 实现，但**尚未并入** `openapi.yaml`：并入会新增 schema，`apps/web/src/api/types.ts` 必须由 M2 重新生成，属消费者切换窗口，与 E1 的节奏一致。
+
+- 内容：配置读/写、运行记录列表、候选列表/详情/修改/提交/丢弃；顶层 `x-e2-runtime-model` 写死运行时口径（15 分钟唤醒只看是否到点、周期 360—43200 分钟、单轮 30 分钟、会话级 advisory lock 与全部写入共用一条专用连接、50,000/8,000 token 预算、抓取护栏、8 个终态码、候选状态机），`x-e2-errors` 汇总 E2 新增错误码。
+- 与 #47 的四条对齐点：审核员可配启用/周期/网址列表（DISC-02）；防重入并有运行记录、能机器区分「没有新政策」与「抓取失败」（DISC-03 + `succeeded/partial_failed/failed` × `terminalReason`）；提交草稿前必须有结构化条件（DISC-06/07）；候选保留到下一次自动抓取前（轮转只把旧的 `pending_review`/`extraction_failed` 置 `expired`，`submitted`/`discarded` 不动）。
+- 写法：同 E1，复用 schema 一律 `$ref: './openapi.yaml#/components/...'`；草案不复制正式契约的组件。
+- 自检（可复跑，只读两份契约）：`python contracts/check_e2_draft.py`。检查 `$ref` 可解析、8 个操作齐全、读/写操作的 `security` 与 `x-e1-gate`、条件写必须声明 428/409/422、错误码唯一且被代码真的抛出、终态码与候选状态机自洽、样例按 schema 通过（含跨文件 `$ref`）。`services/api/tests/test_e2_draft.py` 再把草案与 FastAPI 的实际挂载、发布出去的组件形状、以及 `app/discovery/fetch.py`、`app/discovery/runner.py`、`app/routes/discovery.py` 里的常量逐个对上——上限写错不会让任何接口报错，只会让后台显示一份假的承诺。
+- 流程：M2 逐端点评审 → 版本号与切换安排共同签收 → 并入 `openapi.yaml` → M2 重新生成 `types.ts`。在此之前 `openapi.yaml` 与前端类型都不动。
 
 ## 已实现范围（后端：23/23；前 16 项 2026-10-27，AUTH 7 项 2026-11-11 并入契约）
 

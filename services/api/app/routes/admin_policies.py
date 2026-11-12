@@ -31,14 +31,9 @@ from ..agents.ingestion import (
     prepare_sources,
     validate_official_url,
 )
-from ..domain.citations import CriterionInput, SourceSpanCheck, SourceText, validate_criteria
-from ..domain.rules import (
-    POLICY_BLOCKING_CODES,
-    POLICY_UNSATISFIABLE,
-    CriterionRule,
-    policy_contradictions,
-    validate_expression,
-)
+from ..domain.citations import CriterionInput, SourceSpanCheck, SourceText
+from ..domain.packing import pack_criteria
+from ..domain.rules import POLICY_BLOCKING_CODES, POLICY_UNSATISFIABLE
 from ..errors import ApiProblem, trace_id_of
 from ..integrations.storage import CriterionRecord, FindingRecord
 from ..schemas import (
@@ -53,12 +48,9 @@ from ..schemas import (
     SaveCriteriaInput,
     SaveCriteriaResult,
 )
-from ..identity import (
-    require_csrf,
-    require_reviewer,
-    require_reviewer_or_bearer,
-)
+from ..identity import require_reviewer_or_bearer
 from ..security import GatedRoute
+from .guards import require_idempotency_key, require_if_match, require_reviewer_write
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +74,7 @@ ALLOWED_FORM_PARTS = frozenset({"metadata", "files"})
     summary="API-04",
 )
 async def import_policy(request: Request, response: Response) -> PolicyDraft:
-    _require_reviewer_write(request)
+    require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
 
     content_type = request.headers.get("content-type", "")
@@ -213,10 +205,10 @@ async def extract_policy(
     policyId: UUID,
     body: ExtractPolicyInput,
 ) -> ExtractionResult:
-    _require_reviewer_write(request)
+    require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
-    expected_revision = _require_if_match(request)
-    idempotency_key = _require_idempotency_key(request)
+    expected_revision = require_if_match(request)
+    idempotency_key = require_idempotency_key(request)
     repository = request.app.state.repository
 
     draft = await run_in_threadpool(repository.get_version_for_edit, policyId, body.version)
@@ -336,9 +328,9 @@ def save_criteria(
     policyId: UUID,
     body: SaveCriteriaInput,
 ) -> SaveCriteriaResult:
-    _require_reviewer_write(request)
+    require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
-    expected_revision = _require_if_match(request)
+    expected_revision = require_if_match(request)
     repository = request.app.state.repository
 
     draft = repository.get_version_for_edit(policyId, body.version)
@@ -389,9 +381,9 @@ def publish_policy(
     policyId: UUID,
     body: PublishPolicyInput,
 ) -> PolicyDetail:
-    _require_reviewer_write(request)
+    require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
-    expected_revision = _require_if_match(request)
+    expected_revision = require_if_match(request)
     repository = request.app.state.repository
 
     draft = repository.get_version_for_edit(policyId, body.version)
@@ -454,46 +446,9 @@ def publish_policy(
 
 
 # ------------------------------------------------------------- 写请求公共校验
-
-
-def _require_reviewer_write(request: Request) -> None:
-    """后台写操作：审核员会话 + CSRF/Origin。Bearer 在 E1 后只读，写请求一律 403。"""
-
-    identity = require_reviewer(request)
-    require_csrf(request, identity)
-
-
-def _require_if_match(request: Request) -> UUID:
-    raw = request.headers.get("if-match")
-    if raw is None or not raw.strip():
-        raise ApiProblem(
-            428,
-            "MISSING_IF_MATCH",
-            "写请求必须带 If-Match：取自上一步响应里的 ETag，原样回传。",
-        )
-    value = raw.strip()
-    if value == "*" or value.upper().startswith("W/"):
-        raise ApiProblem(400, "INVALID_IF_MATCH", "If-Match 只接受强 ETag，不接受 * 或弱校验。")
-    if value.startswith('"') and value.endswith('"') and len(value) >= 2:
-        value = value[1:-1]
-    try:
-        return UUID(value)
-    except ValueError as exc:
-        raise ApiProblem(400, "INVALID_IF_MATCH", "If-Match 不是合法的草稿 revision。") from exc
-
-
-def _require_idempotency_key(request: Request) -> UUID:
-    raw = (request.headers.get("idempotency-key") or "").strip()
-    if not raw:
-        raise ApiProblem(
-            400,
-            "MISSING_IDEMPOTENCY_KEY",
-            "抽取接口必须带 Idempotency-Key（UUID），用于防止重复抽取与重复计费。",
-        )
-    try:
-        return UUID(raw)
-    except ValueError as exc:
-        raise ApiProblem(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key 必须是 UUID。") from exc
+#
+# 身份 + CSRF、If-Match、Idempotency-Key 与 E2 的候选接口共用 ``routes.guards``，
+# 两处写法不同会让「同一个请求头在一个接口可用、在另一个接口被拒」。
 
 
 def _ensure_editable(draft: PolicyDraft) -> None:
@@ -654,82 +609,32 @@ def _collect_validation(
 ) -> tuple[list[CriterionRecord], list[FindingRecord]]:
     """调用领域校验并整理成可直接落库的记录；路由自身不做判断。"""
 
-    sources = _source_texts(draft)
-    verdicts = validate_criteria(criteria, sources, draft.version)
-    ast_problems = {
-        criterion.id: validate_expression(criterion.expression or {}) for criterion in criteria
-    }
-
-    records: list[CriterionRecord] = []
-    findings: list[FindingRecord] = []
-    for verdict, criterion in zip(verdicts, criteria):
-        problems = ast_problems[criterion.id]
-        wire_spans = [span.to_wire() for span in criterion.spans]
-        records.append(
-            CriterionRecord(
-                id=criterion.id,
-                title=criterion.title,
-                expression=dict(criterion.expression or {}),
-                spans=wire_spans,
-                review_finding=criterion.review_finding,
-                validation_status="failed" if problems else verdict.status,
-            )
+    # 校验规则（引用 / AST / 跨条款「合取为空」）只在 ``domain.packing`` 写一份：
+    # E2 的候选抽取与提交必须与这里的结论逐条一致，否则会出现「导入能发布、候选提交
+    # 后被同一套闸门拦下」的两套口径。
+    packed_criteria, packed_findings = pack_criteria(
+        criteria, _source_texts(draft), draft.version, extra=extra
+    )
+    records = [
+        CriterionRecord(
+            id=item.id,
+            title=item.title,
+            expression=item.expression,
+            spans=item.spans,
+            review_finding=item.review_finding,
+            validation_status=item.validation_status,
         )
-        for problem in problems:
-            findings.append(
-                FindingRecord(
-                    criterion_id=criterion.id,
-                    code=problem.code,
-                    message=problem.message,
-                    spans=wire_spans,
-                )
-            )
-        for finding in verdict.findings:
-            findings.append(
-                FindingRecord(
-                    criterion_id=criterion.id,
-                    code=finding.code,
-                    message=finding.message,
-                    spans=[span.to_wire() for span in finding.source_spans],
-                )
-            )
-
-    # 跨条款的「合取为空」只能在这里查：单条 AST 各自合法，合起来却永远不成立。
-    # 发现作为政策级 finding 落库（criterion_id 为空），不需要改契约或建表。
-    comparable = [
-        CriterionRule(
-            id=criterion.id,
-            title=criterion.title,
-            expression=criterion.expression or {},
-            review_finding=criterion.review_finding,
-        )
-        for criterion in criteria
-        if criterion.expression and not ast_problems[criterion.id]
+        for item in packed_criteria
     ]
-    for contradiction in policy_contradictions(comparable):
-        findings.append(
-            FindingRecord(
-                criterion_id=None,
-                code=contradiction.code,
-                message=contradiction.message,
-                spans=[
-                    span.to_wire()
-                    for criterion in criteria
-                    if criterion.id in contradiction.criterion_ids
-                    for span in criterion.spans
-                ],
-            )
+    findings = [
+        FindingRecord(
+            criterion_id=item.criterion_id,
+            code=item.code,
+            message=item.message,
+            spans=item.spans,
         )
-
-    for finding in extra:
-        findings.append(
-            FindingRecord(
-                criterion_id=None,
-                code=finding.code,
-                message=finding.message,
-                spans=[span.to_wire() for span in finding.source_spans],
-            )
-        )
+        for item in packed_findings
+    ]
     return records, findings
 
 

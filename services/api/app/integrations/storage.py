@@ -12,9 +12,10 @@ import hashlib
 import hmac
 import json
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -379,6 +380,22 @@ class PolicyRepository:
 
     # ------------------------------------------------------------------ write
 
+    @contextmanager
+    def _transaction(self, connection: Connection | None) -> Iterator[Connection]:
+        """在自己的事务里跑，或并入调用方已经打开的那个事务。
+
+        E2 的候选提交要求「建草稿、存条件、标记候选已提交」三件事事务一致
+        （EXTENSION_INTERFACES §4.3.6）。如果本方法每次都自带事务，调用方就只能
+        在提交之后再补一步，失败时留下孤儿草稿——所以这里允许传入外部连接，事务
+        边界由调用方划。
+        """
+
+        if connection is not None:
+            yield connection
+            return
+        with self._db.connection() as own, own.transaction():
+            yield own
+
     def create_policy_version(
         self,
         *,
@@ -387,6 +404,7 @@ class PolicyRepository:
         storage_keys: Sequence[str],
         trace_id: str,
         started_at: datetime | None = None,
+        connection: Connection | None = None,
     ) -> PolicyDraft:
         if len(storage_keys) != len(sources):
             raise ValueError("storage_keys 与 sources 数量不一致")
@@ -397,7 +415,7 @@ class PolicyRepository:
         revision = uuid4()
         source_ids = [uuid4() for _ in sources]
 
-        with self._db.connection() as conn, conn.transaction():
+        with self._transaction(connection) as conn:
             policy_id = metadata.policy_id
             if policy_id is None:
                 policy_id = uuid4()
@@ -699,6 +717,7 @@ class PolicyRepository:
         extraction_model: str | None = None,
         extraction_elapsed_ms: int = 0,
         extraction_input_chars: int = 0,
+        connection: Connection | None = None,
     ) -> PolicyDraft:
         """整体替换某版本的条款与校验发现（compare-and-swap）。
 
@@ -713,7 +732,7 @@ class PolicyRepository:
         started = started_at or datetime.now(timezone.utc)
         new_revision = uuid4()
 
-        with self._db.connection() as conn, conn.transaction():
+        with self._transaction(connection) as conn:
             row = self._lock_version(conn, policy_id, version)
             self._assert_editable(row, expected_revision)
 
@@ -940,6 +959,7 @@ class PolicyRepository:
         revision: UUID,
         *,
         usage_semantics: str,
+        connection: Connection | None = None,
     ) -> None:
         """记录一次抽取结果。表只追加，重复键保留首次写入的那条。
 
@@ -949,7 +969,7 @@ class PolicyRepository:
         视为未确认——只看数值判不出来（见 ``routes/admin_policies.py``）。
         """
 
-        with self._db.connection() as conn, conn.transaction():
+        with self._transaction(connection) as conn:
             self._execute(
                 conn,
                 _INSERT_IDEMPOTENT,

@@ -1,0 +1,23 @@
+# Purpose: 每 15 分钟唤醒一次 huice-discovery.service（E2 / #47，E0 D3.1）。
+# Install: /etc/systemd/system/huice-discovery.timer（infra/deploy/provision.sh 安装并 enable）
+# Notes: 这个频率只是「看一眼是否到点」，不是抓取周期。抓取周期由后台 discovery_settings
+#        决定（默认 1440 分钟，可配 360—43200），未到点时 CLI 立即退出，不写运行记录。
+#
+#        Persistent=true 是「停机最多补跑一次」的实现：机器停机期间错过的唤醒，开机后
+#        只补一次；CLI 看到 next_run_at 已过就照跑一轮，并把迟到秒数记进
+#        discovery_run.late_by_seconds，不会按历史轮数连着补。
+
+[Unit]
+Description=Wake the Huice policy discovery run every 15 minutes
+Documentation=file:/opt/huice/app/infra/deploy/README.md
+
+[Timer]
+OnCalendar=*:0/15
+# 错开整点：抓取会访问政府站点，避免与其它整点任务挤在一起。
+RandomizedDelaySec=45
+# 停机补跑一次（见上），不追历史每一轮。
+Persistent=true
+Unit=huice-discovery.service
+
+[Install]
+WantedBy=timers.target

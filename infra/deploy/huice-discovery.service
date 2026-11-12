@@ -1,0 +1,41 @@
+# Purpose: 一次政策发现运行（E2 / #47），由 huice-discovery.timer 每 15 分钟唤醒。
+# Install: /etc/systemd/system/huice-discovery.service（infra/deploy/provision.sh 安装）
+# Notes: 唤醒 ≠ 运行。CLI 只读库里的 discovery_settings.next_run_at，没到点就直接返回 0，
+#        所以 15 分钟的唤醒频率与「抓取周期 6 小时—30 天」互不干扰（D3.1）。
+#        运行锁是库层的 pg_try_advisory_lock：本 unit 与手工 CLI、另一台机器之间互斥，
+#        进程退出（含被这里杀掉）连接断开即自动释放。
+#        密钥只来自 /etc/huice/api.env，本文件不含任何取值。
+
+[Unit]
+Description=Huice policy discovery run (only when due)
+Documentation=file:/opt/huice/app/infra/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+# 同一次运行不会被 systemd 并发启动两次：unit 处于 active 时新的 start 是空操作，
+# 15 分钟的唤醒直接跳过。这是并发上限 1 的第一道；第二道是库层 advisory lock。
+
+[Service]
+Type=oneshot
+User=huice
+Group=huice
+WorkingDirectory=/opt/huice/app
+EnvironmentFile=/etc/huice/api.env
+# 与 huice-api.service 的 --app-dir services/api 等价：让 `app` 包可被导入。
+Environment=PYTHONPATH=/opt/huice/app/services/api
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/huice/venv/bin/python -m app.discovery --trigger timer
+# 单轮墙钟上限 30 分钟（D3.1）：运行器自己在 30 分钟处收尾，这里留 5 分钟写回终态。
+# 真被这里杀掉时，下一轮持锁后会把这行 running 收成 failed/lock_lost，不会永远挂着。
+TimeoutStartSec=35min
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# 候选正文只进库、不落盘，所以不放开任何可写路径（对比 huice-api.service 的
+# ReadWritePaths 只给对象目录）。
+
+[Install]
+# 只被 timer 拉起，不要 enable 本 unit 本身（enable 它是无意义的，会随 boot 跑一次）。
