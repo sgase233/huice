@@ -34,6 +34,7 @@ from ..agents.profile import (
 from ..db import Database
 from ..demo_quota import DemoQuota
 from ..domain import versioning
+from ..domain.findings import PRESERVED_SOURCE_FINDING_CODES
 from ..domain.rules import CriterionRule
 from ..domain.versioning import ChangedEvent, PolicyBoundary
 from ..errors import ApiProblem
@@ -727,6 +728,12 @@ class PolicyRepository:
         ``extraction_model`` 只有「本次真的做了抽取」的调用方才会传：传了就在同一事务
         里、引用校验步骤之前补一条 ``extraction`` 轨迹。手工保存条款（API-06）不传，
         因此不会凭空多出一条抽取记录。幂等重放不会走到这里，也就不会重复留痕。
+
+        调用方传进来的 ``findings`` 是**重新计算**出来的条件级结论，本方法整体替换
+        该版本的 findings；唯一的例外是 :data:`PRESERVED_SOURCE_FINDING_CODES` 里的
+        来源级码（如 ``ATTACHMENT_NOT_EXTRACTED``）——它们描述来源本身，与条件校验
+        无关，重算时从库里原样保留。保留只按服务端已有记录，不看客户端传了什么，
+        也不会把过时的条件错误一起留下。
         """
 
         started = started_at or datetime.now(timezone.utc)
@@ -735,6 +742,8 @@ class PolicyRepository:
         with self._transaction(connection) as conn:
             row = self._lock_version(conn, policy_id, version)
             self._assert_editable(row, expected_revision)
+
+            preserved = self._preserved_source_findings(conn, row["id"], findings)
 
             self._execute(
                 conn,
@@ -748,7 +757,7 @@ class PolicyRepository:
             )
             for criterion in criteria:
                 self._execute(conn, _INSERT_CRITERION, criterion.to_params(row["id"]))
-            for ordinal, finding in enumerate(findings):
+            for ordinal, finding in enumerate([*findings, *preserved]):
                 self._execute(
                     conn,
                     _INSERT_FINDING,
@@ -1950,6 +1959,50 @@ class PolicyRepository:
             criteria=criteria,
             preparation_template=_preparation_template(draft),
         )
+
+    @staticmethod
+    def _preserved_source_findings(
+        conn: Connection, version_id: UUID, findings: Sequence[FindingRecord]
+    ) -> list[FindingRecord]:
+        """取出库里已有的来源级提示，供重算条件 findings 时原样保留。
+
+        API-05 重新抽取、API-06 保存条款都只产出条件级结论；保存是整体替换，若不先
+        把来源级码捞出来，DISC-07 写进草稿的附件提示会在第一次保存时消失。只保留
+        :data:`PRESERVED_SOURCE_FINDING_CODES`，找得到的旧条件结论与其它政策级结论
+        一律不保留。调用方恰好也传了同一条时按 ``(code, message)`` 去重。
+        """
+
+        if not PRESERVED_SOURCE_FINDING_CODES:
+            return []
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT code, message, source_spans
+                FROM policy_validation_finding
+                WHERE policy_version_id = %(id)s
+                  AND criterion_id IS NULL
+                  AND code = ANY(%(codes)s)
+                ORDER BY ordinal
+                """,
+                {"id": version_id, "codes": sorted(PRESERVED_SOURCE_FINDING_CODES)},
+            )
+            rows = cur.fetchall()
+        seen = {(item.criterion_id, item.code, item.message) for item in findings}
+        preserved: list[FindingRecord] = []
+        for item in rows:
+            key = (None, item["code"], item["message"])
+            if key in seen:
+                continue
+            seen.add(key)
+            preserved.append(
+                FindingRecord(
+                    criterion_id=None,
+                    code=item["code"],
+                    message=item["message"],
+                    spans=list(item["source_spans"] or []),
+                )
+            )
+        return preserved
 
     def _lock_version(self, conn: Connection, policy_id: UUID, version: str) -> dict[str, Any]:
         with conn.cursor(row_factory=dict_row) as cur:

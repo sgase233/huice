@@ -694,6 +694,8 @@ paths:
 
         候选的 attachmentUrls 非空时，草稿的 validationFindings 里会多一条 criterionId 为 null 的
         ATTACHMENT_NOT_EXTRACTED：附件首版不下载、不解析，提示必须跟着草稿走到发布复核。
+        它是来源级结论，后续 API-05 重新抽取、API-06 保存条款整体替换 findings 时由服务端保留，
+        不会因某条条件被改好而消失，也不会重复累积。
 
         候选条件里的 sourceSpans.sourceVersion 在提交时由 "candidate" 改挂为新建的版本号、
         sourceId 改挂为新来源 id——引文与 textHash 不变，证据不被改写。
@@ -1278,8 +1280,9 @@ components:
             $ref: ./openapi.yaml#/components/schemas/OfficialUrl
           description: >-
             页面上识别到的附件地址，首版不下载、不解析。非空时 validationFindings 必然附带一条
-            ATTACHMENT_NOT_EXTRACTED（criterionId 为 null）：它由本字段派生、不落库，所以保存
-            criteriaDrafts 之后仍在，提交出的草稿里也带同一条。
+            ATTACHMENT_NOT_EXTRACTED（criterionId 为 null）：候选侧由本字段派生、不写候选的
+            validationFindings 列，所以保存 criteriaDrafts 之后仍在；提交后它作为来源级 finding
+            随草稿落库，API-05/06 重算时不丢失。
         missingFields:
           type: array
           items:

@@ -46,6 +46,7 @@ from ..discovery.fetch import (
 from ..discovery.metadata import missing_fields_of
 from ..discovery.runner import CANDIDATE_TOKEN_BUDGET, RUN_TOKEN_BUDGET
 from ..domain.citations import CriterionInput, SourceSpanCheck, SourceText
+from ..domain.findings import ATTACHMENT_NOT_EXTRACTED
 from ..domain.packing import criterion_wire, finding_wire, pack_criteria
 from ..errors import ApiProblem, trace_id_of
 from ..integrations.storage import CriterionRecord, FindingRecord
@@ -77,8 +78,6 @@ router = APIRouter(prefix="/admin", tags=["admin"], route_class=GatedRoute)
 #: 提交候选的幂等作用域。与抽取（``extract``）分开：同一个键在两条链路上互不干扰。
 SUBMIT_SCOPE = "policy-candidate-submit"
 
-#: 附件未纳入抽取的复核提示码。由 ``attachment_urls`` 派生，不落库（见 ``_attachment_finding``）。
-ATTACHMENT_FINDING_CODE = "ATTACHMENT_NOT_EXTRACTED"
 
 MIN_INTERVAL_MINUTES = 360
 MAX_INTERVAL_MINUTES = 43_200
@@ -529,10 +528,15 @@ def _candidate_summary(row: dict[str, Any]) -> CandidateSummary:
 def _attachment_finding(row: dict[str, Any]) -> dict[str, Any] | None:
     """页面有附件时按 ``attachment_urls`` 派生一条复核提示。
 
-    这条提示**不落库**。``validation_findings`` 那一列放的是条件级结论，DISC-06 保存
-    ``criteriaDrafts`` 时会整体重算，存进去的副本第一次编辑就没了，提交时也带不进草稿
-    （DISC-07 只从 ``criteria`` 重新打包）。附件清单本身写入后不再变化，由它派生出来的
-    提示因此编辑不掉、也不会与库里那份漂移。
+    候选侧这条提示**不写进候选的 ``validation_findings`` 列**：那一列放的是条件级结论，
+    DISC-06 保存 ``criteriaDrafts`` 时会整体重算，存进去的副本第一次编辑就没了。它由
+    ``attachment_urls`` 派生，因此编辑不掉。
+
+    提交（DISC-07）时它随草稿作为来源级 finding 落进 ``policy_validation_finding``，
+    之后 API-05 重新抽取、API-06 保存条款整体替换 findings 时，由
+    ``PolicyRepository`` 按 :data:`PRESERVED_SOURCE_FINDING_CODES` 从库里保留——
+    来源没被完整读取这件事不会因为某条条件被改好而消失。附件本身写入后不再变化，
+    所以保留的副本也不会与 ``attachment_urls`` 漂移。
     """
 
     attachments = list(row["attachment_urls"] or [])
@@ -540,7 +544,7 @@ def _attachment_finding(row: dict[str, Any]) -> dict[str, Any] | None:
         return None
     return {
         "criterionId": None,
-        "code": ATTACHMENT_FINDING_CODE,
+        "code": ATTACHMENT_NOT_EXTRACTED,
         "message": (
             f"该页面另有 {len(attachments)} 个附件（如 PDF/DOCX），本轮未下载、未纳入抽取；"
             "条件若写在附件里，请在保存条件时人工补录。"
@@ -550,7 +554,11 @@ def _attachment_finding(row: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _draft_level_findings(row: dict[str, Any]) -> list[FindingRecord]:
-    """草稿里的非条件级提示：与候选详情看到的是同一条，来源同样是 ``attachment_urls``。"""
+    """草稿里的来源级提示：与候选详情看到的是同一条，来源同样是 ``attachment_urls``。
+
+    提交时随草稿一起落库；此后重新保存条款或重新抽取都会把它原样带回（见
+    ``PolicyRepository.save_criteria``）。
+    """
 
     note = _attachment_finding(row)
     if note is None:

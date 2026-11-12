@@ -14,6 +14,8 @@ E2 的退出门槛在 HTTP 层的对应断言：
 
 from __future__ import annotations
 
+import copy
+import hashlib
 from dataclasses import replace
 from threading import Event, Lock, Thread
 from uuid import uuid4
@@ -400,6 +402,82 @@ def test_the_attachment_note_survives_editing_and_reaches_the_draft(
         item["code"] for item in submitted.json()["validationFindings"]
     ], "草稿是审核员最终看到的东西，附件未覆盖不能只留在候选上"
     assert _policy_counts(database_url_schema) == (1, 1, 1)
+
+
+def test_the_attachment_note_survives_saving_criteria_and_re_extraction(
+    app_db, reviewer, database_url_schema
+):
+    """来源级提示要跟着草稿走完 API-05/06：整体替换的是条件结论，不是来源事实。
+
+    #64 复审 P1：DISC-07 写进草稿的提示，会被下一次 API-06 保存条款（或 API-05 重新
+    抽取）整体删掉——``save_criteria`` 先删光该版本 findings 再插入，而这两条路径只
+    产出条件级结论。现在保存时从库里按码保留来源级提示；过时的条件 finding 照常清掉。
+    """
+
+    _seed_run_with_attachment(app_db)
+    [candidate] = _candidates(database_url_schema)
+
+    _, etag = _detail(reviewer, candidate["id"])
+    confirmed = _confirm(reviewer, candidate, etag)
+    assert confirmed.status_code == 200, confirmed.text
+
+    submitted = _submit(reviewer, candidate["id"], _etag(confirmed))
+    assert submitted.status_code == 201, submitted.text
+    draft = submitted.json()
+
+    def _payload(items):
+        return [
+            {key: value for key, value in copy.deepcopy(item).items() if key != "validationStatus"}
+            for item in items
+        ]
+
+    def _codes(items):
+        return [item["code"] for item in items]
+
+    def _save(revision, items):
+        return reviewer["client"].put(
+            f"/api/v1/admin/policies/{draft['id']}/criteria",
+            headers=_headers(reviewer, revision=revision),
+            json={"version": draft["version"], "criteria": items},
+        )
+
+    # 1) 先用一条引文对不上的条件保存：条件级 finding 由本次校验产出，来源级提示保留。
+    broken = _payload(draft["criteria"])
+    quote = "这段引文不在正文里"
+    broken[0]["sourceSpans"][0].update(
+        {"quote": quote, "textHash": hashlib.sha256(quote.encode("utf-8")).hexdigest()}
+    )
+    saved = _save(draft["revision"], broken)
+    assert saved.status_code == 200, saved.text
+    codes = _codes(saved.json()["validationFindings"])
+    assert "SPAN_QUOTE_NOT_FOUND" in codes
+    assert codes.count("ATTACHMENT_NOT_EXTRACTED") == 1
+
+    # 2) 再保存一遍正确的条件：条件错误随重新校验清掉，来源级提示不受影响。
+    saved = _save(_etag(saved), _payload(draft["criteria"]))
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    codes = _codes(body["validationFindings"])
+    assert "SPAN_QUOTE_NOT_FOUND" not in codes, "条件改好后过时的 finding 必须清掉"
+    assert codes.count("ATTACHMENT_NOT_EXTRACTED") == 1
+
+    # 3) API-05 重新抽取同样整体替换 findings，提示仍要在。
+    extracted = reviewer["client"].post(
+        f"/api/v1/admin/policies/{draft['id']}/extract",
+        headers=_headers(reviewer, revision=body["draft"]["revision"], key=uuid4()),
+        json={"version": draft["version"]},
+    )
+    assert extracted.status_code == 200, extracted.text
+    codes = _codes(extracted.json()["validationFindings"])
+    assert codes.count("ATTACHMENT_NOT_EXTRACTED") == 1
+
+    # 4) 反复保存/抽取不会把提示越留越多。
+    count = query_one(
+        database_url_schema,
+        "SELECT count(*) FROM policy_validation_finding "
+        "WHERE criterion_id IS NULL AND code = 'ATTACHMENT_NOT_EXTRACTED'",
+    )[0]
+    assert count == 1
 
 
 def test_patch_requires_if_match_and_rejects_stale_or_unordered_metadata(
