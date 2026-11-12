@@ -6,7 +6,7 @@
 >
 > **同日早先记录保留：** 第一次核对时 `origin/main` 为 `ea44ae0`、PR #62 尚 open（head `4ed6bee`、base 为 M2 工作分支）；17:29 第二次核对时 `main` 为 `5d1adeb`、PR #60 仍 open。上述结论只对应当时基线，不因后续合并而改写；`#62 merged` 当时的含义是“进入 M2 工作分支”，PR #60 直到 2026-11-12T10:01:57Z 才合并到 `main`，且合并仍不等于部署或验收。
 >
-> **2026-11-12 晚 PR #65 复审整改：** 按 sgase233/Hya-555 的复审意见，撤回 `source_register.csv` 的 RD-SUBSIDY 窗口/状态修改（来源登记日期字段/消融管线会把 18:00 截止补成 23:59:59，且不改变评测输入）；两次修正 API-12 的 404 机制；把评估期间文案改为使用 run 的实际 `period`；补充迁移 009 的仓库证据出处与 PR #64/E2 状态。**20:52 再次核对：PR #60 已合并到 `main`（`05982a5`），但同版部署/隔离环境/账号仍未确认；E1 联合验收仍未执行，结论不变。**
+> **2026-11-12 晚 PR #65 复审整改：** 按 sgase233/Hya-555 的复审意见，撤回 `source_register.csv` 的 RD-SUBSIDY 窗口/状态修改（来源登记日期字段/消融管线会把 18:00 截止补成 23:59:59，且不改变评测输入）；两次修正 API-12 的 404 机制；把评估期间文案改为使用 run 的实际 `period`；补充迁移 009 的仓库证据出处与 PR #64/E2 状态。**20:52 再次核对：PR #60 已合并到 `main`（`05982a5`），但同版部署/隔离环境/账号仍未确认；E1 联合验收仍未执行，结论不变。** **21:47 最终复审整改：** 按 sgase233/Hya-555 的最后复审，把 AUTH-AT-03/04 中 3 处仍把 #60 合并列为前置条件的表述统一改为“待同版部署”，消除同一表内的口径冲突；同版部署、隔离环境、账号与联合验收状态不变。
 >
 > **边界：** 本文只写准备、步骤、预期与证据形式；实际结果一律回填 [ACCEPTANCE.md](ACCEPTANCE.md) 的执行记录表。没有真实账号、同版环境和证据时，保持“未执行/阻塞”，不用 mock、作者自述、CI 通过或另一版本环境冒充联合验收。本文不写任何真实口令、演示 cookie、审核员密钥或连接串。
 
@@ -111,14 +111,14 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | 操作步骤 | 1. A 登录，`GET /enterprises` 只返回 A；`GET /enterprises/{A}` 200；`GET /enterprises/{B}` 404；`PATCH /enterprises/{B}/facts/{key}` 404；`POST /assessment-runs` 指向 B 的企业 404；`GET /assessment-runs/{B-run}`、`/report.md`、`/trace` 均 404。2. A 的 `GET /assessment-runs` 只返回 A 的 run；用 B 的游标续页 → 400/422；用不存在的 enterpriseId 筛选 → 404。3. B 对称执行，确认 B 也看不到 A。4. A 下载自己的报告 → 200；下载 B 的报告 → 404；若 E1-A-NR 存在，下载**已落行但未完成** run 的报告 → 409 `RUN_NOT_COMPLETED`，`details.status` 为真实状态。注意：`save_run()` 只写 `succeeded`，正常 API 不产生 `failed/queued/running` 行，E1-A-NR 需 M1 用直接 SQL 或历史数据构造；若用一次失败分析且其未落行，则可能是 404，不能当作 409 样本。5. E1-R 登录：`GET /enterprises` 含全部（含 HIST-U）；读取 A/B/HIST-U 的企业、run、报告、轨迹 → 200；`PATCH` A 或 HIST-U 的事实 → 404；对他人企业发起 run → 404。6. 核对 A/B/HIST-U 的 `owner_user_id`/`user_id` 未被读取动作改变。 |
 | 预期结果 | 企业账号只能读/写本人企业及本人 run；越权与不存在同码同文案；审核员可全局读，但不能因读权修改他人事实；报告只对成功 run 提供；无主数据不被自动认领；分页游标不越权 |
 | 证据形式 | 两组账号的请求矩阵（方法/路径/状态码/错误码/traceId）；响应体中的错误码与文案；数据库归属前后对比；报告下载文件哈希或截图（合成内容） |
-| 主执行/复核 | M1（API）/ M2（#62 页面，待 #60 入 `main`）/ M3（业务复核） |
+| 主执行/复核 | M1（API）/ M2（#62 页面，待同版部署）/ M3（业务复核） |
 | 依赖/阻塞 | 两账号、一审核员、隔离库、同版部署（前端代码已随 #60 入 `main`，但部署仍为 `rc.10`）；当前未提供，未执行 |
 
 ### AUTH-AT-04 门禁、会话生命周期与切换
 
 | 项 | 内容 |
 | --- | --- |
-| 前置条件 | restricted 环境；有效 demo cookie；E1-A/E1-B；可控制会话过期/撤销（DB 或短 TTL 配置）；#62 前端用于浏览器步骤（须先随 #60 入 `main` 并部署同版） |
+| 前置条件 | restricted 环境；有效 demo cookie；E1-A/E1-B；可控制会话过期/撤销（DB 或短 TTL 配置）；#62 前端用于浏览器步骤（代码已随 #60 进入 `main`，须部署同版） |
 | 合成账号/样本 | E1-DEMO、E1-A、E1-B；过期/撤销/格式错误的 `huice_session`；错误 CSRF/Origin 请求 |
 | 操作步骤 | **门禁层：** 1. 不带 demo cookie：`GET /enterprises` → 403 `DEMO_SESSION_REQUIRED`；`POST /auth/login` 用 `{}`、错类型、空体、非 JSON → 均 403（门禁先于请求体校验）；`GET /health` 200；`POST /auth/logout` 204。2. 损坏/过期 demo cookie → 同样 403。**身份层：** 3. 有效 demo cookie、无用户会话：`GET /auth/me` → 403 `ROLE_FORBIDDEN`；`GET /enterprises` → 200 且仅无主数据。4. 登录 A（带有效 demo）→ 200，检查 `Set-Cookie: huice_session` 的 HttpOnly/SameSite/Path/Secure（local 例外）；`/auth/me` 返回同一 `enterpriseId` 与 csrfToken。5. 刷新页面 → 会话恢复；`/auth/me` 不得缓存。6. 登出（带 CSRF+Origin）→ 204；重放旧 cookie → 401 `SESSION_INVALID`；再次登出 → 204。7. **重新登录 A** 建立新会话；再在另一个独立客户端/浏览器上下文登录 A，建立第二个独立会话（两个不同 `session_id`；同一浏览器登录会撤销其出示的有效旧会话，不能在同一 cookie jar 里制造两个会话）。8. 在第一个会话上修改密码 → 204；分别重放改密前的两个旧 cookie → 均 401 `SESSION_INVALID`；旧密码登录 → 401；新密码登录 → 200。9. 使会话过期（DB 改 `expires_at` 或空闲超时）→ 401 `SESSION_INVALID`；同时带有效 demo cookie 仍为 401，不掉回 demo。10. 缺 CSRF/Origin 的写请求 → 403 `CSRF_REQUIRED`/`ORIGIN_MISMATCH`；连续错误登录 → 429。 |
 | 预期结果 | 门禁失败、身份失败、角色不足、CSRF/Origin 失败分别可辨；登出只撤销当前会话；改密撤销该账号全部会话（含当前会话与另一个独立会话）；无效会话不降级；Cookie 属性符合契约；限流生效 |
@@ -156,7 +156,7 @@ E1 的失败码不能混记。验收时每一条请求都要标明它失败在�
 | --- | --- | --- | --- |
 | AUTH-AT-01 | 契约、迁移 009、`tests/test_e1_auth_flow.py` 有注册/重复/密钥/用户名边界用例 | 未执行 | 缺隔离环境与账号；测试存在不等于 M3 联合验收 |
 | AUTH-AT-02 | `infra/deploy/create-admin.py`、部署手册 §3.4、契约密钥错误口径已核对 | 未执行 | 缺服务器 root/机密渠道/隔离环境 |
-| AUTH-AT-03 | `access.py` 的读写归属、`tests/test_e1_access.py` 的越权用例已核对 | 未执行 | 缺两账号、一审核员、隔离库；页面需 #62 随 #60 入 `main` |
+| AUTH-AT-03 | `access.py` 的读写归属、`tests/test_e1_access.py` 的越权用例已核对 | 未执行 | 两账号、一审核员、隔离库及同版前端部署尚未确认 |
 | AUTH-AT-04 | 契约门禁模型、`identity.py` 真值表、`GatedRoute`、限流实现已核对 | **仅匿名门禁探测**（rc.10，非 1.1.0-rc.1 同版） | 不能判通过/失败；见 [ACCEPTANCE.md](ACCEPTANCE.md) 2026-11-12 记录 |
 | AUTH-AT-05 | 当前后台政策接口的角色矩阵、`require_reviewer*`、轨迹 `require_run_access` 已核对；DISC-* 在 `main` 未实现（PR #64 open），VIS-04/05 未实现 | 未执行 | 本人轨迹边界待确认；DISC-* 待 #64 合入并签收，VIS-* 属 E3b；缺账号/环境 |
 | AUTH-AT-06 | 旧 v1 demo 只读、Bearer 只读、历史无主迁移设计已核对 | 未执行 | #60 已合并到 `main`；缺同版部署/隔离环境 |
