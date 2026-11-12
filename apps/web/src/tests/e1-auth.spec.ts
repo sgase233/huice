@@ -48,8 +48,8 @@ test('unavailable server demo reports its own cause', async ({ page }) => {
 });
 
 test('demo entry restores csrf before retrying a rejected logout', async ({ page }) => {
-  let restores = 0; let logouts = 0;
-  await page.route('**/api/v1/auth/me', route => ++restores <= 2 ? route.fulfill({ status: 500, json: error('INTERNAL_ERROR') }) : route.fulfill({ json: session('reviewer', 'reviewer', null) }));
+  let logouts = 0;
+  await page.route('**/api/v1/auth/me', route => logouts === 0 ? route.fulfill({ status: 500, json: error('INTERNAL_ERROR') }) : route.fulfill({ json: session('reviewer', 'reviewer', null) }));
   await page.route('**/api/v1/auth/logout', route => {
     logouts++;
     if (logouts === 1) return route.fulfill({ status: 403, json: error('CSRF_REQUIRED') });
