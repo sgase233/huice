@@ -1,11 +1,12 @@
 """E1 草案的独立校验：结构（contracts/check_e1_draft.py）+ 与现行实现的对照。
 
-这里把两份文件放在一起对：``contracts/openapi.e1-draft.yaml`` 说「现行 16 个端点是什么样」，
+这里把两份文件放在一起对：``contracts/openapi.e1-draft.yaml`` 说「并入前的 16 个端点是什么样」，
 ``services/api`` 的 FastAPI 路由是事实。M2 在 #55 要求「逐端点核对门禁、身份、角色、对象归属、
 CSRF 与失败响应」；能机器判的部分（端点清单、外层门禁、发布出去的 security）在本文件里判，
-不能机器判的部分（角色/归属/CSRF 的**未来**口径）由草案正文与 PR 里的评审表负责。
+不能机器判的部分（角色/归属/CSRF 的口径）由草案正文与 PR 里的评审表负责。
 
-本文件不做实现验收：E1 尚未实现，「身份/角色/归属/CSRF」这些列描述的是 E1 目标行为。
+自 1.1.0-rc.1 起 E1 的 7 个操作已并入 ``openapi.yaml``，草案只剩设计记录的职责：
+``x-e1-impact`` 仍只写并入前那 16 个端点的改造，7 个新操作单独对照。
 """
 
 from __future__ import annotations
@@ -15,9 +16,10 @@ from pathlib import Path
 
 import yaml
 
-from app.main import create_app
+from app.main import API_PREFIX, create_app
 from app.config import Settings
-from app.routes import admin_policies, assessment_runs, enterprises, health, policies
+from app.routes import admin_policies, assessment_runs, auth, enterprises, health, policies
+from app.security import GatedRoute
 from support import ADMIN_TOKEN, DEMO_SESSION_SECRET
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -25,12 +27,13 @@ CONTRACTS = REPO_ROOT / "contracts"
 DRAFT_PATH = CONTRACTS / "openapi.e1-draft.yaml"
 BASE_PATH = CONTRACTS / "openapi.yaml"
 
-#: 草案 `x-e1-impact.current` 的三种写法 → 现行实现里的 router 级依赖。
-#: 出现新写法时本文件会失败，提示把新形态补进来——避免「案里写了、代码里没有」静默通过。
-CURRENT_FORMS = {
-    "公开": [],
-    "DemoSession（restricted 门禁，local 免）": ["require_demo_session"],
-    "AdminBearer（local）/ DemoSession AND AdminBearer（restricted）": ["require_admin"],
+#: 草案 `x-e1-impact.gate.restricted` 的取值 → 现行实现里该操作的**外层门禁**。
+#: 门禁由路由类 ``GatedRoute`` 承担（在解析请求体之前跑），不再是路由器级依赖；
+#: ``current`` 一列描述的是 E1 之前的实现，已随 E1 落地变成历史说明。
+GATE_FORMS = {
+    "DemoSession": ["require_demo_session"],
+    "none": [],
+    "exempt": [],
 }
 
 
@@ -45,21 +48,29 @@ def _load_checker():
 
 
 def _mounted_operations() -> dict[str, list[str]]:
-    """operationId → 该操作的 router 级依赖名（门禁就是这一层）。
+    """operationId → 该操作的外层门禁依赖名（门禁就是这一层）。
+
+    门禁现在由路由类 ``GatedRoute`` 承担：它包在 ``get_route_handler`` 外面，比请求体
+    解析更早，因此不再出现在 ``dependant.dependencies`` 里（那里只剩身份类依赖）。
+    这里按路由类补回门禁，才和草案的 ``gate.restricted`` 可比。
 
     直接查模块级 APIRouter，而不是遍历 app.routes：FastAPI 0.161 起 include_router 会
     保留成 ``_IncludedRouter`` 惰性节点，逐层展开属于实现细节，这里只依赖稳定的
-    ``APIRouter.routes`` 与 ``APIRoute.dependant.dependencies``。
+    ``APIRouter.routes``、``APIRoute.route_class`` 与 ``APIRoute.dependant.dependencies``。
     """
 
     operations: dict[str, list[str]] = {}
-    for module in (health, policies, enterprises, assessment_runs, admin_policies):
-        for attr in ("router", "admin_router"):
+    for module in (health, policies, enterprises, assessment_runs, admin_policies, auth):
+        # 登出单独挂在 ``logout_router`` 上（它豁免门禁，不能跟着 GatedRoute 的 router）。
+        for attr in ("router", "admin_router", "logout_router"):
             router = getattr(module, attr, None)
             if router is None:
                 continue
             for route in router.routes:
-                callables = [
+                gated = (
+                    ["require_demo_session"] if isinstance(route, GatedRoute) else []
+                )
+                callables = gated + [
                     getattr(dep.call, "__name__", repr(dep.call))
                     for dep in route.dependant.dependencies
                 ]
@@ -87,25 +98,59 @@ def test_draft_validator_passes():
     assert counts["draft_operations"] == 7
 
 
+#: E1 新加的 7 个操作：自 1.1.0-rc.1 起已并入 ``openapi.yaml``，且不在
+#: ``x-e1-impact`` 里（那一表只写并入前 16 个端点的改造）。
+E1_ONLY_OPERATIONS = {
+    "registerUser",
+    "loginUser",
+    "logoutUser",
+    "getCurrentUser",
+    "changePassword",
+    "listEnterprises",
+    "listRuns",
+}
+
+
 def test_impact_rows_cover_exactly_the_mounted_operations():
     contract = _contract_operations(BASE_PATH)
     mounted = _mounted_operations()
+    baseline_mounted = {
+        operation_id: deps
+        for operation_id, deps in mounted.items()
+        if operation_id not in E1_ONLY_OPERATIONS
+    }
 
-    assert set(mounted) == set(contract), (
+    # 契约里的 16 个基线操作（并入前的集合）；E1 的 7 个已并进契约，单独算。
+    baseline_contract = {
+        operation_id: endpoint
+        for operation_id, endpoint in contract.items()
+        if operation_id not in E1_ONLY_OPERATIONS
+    }
+
+    assert set(baseline_mounted) == set(baseline_contract), (
         "草案基线端点与 services/api 实际挂载的操作不一致："
-        f"只在契约里 {sorted(set(contract) - set(mounted))}，"
-        f"只在实现里 {sorted(set(mounted) - set(contract))}"
+        f"只在契约里 {sorted(set(baseline_contract) - set(baseline_mounted))}，"
+        f"只在实现里 {sorted(set(baseline_mounted) - set(baseline_contract))}"
     )
-    baseline = set(contract.values())
+    # E1 的 7 个操作必须真的挂上，而且正式契约里也有（1.1.0-rc.1 起）。
+    assert E1_ONLY_OPERATIONS <= set(mounted)
+    assert E1_ONLY_OPERATIONS <= set(contract)
+    baseline = set(baseline_contract.values())
     assert len(baseline) == 16
+    assert len(contract) == 23
 
     draft = yaml.safe_load(DRAFT_PATH.read_text(encoding="utf-8"))
     rows = {row["endpoint"] for row in draft["x-e1-impact"]}
     assert rows == baseline
 
 
-def test_impact_current_column_matches_router_dependencies():
-    """16 行的 `current` 是对**现行**实现的断言，逐条拿代码核对。"""
+def test_impact_gate_column_matches_router_dependencies():
+    """16 行的 `gate.restricted` 是 E1 后的门禁断言，逐条拿代码核对。
+
+    E1 之前的写法是「门禁 + 身份」压在一个路由器级依赖里（Bearer 或 demo cookie），
+    所以 ``x-e1-impact.current`` 描述的是改造前的代码，已无法拿现在的实现对；
+    现在门禁只在 ``GatedRoute`` 里，身份与角色都在处理器里。
+    """
 
     contract = _contract_operations(BASE_PATH)
     mounted = _mounted_operations()
@@ -116,18 +161,28 @@ def test_impact_current_column_matches_router_dependencies():
         endpoint = row["endpoint"]
         operation_id = next(oid for oid, ep in contract.items() if ep == endpoint)
         actual = sorted(mounted[operation_id])
-        current = row["current"]
-        assert current in CURRENT_FORMS, (
-            f"{endpoint}: 未知的 current 写法 {current!r}，请在 CURRENT_FORMS 里补上对应依赖"
+        restricted = row["gate"]["restricted"]
+        assert restricted in GATE_FORMS, (
+            f"{endpoint}: 草案出现未登记的门禁写法 {restricted!r}，"
+            "请核对后补进本文件的 GATE_FORMS"
         )
-        expected = sorted(CURRENT_FORMS[current])
+        expected = sorted(GATE_FORMS[restricted])
         if actual != expected:
-            mismatches.append(f"{endpoint}: 草案说 {current!r}，实现依赖是 {actual}")
+            mismatches.append(
+                f"{endpoint}: 草案门禁是 {restricted!r}，实现依赖是 {actual}"
+            )
     assert mismatches == [], "\n".join(mismatches)
 
 
 def test_published_security_matches_current_classification():
-    """服务端实际发布给客户端的 security：health 无、公开端点 DemoSession、后台两者 AND。"""
+    """服务端实际发布给客户端的 security。
+
+    草案的口径是「``security`` 只表达身份，门禁写 ``x-e1-gate``」。E1 起这 16 个端点
+    的 security 已按**真实授权**改写（#61 review 的 P1）：业务接口是会话或演示会话，
+    后台读是会话或运维 Bearer，后台写只有会话——Bearer 只读。新增的 AUTH-01—05 按
+    草案逐条给：注册/登录/登出不要求身份（``[]``），``/auth/me`` 与
+    ``/auth/password`` 只要会话。
+    """
 
     application = create_app(
         Settings(
@@ -144,23 +199,44 @@ def test_published_security_matches_current_classification():
 
     expected_security = {
         "getHealth": [],
-        "/admin/": [{"DemoSession": [], "AdminBearer": []}],
-        "default": [{"DemoSession": []}],
+        "authPublic": [],
+        "authSession": [{"UserSession": []}],
+        # 后台读：会话或只读 Bearer；后台写：只有会话（E1 起 Bearer 只读）。
+        "adminRead": [{"UserSession": []}, {"AdminBearer": []}],
+        "adminWrite": [{"UserSession": []}],
+        # 轨迹：本人、审核员会话与运维 Bearer 都能读，演示会话也能看无主样本的轨迹。
+        "trace": [{"UserSession": []}, {"AdminBearer": []}, {"DemoSession": []}],
+        "default": [{"UserSession": []}, {"DemoSession": []}],
     }
+    #: 草案写明 security 为空的三条；其余两条只认会话。
+    public_auth = {"/auth/register", "/auth/login", "/auth/logout"}
+    session_auth = {"/auth/me", "/auth/password"}
+
     problems = []
     for path, operations in schema["paths"].items():
         for method, operation in operations.items():
             if method not in {"get", "put", "post", "patch", "delete"}:
                 continue
+            bare = path.removeprefix(API_PREFIX)
             if path.endswith("/health"):
                 expected = expected_security["getHealth"]
+            elif bare in public_auth:
+                expected = expected_security["authPublic"]
+            elif bare in session_auth:
+                expected = expected_security["authSession"]
+            elif bare.endswith("/trace"):
+                expected = expected_security["trace"]
             elif "admin" in (operation.get("tags") or []):
-                # 与 services/api/app/main.py 的 _install_openapi 一致：按 tag 分类，
-                # API-14 轨迹挂在 /assessment-runs 下但属 admin tag。
-                expected = expected_security["/admin/"]
+                # 与 services/api/app/main.py 的 _security_for 一致：API-14 轨迹挂在
+                # /assessment-runs 下但属 admin tag，故上面先判 trace 再判 tag。
+                expected = (
+                    expected_security["adminRead"]
+                    if method == "get"
+                    else expected_security["adminWrite"]
+                )
             else:
                 expected = expected_security["default"]
             if operation.get("security") != expected:
                 problems.append(f"{method.upper()} {path}: {operation.get('security')} != {expected}")
     assert problems == [], "\n".join(problems)
-    assert len(schema["paths"]) == 16
+    assert len(schema["paths"]) == 21

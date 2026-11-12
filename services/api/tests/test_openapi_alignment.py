@@ -26,6 +26,26 @@ IMPLEMENTED = {
     ("get", "/assessment-runs/{runId}"): "getRun",
     ("get", "/assessment-runs/{runId}/report.md"): "downloadReport",
     ("get", "/assessment-runs/{runId}/trace"): "getTrace",
+    # E1（#46）的 7 个操作：自 1.1.0-rc.1 起已并入 contracts/openapi.yaml，
+    # 不再是「只在草案里」的集合。
+    ("post", "/auth/register"): "registerUser",
+    ("post", "/auth/login"): "loginUser",
+    ("post", "/auth/logout"): "logoutUser",
+    ("get", "/auth/me"): "getCurrentUser",
+    ("post", "/auth/password"): "changePassword",
+    ("get", "/enterprises"): "listEnterprises",
+    ("get", "/assessment-runs"): "listRuns",
+}
+
+#: E1（#46）新增的 7 个操作。它们同时写在正式契约与设计记录里，两边都要对得上。
+E1_OPERATIONS = {
+    ("post", "/auth/register"): "registerUser",
+    ("post", "/auth/login"): "loginUser",
+    ("post", "/auth/logout"): "logoutUser",
+    ("get", "/auth/me"): "getCurrentUser",
+    ("post", "/auth/password"): "changePassword",
+    ("get", "/enterprises"): "listEnterprises",
+    ("get", "/assessment-runs"): "listRuns",
 }
 
 
@@ -70,10 +90,105 @@ def test_security_matches(contract, schema):
         assert actual == expected
 
 
+def test_gate_matches_the_contract(contract, schema):
+    """`x-e1-gate` 是 security 之外的第二个维度：门禁（restricted 的外层 demo cookie）。
+
+    标准 ``security`` 只能表达「要哪些凭证」，表达不了「restricted 部署还要先过门禁」。
+    PR #61 最新复审 P1 指的就是这个缺口：后台写在契约里只写了 ``UserSession``，读者
+    会以为任何部署下拿着会话就能写；实际还要先过 demo 门禁。这里把两份文档的门禁
+    逐操作锁死，只有 local/restricted 两个取值参与比较，note 是人读的说明。
+    """
+
+    for (method, path) in IMPLEMENTED:
+        expected = contract["paths"][path][method]["x-e1-gate"]
+        actual = schema["paths"][f"{API_PREFIX}{path}"][method]["x-e1-gate"]
+        assert actual["local"] == expected["local"] == "none", (method, path)
+        assert actual["restricted"] == expected["restricted"], (method, path)
+        assert actual["note"].strip(), f"{method.upper()} {path} 的门禁缺说明"
+
+    model = contract["x-e1-gate-model"]
+    served_model = schema["x-e1-gate-model"]
+    assert served_model["exempt"] == model["exempt"]
+    assert set(served_model["modes"]) == set(model["modes"]) == {"local", "restricted"}
+
+
+def test_e1_operations_agree_across_contract_draft_and_server(contract, schema):
+    """七个 E1 操作在正式契约、设计记录与运行中的服务三处必须一致。
+
+    并入之后 ``contracts/openapi.e1-draft.yaml`` 只剩设计记录的职责（门禁/身份真值表、
+    错误码、可复核样例）；端点与 schema 以 ``openapi.yaml`` 为准。这里锁住三处的
+    operationId 与门禁，防止「改了正式契约、草案没回扫」这种两份文档各说一套。
+    """
+
+    draft = yaml.safe_load(
+        (CONTRACT_PATH.parent / "openapi.e1-draft.yaml").read_text(encoding="utf-8")
+    )
+    for (method, path), operation_id in E1_OPERATIONS.items():
+        declared = contract["paths"][path][method]
+        recorded = draft["paths"][path][method]
+        served = schema["paths"][f"{API_PREFIX}{path}"][method]
+
+        assert declared["operationId"] == recorded["operationId"] == served["operationId"], path
+        assert declared["operationId"] == operation_id, path
+        for field in ("local", "restricted"):
+            assert (
+                declared["x-e1-gate"][field]
+                == recorded["x-e1-gate"][field]
+                == served["x-e1-gate"][field]
+            ), (path, field)
+        assert declared["security"] == recorded["security"] == served["security"], path
+
+
+def test_the_gate_is_exempt_only_for_health_and_logout(schema):
+    """豁免清单只有两项；其余操作在 restricted 下一律先过门禁。"""
+
+    exempt_paths = {f"{API_PREFIX}/health", f"{API_PREFIX}/auth/logout"}
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            gate = operation["x-e1-gate"]
+            assert (gate["restricted"] == "exempt") is (path in exempt_paths), (method, path)
+
+
 def test_security_schemes_are_served(schema):
     schemes = schema["components"]["securitySchemes"]
     assert schemes["AdminBearer"]["scheme"] == "bearer"
     assert schemes["DemoSession"]["name"] == "huice_demo_session"
+    assert schemes["UserSession"]["name"] == "huice_session"
+
+
+def test_published_security_keeps_the_bearer_read_only(contract):
+    """E1 起运维 Bearer 只读：发布的契约不能把写操作或业务接口许诺给 Bearer。
+
+    这条防的是「契约继续写着 DemoSession + AdminBearer、后端却 403」的回退——
+    M2 在 PR #61 上指出的正是这个不一致。它直接读契约文件，与业务代码无关。
+    """
+
+    writes = [
+        ("post", "/admin/policies/import"),
+        ("post", "/admin/policies/{policyId}/extract"),
+        ("put", "/admin/policies/{policyId}/criteria"),
+        ("post", "/admin/policies/{policyId}/publish"),
+    ]
+    for method, path in writes:
+        assert contract["paths"][path][method]["security"] == [{"UserSession": []}], path
+
+    reads = [
+        ("get", "/admin/policies"),
+        ("get", "/admin/policies/{policyId}"),
+        ("get", "/assessment-runs/{runId}/trace"),
+    ]
+    for method, path in reads:
+        schemes = [next(iter(entry)) for entry in contract["paths"][path][method]["security"]]
+        assert "AdminBearer" in schemes, path
+        assert "DemoSession" not in schemes or path.endswith("/trace"), path
+
+    for method, path in IMPLEMENTED:
+        # 后台、自检与 AUTH-01—05 不适用「业务接口 = 会话或演示会话」这条口径：
+        # 注册/登录/登出没有身份要求，/auth/me 与 /auth/password 只要会话。
+        if path.startswith("/admin/") or path == "/health" or path.startswith("/auth/"):
+            continue
+        schemes = [next(iter(entry)) for entry in contract["paths"][path][method]["security"]]
+        assert "DemoSession" in schemes and "UserSession" in schemes, path
 
 
 def test_unimplemented_endpoints_are_not_served(schema):
@@ -83,6 +198,20 @@ def test_unimplemented_endpoints_are_not_served(schema):
         for method in operations
     }
     assert served == set(IMPLEMENTED)
+
+
+def test_e1_operations_are_declared_in_the_contract_and_the_draft(contract, schema):
+    """七个 E1 操作两边都要写明：正式契约是行为来源，草案是设计记录。"""
+
+    draft_path = CONTRACT_PATH.parent / "openapi.e1-draft.yaml"
+    draft = yaml.safe_load(draft_path.read_text(encoding="utf-8"))
+    for (method, path), operation_id in E1_OPERATIONS.items():
+        for label, doc in (("正式契约", contract), ("设计记录", draft)):
+            declared = doc["paths"].get(path, {}).get(method)
+            assert declared is not None, f"{label}缺少 {method.upper()} {path}"
+            assert declared["operationId"] == operation_id
+        actual = schema["paths"][f"{API_PREFIX}{path}"][method]
+        assert actual["operationId"] == operation_id
 
 
 def test_served_version_matches_the_contract(contract):
@@ -324,3 +453,86 @@ def test_trace_step_rejects_untyped_references():
     ):
         with pytest.raises(ValidationError):
             TraceStep(objectRefs=[ref], **base)
+
+
+def test_register_username_constraints_match_the_server_rule(contract, schema):
+    """用户名的契约约束必须与实现同一条规则（PR #61 复审第 1 条）。
+
+    M2 指出过：契约写 3—64 位、服务端规则是 3—32 位，按契约构造的 33—64 位用户名能过
+    schema 校验却被 422 拒绝。这里两件事一起锁住：
+
+    1. **结构**：三份文档（正式契约、运行时 `/openapi.json`、草案）的 `RegisterRequest`
+       与 `User` 的 `username` 都是同一组 `minLength`/`maxLength`/`pattern`，且与
+       `app/auth.py` 的常量一致；
+    2. **行为**：凡是契约会放行的字符串，服务端规则也必须放行，且原样通过不被改写（契约
+       不得接受服务端随后拒掉或静默改写的值）。
+
+    反方向——契约比服务端更严——是**已写明**的口径（PR #61 复审 P2）：契约的
+    ``pattern``/``maxLength`` 作用于请求体原始值，要求调用方先 trim、转小写再发；服务端
+    再做的幂等规范化只是容错，不是契约承诺。下面把这条已知差异也钉住：`` ABC `` 这类
+    原始值服务端会接受，但契约 schema 必须拒绝——谁把 ``pattern`` 放宽成「顺手兼容」，
+    这条就会红。
+    """
+
+    from jsonschema import Draft202012Validator
+
+    from app.auth import (
+        MAX_USERNAME_LENGTH,
+        MIN_USERNAME_LENGTH,
+        USERNAME_PATTERN,
+        normalize_username,
+        username_is_valid,
+    )
+
+    documents = {
+        "openapi.yaml": contract["components"]["schemas"],
+        "运行时 /openapi.json": schema["components"]["schemas"],
+    }
+    for label, schemas in documents.items():
+        for name in ("RegisterRequest", "User"):
+            username = schemas[name]["properties"]["username"]
+            assert username["minLength"] == MIN_USERNAME_LENGTH, (label, name)
+            assert username["maxLength"] == MAX_USERNAME_LENGTH, (label, name)
+            assert username["pattern"] == USERNAME_PATTERN.pattern, (label, name)
+
+    validator = Draft202012Validator(
+        contract["components"]["schemas"]["RegisterRequest"]["properties"]["username"]
+    )
+    samples = [
+        "",
+        " ",
+        "ab",
+        "abc",
+        "a" * 32,
+        "a" * 33,
+        "A" * 20,
+        "a" * 64,
+        "acme.two",
+        "a_b-c.d",
+        "ab c",
+        "ab/c",
+        "用户abc",
+        "ab@c",
+        # 服务端容错会接受、契约按原始值必须拒绝的两例（PR #61 复审 P2）。
+        " ACME.Two ",
+        "  " + "a" * 32 + "  ",
+    ]
+
+    from app.schemas import RegisterRequest
+
+    accepted_by_contract = [value for value in samples if validator.is_valid(value)]
+    assert "a" * 33 not in accepted_by_contract, "契约不得放行 33 位用户名"
+    assert "a" * 64 not in accepted_by_contract, "契约不得放行 64 位用户名"
+    for value in accepted_by_contract:
+        assert username_is_valid(normalize_username(value)), (
+            f"契约放行了 {value!r}，服务端规则却拒绝它"
+        )
+        parsed = RegisterRequest(username=value, password="x" * 12)
+        assert parsed.username == value, f"契约放行的 {value!r} 被服务端改写了"
+
+    # 已知且已写明的差异：这些原始值服务端容错接受（trim + 小写后合规），契约 schema 拒绝。
+    for lenient in (" ACME.Two ", "  " + "a" * 32 + "  "):
+        assert not validator.is_valid(lenient), (
+            f"契约不该放行未规范化的原始值 {lenient!r}——请先改契约字段说明与客户端约定"
+        )
+        assert username_is_valid(normalize_username(lenient)), lenient

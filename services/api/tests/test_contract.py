@@ -32,11 +32,15 @@ class ContractTests(unittest.TestCase):
             ("get", "/assessment-runs/{runId}/report.md"),
             ("get", "/assessment-runs/{runId}/trace"),
             ("get", "/admin/policies"), ("get", "/admin/policies/{policyId}"),
+            # 1.1.0-rc.1 并入的 E1 端点（AUTH-01—07）。
+            ("post", "/auth/register"), ("post", "/auth/login"), ("post", "/auth/logout"),
+            ("get", "/auth/me"), ("post", "/auth/password"),
+            ("get", "/enterprises"), ("get", "/assessment-runs"),
         }
         actual = {(method, path) for path, ops in CONTRACT["paths"].items() for method in ops}
         self.assertEqual(actual, expected)
         ids = [op["operationId"] for ops in CONTRACT["paths"].values() for op in ops.values()]
-        self.assertEqual(len(set(ids)), 16)
+        self.assertEqual(len(set(ids)), 23)
         self.assertEqual(CONTRACT["openapi"], "3.1.0")
         self.assertEqual(CONTRACT["servers"], [{"url": "/api/v1"}])
 
@@ -129,8 +133,20 @@ class ContractTests(unittest.TestCase):
     def test_admin_security_concurrency_headers_and_report_media(self):
         for path, ops in CONTRACT["paths"].items():
             for method, operation in ops.items():
-                if path.startswith("/admin/") or path.endswith("/trace"):
-                    self.assertEqual(operation["security"], [{"DemoSession": [], "AdminBearer": []}])
+                # E1 起运维 Bearer 只读：后台读是「会话或 Bearer」，
+                # 后台写只剩会话；轨迹三类身份都能读。
+                if path.endswith("/trace"):
+                    self.assertEqual(
+                        operation["security"],
+                        [{"UserSession": []}, {"AdminBearer": []}, {"DemoSession": []}],
+                    )
+                elif path.startswith("/admin/"):
+                    expected = (
+                        [{"UserSession": []}, {"AdminBearer": []}]
+                        if method == "get"
+                        else [{"UserSession": []}]
+                    )
+                    self.assertEqual(operation["security"], expected)
                 if path.endswith(("/extract", "/criteria", "/publish")) or method == "patch":
                     names = {p.get("$ref", "").rsplit("/", 1)[-1] for p in operation["parameters"]}
                     self.assertIn("IfMatch", names)

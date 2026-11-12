@@ -31,6 +31,7 @@ from ..agents.profile import (
     to_wire_fact,
 )
 from ..db import Database
+from ..demo_quota import DemoQuota
 from ..domain import versioning
 from ..domain.rules import CriterionRule
 from ..domain.versioning import ChangedEvent, PolicyBoundary
@@ -41,6 +42,8 @@ from ..schemas import (
     AssessmentRun,
     Criterion,
     Enterprise,
+    EnterpriseSummary,
+    EnterpriseSummaryList,
     Period,
     PolicyAssessment,
     PolicyDetail,
@@ -50,6 +53,8 @@ from ..schemas import (
     PolicyList,
     PolicySummary,
     PreparationTemplate,
+    RunSummary,
+    RunSummaryList,
     SourceDocument,
     SourceSpan,
     TraceResponse,
@@ -75,6 +80,28 @@ _STATUS_EXPR = (
 #: API-02 按 region 过滤时的口径是「该区划 + 全国」，见 :meth:`list_public_policies`。
 #: 这是一个约定值而不是国标码，改它必须同时改 `source_register.csv` 与契约描述。
 NATIONAL_REGION_CODE = "CN"
+
+#: AUTH-06/07 的可见范围。路由按身份选一个字面量，SQL 片段只从这里取，
+#: 调用方给不了任意拼接的谓词；``owned`` 用 ``%(viewer)s`` 绑当前账号。
+_ENTERPRISE_SCOPE_SQL = {
+    "all": "TRUE",
+    "owned": "e.owner_user_id = %(viewer)s::uuid",
+    "unowned": "e.owner_user_id IS NULL",
+}
+
+_RUN_SCOPE_SQL = {
+    "all": "TRUE",
+    "owned": "r.user_id = %(viewer)s::uuid",
+    "unowned": "r.user_id IS NULL",
+}
+
+
+def _ownership_of(owner_user_id: UUID | None, viewer_user_id: UUID | None) -> str:
+    """列表里的 ``ownership``：相对**当前调用者**而言，不是绝对归属。"""
+
+    if owner_user_id is None:
+        return "unowned"
+    return "self" if owner_user_id == viewer_user_id else "other"
 
 _INSERT_VERSION = """
 INSERT INTO policy_version (
@@ -231,6 +258,61 @@ ON CONFLICT (material_id) DO UPDATE SET
     review_status           = EXCLUDED.review_status,
     imported_at             = EXCLUDED.imported_at
 """
+
+
+def insert_enterprise_profile(
+    conn: Connection,
+    *,
+    enterprise_id: UUID,
+    profile: NormalizedProfile,
+    owner_user_id: UUID | None = None,
+) -> None:
+    """在调用方的事务里插入企业画像与全部事实。
+
+    ``owner_user_id`` 为 ``None`` 表示无主（演示样本与历史合成企业）；注册事务传
+    账号 ID 来绑定归属（#54 D1.3）。企业表的唯一索引保证「一家企业至多一个账号」，
+    所以这里不做「先查后插」。
+    """
+
+    conn.execute(
+        "INSERT INTO enterprise (id, name_synthetic, period_start, period_end, owner_user_id) "
+        "VALUES (%(id)s, %(name)s, %(start)s, %(end)s, %(owner)s)",
+        {
+            "id": enterprise_id,
+            "name": profile.name_synthetic,
+            "start": profile.period_start,
+            "end": profile.period_end,
+            "owner": owner_user_id,
+        },
+    )
+    for fact in profile.facts:
+        conn.execute(_UPSERT_FACT, _fact_params(enterprise_id, fact))
+
+
+def _fact_params(enterprise_id: UUID, fact: NormalizedFact) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "enterprise_id": enterprise_id,
+        "key": fact.key,
+        "period_start": fact.period_start,
+        "period_end": fact.period_end,
+        "unit": fact.unit,
+        "source": fact.source,
+        "value_code": None,
+        "value_date": None,
+        "value_amount": None,
+        "value_boolean": None,
+    }
+    if fact.value is None:
+        return params
+    if fact.unit == "code":
+        params["value_code"] = fact.value
+    elif fact.unit == "date":
+        params["value_date"] = fact.value
+    elif fact.unit == "boolean":
+        params["value_boolean"] = fact.value
+    else:
+        params["value_amount"] = fact.value
+    return params
 
 
 @dataclass(frozen=True, slots=True)
@@ -883,34 +965,95 @@ class PolicyRepository:
 
     # ------------------------------------------------------------- 企业画像
 
-    def create_enterprise(self, *, profile: NormalizedProfile, trace_id: str) -> Enterprise:
+    def create_enterprise(
+        self,
+        *,
+        profile: NormalizedProfile,
+        trace_id: str,
+        owner_user_id: UUID | None = None,
+        demo_quota: DemoQuota | None = None,
+    ) -> Enterprise:
+        """建一家企业；演示身份的配额与这家企业在**同一个事务**里。
+
+        ``demo_quota`` 非空时先占名额再 INSERT：任何一步失败（含并发绑定撞唯一索引）
+        整个事务回滚，名额也一起退回，不会出现「扣了名额、样本没建成」。占额仍是
+        ``INSERT … ON CONFLICT DO UPDATE … WHERE`` 的单条语句，并发下只会有一个请求
+        拿到最后一个名额。
+        """
+
         enterprise_id = uuid4()
-        with self._db.connection() as conn, conn.transaction():
-            self._execute(
-                conn,
-                "INSERT INTO enterprise (id, name_synthetic, period_start, period_end) "
-                "VALUES (%(id)s, %(name)s, %(start)s, %(end)s)",
-                {
-                    "id": enterprise_id,
-                    "name": profile.name_synthetic,
-                    "start": profile.period_start,
-                    "end": profile.period_end,
-                },
-            )
-            for fact in profile.facts:
-                self._execute(conn, _UPSERT_FACT, self._fact_params(enterprise_id, fact))
-            self._insert_trace(
-                conn,
-                trace_id=trace_id,
-                stage="profile",
-                input_summary="创建企业画像",
-                output_summary=f"事实 {len(profile.facts)} 条，版本 {profile.fact_version[:12]}",
-                policy_version_id=None,
-                model_or_rule_version="rule:profile@1",
-                elapsed_ms=0,
-            )
-            facts = self._load_facts(conn, enterprise_id)
+        try:
+            with self._db.connection() as conn, conn.transaction():
+                if demo_quota is not None:
+                    self._claim_demo_sample(conn, demo_quota)
+                insert_enterprise_profile(
+                    conn,
+                    enterprise_id=enterprise_id,
+                    profile=profile,
+                    owner_user_id=owner_user_id,
+                )
+                self._insert_trace(
+                    conn,
+                    trace_id=trace_id,
+                    stage="profile",
+                    input_summary="创建企业画像",
+                    output_summary=f"事实 {len(profile.facts)} 条，版本 {profile.fact_version[:12]}",
+                    policy_version_id=None,
+                    model_or_rule_version="rule:profile@1",
+                    elapsed_ms=0,
+                )
+                facts = self._load_facts(conn, enterprise_id)
+        except UniqueViolation:
+            # 路由层已经先查过 ``identity.enterprise_id``；两个请求同时到达时都会看到
+            # NULL，唯一索引才是真正的判定点。这里把它翻译成与串行路径同一个 409，
+            # 而不是漏成 500——「一家企业一个账号」的规则对并发一样成立。
+            raise self._already_bound_problem(owner_user_id) from None
         return _enterprise_of(enterprise_id, profile.name_synthetic, profile.period_start, profile.period_end, facts)
+
+    def _claim_demo_sample(self, conn: Connection, quota: DemoQuota) -> None:
+        """在调用方的事务里占一个名额；无名额时抛 429，让整个事务回滚。
+
+        首建与计数是一条语句：两条（先查后插）在并发下会丢计数，上限就形同虚设。
+        """
+
+        row = self._fetchone(
+            conn,
+            """
+            INSERT INTO demo_quota (sid_hash, created, expires_at)
+            VALUES (%s, 1, %s)
+            ON CONFLICT (sid_hash) DO UPDATE
+               SET created = demo_quota.created + 1
+             WHERE demo_quota.created < %s
+               AND demo_quota.expires_at > now()
+            RETURNING created
+            """,
+            (quota.sid_hash, quota.expires_at, quota.limit),
+        )
+        if row is None:
+            raise ApiProblem(
+                429,
+                "DEMO_QUOTA_EXCEEDED",
+                "本次演示会话可创建的样本数已用完，请从演示入口重新进入。",
+                {"limit": quota.limit},
+            )
+
+    def _already_bound_problem(self, owner_user_id: UUID | None) -> ApiProblem:
+        bound_id = None
+        if owner_user_id is not None:
+            with self._db.connection() as conn:
+                row = self._fetchone(
+                    conn,
+                    "SELECT id FROM enterprise WHERE owner_user_id = %s",
+                    (owner_user_id,),
+                )
+                bound_id = None if row is None else row["id"]
+        details = {"enterpriseId": str(bound_id)} if bound_id is not None else {}
+        return ApiProblem(
+            409,
+            "ENTERPRISE_ALREADY_BOUND",
+            "当前账号已绑定企业，不能重复创建；如需更新请调用 PATCH 事实接口。",
+            details,
+        )
 
     def get_enterprise(self, enterprise_id: UUID) -> Enterprise:
         with self._db.connection() as conn:
@@ -925,6 +1068,84 @@ class PolicyRepository:
         return _enterprise_of(
             row["id"], row["name_synthetic"], row["period_start"], row["period_end"], facts
         )
+
+    def enterprise_owner(self, enterprise_id: UUID) -> UUID | None:
+        """归属账号；``None`` 表示无主（演示样本与历史合成企业）。
+
+        对象不存在与「存在但无权访问」在路由层返回同一个 404 与同一文案，所以这里
+        只用与 :meth:`get_enterprise` 相同的码与文案。
+        """
+
+        with self._db.connection() as conn:
+            row = self._fetchone(
+                conn, "SELECT owner_user_id FROM enterprise WHERE id = %s", (enterprise_id,)
+            )
+        if row is None:
+            raise ApiProblem(404, "ENTERPRISE_NOT_FOUND", "没有找到对应的企业画像。")
+        return row["owner_user_id"]
+
+    def list_enterprises(
+        self,
+        *,
+        scope: str,
+        viewer_user_id: UUID | None,
+        cursor: str | None,
+        limit: int,
+    ) -> EnterpriseSummaryList:
+        """AUTH-06：按身份定可见集，再分页。游标绑定身份与可见范围。
+
+        ``scope`` 只接受三个字面量（``all`` / ``owned`` / ``unowned``），由路由按身份
+        决定；SQL 片段从白名单字典里取，不接受调用方拼字符串。
+        """
+
+        predicate = _ENTERPRISE_SCOPE_SQL.get(scope)
+        if predicate is None:  # pragma: no cover - 路由只传三个字面量
+            raise ValueError(f"未知的企业列表范围：{scope}")
+        fingerprint = f"enterprises:{scope}:{viewer_user_id}"
+        after = self._decode_cursor(cursor, fingerprint) if cursor else None
+        after_ts, after_id = after if after else (None, None)
+
+        sql = f"""
+        SELECT e.id, e.name_synthetic, e.period_start, e.period_end,
+               e.owner_user_id, e.created_at
+        FROM enterprise e
+        WHERE {predicate}
+          AND (
+                %(after_ts)s::timestamptz IS NULL
+                OR (e.created_at, e.id) < (%(after_ts)s::timestamptz, %(after_id)s::uuid)
+              )
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT %(limit)s
+        """
+        params = {
+            "viewer": viewer_user_id,
+            "after_ts": after_ts,
+            "after_id": after_id,
+            "limit": limit + 1,
+        }
+        with self._db.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = [
+            EnterpriseSummary(
+                id=row["id"],
+                name_synthetic=row["name_synthetic"],
+                period=Period(
+                    start_date=row["period_start"], end_date=row["period_end"]
+                ),
+                ownership=_ownership_of(row["owner_user_id"], viewer_user_id),
+            )
+            for row in rows
+        ]
+        next_cursor = (
+            self._encode_cursor(rows[-1]["created_at"], rows[-1]["id"], fingerprint)
+            if has_more and rows
+            else None
+        )
+        return EnterpriseSummaryList(items=items, next_cursor=next_cursor)
 
     def update_fact(
         self,
@@ -984,29 +1205,9 @@ class PolicyRepository:
 
     @staticmethod
     def _fact_params(enterprise_id: UUID, fact: NormalizedFact) -> dict[str, Any]:
-        params = {
-            "enterprise_id": enterprise_id,
-            "key": fact.key,
-            "period_start": fact.period_start,
-            "period_end": fact.period_end,
-            "unit": fact.unit,
-            "source": fact.source,
-            "value_code": None,
-            "value_date": None,
-            "value_amount": None,
-            "value_boolean": None,
-        }
-        if fact.value is None:
-            return params
-        if fact.unit == "code":
-            params["value_code"] = fact.value
-        elif fact.unit == "date":
-            params["value_date"] = fact.value
-        elif fact.unit == "boolean":
-            params["value_boolean"] = fact.value
-        else:
-            params["value_amount"] = fact.value
-        return params
+        """保留为方法名是为了不动 ``update_fact`` 的调用点；实现在模块级（注册事务共用）。"""
+
+        return _fact_params(enterprise_id, fact)
 
     def _load_facts(self, conn: Connection, enterprise_id: UUID) -> list[NormalizedFact]:
         rows = self._fetchall(
@@ -1296,8 +1497,13 @@ class PolicyRepository:
         trace_steps: Sequence[Any],
         trace_id: str,
         policy_version_ids: Mapping[UUID, UUID],
+        user_id: UUID | None = None,
     ) -> None:
-        """一次事务写入 run、每项政策的结果快照、依赖与在线轨迹。"""
+        """一次事务写入 run、每项政策的结果快照、依赖与在线轨迹。
+
+        ``user_id`` 是发起账号（E1 归属）；demo 建的 run 与历史数据为 ``None``，
+        列表与读取按「无主」对待。
+        """
 
         with self._db.connection() as conn, conn.transaction():
             self._execute(
@@ -1305,11 +1511,12 @@ class PolicyRepository:
                 """
                 INSERT INTO assessment_run (
                     id, enterprise_id, as_of, status, fact_version, model_or_rule_version,
-                    created_at, finished_at, period_start, period_end, supersedes_run_id
+                    created_at, finished_at, period_start, period_end, supersedes_run_id,
+                    user_id
                 ) VALUES (
                     %(id)s, %(enterprise_id)s, %(as_of)s, 'succeeded', %(fact_version)s,
                     %(rule_version)s, %(created_at)s, %(created_at)s, %(period_start)s,
-                    %(period_end)s, %(supersedes_run_id)s
+                    %(period_end)s, %(supersedes_run_id)s, %(user_id)s
                 )
                 """,
                 {
@@ -1322,6 +1529,7 @@ class PolicyRepository:
                     "period_start": run.period.start_date,
                     "period_end": run.period.end_date,
                     "supersedes_run_id": run.supersedes_run_id,
+                    "user_id": user_id,
                 },
             )
             for assessment in run.assessments:
@@ -1495,6 +1703,97 @@ class PolicyRepository:
             supersedes_run_id=header["supersedes_run_id"],
             assessments=assessments,
         )
+
+    def run_status(self, run_id: UUID) -> str:
+        """只取生命周期状态；报告下载要按它决定 409 还是出文件。
+
+        与 :meth:`get_run` 同一个 404 码与文案（历史数据: ``succeeded``）。
+        """
+
+        with self._db.connection() as conn:
+            row = self._fetchone(
+                conn, "SELECT status FROM assessment_run WHERE id = %s", (run_id,)
+            )
+        if row is None:
+            raise ApiProblem(404, "RUN_NOT_FOUND", "没有找到对应的判断运行。")
+        return row["status"]
+
+    def run_owner(self, run_id: UUID) -> UUID | None:
+        """run 的归属账号；``None`` 表示无主（demo 建的历史运行）。"""
+
+        with self._db.connection() as conn:
+            row = self._fetchone(
+                conn, "SELECT user_id FROM assessment_run WHERE id = %s", (run_id,)
+            )
+        if row is None:
+            raise ApiProblem(404, "RUN_NOT_FOUND", "没有找到对应的判断运行。")
+        return row["user_id"]
+
+    def list_runs(
+        self,
+        *,
+        scope: str,
+        viewer_user_id: UUID | None,
+        enterprise_id: UUID | None,
+        cursor: str | None,
+        limit: int,
+    ) -> RunSummaryList:
+        """AUTH-07：先按身份定可见集，再在可见集里按 ``enterprise_id`` 筛。
+
+        ``enterprise_id`` 的可筛范围由路由先校验（越界一律 404 ``ENTERPRISE_NOT_FOUND``），
+        这里只负责「在已经允许的集合里再筛一次」，不会因为传了别的企业而放宽可见范围。
+        """
+
+        predicate = _RUN_SCOPE_SQL.get(scope)
+        if predicate is None:  # pragma: no cover - 路由只传三个字面量
+            raise ValueError(f"未知的运行列表范围：{scope}")
+        fingerprint = f"runs:{scope}:{viewer_user_id}:{enterprise_id}"
+        after = self._decode_cursor(cursor, fingerprint) if cursor else None
+        after_ts, after_id = after if after else (None, None)
+
+        sql = f"""
+        SELECT r.id, r.enterprise_id, r.as_of, r.created_at, r.status,
+               EXISTS (SELECT 1 FROM assessment a WHERE a.run_id = r.id) AS has_results
+        FROM assessment_run r
+        WHERE {predicate}
+          AND (%(enterprise_id)s::uuid IS NULL OR r.enterprise_id = %(enterprise_id)s::uuid)
+          AND (
+                %(after_ts)s::timestamptz IS NULL
+                OR (r.created_at, r.id) < (%(after_ts)s::timestamptz, %(after_id)s::uuid)
+              )
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT %(limit)s
+        """
+        params = {
+            "viewer": viewer_user_id,
+            "enterprise_id": enterprise_id,
+            "after_ts": after_ts,
+            "after_id": after_id,
+            "limit": limit + 1,
+        }
+        with self._db.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = [
+            RunSummary(
+                id=row["id"],
+                enterprise_id=row["enterprise_id"],
+                as_of=row["as_of"],
+                created_at=row["created_at"],
+                status=row["status"],
+                report_available=row["status"] == "succeeded" and bool(row["has_results"]),
+            )
+            for row in rows
+        ]
+        next_cursor = (
+            self._encode_cursor(rows[-1]["created_at"], rows[-1]["id"], fingerprint)
+            if has_more and rows
+            else None
+        )
+        return RunSummaryList(items=items, next_cursor=next_cursor)
 
     # ---------------------------------------------------------------- helpers
 

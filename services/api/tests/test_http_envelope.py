@@ -76,14 +76,16 @@ def test_cors_preflight_allows_configured_origin_and_headers(client):
         headers={
             "Origin": ALLOWED_ORIGIN,
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "authorization,content-type,if-match",
+            "Access-Control-Request-Headers": (
+                "authorization,content-type,if-match,x-csrf-token"
+            ),
         },
     )
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == ALLOWED_ORIGIN
     allowed = response.headers["access-control-allow-headers"].lower()
-    for name in ("authorization", "content-type", "if-match"):
+    for name in ("authorization", "content-type", "if-match", "x-csrf-token"):
         assert name in allowed
     assert response.headers["access-control-allow-credentials"] == "true"
 

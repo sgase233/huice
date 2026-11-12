@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
@@ -53,14 +53,21 @@ from ..schemas import (
     SaveCriteriaInput,
     SaveCriteriaResult,
 )
-from ..security import require_admin
+from ..identity import (
+    require_csrf,
+    require_reviewer,
+    require_reviewer_or_bearer,
+)
+from ..security import GatedRoute
 
 logger = logging.getLogger(__name__)
 
+#: 门禁与公开接口一致（restricted 下先过外层 demo cookie）；「谁能写」不再由路由器级
+#: Bearer 依赖一人拍板：读操作接受审核员会话或只读运维 Bearer，写操作只接受审核员会话。
 router = APIRouter(
     prefix="/admin",
     tags=["admin"],
-    dependencies=[Depends(require_admin)],
+    route_class=GatedRoute,
 )
 
 _MAX_PART_KB = MAX_FILE_BYTES // 1024
@@ -75,6 +82,7 @@ ALLOWED_FORM_PARTS = frozenset({"metadata", "files"})
     summary="API-04",
 )
 async def import_policy(request: Request, response: Response) -> PolicyDraft:
+    _require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
 
     content_type = request.headers.get("content-type", "")
@@ -163,6 +171,7 @@ def list_admin_policies(
     cursor: str | None = Query(default=None, min_length=1),
     limit: int = Query(default=20, ge=1, le=50),
 ) -> PolicyDraftList:
+    require_reviewer_or_bearer(request)
     return request.app.state.repository.list_admin_policies(
         status=status,
         policy_type=policy_type,
@@ -183,6 +192,7 @@ def get_admin_policy(
     policyId: UUID,
     version: str | None = Query(default=None, min_length=1),
 ) -> PolicyDraft:
+    require_reviewer_or_bearer(request)
     draft = request.app.state.repository.get_admin_policy(policyId, version)
     response.headers["ETag"] = f'"{draft.revision}"'
     return draft
@@ -203,6 +213,7 @@ async def extract_policy(
     policyId: UUID,
     body: ExtractPolicyInput,
 ) -> ExtractionResult:
+    _require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
     expected_revision = _require_if_match(request)
     idempotency_key = _require_idempotency_key(request)
@@ -325,6 +336,7 @@ def save_criteria(
     policyId: UUID,
     body: SaveCriteriaInput,
 ) -> SaveCriteriaResult:
+    _require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
     expected_revision = _require_if_match(request)
     repository = request.app.state.repository
@@ -377,6 +389,7 @@ def publish_policy(
     policyId: UUID,
     body: PublishPolicyInput,
 ) -> PolicyDetail:
+    _require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
     expected_revision = _require_if_match(request)
     repository = request.app.state.repository
@@ -441,6 +454,13 @@ def publish_policy(
 
 
 # ------------------------------------------------------------- 写请求公共校验
+
+
+def _require_reviewer_write(request: Request) -> None:
+    """后台写操作：审核员会话 + CSRF/Origin。Bearer 在 E1 后只读，写请求一律 403。"""
+
+    identity = require_reviewer(request)
+    require_csrf(request, identity)
 
 
 def _require_if_match(request: Request) -> UUID:

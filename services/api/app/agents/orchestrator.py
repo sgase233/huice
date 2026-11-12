@@ -58,6 +58,7 @@ def assess(
     repository,
     llm: LlmClient | None = None,
     cache: EvaluationCache | None = None,
+    user_id=None,
 ) -> AssessmentRun:
     trace = TraceRecorder(trace_id=context.trace_id, model_or_rule_version=rules.RULE_VERSION)
     created_at = datetime.now(timezone.utc)
@@ -188,6 +189,7 @@ def assess(
         trace_steps=trace.steps,
         trace_id=context.trace_id,
         policy_version_ids={item.id: item.version_id for item in snapshots},
+        user_id=user_id,
     )
     return run
 

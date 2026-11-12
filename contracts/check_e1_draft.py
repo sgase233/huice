@@ -11,7 +11,8 @@
 1. 草案结构：openapi 版本、operationId 唯一、``$ref`` 可解析（含跨文件指向 openapi.yaml）；
 2. 权限模型：7 个新增操作都有 ``x-e1-gate``；``security`` 只引用已定义的 scheme；
    登出豁免门禁、无 401；注册/登录带 Origin 参数；
-3. 16 行 ``x-e1-impact`` 与基线 ``openapi.yaml`` 的端点集合一一对应，键齐全；
+3. 16 行 ``x-e1-impact`` 与基线 ``openapi.yaml`` 的端点集合一一对应，键齐全；E1 的 7 个
+   操作自 1.1.0-rc.1 起已并入正式契约，比较基线时排除它们（见 ``E1_ENDPOINTS``）；
 4. 错误码唯一，且 ``x-e1-impact.newFailures`` 里引用的码都已定义；
    带身份要求的既有端点必须列出 401 族（防止再次漏写 401）；
 5. ``RunStatus`` 仍是封闭四值，E3b 的 interrupted 只在 ``x-e1-lifecycle`` 里预留；
@@ -44,6 +45,18 @@ DRAFT = CONTRACTS / "openapi.e1-draft.yaml"
 BASE = CONTRACTS / "openapi.yaml"
 
 METHODS = {"get", "put", "post", "patch", "delete", "head", "options"}
+
+#: 自 1.1.0-rc.1 起并入 ``openapi.yaml`` 的 7 个 E1 操作。``x-e1-impact`` 只描述
+#: **并入前**的 16 个基线端点，所以对基线端点做集合比较时要先把这 7 个操作减掉。
+E1_ENDPOINTS = {
+    "POST /auth/register",
+    "POST /auth/login",
+    "POST /auth/logout",
+    "GET /auth/me",
+    "POST /auth/password",
+    "GET /enterprises",
+    "GET /assessment-runs",
+}
 IMPACT_KEYS = ("endpoint", "current", "gate", "identity", "roles", "ownership", "csrf", "newFailures")
 CODE_RE = re.compile(r"\b[A-Z][A-Z_]{4,}\b")
 
@@ -176,8 +189,8 @@ def check(draft_path: Path = DRAFT, base_path: Path = BASE) -> tuple[dict, list[
         if "#/components/parameters/OriginHeader" not in refs:
             errors.append(f"{oid}: 缺 OriginHeader 参数")
 
-    # 7. 16 个既有操作逐项覆盖
-    base_ops = _endpoint_set(base)
+    # 7. 16 个既有操作逐项覆盖（并入正式契约后要先减掉 E1 新增的 7 个操作）
+    base_ops = _endpoint_set(base) - E1_ENDPOINTS
     impact = draft.get("x-e1-impact") or []
     impact_set = {row["endpoint"] for row in impact}
     counts["impact_rows"] = len(impact)

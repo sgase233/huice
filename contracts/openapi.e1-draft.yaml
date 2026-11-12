@@ -37,13 +37,32 @@
 #     (3) admin 行的 current 列改成按模式写（local 只要 Bearer），原来写成 AND 只对 restricted 成立；
 #     (4) report.md 的 ownership 写清「现状未完成也给 200 报告，E1 收紧为 409」；
 #     (5) trace 行写清企业会话的脱敏投影边界。
+#   draft.5（2026-11-11）：按 PR #61 复审 ——
+#     (1) 7 个操作与账号/会话 schema 已并入 contracts/openapi.yaml（1.1.0-rc.1），本文件从此是
+#         设计记录：端点与 schema 以正式契约为准，这里保留门禁/身份真值表、错误码与请求样例；
+#     (2) 判定顺序补「请求体解析与字段校验」一层：门禁写在 handler 里会被 422 抢先，实现改为
+#         GatedRoute（在解析请求体之前跑），因此 restricted 下缺 cookie 一律 403，不看请求体；
+#     (3) 各操作的 summary 与正式契约、服务端发布一致，统一为裸编号。
+#   draft.6（2026-11-11）：按 PR #61 复审 ——
+#     (1) 用户名约束与实现对齐：RegisterRequest.username 与 User.username 由 3—64 位改为
+#         3—32 位 + pattern ^[a-z0-9_.-]{3,32}$（先去首尾空白再转小写），与 app/auth.py 的
+#         USERNAME_PATTERN、库表 CHECK 和正式契约同一条规则；
+#     (2) 版本说明不再写成笼统的「向后兼容」：相对 rc.10 是纯增量，相对 rc.9 是破坏性鉴权变更。
+#   draft.7（2026-11-11）：按 PR #61 复审 P2 明确用户名的校验对象——
+#     契约的 pattern/maxLength 作用于**请求体原始值**（调用方先 trim、转小写再发），
+#     服务端再做一次幂等规范化只是容错、不是承诺；正式契约、本文与实现说明同步此口径。
+#   draft.8（2026-11-12）：按 PR #62 的待确认项明确 AUTH-04 的第三种失败——
+#     出示有效 demo cookie（或运维 Bearer）而无用户会话时是 403 ROLE_FORBIDDEN
+#     （凭证有效但不够），不是 401、也不是 DEMO_SESSION_REQUIRED；AUTH-05 同口径。
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约（E1 草案：账号、会话与对象权限）
-  version: 1.1.0-rc.1-draft.4
+  version: 1.1.0-rc.1-draft.8
   description: |
-    **草案，未实现，未并入正式契约。** 编号 AUTH-01—07 是设计追踪编号（见
-    docs/EXTENSION_INTERFACES.md §3.2），合并进正式契约时按现行 API-01—16 的顺序续编。
+    **本文件是设计记录，不是可服务端点的声明。** 7 个操作与账号/会话 schema 自
+    `openapi.yaml` 的 `1.1.0-rc.1` 起已并入正式契约；端点、schema 与 security 以正式契约为准，
+    本文件保留评审时用到的门禁/身份真值表、错误码清单与可复核的请求样例。
+    编号 AUTH-01—07 是设计追踪编号（见 docs/EXTENSION_INTERFACES.md §3.2）。
 
     ## 草案基线
     - 基线：`contracts/openapi.yaml` 的 `1.0.0-rc.9`（16 个端点，评测指纹 `8fe2368b…`）。
@@ -52,7 +71,7 @@ info:
     - 未包含：DISC-01—08（E2）、VIS-01—06（E3）。它们不依赖本草案的判定顺序，另行评审。
 
     ## 版本
-    - 草案号 `1.1.0-rc.1-draft.4`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
+    - 草案号 `1.1.0-rc.1-draft.8`（与 `info.version` 同步，评审记录以 head 提交为准）；**正式版本号与逐端点兼容结论由 M1/M2 在本草案评审后共同签收**，
       本文件不自定 `1.1.0`。
     - 合并时 `contracts/openapi.yaml` 的 `info.version` 与 `APP_VERSION` 必须同一次改动一起升，
       否则 `test_served_version_matches_the_contract` 会红；届时指纹本来就要重算。
@@ -110,7 +129,9 @@ info:
 
     ## 本草案怎么读
     - `security` = 身份要求；`x-e1-gate` = 外层门禁（按部署模式分 local/restricted）。
-    - 判定顺序固定为：门禁 → 身份 → 角色 → 对象归属 → CSRF/Origin。
+    - 判定顺序固定为：门禁 → 请求体解析与字段校验 → 身份 → 角色 → 对象归属 → CSRF/Origin。
+      门禁先于请求体：restricted 下缺 cookie 时，请求体缺字段、类型不对、为空或不是 JSON
+      都先得到 403 `DEMO_SESSION_REQUIRED`，而不是 422。
     - restricted 对应现网 `APP_ENV=demo` + `DEMO_ACCESS_MODE=restricted`，local 对应
       `APP_ENV=local`（配置层已强制两者一致，见 `services/api/app/config.py`）。
 
@@ -145,24 +166,34 @@ x-e1-gate-model:
     - 服务端判定顺序以本节的 `evaluation-order` 为准。两份信息都只是文档口径，
       错误信封仍沿用现有 `ApiError`。
 
+  gate-precedes-validation: >
+    门禁跑在请求体解析之前（服务端由路由类 GatedRoute 包装 get_route_handler 实现）。
+    restricted 下缺 cookie 的请求不会因为请求体不合法而先拿到 422：缺字段、错类型、空体、
+    非 JSON 一律 403 DEMO_SESSION_REQUIRED；local 模式没有门禁，同样的请求才是 422。
+    前端处理约定：所有请求都带门禁 cookie；403 DEMO_SESSION_REQUIRED 表示门禁失效，回演示入口
+    重取，不要当成表单错误（422）或登录失效（401）。
   evaluation-order:
     - step: 1
       layer: 外层门禁
       applies: 仅 restricted；GET /health 与 POST /auth/logout 豁免
       failure: '403 DEMO_SESSION_REQUIRED'
     - step: 2
+      layer: 请求体解析与字段校验
+      applies: 仅带请求体的操作；门禁通过后才会解析（FastAPI 的解析与 schema 校验在路由类包装之后）
+      failure: '422 VALIDATION_ERROR'
+    - step: 3
       layer: 身份
       applies: 按操作的 security（列表内 OR，对象内 AND），只认「未提供」才轮到下一个
       failure: '401 UNAUTHENTICATED / 401 SESSION_INVALID / 401 TOKEN_INVALID / 401 DEMO_SESSION_INVALID'
-    - step: 3
+    - step: 4
       layer: 角色
       applies: 该身份能否调用此操作
       failure: '403 ROLE_FORBIDDEN'
-    - step: 4
+    - step: 5
       layer: 对象归属
       applies: 目标对象是否属于当前身份
       failure: '404 ENTERPRISE_NOT_FOUND / RUN_NOT_FOUND / POLICY_NOT_FOUND（按对象类型；与「不存在」同码同文案）'
-    - step: 5
+    - step: 6
       layer: CSRF 与 Origin
       applies: 仅写请求，且按凭证类型区分（D1.6）
       failure: '403 CSRF_REQUIRED / 403 ORIGIN_MISMATCH'
@@ -257,6 +288,9 @@ x-e1-gate-model:
     - AUTH-01/02 不消费请求里已有的 `huice_session`（浏览器自动带 HttpOnly cookie，前端删不掉）：
       注册忽略它，登录遇有效会话则撤销并替换、遇无效会话直接忽略。否则会话一过期就再也登录不了。
     - 同一请求里 Origin 与 CSRF 都错，先报 `ORIGIN_MISMATCH`；403 一律不撤销会话、不清 Cookie。
+    - 会话专属操作（AUTH-04/AUTH-05）遇到**有效** demo cookie 或运维 Bearer（有身份、但不是账号）
+      回 `403 ROLE_FORBIDDEN`，不是 401：按「有效但不够 → 403、无效 → 401」的全局判定顺序；
+      local 与 restricted 同结论（restricted 还要先过门禁），与 `DEMO_SESSION_REQUIRED` 不混用。
     - 注册/登录 × 会话状态的组合：restricted 且无 demo cookie → 无论会话是否有效，都是 403
       `DEMO_SESSION_REQUIRED`（门禁在最前）；有门禁时，失效会话被忽略、注册照常成功、登录成功后
       `Set-Cookie` 覆盖旧值；local 无门禁，只有「会话被忽略/被替换」这一种行为，不会出现 401。
@@ -319,7 +353,7 @@ paths:
   /auth/register:
     post:
       operationId: registerUser
-      summary: AUTH-01 注册
+      summary: AUTH-01
       tags:
       - auth
       security: []
@@ -431,7 +465,7 @@ paths:
   /auth/login:
     post:
       operationId: loginUser
-      summary: AUTH-02 登录
+      summary: AUTH-02
       tags:
       - auth
       security: []
@@ -537,7 +571,7 @@ paths:
   /auth/logout:
     post:
       operationId: logoutUser
-      summary: AUTH-03 登出
+      summary: AUTH-03
       tags:
       - auth
       security: []
@@ -594,7 +628,7 @@ paths:
   /auth/me:
     get:
       operationId: getCurrentUser
-      summary: AUTH-04 会话恢复
+      summary: AUTH-04
       tags:
       - auth
       security:
@@ -602,17 +636,20 @@ paths:
       x-e1-gate:
         local: none
         restricted: DemoSession
-        note: restricted 下先过门禁；门禁缺失是 403，会话无效才是 401，两者不互换。
+        note: restricted 下先过门禁；门禁缺失是 403 DEMO_SESSION_REQUIRED，凭证有效但不是账号是 403 ROLE_FORBIDDEN，会话无效才是 401。
       description: |
         刷新页面后恢复登录态与 `enterpriseId`；返回与 AUTH-02 相同的 `csrfToken`（首版不轮换）。
         响应禁止缓存。会话过期或已撤销一律 401，不降级到 demo 或 Bearer。
 
-        **两种失败要分开处理**（restricted 部署）：
-        - `403 DEMO_SESSION_REQUIRED`：外层门禁失效——回演示入口重新拿 demo cookie，
+        **三种失败要分开处理**：
+        - `403 DEMO_SESSION_REQUIRED`（restricted）：外层门禁失效——回演示入口重新拿 demo cookie，
           **会话本身可能还有效**，不要直接清掉并跳登录页；
-        - `401 SESSION_INVALID` / `401 UNAUTHENTICATED`：会话本身失效——跳登录页，
+        - `403 ROLE_FORBIDDEN`：出示了**有效**的 demo cookie（或运维 Bearer）但没有用户会话——凭证
+          有效、只是不是账号身份。按「有效但不够 → 403、无效 → 401」，前端据此显示登录入口
+          （演示访客态），不要当成会话过期，也不要和 `DEMO_SESSION_REQUIRED` 混用；
+        - `401 SESSION_INVALID` / `401 UNAUTHENTICATED`：会话本身失效或未提供——跳登录页，
           登录（AUTH-02）会覆盖旧 Cookie，不需要前端先删。
-        local 部署没有门禁，只可能出现 401。
+        local 部署没有门禁，可能出现 401 与 `403 ROLE_FORBIDDEN`，不会出现 `DEMO_SESSION_REQUIRED`。
       responses:
         '200':
           description: 当前会话
@@ -651,7 +688,7 @@ paths:
   /auth/password:
     post:
       operationId: changePassword
-      summary: AUTH-05 改密
+      summary: AUTH-05
       tags:
       - auth
       security:
@@ -663,6 +700,9 @@ paths:
       description: |
         校验旧密码后更新哈希，并**立即撤销该账号的全部会话**（含当前会话），清 Cookie；
         用户须重新登录。没有「替他人改密」的接口，审核员也不能重置他人密码。
+
+        出示了**有效** demo cookie（或运维 Bearer）但没有用户会话时是 `403 ROLE_FORBIDDEN`，
+        且先于 CSRF/Origin 判定——不会先被误报成缺 CSRF。
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
         - $ref: '#/components/parameters/OriginHeader'
@@ -699,7 +739,7 @@ paths:
   /enterprises:
     get:
       operationId: listEnterprises
-      summary: AUTH-06 企业列表
+      summary: AUTH-06
       tags:
       - public
       security:
@@ -765,7 +805,7 @@ paths:
   /assessment-runs:
     get:
       operationId: listRuns
-      summary: AUTH-07 分析运行列表
+      summary: AUTH-07
       tags:
       - public
       security:
@@ -1161,7 +1201,9 @@ components:
         username:
           type: string
           minLength: 3
-          maxLength: 64
+          maxLength: 32
+          pattern: '^[a-z0-9_.-]{3,32}$'
+          description: 已规范化的用户名（小写）；规则见 RegisterRequest.username。
         role:
           $ref: '#/components/schemas/UserRole'
         enterpriseId:
@@ -1180,7 +1222,15 @@ components:
         username:
           type: string
           minLength: 3
-          maxLength: 64
+          maxLength: 32
+          pattern: '^[a-z0-9_.-]{3,32}$'
+          description: >-
+            3—32 位，只允许 a-z、0-9、下划线、点、连字符。约束作用于**请求体原始值**：
+            调用方先 trim、转小写再发（ACME.Two → acme.two），标准 JSON Schema 校验器与
+            服务端就会给同一个答案；服务端解析时再做一次幂等规范化只是容错，不是契约承诺，
+            客户端不得依赖它发送非规范化值。不合规一律 422 VALIDATION_ERROR
+            （fieldErrors[].field = username）。与 app/auth.py 的 USERNAME_PATTERN、库表
+            CHECK 同一条规则（draft.6 修正：原写 64；draft.7 补校验对象口径）。
         password:
           type: string
           minLength: 12

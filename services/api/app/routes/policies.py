@@ -10,14 +10,17 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import AwareDatetime
 
 from ..domain.versioning import shanghai_date
+from ..identity import require_public_identity
 from ..schemas import PolicyDetail, PolicyList
-from ..security import require_demo_session
+from ..security import GatedRoute
 
-router = APIRouter(tags=["public"], dependencies=[Depends(require_demo_session)])
+#: 门禁仍挂在路由器上（restricted 部署先验外层 demo cookie），身份与角色在处理器里判：
+#: 门禁失败是 403，身份缺失是 401，两者不能互换（#55 draft.4 的判定顺序）。
+router = APIRouter(tags=["public"], route_class=GatedRoute)
 
 
 @router.get(
@@ -44,6 +47,7 @@ def list_policies(
     按北京时间解释，与判断链路口径一致。
     """
 
+    require_public_identity(request)
     return request.app.state.repository.list_public_policies(
         status=status,
         policy_type=policy_type,
@@ -65,4 +69,5 @@ def get_policy(
     policyId: UUID,
     version: str | None = Query(default=None, min_length=1),
 ) -> PolicyDetail:
+    require_public_identity(request)
     return request.app.state.repository.get_policy_detail(policyId, version)

@@ -1,25 +1,27 @@
 # 接口契约
 
-`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.0.0-rc.9`（16 个接口、请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
+`openapi.yaml` 是 HTTP 字段的单一真源，当前版本 `1.1.0-rc.1`（23 个操作 = API-01—API-16 + AUTH-01—AUTH-07，请求/响应 schema 与合成示例）。人工可读说明见[功能实现逻辑与接口协作约定](../docs/IMPLEMENTATION_AND_INTERFACE.md)，补充了版本、事实期间、清单与后台读取约束。
 
 M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏性变更先更新契约与说明，由 M1/M2 确认并附迁移说明。
 
+**`security` 与 `x-e1-gate` 是两个维度**（rc.10 起）：标准 `security` 只表达「要哪些凭证」（列表内 OR、对象内 AND）；部署模式相关的外层门禁逐操作写在 `x-e1-gate`（`local: none`；`restricted: DemoSession` 或 `exempt`），根级 `x-e1-gate-model` 给出判定顺序、豁免清单与两种模式的说明。restricted 下只有 `GET /health` 与 `POST /auth/logout` 豁免，连 `security: []` 的注册/登录也要先过门禁（403 `DEMO_SESSION_REQUIRED`）。门禁在**解析请求体之前**执行（服务端由路由类 `GatedRoute` 保证）：缺 cookie 时请求体缺字段、类型不对、为空或不是 JSON 也一律 403，不会先回 422——前端据此区分「门禁失效（回演示入口）」与「表单错误（422）」「登录失效（401）」。运行时 `/openapi.json` 发布同一份口径，`tests/test_openapi_alignment.py` 逐操作比对两份文档，`tests/test_e1_gate_modes.py` 按文档驱动 restricted 模式的实际请求。
+
 ## #46—#48 扩展设计入口（2026-11-09）
 
-[扩展接口设计](../docs/EXTENSION_INTERFACES.md) 定义账号/会话/对象归属、发现配置/运行/候选审核、完整度/轨迹/趋势的建议请求与响应，以及迁移、幂等、权限和错误边界。新增端点目前**待评审、未实现**；现行 OpenAPI 保持 `1.0.0-rc.9` 与 16 个端点，未提前生成不存在的客户端能力。开发顺序和未决项见[开发计划](../docs/DEVELOPMENT_PLAN.md)。
+[扩展接口设计](../docs/EXTENSION_INTERFACES.md) 定义账号/会话/对象归属、发现配置/运行/候选审核、完整度/轨迹/趋势的建议请求与响应，以及迁移、幂等、权限和错误边界。其中账号/会话/对象权限（E1）的 7 个端点已实现并并入 `openapi.yaml`（`1.1.0-rc.1`）；其余部分仍待评审、未实现，契约不提前声明不存在的客户端能力。开发顺序和未决项见[开发计划](../docs/DEVELOPMENT_PLAN.md)。
 
 M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实现 PR 将已签收部分同步进 OpenAPI、后端 schema、M2 生成类型/客户端及成功失败示例。鉴权改造必须附旧门禁/脚本和新账号数据隔离迁移方案。迁移当前到 `008`，实施前核查最新序号再追加；不修改已部署 SQL。
 
 ## E1 契约草案（2026-11-10）
 
-[`openapi.e1-draft.yaml`](openapi.e1-draft.yaml) 是 #46 账号/会话/对象权限的**评审用草案**，不是可生成客户端的能力声明：它不进 `generate_types.py` 的管线、不影响 `APP_VERSION` 与评测指纹（`openapi.yaml` 仍是唯一真源）。
+[`openapi.e1-draft.yaml`](openapi.e1-draft.yaml) 是 #46 账号/会话/对象权限的**设计记录**（`1.1.0-rc.1-draft.8`）。自 `openapi.yaml` 的 `1.1.0-rc.1` 起，7 个操作与账号/会话 schema 已并入正式契约，端点、schema 与 `security` 以 `openapi.yaml` 为准；本文件保留评审时用到的门禁/身份真值表、错误码清单与可复核的请求样例。它不进 `generate_types.py` 的管线、不影响 `APP_VERSION` 与评测指纹。
 
 - 内容：AUTH-01—07 七个操作、16 个现有操作的 security 与 404/409 语义变更（`x-e1-impact`）、错误码表（`x-error-codes`）、旧消费者清单（`x-legacy-consumers`）、未决项（`x-open-questions`）。
 - 写法：复用的现有 schema 一律 `$ref: './openapi.yaml#/components/...'`，草案不复制它们；两份文件在同一个目录，工具可直接解析。
-- 自检（可复跑，只读两份契约）：`python contracts/check_e1_draft.py`。检查 `$ref` 可解析、7 个操作都有 `x-e1-gate`、`x-e1-impact` 16 行与基线端点一一对应、错误码唯一且被引用、样例按 schema 通过。`services/api/tests/test_e1_draft.py` 在它之上再把 16 行的 `current` 列与现行 FastAPI 路由的 router 级依赖对一遍。
-- 流程：M2 逐端点评审 → 版本号与切换安排共同签收 → E1 实现完成后并入 `openapi.yaml`，同一次改动里升级 `info.version` 与 `APP_VERSION` 并重算指纹。
+- 自检（可复跑，只读两份契约）：`python contracts/check_e1_draft.py`。检查 `$ref` 可解析、7 个操作都有 `x-e1-gate`、`x-e1-impact` 16 行与基线端点一一对应（比较基线时排除已并入的 7 个 E1 操作）、错误码唯一且被引用、样例按 schema 通过。`services/api/tests/test_e1_draft.py` 再把 16 行的门禁与 FastAPI 路由的 `GatedRoute`／依赖对一遍，并逐操作比对正式契约、草案与服务端三处的 operationId、`security` 与 `x-e1-gate`。
+- 流程：M2 逐端点评审 → 版本号与切换安排共同签收 → 并入 `openapi.yaml`（已完成，`1.1.0-rc.1`）→ M2 重新生成 `types.ts`。
 
-## 已实现范围（后端，2026-10-27：16/16）
+## 已实现范围（后端：23/23；前 16 项 2026-10-27，AUTH 7 项 2026-11-11 并入契约）
 
 | 接口 | 方法路径 | 状态 |
 | --- | --- | --- |
@@ -39,8 +41,15 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 | API-14 `getTrace` | `GET /assessment-runs/{runId}/trace` | 已实现；管理 Bearer、脱敏、阶段顺序重排；路径无 /admin 不代表公开可读 |
 | API-15 `listAdminPolicies` | `GET /admin/policies` | 已实现；`{items,nextCursor}`，无 ETag |
 | API-16 `getAdminPolicy` | `GET /admin/policies/{policyId}` | 已实现；200 + ETag，缺省取最新导入版本 |
+| AUTH-01 `registerUser` | `POST /auth/register` | 已实现；201，事务内建账号与（企业用户）唯一企业 |
+| AUTH-02 `loginUser` | `POST /auth/login` | 已实现；下发 `huice_session`，返回 `csrfToken` |
+| AUTH-03 `logoutUser` | `POST /auth/logout` | 已实现；204，豁免演示门禁，无 401 分支 |
+| AUTH-04 `getCurrentUser` | `GET /auth/me` | 已实现；会话恢复，`Cache-Control: no-store` |
+| AUTH-05 `changePassword` | `POST /auth/password` | 已实现；204，改密后撤销该账号全部会话 |
+| AUTH-06 `listEnterprises` | `GET /enterprises` | 已实现；按身份与归属过滤，游标绑定可见范围 |
+| AUTH-07 `listRuns` | `GET /assessment-runs` | 已实现；按身份与归属过滤，`enterpriseId` 只筛不放宽 |
 
-后端实现与契约的 operationId、tags、security 由 `services/api/tests/test_openapi_alignment.py` 逐项比对。契约定版 `1.0.0` 仍需 M2 复核。
+后端实现与契约的 operationId、tags、security 由 `services/api/tests/test_openapi_alignment.py` 逐项比对（23 个操作全覆盖）。契约定版仍需 M2 复核。
 
 ### 本轮契约变更（待 M2 复核）
 
@@ -98,14 +107,29 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
     - `missing` 布尔仍是保守口径（`manual_check` 也算 `true`），语义不变；报告文案同步改为「所需事实都有取值，但不代表材料已交」「所需事实有缺项」，不再出现「缺材料」。
     - 破坏性：枚举只有这两个值变了，按旧值匹配的消费者会落空。`apps/web/src/api/types.ts` 需由 M2 按 rc.9 重新生成并同步页面文案（把「资料缺失／资料已提供」改成「所需事实有缺项／事实已齐（不代表已交）」口径），在那之前 `python contracts/generate_types.py --check` 会红。
 
+14. rc.10（2026-11-11，应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」）：16 个操作的 `security` 改成 E1 之后的**真实**身份集合，新增 `securitySchemes.UserSession`（cookie `huice_session`）。
+    - 后台写（导入、抽取、保存条件、发布）只剩 `UserSession`：E1 起运维 Bearer 只读，原来写的 `DemoSession + AdminBearer` 既许诺了 Bearer 能写，也把两个方案写进**同一个映射**（那是「与」不是「或」），与实现两处都不符。
+    - 后台读（`GET /admin/policies`、`GET /admin/policies/{policyId}`）是 `UserSession` 或 `AdminBearer`；轨迹（`GET /assessment-runs/{runId}/trace`）三类身份都可读；其余业务接口是 `UserSession` 或 `DemoSession`——Bearer 在 E1 后读不到业务数据（403）。
+    - 兼容性：`security` 不进生成的类型（`generate_types.py` 只读 `components.schemas`），`apps/web/src/api/types.ts` 不变，`--check` 仍一致。按旧文档「Bearer 能写」实现的调用方在 E1 已实装后本来就会收到 403，这次只是把文档改成事实。
+    - **E1 的 7 个新端点当时仍未并入本契约**（只在 `openapi.e1-draft.yaml`）：并入会新增 schema，`types.ts` 必须由 M2 重新生成，属消费者切换窗口。该窗口已在 `1.1.0-rc.1` 打开。
+
+15. `1.1.0-rc.1`（2026-11-11，应答 M2 对 PR #61 的复审）：把 E1 的 7 个操作并入正式契约。
+    - 新增路径/操作：`POST /auth/register`、`POST /auth/login`、`POST /auth/logout`、`GET /auth/me`、`POST /auth/password`，以及给既有 `/enterprises`、`/assessment-runs` 增加 `GET`（AUTH-06/AUTH-07）。
+    - 新增 13 个 schema：`UserRole`、`User`、`RegisterRequest`、`RegisterResponse`、`LoginRequest`、`PasswordChangeRequest`、`SessionResponse`、`Ownership`、`EnterpriseSummary`、`EnterpriseSummaryList`、`RunStatus`、`RunSummary`、`RunSummaryList`；新增参数 `CsrfToken`、`OriginHeader`、`OriginHeaderOptional`。
+    - `RegisterRequest.username` 与 `User.username` 是 **3—32 位**（`minLength: 3`、`maxLength: 32`、`pattern: ^[a-z0-9_.-]{3,32}$`），服务端先去首尾空白再转小写，之后才套这条规则。规则只有一处真值：`app/auth.py` 的 `USERNAME_PATTERN`，库表（迁移 `009` 的 `app_user_username_shape` CHECK）与契约的 `pattern` 都是它；`app/schemas.py` 直接读这个常量生成 JSON Schema 并在解析阶段判。此前契约写 64 位、handler 另判 3—32，按契约构造的 33—64 位用户名能过 schema 却被 422 拒绝，现已同源（M2 在 PR #61 复审指出）。`LoginRequest.username` 相反：只做规范化后查账号，**不**套注册规则，长度或字符不合规的名字统一回 401 `INVALID_CREDENTIALS`，不借登录接口暴露名字格式或是否存在（契约字段说明已写）。**校验对象写明是请求体的原始值**（M2 在 PR #61 复审 P2）：契约要求调用方先 trim、转小写再发，`pattern`/`maxLength` 直接作用于发送值，用 schema 做请求校验的客户端与服务端因此一致；服务端解析时再做一次幂等规范化只是容错，不是契约承诺，带首尾空白或大写的原始输入能成功属实现细节，客户端不得依赖。按契约构造的合法值原样通过、原样入库。
+    - 版本从 `1.0.0` 升到 `1.1.0`：新增了路径、操作与 components，`apps/web/src/api/types.ts` 必须重新生成，所以不是补丁级。`info.version` 与 `APP_VERSION` 已同一次改动一起升。**兼容性分两层，不能笼统说「向后兼容」**：①相对本 PR 内的 `rc.10` 是**纯增量**——既有 16 个操作的 schema、`security` 与门禁一字未改；②相对 `main` 上的 `rc.9` 与按 `rc.9` 写的旧调用方是**破坏性鉴权变更**——`rc.10` 已把后台写权限从运维 Bearer 改为审核员会话（Bearer 只读，拿 Bearer 写后台会 403），从 `rc.9` 升级必须同时切换调用方，不能只换契约文件。`1.1.0-rc.1` 是候选版本号，最终版本口径由 M1/M2 确认。
+    - **已知中间状态**：`python contracts/generate_types.py --check` 与 `services/api/tests/test_contract.py::test_types_are_generated_from_current_contract` 在 M2 重新生成 `types.ts` 之前会红。`apps/web/**` 归 M2，M1 不直接改；生成只需要 `python contracts/generate_types.py`（差异是新增的 13 个 schema，既有类型不变）。
+    - 门禁判定顺序补一层：门禁在**解析请求体之前**执行，restricted 下缺 cookie 一律 403 `DEMO_SESSION_REQUIRED`（缺字段/错类型/空体/非 JSON 都一样），local 模式同样的请求才是 422。`x-e1-gate-model` 的 `evaluation-order` 与各操作 `x-e1-gate.note` 已同步。
+
 ## 当前实现产出的错误码
 
-响应统一为 `{"error":{"code","message","details"},"traceId"}`，并带 `X-Trace-Id`。全部 16 个接口都按此信封返回，例如：
+响应统一为 `{"error":{"code","message","details"},"traceId"}`，并带 `X-Trace-Id`。全部 23 个操作都按此信封返回，例如：
 
 | HTTP | code | 触发条件 |
 | --- | --- | --- |
-| 401 | `UNAUTHENTICATED` | 缺少或错误的 Bearer（响应带 `WWW-Authenticate: Bearer`） |
-| 403 | `DEMO_SESSION_REQUIRED` | `DEMO_ACCESS_MODE=restricted` 且 `huice_demo_session` 缺失、签名不符或已过期（格式 `v1.<过期秒>.<HMAC>`，用独立机密 `DEMO_SESSION_SECRET` 签发，见 `infra/deploy/issue-session.py`） |
+| 401 | `UNAUTHENTICATED` | 未提供任何凭证（E1 起「提供了但无效」另报 `TOKEN_INVALID` / `SESSION_INVALID`，不再混用本码，也不降级到下一种凭证；新增错误码见 `openapi.e1-draft.yaml` 的 `x-error-codes`） |
+| 403 | `DEMO_SESSION_REQUIRED` | `DEMO_ACCESS_MODE=restricted` 且 `huice_demo_session` 缺失、签名不符或已过期（格式 `v2.<过期秒>.<sid>.<HMAC>`，E1 前签发的 `v1.<过期秒>.<HMAC>` 仍验签通过但只读；用独立机密 `DEMO_SESSION_SECRET` 签发，见 `infra/deploy/issue-session.py`） |
+| 403 | `ROLE_FORBIDDEN` | **凭证有效但不够**：有效 demo cookie 或运维 Bearer 访问会话专属操作（`/auth/me`、`/auth/password`）、非审核员写后台、Bearer 读业务数据等。按「有效但不够 → 403、无效 → 401」的判定顺序，与 `UNAUTHENTICATED`/`SESSION_INVALID`（无效或未提供）和 `DEMO_SESSION_REQUIRED`（外层门禁缺失）是三种不同处置：`/auth/me` 收到它应当显示登录入口（演示访客态），不是清会话跳登录页 |
 | 400 | `INVALID_QUERY` | query/path 参数不合法（含 limit 越界、非法 UUID、游标无效） |
 | 400 | `INVALID_METADATA` | `metadata` 不是合法 JSON 对象 |
 | 400 | `INVALID_MULTIPART` | multipart 结构损坏 |

@@ -5,8 +5,10 @@
 | 文件 | 安装位置 | 作用 |
 | --- | --- | --- |
 | `huice-api.service` | `/etc/systemd/system/` | 守护 uvicorn，`Restart=always`、开机自启 |
-| `nginx-huice.conf` | `/etc/nginx/conf.d/` | 监听 80，转发 `/`，`client_max_body_size 60m` |
+| `nginx-huice.conf` | `/etc/nginx/conf.d/` | 监听 80，转发 `/`，`client_max_body_size 60m`，每 IP 粗粒度 `limit_req`（20r/s，突发 40） |
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
+| `issue-session.py` | 不安装，直接`/opt/huice/venv/bin/python` 跑 | 签发演示会话 cookie 并写 `demo_quota` 起始行（§3.1） |
+| `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
 | `nginx-huice-site.conf` | 同上，`enable-tls.sh --web-root` 时改装这一份 | 443 同源站点：前端静态文件 + `/api/v1/` 反代（与上一行**互斥**，同一个文件名） |
@@ -41,18 +43,19 @@
 
 ### 0.3 从零到「健康检查 200」的顺序
 
-顺序反了不会「降级运行」，而是出现「启动成功但写入 500」「外网 404 且响应头泄露版本」这类故障。按下面八步走：
+顺序反了不会「降级运行」，而是出现「启动成功但写入 500」「外网 404 且响应头泄露版本」这类故障。按下面九步走（第 9 步只在需要登录后台时做）：
 
 | 步 | 做什么 | 在哪 | 顺序反了的表现 |
 | --- | --- | --- | --- |
 | 1 | 传代码到 `/opt/huice/app`（§1） | Windows 侧 + ECS | 后面所有脚本都找不到 |
 | 2 | `provision.sh`（§2）：装包、建 `huice` 用户与 venv、装依赖、装 unit 与 80 配置 | ECS | — |
 | 3 | 填 `/etc/huice/api.env`（§3） | ECS | 第 2 步结束时模板里的必填项还是空值，服务会以「缺少变量名」启动失败，属预期（脚本那一步就算失败也继续执行下一步） |
-| 4 | 执行迁移 001—008（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 八行 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500、判断运行因 `material_requirement` 不存在 500（§2.1 末段） |
+| 4 | 执行迁移 001—009（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 九行 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500、判断运行因 `material_requirement` 不存在 500；E1 起缺 009 则注册/登录 500（`app_user` / `user_session` / `demo_quota` 都不存在），发送演示会话也会因写不了配额行退出码 3（§2.1 末段） |
 | 5 | `systemctl restart huice-api`，再 `nginx -t && systemctl reload nginx` | ECS | 只 `enable` 不 `reload`：外网 404 且 `Server` 头暴露 nginx 版本（见 §8「外网 404」一行） |
 | 6 | 健康检查 200（§4 第 **1—4** 项）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
 | 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3）。**完成后**按 §4 的三批安排补跑第 **8—11** 项（第 5—7 项在第 6 步之后就能跑，不必等这里） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403；若先跑第 8—9 项，会因为 443 还不存在而误判成部署失败 |
 | 8 | 签发会话 cookie（§3.1） | ECS | `/admin/*` 会卡在鉴权第一关：没有 Bearer 或 Bearer 不对是 **401 `UNAUTHENTICATED`**；Bearer 正确但缺/错 cookie 才是 **403 `DEMO_SESSION_REQUIRED`**（与 §4 第 5—7 项同一口径），`/health` 仍是 200 |
+| 9 | 要登后台就再建首个审核员账号（§3.4，保底初始化） | ECS | 跳过它就没有任何 `reviewer` 账号：后台**写**接口（导入、抽取、保存条件、发布）只能用审核员会话，Bearer 在 E1 起只读，会一直 403 `ROLE_FORBIDDEN`；注册接口也建不出来，除非先配好 `REVIEWER_SIGNUP_KEY` |
 
 ## 1. 上传代码
 
@@ -195,6 +198,8 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `DATABASE_URL` | `postgresql://root:<密码>@192.168.0.80:5432/huice` |
 | `REDIS_URL` | `redis://:<密码>@192.168.0.38:6379/0`（也可用控制台「连接地址」的域名形式 `redis://:<密码>@redis-4be07660-....dcs.myhuaweicloud.com:6379/0`；2026-10-26 在 ECS 上实测 `--askpass PING` → `PONG`） |
 | `CORS_ORIGINS` | 前端真实源；前端未部署前用 `http://139.9.33.46`，做了 §3.3 的同源站点后改用 `https://139.9.33.46`（同源请求不再走 CORS，填了也无害） |
+| `PUBLIC_ORIGIN` | E1 起建议显式写成用户实际访问的源：`https://139.9.33.46`（带 scheme、无尾斜杠、无路径）。留空时退回 `CORS_ORIGINS` 的第一项。**它必须与浏览器地址栏的源逐字相同**——登录/注册/登出与演示写操作都先校验 `Origin`，不等一律 403 `ORIGIN_MISMATCH`。2026-11-11 云端实测：只配 `CORS_ORIGINS=http://139.9.33.46` 而按 `https://` 访问，登录被挡；补一行 `PUBLIC_ORIGIN=https://139.9.33.46` 重启后通过 |
+| `REVIEWER_SIGNUP_KEY` | 可选，≥16 位且不得与 `ADMIN_TOKEN` 相同；配了才能用注册接口建审核员，未配时这类注册一律 403（与密钥错误同码，不回显是否配置）。首个审核员仍按 §3.4 从服务器上建 |
 | `DEMO_ACCESS_MODE` | `restricted`（`APP_ENV=demo` 时强制） |
 | `ADMIN_TOKEN` | ≥16 位随机串，仅服务端使用；只用于后台 Bearer |
 | `DEMO_SESSION_SECRET` | ≥32 位随机串，仅服务端使用；**必须与 `ADMIN_TOKEN` 不同**（取值相同同样启动失败），用于签发与校验演示会话 cookie。restricted 模式必填，缺失、过短或与 `ADMIN_TOKEN` 相同时启动失败并只报变量名 |
@@ -231,6 +236,12 @@ echo "退出码: $?"
 两点注意：**不要 `set -a; . /etc/huice/api.env`**——shell 会按 shell 规则解析整个文件，而 `systemd` 的 `EnvironmentFile` 不是 shell（不做变量展开、不执行命令），密钥里含 `$`、反引号或引号时两边读到的值可能不同，甚至把文件内容当命令执行；改用上面的 `systemd-run` 后这条风险不再存在（两种读法的实测对照表见 §2.1）；但读回**空值**时仍要按 §2.1 的自查查 `api.env` 的写法与 unit 的 `EnvironmentFiles`——临时单元读的和 `migrate.sh` 是同一份文件、同一套规则。签发完成后按 §3.2 的例外说明限定有效期、用完清掉并按需轮换 `DEMO_SESSION_SECRET`。
 
 输出两行：cookie 值和可直接使用的 `Set-Cookie` 头。把 `Set-Cookie` 配到网关/演示入口（或在浏览器开发者工具里手工设置 cookie，见 §3.2 的例外说明），之后带着它访问后台接口。
+
+**E1 起签发的会话带演示配额（#54 D1.5）**：载荷是 `v2.<过期秒>.<sid>.<HMAC>`，签发脚本同时往 `demo_quota` 表写一行（`created = 0`、`expires_at` 与 cookie 同寿命），服务端按这个 `sid` 计「本次演示会话还能建几家无主合成企业」（默认 20）。因此：
+
+- 这一步需要 `DATABASE_URL`，且**迁移 009 已执行**。上面的 `systemd-run` 用同一个 `EnvironmentFile` 提供，不用另加参数（连接串只从环境读，不进命令行）。
+- 演示配额行写库失败时脚本以**退出码 3**结束，并且**不输出** cookie——配额行没落库就发出去的会话会从错误的起点计数。stderr 只报失败类别（`StorageUnavailable` 等），报错里不含主机名或连接串。
+- 旧格式 `v1.<过期秒>.<HMAC>`（无 `sid`）仍然验签通过，但**只读**：写操作返回 403 `DEMO_SESSION_LEGACY`。此前签发的旧 cookie 不必立即作废，但建不了样本。
 
 签名密钥是**独立的 `DEMO_SESSION_SECRET`**，与后台 Bearer 使用的 `ADMIN_TOKEN` 互不派生：持有 Bearer 不能签发会话，持有会话密钥也不能调用后台接口。两个值都要按机密对待，**不要把密钥或输出写进日志、文档或群聊**。
 
@@ -321,6 +332,38 @@ ls /opt/huice/web/dist                                                  # 仍不
 两者最后都再确认一次：`curl -k -i https://127.0.0.1/` 返回 `index.html`，`curl -k -i https://127.0.0.1/api/v1/health` 仍是 200。
 
 2026-11-04 在 ECS 上按这两种情形各跑过一次：首次部署后 `/opt/huice/web` 下直接是 `index.html` + `assets/`、`/opt/huice/web/dist` 不存在；模拟换一版（改资源名）解包到已存在的站点根目录后，`index.html` 引用的是新资源名、`/` 与 `/assets/<新文件>` 均 200、仍未生成 `dist/`，验完已还原原产物。
+
+### 3.4 首个审核员账号（保底初始化）
+
+E1 起，后台写操作只接受**审核员会话**（`role = reviewer`），运维 Bearer 降为只读。而 `POST /auth/register` 只有配置了 `REVIEWER_SIGNUP_KEY` 时才允许建审核员——全新部署里没有任何审核员，也就没人能登进去配置它。保底路径是由持有服务器 root 的人在 ECS 上直接写库，只建审核员账号，不建企业、不签发会话：
+
+```bash
+# 1) 只读口令与用户名，写进 /run（tmpfs，不落盘）下只有 root 可读的一份临时文件
+umask 077
+read -r -p '审核员用户名: ' ADMIN_INIT_USERNAME
+read -r -s -p 'ADMIN_INIT_PASSWORD: ' ADMIN_INIT_PASSWORD; echo
+printf 'ADMIN_INIT_USERNAME=%s\nADMIN_INIT_PASSWORD=%s\n' \
+  "$ADMIN_INIT_USERNAME" "$ADMIN_INIT_PASSWORD" > /run/huice-create-admin.env
+unset ADMIN_INIT_USERNAME ADMIN_INIT_PASSWORD
+
+# 2) 临时单元读两份 EnvironmentFile：api.env 提供 DATABASE_URL，上面那份提供账号与口令
+systemd-run --quiet --pipe --wait --collect \
+  -p EnvironmentFile=/etc/huice/api.env \
+  -p EnvironmentFile=/run/huice-create-admin.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/create-admin.py
+echo "退出码: $?"
+
+# 3) 不论成败都清掉
+shred -u /run/huice-create-admin.env
+```
+
+- 口令走**临时 EnvironmentFile**，不进命令行参数（`ps` 看不到）、不进 shell 历史、不写进 `api.env`（否则保底口令与运行时长期共存）。`/proc/<pid>/environ` 在单元存活期间仍能看到它——这是保底初始化的固有暴露面，跑完立刻 `shred`，并紧接着登录改口令。脚本只从环境读 `DATABASE_URL` / `ADMIN_INIT_USERNAME` / `ADMIN_INIT_PASSWORD`。
+- 口令请用可打印 ASCII、不含换行；`systemd` 的 `EnvironmentFile` 不是 shell（不做变量展开、不执行命令），`$`、反引号、引号都按字面读入（两种读法的对照见 §2.1）。
+- 用户名按注册同一规则规范化（去空白、转小写），须满足 3—32 位 `a-z0-9_.-`；口令长度与契约一致（12—128）。
+- **退出码**：0 成功（只打印用户名）；2 变量缺失或取值不合法（只报变量名，不报值）；3 写库失败（迁移 009 未执行、库不可达、无写权限）；4 用户名已存在——脚本**不覆盖**既有口令，重置要走登录后的 AUTH-05。
+- 创建后立刻用该账号登录（前端登录页 → `POST /auth/login`），并按 AUTH-05 改一次口令。之后要加更多审核员，用 `REVIEWER_SIGNUP_KEY` + 注册接口即可，不必再上服务器。
+- 这一步与演示会话（§3.1）无关：演示身份能建无主样本，但建不了审核员，也进不了后台写接口。
 
 ## 4. 验证
 
@@ -572,6 +615,9 @@ bash /opt/huice/app/infra/deploy/rollback.sh <X> --from-backup /root/app-before-
 | 服务本机 `curl 127.0.0.1:8000` 是 200，外网访问 `http://<EIP>` 是 **404**，响应头 `Server: nginx/x.y.z` 带版本号 | `provision.sh` 装完 `conf.d` 后只 `enable nginx`；nginx 常已被 apt 拉起，`enable` 不会让已运行的进程读新配置，默认站点还在服务 | `nginx -t && systemctl reload nginx`；再确认 `/etc/nginx/sites-enabled/default` 已删（脚本会删，手改过的机器要自己核） |
 | 登录后接口仍 403 `DEMO_SESSION_REQUIRED`，或 cookie 写进去就没了 | 会话 cookie 带 `Secure`，而页面在 `http://<EIP>`（非 localhost）下打开，浏览器不保存；或前端与 API 不同源，`SameSite=Lax` 不发送（§3.2 末段） | 走 §3.2 的 443 同源；临时演示按 §3.2 手工设置，注意 DevTools 新建 cookie 的 `HttpOnly` / `SameSite` 在新版 Chromium 里勾不动，退而用 `document.cookie` 写入就没有 `HttpOnly`——这是 §3.2 写的受限测试例外（合成数据、短有效期、验完清掉并轮换密钥），不是等价方案 |
 | `nginx -t` 通过，但 443 上的行为时好时坏（有时是旧配置、有时两份都对不上） | `/etc/nginx/conf.d/` 里同时存在两份 `listen 443` + `server_name _` 的配置：nginx 只打一条 `conflicting server name "_"` 警告，不报错，实际只生效一份 | `grep -rl "listen 443" /etc/nginx/conf.d/` 只应有一份（`huice-api-tls.conf`）；`enable-tls.sh` 靠「同一个文件名」避免并存，手工加过配置的机器要自己删掉多出来的那份 |
+| 接口偶发 **429**，但响应体是 HTML、不是 `{"error": {...}}` 信封 | 这是 nginx 的 `limit_req` 兜底（每 IP 20 r/s、突发 40，见 `nginx-huice.conf`），不是后端的 `ACCOUNT_LOCKED`。后端那个 429 带 JSON 信封与 `Retry-After`，按失败次数锁 | 确认是不是压测/共享出口 IP 造成：`grep limiting /var/log/nginx/huice-api.error.log`。演示现场被同一出口的多台设备一起访问时，可以临时调高 `rate`/`burst` 后 `nginx -t && systemctl reload nginx`；**不要**删掉这段兜底 |
+| 登录/注册/登出返回 **403 `ORIGIN_MISMATCH`**，`CORS_ORIGINS` 里明明有这个地址 | E1 起这三个接口先校验 `Origin`：取 `PUBLIC_ORIGIN`，没配就取 `CORS_ORIGINS` 的**第一项**；只写了 `http://<EIP>` 而用户按 `https://<EIP>` 访问，两者不相等 | 在 `/etc/huice/api.env` 加 `PUBLIC_ORIGIN=https://<EIP>`（带 scheme、无尾斜杠、无路径），`systemctl restart huice-api`。同源部署下 `CORS_ORIGINS` 那条可以留着不动 |
+| 不带演示 cookie 请求 `/api/v1/auth/login` 得到 **403 `DEMO_SESSION_REQUIRED`**，而不是 401 | **预期行为**：`restricted` 模式下整个 API 在演示门禁后面，登录接口也在其中；没有演示会话时轮不到账号密码校验 | 先按 §3.1 用 `issue-session.py` 签一份演示会话并在请求里带上 `Cookie: huice_demo_session=...`，再验登录 |
 
 ### 口令转义（连接串里的特殊字符）
 

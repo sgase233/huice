@@ -1,8 +1,8 @@
 # 惠策协同：功能实现逻辑与接口协作约定
 
-> 初稿：2026-10-23；当前状态更新：2026-11-09，本地基线 `807e1bb`；现行契约 `1.0.0-rc.9`。成员沿用 M1（后端）、M2（前端）、M3（政策与验收）。
+> 初稿：2026-10-23；当前状态更新：2026-11-11，E1 后端实现已合入，7 个 E1 操作已并入正式契约（`1.1.0-rc.1`）。成员沿用 M1（后端）、M2（前端）、M3（政策与验收）。
 >
-> 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[原开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及现有代码整理。后端已实现 **16 个端点**，前端六类业务页已接入，已有隔离库/真实 HTTP/合成数据的阶段浏览器记录；最终云端联合与业务验收仍按实际证据确认。第 8 节保留各日期历史验证，不代表本次重跑。后续范围和排期见[开发计划](DEVELOPMENT_PLAN.md)，新增账号、发现候选及图表接口见[扩展接口设计](EXTENSION_INTERFACES.md)，该设计待签收，不能替代现行 OpenAPI。
+> 本文依据[需求分析](./brief/惠策协同_需求分析与功能范围.md)、[原开发计划](./brief/惠策协同_三人分工与开发计划_截至11月15日.md)、[策划案](./brief/华为ICT大赛赛题一_政策红利挖掘与申报多智能体_初步策划案.md)、[评审建议](./brief/评审建议_惠策协同方案_可行性与优化.md)及现有代码整理。后端已实现 **23 个操作**（API-01—16 + AUTH-01—07），前端六类业务页已接入，已有隔离库/真实 HTTP/合成数据的阶段浏览器记录；最终云端联合与业务验收仍按实际证据确认。第 8 节保留各日期历史验证，不代表本次重跑。后续范围和排期见[开发计划](DEVELOPMENT_PLAN.md)，新增账号、发现候选及图表接口见[扩展接口设计](EXTENSION_INTERFACES.md)，该设计待签收，不能替代现行 OpenAPI。
 
 ## 1. 范围、依据和成功标准
 
@@ -16,7 +16,7 @@
 
 | 可验证标准 | 负责人/检查位置 |
 | --- | --- |
-| 16 个接口的字段、枚举、状态码、参数位置、权限和示例一致 | M1/M2；`contracts/openapi.yaml`、`src/api/types.ts`、`test_contract.py` |
+| 23 个操作的字段、枚举、状态码、参数位置、权限和示例一致 | M1/M2；`contracts/openapi.yaml`、`src/api/types.ts`、`test_contract.py` |
 | 数字方向抽错不能发布；未发布规则不能判断；缺事实不判满足 | M1/M3；`test_rules.py`、`test_agent_flow.py` |
 | 补答只影响相关条件；跳过不改事实；0 与 null 区分 | M1/M2；规则测试和浏览器用例 |
 | 政策或事实变化能指出依赖和失效原因，保留历史原文及结果 | M1；`test_invalidation.py` |
@@ -329,9 +329,15 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
 - 所有公开政策读取只含已审核版本。`version` 指定不存在/未发布版本时 404，不能回退到其他版本。后台 API-16 可读取未发布版本。
 - 非 2xx 统一 `{"error":{"code":"...","message":"中文可执行说明","details":{}},"traceId":"UUID"}`；FastAPI 默认 detail 数组必须转换。响应头 `X-Trace-Id` 与 body.traceId 一致；成功也返回追踪头。422 的 details 可放 fieldErrors/findings；409 放 currentVersion；不得含堆栈、密钥或连接串。
 - 状态码：400 请求语法/查询参数错误；401 未认证；403 已认证但权限不足；404 不存在；409 版本/幂等冲突；413 文件过大；415 文件类型不支持；422 业务或 body 校验失败；428 缺并发头；429 限流；500 未预期内部错误（脱敏）；503 必需依赖不可用。
-- 本地模式仅监听 loopback；管理 API 和轨迹均须 `Authorization: Bearer <ADMIN_TOKEN>`。M1 在受控机器手动输入，M2 的 client 仅保存在内存，退出/刷新清空，不写 localStorage、URL 或 VITE 变量。没有令牌不展示后台数据。
-- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie（HttpOnly/Secure/SameSite=Lax），管理 API/轨迹再验证 Bearer；后端已校验 cookie 的 HMAC 签名与有效期（`v1.<过期秒>.<HMAC>`，签发脚本 `infra/deploy/issue-session.py`）；签名密钥是独立的 `DEMO_SESSION_SECRET`（restricted 模式必填），**不由 `ADMIN_TOKEN` 派生**，因此持有 Bearer 的人不能自行签发会话，两层门禁相互独立。网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 描述 restricted 模式；local 模式免演示 cookie，但不免管理 Bearer。健康检查无认证且不含连接详情。
-- 跨源开发 fetch 使用 `credentials:'include'`，CORS 只允许确切前端源并允许 credentials。允许头 `Content-Type,Authorization,If-Match,Idempotency-Key`；暴露头 `ETag,X-Trace-Id,Content-Disposition`。M1 处理 OPTIONS；M2 不能以 no-cors 规避。
+- **认证分两层（E1，#46）**：外层是**门禁**，内层是**身份/角色/归属**。`security.py` 只表达门禁（`require_demo_session`），身份与角色在 `identity.py`，对象归属在 `access.py`。判定顺序固定：门禁 → 请求体解析与字段校验 → 身份 → 角色 → 对象归属 → CSRF/Origin。门禁由路由类 `GatedRoute` 在**解析请求体之前**执行（`APIRouter(dependencies=[...])` 或写在 handler 里都会被 422 抢先），因此 restricted 下缺 demo cookie 时，请求体缺字段、类型不对、为空或不是 JSON 都先得到 403 `DEMO_SESSION_REQUIRED`；local 模式没有门禁，同样的请求才是 422。前端据此区分三种失败：403 `DEMO_SESSION_REQUIRED`（门禁失效，回演示入口重取）、422 `VALIDATION_ERROR`（表单字段问题）、401（会话失效，跳登录页）。
+  - 门禁：`DEMO_ACCESS_MODE=restricted` 时业务接口都要 `huice_demo_session`（`HttpOnly/Secure/SameSite=Lax`，载荷 `v2.<过期秒>.<sid>.<HMAC>`；E1 前签发的 `v1.<过期秒>.<HMAC>` 仍验签通过但**只读**）；豁免只有 `GET /health` 与 `POST /auth/logout`；`local` 模式免。
+  - 身份：会话 Cookie `huice_session` → 运维 `Authorization: Bearer <ADMIN_TOKEN>` → demo cookie，按真值表取**第一个「提供了且有效」**的凭证：只有未提供才轮到下一个，提供了但无效一律 401（`TOKEN_INVALID` / `SESSION_INVALID`），绝不降级到 demo。注册/登录/登出不消费会话 Cookie（浏览器删不掉 HttpOnly Cookie）。
+  - 角色：凭证有效但角色不够 → 403 `ROLE_FORBIDDEN`。运维 Bearer 在 E1 后**只读**：可读后台政策与全部 run 轨迹，任何业务接口与写操作都 403。
+  - 对象归属：他人企业与 run 一律 404，且与「不存在」**同码同文案**（`ENTERPRISE_NOT_FOUND` / `RUN_NOT_FOUND`），否则 404/403 的差别本身就是「他人对象是否存在」的探针。企业读：本人 / 审核员全部 / demo 仅无主；企业写：仅本人（审核员也只能改本人）；run 读同企业读口径。
+  - CSRF/Origin：会话写请求要 `X-CSRF-Token`（登录返回的 `csrfToken`，等于 `sha256("huice-csrf:" + 会话令牌)[:32]`）；注册/登录/登出只校验 Origin；demo 写只校验 Origin（+Referer）；Bearer 不校验。两样都缺时先报 `ORIGIN_MISMATCH`。
+- 本地模式仅监听 loopback。**运维通道**（`Authorization: Bearer <ADMIN_TOKEN>`）只用于脚本/curl 读后台政策与轨迹：M1 在受控机器手动输入，M2 的 client 仅保存在内存，退出/刷新清空，不写 localStorage、URL 或 VITE 变量；E1 后浏览器里的后台写操作改用**审核员会话**，不再把 `ADMIN_TOKEN` 打进前端。没有凭证不展示后台数据。
+- 云端 restricted 模式网关先验证 `huice_demo_session` 会话 cookie，再交给后端做身份判定；后端自己校验 cookie 的 HMAC 签名与有效期（签发脚本 `infra/deploy/issue-session.py`，同时写 `demo_quota` 起始行）；签名密钥是独立的 `DEMO_SESSION_SECRET`（restricted 模式必填），**不由 `ADMIN_TOKEN` 派生**，因此持有 Bearer 的人不能自行签发会话，两层门禁相互独立。网关仍需负责下发并拦掉绕过网关的请求，不能仅隐藏按钮。OpenAPI 里 `security` 只写身份，门禁逐操作写在 `x-e1-gate`（`contracts/openapi.yaml` 与运行时 `/openapi.json` 两份一致，含 `x-e1-gate-model` 的口径与 `evaluation-order`；门禁先于请求体解析）；7 个 E1 操作自 `1.1.0-rc.1` 起已并入正式契约，`openapi.e1-draft.yaml` 保留为设计记录（门禁/身份真值表与请求样例）；local 模式免演示 cookie。健康检查无认证且不含连接详情。**rc.10 起发布的 `security` 与该判定逐条对齐**（M2 在 PR #61 的 P1）：业务接口 `UserSession` 或 `DemoSession`，后台读 `UserSession` 或 `AdminBearer`，后台写只有 `UserSession`（Bearer 只读），轨迹三类身份都可读——契约不再承诺后端一定会 403 的入口。
+- 跨源开发 fetch 使用 `credentials:'include'`，CORS 只允许确切前端源并允许 credentials。允许头 `Content-Type,Authorization,If-Match,Idempotency-Key,X-CSRF-Token`；暴露头 `ETag,X-Trace-Id,Content-Disposition`。M1 处理 OPTIONS；M2 不能以 no-cors 规避。
 
 ## 4. 端点与参数传递（路径均省略 /api/v1）
 
@@ -342,11 +348,14 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
 | API-01 `GET /health` | 无 body | 200 `{status:"ok",version}`；未就绪 503 |
 | API-02 `GET /policies` | query：status=published/closed、type=tax/grant、region、asOf、cursor、limit 均可选；不传 status 时含已审开放和关闭样本；**region 按「该区划 + 全国性政策」匹配**——传 `440300` 同时返回 `region=CN` 的全国性政策，传 `CN` 只返回全国性政策（2026-10-29 修，见下） | 200 `PolicyList`；支持历史展示 |
 | API-03 `GET /policies/{policyId}` | path UUID；query version 可选 | 200 `PolicyDetail`，sources/criteria/preparationTemplate |
-| API-08 `POST /enterprises` | JSON `EnterpriseInput`，见 2.3 | 201 `Enterprise` + ETag |
+| API-08 `POST /enterprises` | JSON `EnterpriseInput`，见 2.3。会话写要 CSRF + Origin；demo 写只要 Origin，并占用本次演示会话的一个建样名额 | 201 `Enterprise` + ETag；账号已绑企业 409 `ENTERPRISE_ALREADY_BOUND`（`details.enterpriseId` 给已绑的那家；两个并发请求同时到达时同样 409，由 `owner_user_id` 部分唯一索引兜底）；演示配额用完 429 `DEMO_QUOTA_EXCEEDED`（`details.limit`） |
 | API-09 `GET /enterprises/{enterpriseId}` | path UUID | 200 `Enterprise` + ETag |
-| API-10 `PATCH /enterprises/{enterpriseId}/facts/{factKey}` | path ID/key；If-Match 头必填；JSON `FactUpdate` 不含 key，period 必填 | 200 完整 `Enterprise` + 新 ETag |
+| API-10 `PATCH /enterprises/{enterpriseId}/facts/{factKey}` | path ID/key；If-Match 头必填；JSON `FactUpdate` 不含 key，period 必填；仅企业本人可写（审核员、demo、Bearer 不行） | 200 完整 `Enterprise` + 新 ETag |
+| AUTH-06 `GET /enterprises`（E1 新增） | query cursor/limit 可选；服务端按身份过滤：企业会话只看本人、审核员看全部、demo 只看无主样本、Bearer 403 | 200 `EnterpriseSummaryList` = `{items:EnterpriseSummary[],nextCursor}`，`EnterpriseSummary={id,nameSynthetic,period,ownership}`；`ownership` 为 `self/other/unowned`。列表不带 `facts`：一次拉全量事实会让导航页变成画像下载 |
 
 `Enterprise={id,nameSynthetic,period,facts:EnterpriseFact[],factVersion}`。API-02 只给政策元数据，不含企业判断；M2 按 policyId 将 API-11/12 的 assessments 合并到列表。未分析时显示“尚未分析”，不得猜测四态。
+
+> **演示建样名额与建企业同事务（2026-11-11，#61 review 的 P2）**：`normalize_profile` 的 422 校验在占额之前，格式错误不消耗名额；通过校验后，占额（`INSERT … ON CONFLICT (sid_hash) DO UPDATE … WHERE created < limit AND expires_at > now() RETURNING created`，单语句原子，并发下只有最后一个名额的唯一赢家）与 `enterprise` 的 INSERT、`profile` 轨迹在**同一个数据库事务**里（`PolicyRepository.create_enterprise(demo_quota=…)`）。任何一步失败——配额用尽 429、唯一索引撞车、外键失败、进程崩溃——整个事务回滚，名额一起退回，不会出现「扣了名额、样本没建成」。不再有「先占后建、失败再退」：退额本身失败或进程在两步之间退出时，那种写法仍会白扣一个名额。用例：`tests/test_e1_access.py`（非法 body 不占额、写库失败名额不变、配额用尽不建企业）+ `tests/test_db_demo_quota.py`（真库的同成同败、过期不占额、8 并发只放行 2 个）。
 
 > **region 过滤按「该区划 + 全国」（2026-10-29 修）**：行政区划码只覆盖地方，国家层面的政策没有对应区划码，`source_register.csv` 统一记 `CN`（`storage.NATIONAL_REGION_CODE`）。若按等值过滤，深圳企业查 `region=440300` 会看不到《研发费用加计扣除公告》这类全国性政策——候选集合数量对但内容缺，而且缺的是最不该缺的那部分。因此改为「`region = 传入值` 或 `region = CN`」，只放宽不收紧；传 `CN` 本身只返回全国性政策。目前不支持「只看地方」的严格过滤，若 M2 需要再加显式参数，不加就默认放宽。前端展示时应把 `region=CN` 显示为「全国」，不要显示成区划码。
 
@@ -374,7 +383,8 @@ API-05 同一 policyId/version/Idempotency-Key 和相同 body 的已成功请求
 | API-11 `POST /assessment-runs` | JSON `{enterpriseId,policyIds,asOf,period,supersedesRunId?,skippedFactRefs?}` | 200 `AssessmentRun`；同步完成，不返回未定义 taskId |
 | API-12 `GET /assessment-runs/{runId}` | path UUID | 200 `AssessmentRun`，读取时刷新有效性视图 |
 | API-13 `GET /assessment-runs/{runId}/report.md` | path UUID；Accept=`text/markdown` | 200 `text/markdown; charset=utf-8`，Content-Disposition 为安全文件名的 attachment |
-| API-14 `GET /assessment-runs/{runId}/trace` | path UUID；管理 Bearer | 200 `{steps:TraceStep[]}`，sequence 升序 |
+| API-14 `GET /assessment-runs/{runId}/trace` | path UUID；企业会话（本人 run）/ 审核员会话 / 运维 Bearer | 200 `{steps:TraceStep[]}`，sequence 升序 |
+| AUTH-07 `GET /assessment-runs`（E1 新增） | query `enterpriseId`（可选，越出可见范围 → 404 `ENTERPRISE_NOT_FOUND`）、cursor、limit；可见范围同企业读口径 | 200 `RunSummaryList` = `{items:RunSummary[],nextCursor}`，`RunSummary={id,enterpriseId,asOf,createdAt,status,reportAvailable}`；`status` 为 `queued/running/succeeded/failed` |
 
 API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络失败后不得自动创建重复运行。同步超时由 M1 记录，MVP 不引入未定义异步队列。所有 API 都须处理统一错误；报告接口失败时 Content-Type 回到 application/json。
 
@@ -383,6 +393,30 @@ API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络�
 `PolicyAssessment={policyId,result,validity,staleReasons,criteriaResults,missingFacts,nextQuestion,validUntil,preparation,explanation,explanationMode,warnings}`。`CriterionResult={criterionId,result,reason,factRefs,evidenceRefs,calculation}`，calculation 可 null，季度计算必须给输入与中间值。`FactRef={key,period}`；missingFacts 是 FactRef 数组，结果不是 insufficient_evidence 时恒为空数组（个别条件缺事实不影响已定结论），结果如此时只含仍挡住结论的事实。`NextQuestion={factRef,prompt,reason,rank}`；不存在为 null。
 
 四态枚举仅 `satisfied/not_satisfied/insufficient_evidence/conflict`；有效性仅 `current/stale`；closed 是政策状态。stale 展示优先，但原四态与原因仍可见。schema 中规定的可空字段应显式传 null；不能把空数组、缺字段、null 任意互换。
+
+### 4.4 账号与会话（E1 新增）
+
+契约在 `contracts/openapi.yaml`（`1.1.0-rc.1` 起并入），设计记录见 `contracts/openapi.e1-draft.yaml`，实现见 `services/api/app/routes/auth.py`；判定顺序见 §3。
+
+| ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
+| --- | --- | --- |
+| AUTH-01 `POST /auth/register` | JSON `{username,password,enterprise?,reviewerSignupKey?}`；`username` 按**发送的原始值**校验 `^[a-z0-9_.-]{3,32}$`——调用方先 trim、转小写再发（`ACME.Two` → `acme.two`），服务端再做的幂等规范化只是容错、不是契约承诺，按契约发的合法值原样入库。企业用户必须带 `enterprise`；带**有效** `reviewerSignupKey` 时不建企业。只有 Origin 校验，不消费会话 Cookie | 201 `{user:{id,username,role,enterpriseId}}`，不自动登录；重名 409 `USERNAME_TAKEN`，密钥错 403 `ROLE_FORBIDDEN` |
+| AUTH-02 `POST /auth/login` | JSON `{username,password}`；只有 Origin 校验。请求里**有效**的会话会被撤销并换新（不留两个活会话）；无效/过期的直接忽略，不返回 401 | 200 `{user,expiresAt,csrfToken}` + `Set-Cookie: huice_session=…; HttpOnly; SameSite=lax; Path=/api`（非 local 加 `Secure`），`Cache-Control: no-store`；账号不存在与密码错同为 401 `INVALID_CREDENTIALS` |
+| AUTH-03 `POST /auth/logout` | 无 body；只撤销**当前出示的**会话，缺 CSRF 时 403 `CSRF_REQUIRED` 且无副作用；无效会话按「无会话」处理 | 204 + 清 Cookie。门禁豁免（否则 demo cookie 过期后连登出都做不了） |
+| AUTH-04 `GET /auth/me` | 只要会话：带**有效** demo cookie 或运维 Bearer 但没有用户会话 → 403 `ROLE_FORBIDDEN`（凭证有效但不够，不是「会话过期」；local 与 restricted 同结论，restricted 还要先过门禁） | 200 `{user,expiresAt,csrfToken}`（`csrfToken` 与 AUTH-02 相同，首版不轮换），`no-store`；会话失效 401 `SESSION_INVALID` |
+| AUTH-05 `POST /auth/password` | JSON `{currentPassword,newPassword}`；CSRF + Origin 必填 | 204；成功后撤销该账号**全部**会话并清 Cookie。旧密码错 401 `INVALID_CREDENTIALS` |
+
+共用的两处工具：密码哈希 `hashlib.scrypt`（格式 `scrypt$n$r$p$salt$hash`），CSRF 值 `sha256("huice-csrf:" + 会话令牌)[:32]`。
+
+登录/注册限流按 IP，三条约束（`app/identity.py` 的 `LoginLimiter.attempt()`，名额在**进入慢哈希之前**原子占下）：
+
+1. **在途名额**：同一 IP 同时最多 5 个认证请求在跑，第 6 个立刻 429（`Retry-After: 1`）。没有这一条时，并发洪峰会在首个失败落账前全部通过检查，一起压满 scrypt 的 CPU（M2 在 PR #61 的 P1）。
+2. **失败窗口**：60 秒内 5 次失败后拒绝，直到窗口滑过。
+3. **连续失败**：累计 20 次失败锁 900 秒。
+
+只有 401/403（密码错、注册密钥错）算失败；数据库故障等 5xx 只释放名额，故障期间不会把整片 IP 锁死。**成功不清零失败记录**，只释放自己的名额——否则握有一个有效账号的人可以靠反复登录把失败计数刷掉，再接着猜别的账号。纯字段校验（422）在限流块之外，不消耗失败次数。计数在进程内：`huice-api.service` 是单 worker，重启清零；`nginx-huice.conf` 另有一层每 IP 20 r/s（突发 40）的粗粒度 `limit_req` 兜瞬时洪峰，它看不到密码对不对，替代不了上面的按失败次数锁定。
+
+**保底审核员**：E1 起后台写操作只接受审核员会话（Bearer 只读），而注册接口建审核员要配置 `REVIEWER_SIGNUP_KEY`。全新部署用 `infra/deploy/create-admin.py` 由持 root 的人在 ECS 上写库建第一个审核员（只从环境读 `DATABASE_URL`/`ADMIN_INIT_USERNAME`/`ADMIN_INIT_PASSWORD`，不覆盖既有账号），流程见 `infra/deploy/README.md` §3.4。
 
 ## 5. 一次完整联调如何传参
 
@@ -532,7 +566,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 - **失效视图**：改事实只让读到该事实的条件/政策变 `stale`（`fact_changed` + `changedCriterionIds`/`changedFactRefs`）；发布新版本使依赖旧版本的 run 变 `stale`（`policy_changed`）；历史四态与快照不变（`test_invalidation.py`、`test_db_evaluation.py`）。
 - **并发与幂等**：`factVersion` 走 compare-and-swap（缺 `If-Match` 428、`*`/弱标签/畸形 400、过期 409 + `currentVersion`）；抽取按 `Idempotency-Key` 复用已成功结果（`test_enterprise_http.py`、`test_admin_review_http.py`）。
 - **契约对齐**：全部 16 个端点与契约的 operationId/summary/tags/security 逐项比对（`test_openapi_alignment.py`），`generate_types.py --check` 一致、`test_contract.py` 8 项通过。
-- **报告与轨迹**：报告为 UTF-8 Markdown + `Content-Disposition: attachment`，四态/证据/清单原样转写并单列下载时刻的有效性（`test_report_trace_http.py`）；轨迹需管理 Bearer，先列入库/审核步骤、再列在线步骤，`sequence` 重排为严格递增，`policyId`/`policyVersion` 由版本引用回填（`test_report_trace_http.py`、`test_db_evaluation.py`）。
+- **报告与轨迹**：报告为 UTF-8 Markdown + `Content-Disposition: attachment`，四态/证据/清单原样转写并单列下载时刻的有效性（`test_report_trace_http.py`）；run 未成功时报告 409 `RUN_NOT_COMPLETED`（`details.status`）；轨迹按身份三通道（企业会话看本人 run、审核员与运维 Bearer 看全部、demo 看无主 run，他人 run 404），先列入库/审核步骤、再列在线步骤，`sequence` 重排为严格递增，`policyId`/`policyVersion` 由版本引用回填（`test_report_trace_http.py`、`test_db_evaluation.py`）。
 
 本阶段连真库才暴露、并已修复的缺陷（详见 `docs/devlog/M1.md`）：
 
@@ -657,15 +691,16 @@ M2 复核 PR #8 时提出两处正确性问题，均已修复并补回归用例�
 | --- | --- |
 | `contracts/openapi.yaml`、`contracts/README.md`、`contracts/generate_types.py` | API 参数、schema、权限、错误、示例和类型生成；M2 审查每次变更及前端生成文件 |
 | `services/api/app/main.py`、`schemas.py` | 应用组装（CORS、中间件顺序、惰性 `app`）、wire 模型与 camelCase 别名 |
-| `services/api/app/{config,errors,security,db}.py` | 环境变量加载与按模式校验（缺失只报变量名）、统一错误信封与 `X-Trace-Id`、管理 Bearer 与演示 cookie、psycopg 连接池与健康探测 |
-| `services/api/app/routes/{health,policies,admin_policies,enterprises,assessment_runs}.py` | 本文对应16个接口；只组织请求/响应，不在路由里写规则（API-01—16 均已实现，API-14 轨迹在 `assessment_runs.admin_router`） |
+| `services/api/app/{config,errors,security,db}.py` | 环境变量加载与按模式校验（缺失只报变量名）、统一错误信封与 `X-Trace-Id`、**门禁**（restricted 的演示 cookie）、psycopg 连接池与健康探测；E1 起身份/角色/归属分别在 `identity.py` / `access.py`，见 §3 |
+| `services/api/app/{auth,identity,access}.py` | 密码哈希与 CSRF 派生、登录限流；凭证真值表（会话 → 运维 Bearer → demo）、角色判定；企业与 run 的对象归属 |
+| `services/api/app/routes/{health,policies,admin_policies,enterprises,assessment_runs,auth}.py` | 本文对应的 16 个基线接口 + E1 新增的 AUTH-01—07（`auth.py` 五个账号/会话操作，两个列表在 `enterprises.py` / `assessment_runs.py`）；只组织请求/响应，不在路由里写规则（API-01—16 均已实现，API-14 轨迹在 `assessment_runs.admin_router`） |
 | `services/api/app/domain/{rules,citations,questioning,versioning}.py` | AST/求值、引用校验、补问、版本依赖与失效（均已实现；季度平均的期间约束与冲突传播见 2.2） |
 | `services/api/app/domain/preparation.py`、`services/api/app/materials/{catalog,__main__}.py` | 材料要求的导入与运行期展开：`catalog` 解析并校验 CSV（只收已仲裁行、必交/条件交字段互斥、事实键白名单），`__main__` 是 `python -m app.materials check/import` 命令行，`preparation.build_items` 把材料按本次判断的引用与期间展开成四态条目（2026-11-06，契约 rc.8） |
 | `services/api/app/agents/{contracts,orchestrator,ingestion,extraction,profile,explanation,report,trace}.py` | 交接类型、两条流程、预算与脱敏轨迹（ingestion 文件摄取、profile 画像归一化、extraction 草稿抽取、orchestrator 同步判断、trace 轨迹、report 报告渲染均已实现；`explanation` 的清单 `items[]` 自 2026-11-06 起由 `orchestrator._material_items` 生成、`report` 按四态渲染） |
-| `services/api/app/integrations/{storage,cache,llm,obs}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（storage 已覆盖政策草稿、企业画像、公开政策、run、失效视图与轨迹读取；llm/obs 已实现，`esdk-obs-python` 已入锁，**2026-10-27 已在真实桶与真实 DeepSeek Key 上联调通过**（`test_obs_live.py` 5 项、`test_deepseek_live.py` 3 项）；cache 已实现七字段版本化键、值投影与故障绕过，`redis==8.1.0` 已入锁） |
+| `services/api/app/integrations/{storage,cache,llm,obs,accounts}.py` | 持久化、缓存、模型（DeepSeek）与原文存储适配（accounts 是 E1 的账号/会话仓储：注册事务、会话摘要、签发演示 cookie 时登记 `demo_quota` 行（占额在建企业的事务里，见 API-08 下的说明）；storage 已覆盖政策草稿、企业画像、公开政策、run、失效视图与轨迹读取，以及 E1 的归属过滤与两个列表；llm/obs 已实现，`esdk-obs-python` 已入锁，**2026-10-27 已在真实桶与真实 DeepSeek Key 上联调通过**（`test_obs_live.py` 5 项、`test_deepseek_live.py` 3 项）；cache 已实现七字段版本化键、值投影与故障绕过，`redis==8.1.0` 已入锁） |
 | `services/api/app/evaluation/`（含 `dataset_map.py`）、`services/api/tests/{test_eval_snapshot,test_eval_dataset_map,test_eval_report_freeze}.py` | 评测输入快照的导出与核对（含 CSV ↔ 库的逐条对齐）、以及 API-13 报告的确定性冻结（`EVALUATION_FREEZE` §5.2 第 1/2/3/4/5 项，见 2.9）；不产出评测指标 |
 | `services/api/tests/{test_contract,test_rules,test_invalidation,test_agent_flow,test_citations}.py` | 静态契约与业务测试，独立报告覆盖范围（refs 解析、四态优先级、AST 求值、引用校验、失效视图与端到端判断链路） |
-| `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_import_http,test_ingestion_units,test_admin_read_http,test_admin_review_http,test_public_read_http,test_enterprise_http,test_report_trace_http,test_profile_units,test_questioning,test_trace,test_cache,test_cache_redis_live,test_extraction_units,test_openapi_alignment,test_obs_object_store,test_obs_live,test_llm_client,test_deepseek_live}.py` | 无数据库 HTTP 测试（假仓储）、各单元口径与契约对齐测试；适配器用假客户端/假传输层/假缓存后端，不联网。三个例外都靠环境变量门控、默认跳过：`test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL`，真实 Redis）、`test_obs_live.py`（`HUICE_TEST_OBS_*` 四项，真实桶）、`test_deepseek_live.py`（`HUICE_TEST_DEEPSEEK_API_KEY`，真实模型） |
+| `services/api/tests/{conftest,support,test_config,test_http_envelope,test_auth,test_e1_auth_flow,test_e1_access,test_e1_draft,test_import_http,test_ingestion_units,test_admin_read_http,test_admin_review_http,test_public_read_http,test_enterprise_http,test_report_trace_http,test_profile_units,test_questioning,test_trace,test_cache,test_cache_redis_live,test_extraction_units,test_openapi_alignment,test_obs_object_store,test_obs_live,test_llm_client,test_deepseek_live}.py` | 无数据库 HTTP 测试（假仓储）、各单元口径与契约对齐测试；适配器用假客户端/假传输层/假缓存后端，不联网。三个例外都靠环境变量门控、默认跳过：`test_cache_redis_live.py`（`HUICE_TEST_REDIS_URL`，真实 Redis）、`test_obs_live.py`（`HUICE_TEST_OBS_*` 四项，真实桶）、`test_deepseek_live.py`（`HUICE_TEST_DEEPSEEK_API_KEY`，真实模型） |
 | `services/api/tests/{conftest,support,db_support,test_db_policy_repository,test_db_evaluation,test_db_errors}.py` | `db` 标记的真库用例：独立 schema 建表、用例间清表；覆盖政策导入落库、企业画像 CAS、公开列表与游标、快照闸门、run 落库与失效视图、只追加与不可发布保护 |
 | `services/api/tests/{test_materials,test_db_materials}.py` | 材料要求：CSV 解析与校验、代号多文号解析、导入替换与类型一致性（真库），以及运行期展开成四态、季度八引用、关闭政策与报告文案（2026-11-06，24 + 14 项） |
 | `services/api/AGENT_PROTOCOL.md`、`pyproject.toml`、实现后生成的 `requirements.lock` | 内部协议、真实依赖与测试命令 |
