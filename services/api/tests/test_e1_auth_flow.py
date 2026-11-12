@@ -345,6 +345,35 @@ def test_me_requires_a_session_not_a_bearer(anon_client, bearer):
     assert from_bearer.json()["error"]["code"] == "ROLE_FORBIDDEN"
 
 
+def test_me_treats_a_demo_visitor_as_a_valid_but_insufficient_credential(client):
+    """有效 demo cookie、没有用户会话：403 `ROLE_FORBIDDEN`，不是 401（PR #62 的待确认项）。
+
+    demo 身份是真的（已通过门禁与身份判定），只是会话专属操作要账号——按「有效但不够 → 403、
+    无效 → 401」的全局顺序。前端据此显示登录入口，不要当成会话过期或门禁失效。
+    改密同理，而且身份层先于 CSRF/Origin：不会先被误报成缺 CSRF。
+    """
+
+    from app.security import DEMO_SESSION_COOKIE, issue_demo_session
+
+    client.cookies.clear()
+    client.cookies.set(
+        DEMO_SESSION_COOKIE,
+        issue_demo_session(DEMO_SESSION_SECRET, expires_at=2**31 - 1, sid="me-demo-0001"),
+        path="/api",
+    )
+
+    me = client.get("/api/v1/auth/me")
+    assert me.status_code == 403, me.text
+    assert me.json()["error"]["code"] == "ROLE_FORBIDDEN"
+
+    change = client.post(
+        "/api/v1/auth/password",
+        json={"currentPassword": "x" * 12, "newPassword": "y" * 12},
+    )
+    assert change.status_code == 403, change.text
+    assert change.json()["error"]["code"] == "ROLE_FORBIDDEN"
+
+
 def test_change_password_needs_the_current_one_and_kills_all_sessions(client, accounts):
     accounts.seed_user("pw.one")
     token = accounts.seed_session("pw.one", token="pw-token-0001")

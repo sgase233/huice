@@ -14,7 +14,7 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 
 ## E1 契约草案（2026-11-10）
 
-[`openapi.e1-draft.yaml`](openapi.e1-draft.yaml) 是 #46 账号/会话/对象权限的**设计记录**（`1.1.0-rc.1-draft.7`）。自 `openapi.yaml` 的 `1.1.0-rc.1` 起，7 个操作与账号/会话 schema 已并入正式契约，端点、schema 与 `security` 以 `openapi.yaml` 为准；本文件保留评审时用到的门禁/身份真值表、错误码清单与可复核的请求样例。它不进 `generate_types.py` 的管线、不影响 `APP_VERSION` 与评测指纹。
+[`openapi.e1-draft.yaml`](openapi.e1-draft.yaml) 是 #46 账号/会话/对象权限的**设计记录**（`1.1.0-rc.1-draft.8`）。自 `openapi.yaml` 的 `1.1.0-rc.1` 起，7 个操作与账号/会话 schema 已并入正式契约，端点、schema 与 `security` 以 `openapi.yaml` 为准；本文件保留评审时用到的门禁/身份真值表、错误码清单与可复核的请求样例。它不进 `generate_types.py` 的管线、不影响 `APP_VERSION` 与评测指纹。
 
 - 内容：AUTH-01—07 七个操作、16 个现有操作的 security 与 404/409 语义变更（`x-e1-impact`）、错误码表（`x-error-codes`）、旧消费者清单（`x-legacy-consumers`）、未决项（`x-open-questions`）。
 - 写法：复用的现有 schema 一律 `$ref: './openapi.yaml#/components/...'`，草案不复制它们；两份文件在同一个目录，工具可直接解析。
@@ -129,6 +129,7 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 | --- | --- | --- |
 | 401 | `UNAUTHENTICATED` | 未提供任何凭证（E1 起「提供了但无效」另报 `TOKEN_INVALID` / `SESSION_INVALID`，不再混用本码，也不降级到下一种凭证；新增错误码见 `openapi.e1-draft.yaml` 的 `x-error-codes`） |
 | 403 | `DEMO_SESSION_REQUIRED` | `DEMO_ACCESS_MODE=restricted` 且 `huice_demo_session` 缺失、签名不符或已过期（格式 `v2.<过期秒>.<sid>.<HMAC>`，E1 前签发的 `v1.<过期秒>.<HMAC>` 仍验签通过但只读；用独立机密 `DEMO_SESSION_SECRET` 签发，见 `infra/deploy/issue-session.py`） |
+| 403 | `ROLE_FORBIDDEN` | **凭证有效但不够**：有效 demo cookie 或运维 Bearer 访问会话专属操作（`/auth/me`、`/auth/password`）、非审核员写后台、Bearer 读业务数据等。按「有效但不够 → 403、无效 → 401」的判定顺序，与 `UNAUTHENTICATED`/`SESSION_INVALID`（无效或未提供）和 `DEMO_SESSION_REQUIRED`（外层门禁缺失）是三种不同处置：`/auth/me` 收到它应当显示登录入口（演示访客态），不是清会话跳登录页 |
 | 400 | `INVALID_QUERY` | query/path 参数不合法（含 limit 越界、非法 UUID、游标无效） |
 | 400 | `INVALID_METADATA` | `metadata` 不是合法 JSON 对象 |
 | 400 | `INVALID_MULTIPART` | multipart 结构损坏 |

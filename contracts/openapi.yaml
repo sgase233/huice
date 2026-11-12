@@ -1330,12 +1330,15 @@ paths:
         刷新页面后恢复登录态与 `enterpriseId`；返回与 AUTH-02 相同的 `csrfToken`（首版不轮换）。
         响应禁止缓存。会话过期或已撤销一律 401，不降级到 demo 或 Bearer。
 
-        **两种失败要分开处理**（restricted 部署）：
-        - `403 DEMO_SESSION_REQUIRED`：外层门禁失效——回演示入口重新拿 demo cookie，
+        **三种失败要分开处理**：
+        - `403 DEMO_SESSION_REQUIRED`（restricted）：外层门禁失效——回演示入口重新拿 demo cookie，
           **会话本身可能还有效**，不要直接清掉并跳登录页；
-        - `401 SESSION_INVALID` / `401 UNAUTHENTICATED`：会话本身失效——跳登录页，
+        - `403 ROLE_FORBIDDEN`：出示了**有效**的 demo cookie（或运维 Bearer）但没有用户会话——凭证
+          有效、只是不是账号身份。按全局判定顺序「有效但不够 → 403、无效 → 401」，前端据此显示
+          登录入口（演示访客态），不要当成会话过期，也不要和上面的 `DEMO_SESSION_REQUIRED` 混用；
+        - `401 SESSION_INVALID` / `401 UNAUTHENTICATED`：会话本身失效或未提供——跳登录页，
           登录（AUTH-02）会覆盖旧 Cookie，不需要前端先删。
-        local 部署没有门禁，只可能出现 401。
+        local 部署没有门禁，可能出现 401 与 `403 ROLE_FORBIDDEN`，不会出现 `DEMO_SESSION_REQUIRED`。
       responses:
         '200':
           description: 当前会话
@@ -1381,6 +1384,9 @@ paths:
       description: |
         校验旧密码后更新哈希，并**立即撤销该账号的全部会话**（含当前会话），清 Cookie；
         用户须重新登录。没有「替他人改密」的接口，审核员也不能重置他人密码。
+
+        出示了**有效** demo cookie（或运维 Bearer）但没有用户会话时是 `403 ROLE_FORBIDDEN`，
+        且先于 CSRF/Origin 判定——不会先被误报成缺 CSRF。
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
         - $ref: '#/components/parameters/OriginHeader'
