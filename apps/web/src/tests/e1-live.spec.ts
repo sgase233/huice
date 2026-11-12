@@ -93,7 +93,7 @@ test('isolated HTTP: reviewer session controls audit access', async ({ page, req
   const denied = await page.request.post('http://127.0.0.1:8000/api/v1/admin/policies/import', { headers: { Origin: 'http://127.0.0.1:5173' }, multipart: {} });
   expect(denied.status()).toBe(403);
   expect((await denied.json()).error.code).toBe('CSRF_REQUIRED');
-  await expect(page.getByRole('button', { name: '处理轨迹' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '处理轨迹' })).toBeVisible();
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: '企业与运行记录' }).click();
   await page.getByRole('button', { name: '读取企业列表' }).click();

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-// E1 审核用例使用模拟审核员会话；旧本人轨迹用例暂留，待脱敏边界确认后重写。
+// E1 审核用例使用模拟审核员会话；旧令牌授权轨迹用例暂标记 fixme，待按审核员会话重写；本人轨迹仍待脱敏边界确认。
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
 });
@@ -17,7 +17,7 @@ test('审核页返回首页时取消离开保留未保存的输入', async ({ pa
   await expect(page.getByLabel('标题', { exact: true })).toHaveValue('尚未保存', { timeout: 3000 });
 });
 
-test.skip('轨迹页展示未选择、加载、空结果和不存在状态', async ({ page }) => {
+test.fixme('轨迹页展示未选择、加载、空结果和不存在状态', async ({ page }) => {
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   let calls = 0;
@@ -41,7 +41,7 @@ test.skip('轨迹页展示未选择、加载、空结果和不存在状态', asy
   await expect(page.getByText(/尚未选择分析记录/)).toBeVisible();
 });
 
-test.skip('受限轨迹携带内存令牌，退出后不再显示数据', async ({ page }) => {
+test.fixme('受限轨迹携带内存令牌，退出后不再显示数据', async ({ page }) => {
   let authorization = '';
   await page.route('**/api/v1/assessment-runs/*/trace', async route => {
     authorization = route.request().headers().authorization ?? '';
@@ -62,7 +62,7 @@ test.skip('受限轨迹携带内存令牌，退出后不再显示数据', async 
   await expect(page.getByLabel('管理令牌')).toBeVisible();
 });
 
-test.skip('轨迹按序展示降级、失败、版本和人工动作', async ({ page }) => {
+test.fixme('轨迹按序展示降级、失败、版本和人工动作', async ({ page }) => {
   const base = { inputSummary: '输入', outputSummary: '输出', objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'rule-v2', elapsedMs: 18, errorCode: null, humanAction: null };
   await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [
     { ...base, sequence: 2, stage: 'explanation', status: 'retryable_error', errorCode: 'DEPENDENCY_UNAVAILABLE', humanAction: '人工复核' },
@@ -93,7 +93,7 @@ test.skip('轨迹按序展示降级、失败、版本和人工动作', async ({ 
   await steps.first().screenshot({ path: 'test-results/trace-flow-dark.png' });
 });
 
-test.skip('轨迹序号不符合契约时显示错误而不保留旧轨迹', async ({ page }) => {
+test.fixme('轨迹序号不符合契约时显示错误而不保留旧轨迹', async ({ page }) => {
   let calls = 0;
   const step = { sequence: 1, stage: 'profile', status: 'ok', inputSummary: '输入', outputSummary: '旧轨迹', objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'v1', elapsedMs: 0, errorCode: null, humanAction: null };
   await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [{ ...step, sequence: ++calls === 1 ? 1 : 0 }] } }));
@@ -108,7 +108,7 @@ test.skip('轨迹序号不符合契约时显示错误而不保留旧轨迹', asy
 });
 
 for (const status of [200, 401]) {
-  test.skip(`退出授权后迟到的轨迹 ${status} 响应不影响新会话`, async ({ page }) => {
+  test.fixme(`退出授权后迟到的轨迹 ${status} 响应不影响新会话`, async ({ page }) => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     await page.route('**/api/v1/assessment-runs/*/trace', async route => {
@@ -319,7 +319,7 @@ test('审核页表单无横向溢出，键盘可切换焦点', async ({ page }) 
   await page.goto('/#admin');
   for (const width of [375, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `width ${width}`).toBe(true);
   }
   await page.screenshot({ path: 'test-results/phase5-admin-desktop.png', fullPage: true });
   await page.getByLabel('版本', { exact: true }).focus();
@@ -329,7 +329,7 @@ test('审核页表单无横向溢出，键盘可切换焦点', async ({ page }) 
 });
 
 for (const status of [401, 403]) {
-  test.skip(`轨迹授权失败 ${status} 清除受限内容并给出对应提示`, async ({ page }) => {
+  test.fixme(`轨迹授权失败 ${status} 清除受限内容并给出对应提示`, async ({ page }) => {
     let count = 0;
     await page.route('**/api/v1/assessment-runs/*/trace', async route => {
       count++;
@@ -398,7 +398,7 @@ test('编辑多来源引用时保留来源与版本并按原文计算哈希', as
   expect(saved.criteria[0].sourceSpans[0]).toMatchObject({ sourceId: 'b', sourceVersion: 'v1', quote: 'abc', textHash: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' });
 });
 
-test.skip('切换运行时迟到的轨迹响应不能覆盖新结果', async ({ page }) => {
+test.fixme('切换运行时迟到的轨迹响应不能覆盖新结果', async ({ page }) => {
   let releaseFirst!: () => void;
   const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
   const makeStep = (text: string) => ({ steps: [{ sequence: 1, stage: 'evaluation', status: 'ok', inputSummary: '输入', outputSummary: text, objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'test', elapsedMs: 1, errorCode: null, humanAction: null }] });

@@ -162,7 +162,7 @@ async function request<T>(path: string, kind: string, init: RequestInit = {}): P
     try { error = await response.json(); } catch { /* Malformed errors still remain visible. */ }
     const body = error as { error?: { code?: string; message?: string; details?: Record<string, unknown> }; traceId?: string } | undefined;
     if (generation !== requestGeneration) throw new ApiRequestError(0, 'STALE_REQUEST', '请求已被账号切换替代。', null);
-    if (typeof window !== 'undefined' && (body?.error?.code === 'SESSION_INVALID' || body?.error?.code === 'UNAUTHENTICATED' || body?.error?.code === 'DEMO_SESSION_REQUIRED' || body?.error?.code === 'DEMO_SESSION_INVALID')) window.dispatchEvent(new CustomEvent('huice-auth-error', { detail: body.error.code }));
+    if (path !== '/auth/me' && typeof window !== 'undefined' && (body?.error?.code === 'SESSION_INVALID' || body?.error?.code === 'UNAUTHENTICATED' || body?.error?.code === 'DEMO_SESSION_REQUIRED' || body?.error?.code === 'DEMO_SESSION_INVALID')) window.dispatchEvent(new CustomEvent('huice-auth-error', { detail: body.error.code }));
     throw new ApiRequestError(response.status, body?.error?.code || 'INVALID_ERROR_RESPONSE', body?.error?.message || `服务返回 ${response.status}，错误格式不符合契约。`, body?.traceId || traceId, body?.error?.details || {});
   }
   if (response.status === 204 && kind === 'empty') return { data: undefined as T, etag, traceId };

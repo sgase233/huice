@@ -3,6 +3,87 @@ import { expect, test } from '@playwright/test';
 const session = (name: string, role: 'enterprise' | 'reviewer', enterpriseId: string | null) => ({ user: { id: name, username: name, role, enterpriseId }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' });
 const error = (code: string) => ({ error: { code, message: code, details: {} }, traceId: 'test' });
 
+test('anonymous first visit does not report an expired session', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
+  await page.goto('/#enterprise');
+  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+  await expect(page.getByText('会话已失效，请重新登录。')).toHaveCount(0);
+});
+
+test('registration validates normalized username and displays server field errors', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
+  await page.route('**/api/v1/auth/register', route => route.fulfill({ status: 422, json: { error: { code: 'VALIDATION_ERROR', message: '请求内容不合法', details: { fieldErrors: [{ field: 'enterprise.nameSynthetic', message: '名称无效' }] } }, traceId: 'test' } }));
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '注册账号' }).click();
+  await page.getByLabel('用户名').fill('中文');
+  await page.getByLabel('密码', { exact: true }).fill('password-12345');
+  await page.getByLabel('企业名称').fill('合成企业');
+  await page.getByLabel('地区代码').fill('440300');
+  await page.getByLabel('行业代码').fill('C39');
+  await page.getByRole('button', { name: '注册', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('用户名须为');
+  await page.getByLabel('用户名').fill(' ACME ');
+  await page.getByRole('button', { name: '注册', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('名称无效');
+});
+
+test('reviewer can read trace without exposing it to enterprise accounts', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('reviewer', 'reviewer', null) }));
+  await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [] } }));
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '处理轨迹' }).click();
+  await page.getByLabel('分析记录编号').fill('123e4567-e89b-42d3-a456-426614174000');
+  await page.getByRole('button', { name: '读取轨迹' }).click();
+  await expect(page.getByText('这条分析记录没有处理步骤。')).toBeVisible();
+});
+
+test('unavailable server demo reports its own cause', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
+  await page.route('**/api/v1/auth/logout', route => route.fulfill({ status: 204 }));
+  await page.route('**/api/v1/policies**', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '进入服务端演示' }).click();
+  await page.getByRole('button', { name: '机会列表' }).click();
+  await expect(page.getByRole('alert')).toContainText('该部署未启用服务端演示');
+});
+
+test('demo entry restores csrf before retrying a rejected logout', async ({ page }) => {
+  let restores = 0; let logouts = 0;
+  await page.route('**/api/v1/auth/me', route => ++restores <= 2 ? route.fulfill({ status: 500, json: error('INTERNAL_ERROR') }) : route.fulfill({ json: session('reviewer', 'reviewer', null) }));
+  await page.route('**/api/v1/auth/logout', route => {
+    logouts++;
+    if (logouts === 1) return route.fulfill({ status: 403, json: error('CSRF_REQUIRED') });
+    expect(route.request().headers()['x-csrf-token']).toBe('0123456789abcdef');
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '进入服务端演示' }).click();
+  await expect(page.getByText('服务端演示', { exact: true })).toBeVisible();
+  expect(logouts).toBe(2);
+});
+
+test('password change exposes server field errors', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', null) }));
+  await page.route('**/api/v1/auth/password', route => route.fulfill({ status: 422, json: { error: { code: 'VALIDATION_ERROR', message: '请求内容不合法', details: { fieldErrors: [{ field: 'newPassword', message: '密码不符合要求' }] } }, traceId: 'test' } }));
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '账号与退出' }).click();
+  await page.getByLabel('当前密码').fill('password-12345');
+  await page.getByLabel('新密码').fill('password-67890');
+  await page.getByRole('button', { name: '修改密码' }).click();
+  await expect(page.getByRole('alert')).toContainText('密码不符合要求');
+});
+
+test('bound enterprise can be retried after a failed read', async ({ page }) => {
+  let failed = true;
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', 'e1') }));
+  await page.route('**/api/v1/enterprises/e1', route => failed ? route.fulfill({ status: 500, json: error('INTERNAL_ERROR') }) : route.fulfill({ json: { id: 'e1', nameSynthetic: '重试企业', period: { startDate: '2026-01-01', endDate: '2026-12-31' }, factVersion: 'a', facts: [] } }));
+  await page.goto('/#enterprise');
+  await expect(page.getByRole('alert')).toBeVisible();
+  failed = false;
+  await page.getByRole('button', { name: '重新读取企业' }).click();
+  await expect(page.getByText('已保存合成企业：重试企业')).toBeVisible();
+});
+
 test('register sends normalized username and required enterprise facts', async ({ page }) => {
   let sent: any;
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
@@ -18,6 +99,25 @@ test('register sends normalized username and required enterprise facts', async (
   await expect(page.getByText('注册成功，请登录。')).toBeVisible();
   expect(sent.username).toBe('acme');
   expect(sent.enterprise.facts.map((f: { key: string }) => f.key)).toEqual(['region', 'industry']);
+});
+
+test('reviewer registration explains and preserves optional enterprise binding', async ({ page }) => {
+  let sent: any;
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
+  await page.route('**/api/v1/auth/register', route => { sent = route.request().postDataJSON(); return route.fulfill({ status: 201, json: { user: { id: 'r', username: 'reviewer', role: 'reviewer', enterpriseId: 'e1' } } }); });
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '注册账号' }).click();
+  await expect(page.getByText(/若填写企业资料则会创建并绑定该企业/)).toBeVisible();
+  await page.getByLabel('用户名').fill('reviewer');
+  await page.getByLabel('密码', { exact: true }).fill('password-12345');
+  await page.getByLabel('企业名称').fill('合成企业');
+  await page.getByLabel('地区代码').fill('440300');
+  await page.getByLabel('行业代码').fill('C39');
+  await page.getByLabel('审核员注册密钥（仅审核员）').fill('synthetic-key-12345');
+  await page.getByRole('button', { name: '注册', exact: true }).click();
+  await expect(page.getByText('注册成功，请登录。')).toBeVisible();
+  expect(sent.enterprise.nameSynthetic).toBe('合成企业');
+  expect(sent.reviewerSignupKey).toBe('synthetic-key-12345');
 });
 
 test('logout clears account data and reviewer navigation follows the next session', async ({ page }) => {
@@ -160,6 +260,9 @@ test('enterprise account cannot open reviewer view by hash', async ({ page }) =>
   await page.goto('/#reviewer');
   await expect(page.getByText('此入口仅供审核员使用。')).toBeVisible();
   await expect(page.getByRole('button', { name: '读取企业列表' })).toHaveCount(0);
+  await page.goto('/#trace');
+  await expect(page.getByText('此入口仅供审核员使用；本人轨迹暂未开放。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '读取轨迹' })).toHaveCount(0);
 });
 
 test('valid demo identity can enter demo after session restoration is forbidden', async ({ page }) => {
@@ -174,13 +277,13 @@ test('valid demo identity can enter demo after session restoration is forbidden'
 });
 
 test('gate failure stays distinct from an expired session', async ({ page }) => {
-  let calls = 0;
+  let expired = false;
   await page.route('**/api/v1/auth/me', route => {
-    calls++;
-    return calls === 1 ? route.fulfill({ status: 403, json: error('DEMO_SESSION_REQUIRED') }) : route.fulfill({ status: 401, json: error('SESSION_INVALID') });
+    return !expired ? route.fulfill({ status: 403, json: error('DEMO_SESSION_REQUIRED') }) : route.fulfill({ status: 401, json: error('SESSION_INVALID') });
   });
   await page.goto('/#enterprise');
   await expect(page.getByRole('heading', { name: '演示入口已失效' })).toBeVisible();
+  expired = true;
   await page.getByRole('button', { name: '重新检查会话' }).click();
   await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
   await expect(page.getByText('请求已被账号切换替代。')).toHaveCount(0);

@@ -74,7 +74,7 @@ test('审核员仅用键盘完成草稿编辑、保存和发布', async ({ page 
   const publish = page.getByRole('button', { name: '确认发布' });
   await expect(publish).toBeEnabled(); await tabTo(page, publish); await page.keyboard.press('Enter');
   await expect(page.getByRole('status')).toContainText('发布请求已成功'); await expect(page.getByRole('alert')).toHaveCount(0); expect(published).toBe(true);
-  await expect(page.getByRole('button', { name: '处理轨迹' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '处理轨迹' })).toBeVisible();
 });
 
 test('键盘可以填写导入表单、选择正文并抽取', async ({ page }) => {

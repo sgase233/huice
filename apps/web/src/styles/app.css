@@ -213,6 +213,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .app-shell .real-nav button[aria-current="page"] { background: #ebebeb; color: #3f3f3f; }
 .app-shell .real-nav button:hover:not(:disabled) { background: #f0f0f0; }
 .app-shell .side-nav { position: relative; }
+.workflow-indicator-clip { position: absolute; inset: 0; overflow: clip; pointer-events: none; }
 .workflow-indicator { position: absolute; left: 0; top: 0; z-index: 0; opacity: 0; pointer-events: none; border-radius: .65rem; background: #ebebeb; }
 .workflow-indicator.is-ready { transition: transform .65s cubic-bezier(.22, 1, .36, 1), width .65s cubic-bezier(.22, 1, .36, 1), height .65s cubic-bezier(.22, 1, .36, 1); }
 .app-shell .side-nav a, .app-shell .real-nav button { position: relative; z-index: 1; }
