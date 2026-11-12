@@ -16,9 +16,12 @@
 | UI | 完整度/趋势展示规则 | [UI_BRIEF.md](../ui/UI_BRIEF.md) §5 | 待 M2 复核 | M2 |
 | 估工 | E1—E4 M3 初步估工 | 本文 §4 | 初步，不代替负责人排期 | 负责人、M1、M2 |
 | E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-12；仅执行旧版环境的部分匿名探测，联合验收未执行；未签收 | M1（环境/账号）、M2（#60 前端）、M3（执行） |
+| E2 | 政策发现验收准备 | [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)、[E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) | M3 准备清单/静态审查，2026-11-12；对象为 PR #64 head `00c02f1`；DISC-AT-01—07 未执行；S03/S04/S05 暂不纳入自动发现验收；未签收 | M1（抓取/契约/部署）、M2（候选 UI/契约）、M3（执行）、负责人（附件范围/发布口径） |
 | E3a | 结果分布、资格逻辑树、轨迹展示业务复核 | [E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) | M3 静态评审输入，2026-11-12；对象为 PR #60 head `9caa1e0`；#60 已于 2026-11-12T10:01:57Z 合并到 `main`（`05982a5`），但未验证同版部署、未执行；未签收 | M2（展示/交互）、M1（轨迹与版本数据）、负责人（时间线范围） |
 
 > **2026-11-12 状态更新（20:52）：** `origin/main` 已由 `ea44ae0` → `5d1adeb` → `05982a5`（2026-11-12T10:01:57Z 合并 PR #60；此前 #63 仅 M3 文档）；#61 的后端与候选契约 `1.1.0-rc.1`、迁移 `009_users_sessions.sql` 仍在 `main`。E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，**#60 已合并但同版部署、隔离环境与账号仍未确认**。D3/D4/D5 仍按本文状态待评审，不因 #60/#61/#63 合并而签收；本轮 D3 新增 2026 年度研发费用资助申请指南的官方原文核对（见 [DISCOVERY_SOURCES](DISCOVERY_SOURCES.md) §3.7 与 [POLICY_SCOPE](POLICY_SCOPE.md)），但**未写入 `source_register`/评测输入**（来源登记 CSV 的日期字段无法表达 18:00 截止；正式契约 `ApplicationWindow` 用 `Timestamp`，可表达时间，待 M1/M2 确认承载与消费）。D4 本轮没有新的实现或数据证据；D5 依据 Hya-555 二次复核再次修正 API-12 的 404 事实，METRICS_SPEC 仍为草案。E3a 的静态复核见新文档，不代表 E3a 验收通过。
+>
+> **2026-11-12 E2 更新（23:42 后）：** PR #64 最新 head `00c02f1`，E2 契约仍为草案、迁移 010 未执行。M3 静态审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md)，验收准备见 [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)。DISC-AT-01—07 **均未执行**；S03/S04/S05 按 2026-11-12 范围决定暂不纳入 E2 自动发现验收；附件不下载、不解析，`ATTACHMENT_NOT_EXTRACTED` 不阻断发布且不等于附件已核对。当前仍有两个 P1：同 URL 短句变化可能被长句指纹误判为重复（DISC-AT-04），HTTP-only 附件会显示 0 附件且无提示（DISC-AT-05）。真实抓取器、真实模型、云端部署、010 迁移和三方联合验收均无证据，不能签收。
 
 ## 2. D3/D4/D5 已明确与仍待确认
 
