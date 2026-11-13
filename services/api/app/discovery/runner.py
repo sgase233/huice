@@ -89,6 +89,8 @@ class DiscoveryOutcome:
     run_id: UUID | None = None
     new_candidates: int = 0
     duplicates: int = 0
+    #: 只按正文指纹怀疑重复、但仍照常建候选的条数；与 ``duplicates``（确认重复）分开。
+    suspected_duplicates: int = 0
     detail: str | None = None
 
     @property
@@ -102,6 +104,7 @@ class DiscoveryOutcome:
             "runId": str(self.run_id) if self.run_id else None,
             "newCandidates": self.new_candidates,
             "duplicates": self.duplicates,
+            "suspectedDuplicates": self.suspected_duplicates,
             "detail": self.detail,
         }
 
@@ -345,22 +348,24 @@ class DiscoveryRunner:
                     self._touch_page(conn, canonical, content_hash, fingerprint["candidate_id"], run_id, now)
                     continue
                 # 换 URL 同内容：整页文本（含导航、页脚）哈希不同，但正文条款逐字相同。
-                # 按句子集合指纹再比一次，跨站转载不会被当成新政策再推荐一遍。
+                # 按句子集合指纹再比一次，但**只当提示，不当结论**：跨站转载里常见
+                # 「长条款照抄、适用范围或截止日等短句不同」的孪生文件，直接跳过会把
+                # 另一份政策静默吞掉（#64 用「适用范围：深圳市 → 广东省」复现过）。
+                # 因此这里照常建候选，用 ``suspectedDuplicateOf`` 指向指纹命中的那条，
+                # 由审核员比对后决定丢弃还是分别提交；只有整页哈希（含同 URL 未变化页）
+                # 才算确认重复，记 ``duplicates``。
                 #
                 # **同一 URL 内容变了不走这条**：那是新版政策，必须按新候选落库并标
                 # ``versionChanged``。指纹只认「见过的 URL 之外」的转载；同 URL 的
                 # 短句变化（截止日、金额、人数、适用范围）本就不该靠指纹兜底。
+                suspected_of: UUID | None = None
                 body_fp = body_fingerprint(article.text)
                 if page_row is None and body_fp is not None:
                     twin = self._repository.find_fingerprint_by_body(
                         conn, body_fp, exclude_url=canonical
                     )
                     if twin is not None:
-                        counts.duplicates += 1
-                        self._touch_page(
-                            conn, canonical, content_hash, twin["candidate_id"], run_id, now
-                        )
-                        continue
+                        suspected_of = twin["candidate_id"]
                 seen_hashes.add(content_hash)
 
                 version_changed = page_row is not None
@@ -416,11 +421,15 @@ class DiscoveryRunner:
                     prior_candidate_id=prior_candidate_id,
                     prior_policy_id=prior_policy_id,
                     prior_version=prior_version,
+                    suspected_duplicate_of=suspected_of,
                 )
                 if stored:
                     counts.new_candidates += 1
                     entry["candidates"] += 1
+                    if suspected_of is not None:
+                        counts.suspected_duplicates += 1
                 else:
+                    # 部分唯一索引拦下了同一批里的另一条同内容：这条才是确认重复。
                     counts.duplicates += 1
 
                 if outcome.status != "pending_review":
@@ -475,6 +484,7 @@ class DiscoveryRunner:
         prior_candidate_id: UUID | None,
         prior_policy_id: UUID | None,
         prior_version: str | None,
+        suspected_duplicate_of: UUID | None = None,
     ) -> bool:
         """一个候选一个事务：候选行、指纹、网址快照一起提交，不留半条。"""
 
@@ -509,6 +519,8 @@ class DiscoveryRunner:
                 else None
             ),
             "duplicate_of": prior_candidate_id if version_changed else None,
+            # 正文指纹命中的是**另一条候选**，不是本 URL 的上一版；只提示、不合并。
+            "suspected_duplicate_of": suspected_duplicate_of,
             "existing_policy_id": prior_policy_id if version_changed else None,
             "existing_version": prior_version if version_changed else None,
             "version_changed": version_changed,
@@ -607,6 +619,7 @@ class DiscoveryRunner:
             run_id=run_id,
             new_candidates=counts.new_candidates,
             duplicates=counts.duplicates,
+            suspected_duplicates=counts.suspected_duplicates,
             detail=detail,
         )
 
@@ -634,6 +647,7 @@ class DiscoveryRunner:
                 sources_checked=counts.sources_checked,
                 links_seen=counts.links_seen,
                 duplicates=counts.duplicates,
+                suspected_duplicates=counts.suspected_duplicates,
                 new_candidates=counts.new_candidates,
                 failed_sources=counts.failed_sources,
                 failed_articles=counts.failed_articles,
@@ -648,7 +662,10 @@ class DiscoveryRunner:
 class _Counts:
     sources_checked: int = 0
     links_seen: int = 0
+    #: 确认重复（整页哈希 / 同 URL 未变化）。正文指纹命中不在此列。
     duplicates: int = 0
+    #: 正文指纹疑似重复：仍建了候选，由审核员比对。
+    suspected_duplicates: int = 0
     new_candidates: int = 0
     failed_sources: int = 0
     #: 真正发起过的正文下载次数与其中失败的次数。栏目页打不开和「栏目页打不开正文」

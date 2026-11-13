@@ -21,6 +21,10 @@
 --      · `policy_candidate_fingerprint` 长期保留「这份内容已经出现过、后来怎么处理了」，
 --        候选正文被清理后仍然记得它提交过或丢弃过，下一轮不会再推荐一次。
 --      只靠候选表判重的话，候选过期清理一结束，同样的政策就会被反复推荐。
+--      · 第二层里的「正文指纹」只作**提示**，不作结论：整页哈希不同但正文条款逐字
+--        相同的页面（跨站转载）仍会建候选，只是用 `suspected_duplicate_of` 指向指纹
+--        命中的那条，由审核员比对。直接跳过会把「长条款照抄、适用范围/截止日等短句
+--        不同」的另一份政策静默吞掉。确认重复只算整页哈希命中。
 --
 --   4. `discovery_page` 记「每个网址上次看到的内容哈希」：同一网址内容变了（政策修订）
 --      要能识别成新候选并提示版本变化，而不是当成重复静默丢掉。
@@ -85,7 +89,10 @@ CREATE TABLE IF NOT EXISTS discovery_run (
                     )),
     sources_checked integer NOT NULL DEFAULT 0,
     links_seen      integer NOT NULL DEFAULT 0,
+    -- 确认重复（整页哈希命中）与「正文指纹疑似重复」分开计数：后者仍建了候选，
+    -- 只是提示审核员比对，不能和确认重复混成一个数。
     duplicates      integer NOT NULL DEFAULT 0,
+    suspected_duplicates integer NOT NULL DEFAULT 0,
     new_candidates  integer NOT NULL DEFAULT 0,
     failed_sources  integer NOT NULL DEFAULT 0,
     -- 正文级失败：栏目页抓到了、单篇正文没抓到。与 failed_sources 分开，
@@ -165,7 +172,10 @@ CREATE TABLE IF NOT EXISTS policy_candidate (
     extraction          jsonb,
 
     -- ---- 重复与版本提示
+    -- 同一 URL 的上一版候选（版本变化时用 duplicate_of）；跨 URL 正文指纹命中的
+    -- 另一条候选用 suspected_duplicate_of：语义是「疑似」，不合并、不覆盖。
     duplicate_of        uuid REFERENCES policy_candidate (id),
+    suspected_duplicate_of uuid REFERENCES policy_candidate (id),
     existing_policy_id  uuid,
     existing_version    text,
     version_changed     boolean NOT NULL DEFAULT false,

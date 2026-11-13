@@ -683,6 +683,9 @@ class DiscoveryRun(WireModel):
     sources_checked: int
     links_seen: int
     duplicates: int
+    #: 正文指纹疑似重复的条数。这些页照常生成候选（页面也在 newCandidates 里），
+    #: 只提示审核员比对，不自动合并；``duplicates`` 只统计确认重复。
+    suspected_duplicates: int
     new_candidates: int
     failed_sources: int
     failed_articles: int
@@ -737,6 +740,10 @@ class CandidateSummary(WireModel):
     #: 看到了但无法记入候选的附件链接数（如 http://）：同样要提示，不能当没有附件。
     unsupported_attachment_count: int = Field(ge=0)
     duplicate_of: UUID | None
+    #: 正文指纹命中的另一条候选。只表示「疑似重复」，不是已确认同文：不合并、不覆盖，
+    #: 由审核员比对后决定丢弃还是分别提交。只有在能指到一条候选时才非空。
+    suspected_duplicate_of: UUID | None
+    suspected_duplicate_source_url: str | None
     existing_policy_id: UUID | None
     existing_version: str | None
     version_changed: bool
@@ -771,6 +778,8 @@ class CandidateDetail(WireModel):
     validation_findings: list[ValidationFinding]
     usage: ModelUsage | None
     duplicate_of: UUID | None
+    suspected_duplicate_of: UUID | None
+    suspected_duplicate_source_url: str | None
     existing_policy_id: UUID | None
     existing_version: str | None
     version_changed: bool

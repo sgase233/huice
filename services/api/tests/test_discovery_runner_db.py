@@ -79,7 +79,8 @@ def _run_row(dsn: str, run_id) -> tuple:
     return query_one(
         dsn,
         "SELECT status, terminal_reason, new_candidates, duplicates, failed_sources, "
-        "tokens_used, late_by_seconds, finished_at FROM discovery_run WHERE id = %s",
+        "tokens_used, late_by_seconds, finished_at, suspected_duplicates "
+        "FROM discovery_run WHERE id = %s",
         (run_id,),
     )
 
@@ -87,8 +88,8 @@ def _run_row(dsn: str, run_id) -> tuple:
 def _candidates(dsn: str) -> list[tuple]:
     return query_all(
         dsn,
-        "SELECT status, source_url, content_hash, version, duplicate_of, existing_version "
-        "FROM policy_candidate ORDER BY created_at",
+        "SELECT status, source_url, content_hash, version, duplicate_of, existing_version, "
+        "suspected_duplicate_of FROM policy_candidate ORDER BY created_at",
     )
 
 
@@ -142,7 +143,7 @@ def test_a_successful_run_stages_candidates_without_touching_the_policy_library(
     assert outcome.reason == "completed"
     assert outcome.new_candidates == 1
 
-    status, reason, new, duplicates, failed, tokens, late_by, finished = _run_row(
+    status, reason, new, duplicates, failed, tokens, late_by, finished, _suspected = _run_row(
         database_url_schema, outcome.run_id
     )
     assert (status, reason) == ("succeeded", "completed")
@@ -152,7 +153,9 @@ def test_a_successful_run_stages_candidates_without_touching_the_policy_library(
 
     rows = _candidates(database_url_schema)
     assert len(rows) == 1
-    candidate_status, source_url, content_hash, version, duplicate_of, existing = rows[0]
+    candidate_status, source_url, content_hash, version, duplicate_of, existing, _suspect = (
+        rows[0]
+    )
     assert candidate_status == "pending_review"
     assert source_url == ARTICLE_URL
     assert len(content_hash) == 64
@@ -627,10 +630,9 @@ CROSS_SITE_BODY = (
 )
 
 
-def test_the_same_policy_on_another_site_is_a_duplicate(db, discovery, database_url_schema):
-    """换 URL 同内容（DISC-AT-04）：S01/S10 那种跨站转载只能产生一条候选。"""
+def _cross_site_pages(first_body: str, second_body: str) -> tuple[dict, str, str]:
+    """两个站点各转载一份正文；两页导航文字不同，因此整页哈希不同。"""
 
-    configure(discovery)
     first = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
     second = "https://www.chinatax.gov.cn/chinatax/n810765/content_2.html"
     pages = {
@@ -639,14 +641,117 @@ def test_the_same_policy_on_another_site_is_a_duplicate(db, discovery, database_
             "政策文件列表",
             markup=f'<html><body><a href="{first}">一</a><a href="{second}">二</a></body></html>',
         ),
-        first: page(first, "首页 > 政策 > 文件库\n" + CROSS_SITE_BODY + "\n主办单位：国务院办公厅"),
-        second: page(second, "税务公报\n" + CROSS_SITE_BODY + "\n网站标识码：bm29000002"),
+        first: page(first, "首页 > 政策 > 文件库\n" + first_body + "\n主办单位：国务院办公厅"),
+        second: page(second, "税务公报\n" + second_body + "\n网站标识码：bm29000002"),
+    }
+    return pages, first, second
+
+
+def test_a_cross_site_copy_is_a_suspected_duplicate_not_a_silent_skip(
+    db, discovery, database_url_schema
+):
+    """换 URL 同正文（DISC-AT-04）：两条候选都在，第二条指向第一条并记疑似重复。
+
+    旧实现按正文指纹命中直接 ``continue``：跨站转载确实只留一条，但「长条款照抄、
+    短句不同」的另一份政策也会被同样吞掉（#64 P1）。现在改为保留候选、只提示。
+    """
+
+    configure(discovery)
+    pages, first, second = _cross_site_pages(CROSS_SITE_BODY, CROSS_SITE_BODY)
+    outcome = make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm()).run(trigger="timer")
+
+    status, reason, new, duplicates, _failed, _tokens, _late, _finished, suspected = _run_row(
+        database_url_schema, outcome.run_id
+    )
+    assert (status, reason) == ("succeeded", "completed")
+    assert (new, duplicates, suspected) == (2, 0, 1)
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT source_url, suspected_duplicate_of FROM policy_candidate ORDER BY source_url",
+    )
+    assert len(rows) == 2
+    first_id = query_one(
+        database_url_schema,
+        "SELECT id FROM policy_candidate WHERE source_url = %s",
+        (first,),
+    )[0]
+    assert (rows[0][0], rows[0][1]) == (second, first_id)
+    assert (rows[1][0], rows[1][1]) == (first, None)
+
+
+def test_a_copy_with_a_different_short_clause_is_flagged_not_swallowed(
+    db, discovery, database_url_schema
+):
+    """#64 的复现：长条款逐字相同、只把「适用范围：深圳市」改成「广东省」。
+
+    两句都不带数字，正文指纹相同；旧实现直接跳过，审核员看不到另一份政策。现在两份
+    都是候选，后一份带疑似重复提示，由人判断是转载还是适用范围不同的另一份文件。
+    """
+
+    configure(discovery)
+    pages, first, second = _cross_site_pages(
+        CROSS_SITE_BODY + "适用范围：深圳市。",
+        CROSS_SITE_BODY + "适用范围：广东省。",
+    )
+    outcome = make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm()).run(trigger="timer")
+
+    _status, _reason, new, duplicates, *_tail = _run_row(database_url_schema, outcome.run_id)
+    assert (new, duplicates, _tail[-1]) == (2, 0, 1)
+
+    first_id = query_one(
+        database_url_schema,
+        "SELECT id FROM policy_candidate WHERE source_url = %s",
+        (first,),
+    )[0]
+    flagged = query_one(
+        database_url_schema,
+        "SELECT suspected_duplicate_of FROM policy_candidate WHERE source_url = %s",
+        (second,),
+    )
+    assert flagged == (first_id,)
+
+
+def test_a_copy_with_reordered_clauses_is_flagged_not_swallowed(
+    db, discovery, database_url_schema
+):
+    """条款顺序不同也命中正文指纹（句子集合无序）：同样只提示，不跳过。"""
+
+    configure(discovery)
+    reordered = "\n".join(reversed(CROSS_SITE_BODY.strip().split("\n")))
+    pages, _first, _second = _cross_site_pages(CROSS_SITE_BODY, reordered)
+    outcome = make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm()).run(trigger="timer")
+
+    _status, _reason, new, duplicates, *_tail = _run_row(database_url_schema, outcome.run_id)
+    assert (new, duplicates, _tail[-1]) == (2, 0, 1)
+    assert query_one(
+        database_url_schema,
+        "SELECT count(*) FROM policy_candidate WHERE suspected_duplicate_of IS NOT NULL",
+    ) == (1,)
+
+
+def test_an_identical_page_is_still_automatically_deduplicated(
+    db, discovery, database_url_schema
+):
+    """整页规范化正文完全相同（含导航）：仍是确认重复，不建第二条候选。"""
+
+    configure(discovery)
+    first = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    second = "https://www.chinatax.gov.cn/chinatax/n810765/content_2.html"
+    same = "政策文件正文\n" + CROSS_SITE_BODY
+    pages = {
+        LIST_URL: page(
+            LIST_URL,
+            "政策文件列表",
+            markup=f'<html><body><a href="{first}">一</a><a href="{second}">二</a></body></html>',
+        ),
+        first: page(first, same),
+        second: page(second, same),
     }
     outcome = make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm()).run(trigger="timer")
 
-    status, reason, new, duplicates, *_ = _run_row(database_url_schema, outcome.run_id)
-    assert (status, reason) == ("succeeded", "completed")
-    assert new == 1 and duplicates == 1
+    _status, _reason, new, duplicates, *_tail = _run_row(database_url_schema, outcome.run_id)
+    assert (new, duplicates, _tail[-1]) == (1, 1, 0)
     assert len(_candidates(database_url_schema)) == 1
 
 

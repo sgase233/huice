@@ -39,7 +39,8 @@ _SETTINGS_COLUMNS = (
 
 _RUN_COLUMNS = (
     "id, trigger, started_at, finished_at, status, terminal_reason, sources_checked, "
-    "links_seen, duplicates, new_candidates, failed_sources, failed_articles, tokens_used, "
+    "links_seen, duplicates, suspected_duplicates, new_candidates, failed_sources, "
+    "failed_articles, tokens_used, "
     "tokens_unknown, late_by_seconds, source_status, detail"
 )
 
@@ -50,7 +51,8 @@ _CANDIDATE_COLUMNS = (
     "applicable_entities, published_at, effective_from, effective_to, application_window, "
     "official_entry_url, attachment_urls, unsupported_attachment_urls, missing_fields, "
     "criteria, validation_findings, "
-    "extraction, duplicate_of, existing_policy_id, existing_version, version_changed, "
+    "extraction, duplicate_of, suspected_duplicate_of, existing_policy_id, existing_version, "
+    "version_changed, "
     "submitted_policy_id, submitted_version, submitted_at, discarded_at, expired_at, "
     "discard_reason, created_at, updated_at"
 )
@@ -170,6 +172,7 @@ class DiscoveryRepository:
                 tuple(params),
             )
             rows = cur.fetchall()
+            self._attach_suspected_source(conn, rows)
         next_cursor = None
         if len(rows) > limit:
             rows = rows[:limit]
@@ -183,7 +186,39 @@ class DiscoveryRepository:
                 f"SELECT {_CANDIDATE_COLUMNS} FROM policy_candidate WHERE id = %s",
                 (candidate_id,),
             )
-            return cur.fetchone()
+            row = cur.fetchone()
+            if row is not None:
+                self._attach_suspected_source(conn, [row])
+            return row
+
+    def _attach_suspected_source(
+        self, conn: Connection, rows: Sequence[dict[str, Any]]
+    ) -> None:
+        """给候选行补上「疑似重复」指向那条的来源页。
+
+        ``suspected_duplicate_of`` 只在能指到一条候选时写；这里把它翻成审核员能直接
+        看到的 URL，列表和详情都不必再发一次请求。查不到（行已清理）就给 None。
+        """
+
+        for row in rows:
+            row.setdefault("suspected_duplicate_source_url", None)
+        wanted = [
+            row["suspected_duplicate_of"]
+            for row in rows
+            if row.get("suspected_duplicate_of") is not None
+        ]
+        if not wanted:
+            return
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT id, source_url FROM policy_candidate WHERE id = ANY(%s)",
+                (wanted,),
+            )
+            sources = {item["id"]: item["source_url"] for item in cur.fetchall()}
+        for row in rows:
+            row["suspected_duplicate_source_url"] = sources.get(
+                row["suspected_duplicate_of"]
+            )
 
     # ------------------------------------------------- 运行器写入（显式连接）
 
@@ -241,6 +276,7 @@ class DiscoveryRepository:
         sources_checked: int,
         links_seen: int,
         duplicates: int,
+        suspected_duplicates: int,
         new_candidates: int,
         failed_sources: int,
         failed_articles: int,
@@ -253,7 +289,8 @@ class DiscoveryRepository:
             cur.execute(
                 "UPDATE discovery_run SET status = %s, terminal_reason = %s, "
                 "finished_at = %s, sources_checked = %s, links_seen = %s, duplicates = %s, "
-                "new_candidates = %s, failed_sources = %s, failed_articles = %s, "
+                "suspected_duplicates = %s, new_candidates = %s, failed_sources = %s, "
+                "failed_articles = %s, "
                 "tokens_used = %s, "
                 "tokens_unknown = %s, source_status = %s, detail = %s "
                 "WHERE id = %s",
@@ -264,6 +301,7 @@ class DiscoveryRepository:
                     sources_checked,
                     links_seen,
                     duplicates,
+                    suspected_duplicates,
                     new_candidates,
                     failed_sources,
                     failed_articles,
@@ -511,6 +549,8 @@ class DiscoveryRepository:
                 ),
             )
             row = cur.fetchone()
+            if row is not None:
+                self._attach_suspected_source(conn, [row])
         if row is None:  # 行在 FOR UPDATE 之后消失：并发删除，按不存在处理
             raise ApiProblem(404, "CANDIDATE_NOT_FOUND", "候选不存在。")
         return row
@@ -535,6 +575,7 @@ class DiscoveryRepository:
             row = cur.fetchone()
             if row is None:
                 raise ApiProblem(404, "CANDIDATE_NOT_FOUND", "候选不存在。")
+            self._attach_suspected_source(conn, [row])
             cur.execute(
                 "UPDATE policy_candidate_fingerprint SET outcome = 'submitted', "
                 "submitted_policy_id = %s WHERE candidate_id = %s",
@@ -560,6 +601,7 @@ class DiscoveryRepository:
             row = cur.fetchone()
             if row is None:
                 raise ApiProblem(404, "CANDIDATE_NOT_FOUND", "候选不存在。")
+            self._attach_suspected_source(conn, [row])
             cur.execute(
                 "UPDATE policy_candidate_fingerprint SET outcome = 'discarded' "
                 "WHERE candidate_id = %s",

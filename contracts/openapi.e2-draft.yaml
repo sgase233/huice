@@ -92,9 +92,14 @@ x-e2-runtime-model:
       逐跳复检：每一跳都重新做「官方域 + 解析出的公网地址」校验，最后一跳也过同一套检查。
       落盘与候选里的来源 URL 一律是规范化（canonicalize_url）后的最终地址。
   dedup: >-
-    三重判重按顺序：本轮已见过的正文哈希 → discovery_page 里同 URL 已见哈希 → 候选指纹
-    （内容哈希 + 来源）。命中即记 duplicates，不重复建候选。同一政策换了正文（版本变更）时
-    新候选带 versionChanged=true 与既有 policyId/version，供审核员决定是新建还是追加版本。
+    判重按顺序：本轮已见过的正文哈希 → discovery_page 里同 URL 已见哈希 → 候选指纹
+    （内容哈希）→ 正文句子指纹（只对「这个 URL 从没出现过」的页面）。前三级是确认重复，
+    命中即记 duplicates，不建候选。正文指纹**只作提示**：命中也照常建候选、照常抽取，
+    计数记 suspectedDuplicates，候选的 suspectedDuplicateOf / suspectedDuplicateSourceUrl
+    指向指纹命中的那条，由审核员比对。原因：跨站转载里常见长条款逐字相同、而适用范围或
+    截止日等短句不同的孪生文件，直接跳过会把另一份政策静默吞掉。同一 URL 内容变化
+    （版本变更）一律建新候选，带 versionChanged=true 与既有 policyId/version，供审核员
+    决定是新建还是追加版本。
   candidate-lifecycle:
     states:
     - pending_review
@@ -363,6 +368,7 @@ paths:
                   sourcesChecked: 2
                   linksSeen: 37
                   duplicates: 5
+                  suspectedDuplicates: 0
                   newCandidates: 0
                   failedSources: 0
                   failedArticles: 0
@@ -393,6 +399,7 @@ paths:
                   sourcesChecked: 2
                   linksSeen: 0
                   duplicates: 0
+                  suspectedDuplicates: 0
                   newCandidates: 0
                   failedSources: 2
                   failedArticles: 0
@@ -473,6 +480,8 @@ paths:
                   - version
                   - applicableEntities
                   duplicateOf: null
+                  suspectedDuplicateOf: null
+                  suspectedDuplicateSourceUrl: null
                   existingPolicyId: null
                   existingVersion: null
                   versionChanged: false
@@ -572,6 +581,8 @@ paths:
                   outputTokens: 640
                   elapsedMs: 8400
                 duplicateOf: null
+                suspectedDuplicateOf: null
+                suspectedDuplicateSourceUrl: null
                 existingPolicyId: null
                 existingVersion: null
                 versionChanged: false
@@ -964,6 +975,7 @@ components:
       - sourcesChecked
       - linksSeen
       - duplicates
+      - suspectedDuplicates
       - newCandidates
       - failedSources
       - failedArticles
@@ -1010,6 +1022,14 @@ components:
         duplicates:
           type: integer
           minimum: 0
+          description: 确认重复的页数（整页哈希命中：本轮已见 / 同 URL 未变化 / 候选指纹）。
+            这些页不建候选。
+        suspectedDuplicates:
+          type: integer
+          minimum: 0
+          description: 正文指纹疑似重复的页数。这些页**照常建了候选**（也计入 newCandidates），
+            候选上带 suspectedDuplicateOf 指向指纹命中的那条。与 duplicates 分开计数，
+            不能把「疑似」当成「已确认」。
         newCandidates:
           type: integer
           minimum: 0
@@ -1152,6 +1172,8 @@ components:
       - attachmentCount
       - unsupportedAttachmentCount
       - duplicateOf
+      - suspectedDuplicateOf
+      - suspectedDuplicateSourceUrl
       - existingPolicyId
       - existingVersion
       - versionChanged
@@ -1208,6 +1230,21 @@ components:
           anyOf:
           - $ref: ./openapi.yaml#/components/schemas/UUID
           - type: 'null'
+        suspectedDuplicateOf:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+          description: >-
+            正文指纹命中的**另一条候选**。只表示「疑似重复」，不是已确认同文：本候选照常
+            存在、照常可编辑提交，不合并、不覆盖任何已有候选或政策；审核员比对后决定丢弃
+            还是分别提交。只有在能指到一条候选时才非空（内容早已提交/丢弃、只留在指纹表里的
+            不算，那些情况该页仍会建候选，但这里为空）。
+        suspectedDuplicateSourceUrl:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+          - type: 'null'
+          description: suspectedDuplicateOf 指向那条候选的 sourceUrl，列表直接展示「疑似与
+            这一页重复」，不必再查一次详情。
         existingPolicyId:
           anyOf:
           - $ref: ./openapi.yaml#/components/schemas/UUID
@@ -1267,6 +1304,8 @@ components:
       - validationFindings
       - usage
       - duplicateOf
+      - suspectedDuplicateOf
+      - suspectedDuplicateSourceUrl
       - existingPolicyId
       - existingVersion
       - versionChanged
@@ -1336,6 +1375,18 @@ components:
           anyOf:
           - $ref: ./openapi.yaml#/components/schemas/ModelUsage
           - type: 'null'
+        suspectedDuplicateOf:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/UUID
+          - type: 'null'
+          description: >-
+            正文指纹命中的另一条候选（疑似重复，未确认）。语义与 CandidateSummary 同名
+            字段一致：不合并、不覆盖，供人工比对。
+        suspectedDuplicateSourceUrl:
+          anyOf:
+          - $ref: ./openapi.yaml#/components/schemas/OfficialUrl
+          - type: 'null'
+          description: suspectedDuplicateOf 指向那条候选的 sourceUrl。
         duplicateOf:
           anyOf:
           - $ref: ./openapi.yaml#/components/schemas/UUID

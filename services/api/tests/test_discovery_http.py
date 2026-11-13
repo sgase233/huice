@@ -462,6 +462,59 @@ def test_an_http_only_attachment_is_visible_as_a_note_not_as_an_empty_list(
     ]
 
 
+def test_a_suspected_duplicate_is_visible_on_the_list_and_detail(
+    app_db, reviewer, database_url_schema
+):
+    """跨站转载保留为候选：列表与详情都能看到「疑似与这一页重复」及来源。
+
+    #64 P1：正文指纹命中不再直接跳过。两份只差一句「适用范围」的页面都必须留在暂存区，
+    由审核员比对；运行记录单独记 ``suspectedDuplicates``，不能和确认重复混在一起。
+    """
+
+    configure(app_db.state.discovery)
+    first = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    second = "https://www.chinatax.gov.cn/chinatax/n810765/content_2.html"
+    pages = {
+        LIST_URL: page(
+            LIST_URL,
+            "政策文件列表",
+            markup=(
+                f'<html><body><a href="{first}">一</a><a href="{second}">二</a></body></html>'
+            ),
+        ),
+        first: page(
+            first,
+            "首页 > 政策 > 文件库\n" + BODY + "适用范围：深圳市。\n主办单位：国务院办公厅",
+        ),
+        second: page(
+            second,
+            "税务公报\n" + BODY + "适用范围：广东省。\n网站标识码：bm29000002",
+        ),
+    }
+    make_runner(
+        app_db.state.db, app_db.state.discovery, FakeFetcher(pages), llm=FakeLlm()
+    ).run(trigger="timer")
+
+    rows = {item["source_url"]: item["id"] for item in _candidates(database_url_schema)}
+    assert set(rows) == {first, second}, "疑似重复也要保留候选，不能被跳过"
+
+    listed = reviewer["client"].get("/api/v1/admin/policy-candidates").json()["items"]
+    assert len(listed) == 2
+    by_url = {item["sourceUrl"]: item for item in listed}
+    assert by_url[first]["suspectedDuplicateOf"] is None
+    assert by_url[second]["suspectedDuplicateOf"] == rows[first]
+    assert by_url[second]["suspectedDuplicateSourceUrl"] == first
+    assert by_url[second]["duplicateOf"] is None, "疑似重复不是版本变化，不能占用 duplicateOf"
+
+    detail, _etag_value = _detail(reviewer, by_url[second]["id"])
+    assert detail["suspectedDuplicateOf"] == rows[first]
+    assert detail["suspectedDuplicateSourceUrl"] == first
+
+    runs = reviewer["client"].get("/api/v1/admin/discovery/runs").json()["items"]
+    assert (runs[0]["duplicates"], runs[0]["suspectedDuplicates"]) == (0, 1)
+    assert runs[0]["newCandidates"] == 2
+
+
 def test_the_attachment_note_survives_saving_criteria_and_re_extraction(
     app_db, reviewer, database_url_schema
 ):
