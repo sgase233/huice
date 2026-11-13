@@ -136,14 +136,14 @@
 
 | 项 | M1 方案 | M3 核对 |
 | --- | --- | --- |
-| 结果分布 | 后端数据够；`assessment` 主键 `(run_id, policy_id)`，`assessments` 为 `min_length=1`；`stale` 是读取时重算的独立字段 | 口径一致；对账样本必须固定 `generatedAt`，否则两次刷新可能不同 |
+| 结果分布 | 后端数据够；`assessment` 主键 `(run_id, policy_id)`，`assessments` 为 `min_length=1`；`stale` 是读取时重算的独立字段 | 口径一致；对账样本需固定同一 run 和相关输入、控制两次读取的测试时钟（或确保不跨越影响该 run 的时间边界），并排除两次读取间的失效事件/政策状态变化；`createdAt` 不是读取时钟，现行 `AssessmentRun` 也没有 `generatedAt` |
 | 逻辑树 | `get_run` 用 `assessment.policy_version_id` 取该 run 钉住的版本；已发布版本不可变；节点级结果不提供 | 符合“不编造子节点状态”；仍需 GXJS v1/v2 历史版本切换实测与一条 `manual_review` 样本 |
 | 轨迹 | `stage` 九值可唯一映射离线/在线；服务端只返回已有步骤 | 前端分组可行；缺步骤需显示“轨迹可能不完整”，不能补造 |
 | 时间线 | 不可执行：无日期来源、`application_window` 单对象、`closed` 混同有效期/窗口 | 同意延期；不得用 `effectiveFrom/To` 文本代替 VIS-AT-04 验收 |
 
 ### 7.3 需要 M1/M2 补的样本与证据
 
-1. **结果分布对账样本**：一个含四态且至少一项 `stale` 的 run，附 `assessments.length`、四态计数、`stale` 计数、固定 `generatedAt` 和只读 SQL 结果；M3 再与页面比。
+1. **结果分布对账样本**：一个含四态且至少一项 `stale` 的 run，附 `assessments.length`、四态计数、`stale` 计数、读取测试时钟（或两次读取均未跨越影响该 run 的时间边界、无失效事件/政策状态变化的证据）和只读 SQL 结果；`createdAt` 只是 run 创建时间，`generatedAt` 不是现行 `AssessmentRun` 字段；M3 再与页面比。
 2. **逻辑树样本**：同一 `policyId` 的 GXJS v1/v2，确认切换版本后树结构、`criterionId`、原文定位随版本变化；另含一条 `manual_review` 叶子，确认不显示成“不满足”或空白。
 3. **轨迹样本**：一条同时含离线 `ingestion/extraction/citation_validation/human_review` 与在线 `profile/retrieval/evaluation/questioning/explanation` 的 run；确认分组、顺序、缺步骤提示、脱敏字段与 `objectRefs` 不当引文。
 4. **时间线**：在 VIS-06 `dateProvenance` 与多批次 `note` 落地前，VIS-AT-04 保持“未执行/延期”；样本见 [POLICY_SCOPE.md](POLICY_SCOPE.md) 的 2026-11-13 日期来源核对表。
