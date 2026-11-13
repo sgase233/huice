@@ -15,13 +15,21 @@
 | 验收 | 来源可用性复核记录 | [ACCEPTANCE.md](ACCEPTANCE.md)「2026-11-10 来源可用性复核」 | 只记录实际访问，不构成验收通过 | 全组 |
 | UI | 完整度/趋势展示规则 | [UI_BRIEF.md](../ui/UI_BRIEF.md) §5 | 待 M2 复核 | M2 |
 | 估工 | E1—E4 M3 初步估工 | 本文 §4 | 初步，不代替负责人排期 | 负责人、M1、M2 |
-| E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-12；仅执行旧版环境的部分匿名探测，联合验收未执行；未签收 | M1（环境/账号）、M2（#60 前端）、M3（执行） |
-| E2 | 政策发现验收准备 | [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)、[E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) | M3 准备清单/静态审查，2026-11-12；对象为 PR #64 head `00c02f1`；DISC-AT-01—07 未执行；S03/S04/S05 暂不纳入自动发现验收；未签收 | M1（抓取/契约/部署）、M2（候选 UI/契约）、M3（执行）、负责人（附件范围/发布口径） |
-| E3a | 结果分布、资格逻辑树、轨迹展示业务复核 | [E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) | M3 静态评审输入，2026-11-12；对象为 PR #60 head `9caa1e0`；#60 已于 2026-11-12T10:01:57Z 合并到 `main`（`05982a5`），但未验证同版部署、未执行；未签收 | M2（展示/交互）、M1（轨迹与版本数据）、负责人（时间线范围） |
+| E1 | 账号与归属验收准备 | [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) | M3 准备清单，2026-11-13 更新；云端 `/health=1.1.0-rc.1` 与门禁层已由 M3 匿名探测确认，AUTH-AT-04 仅门禁层部分覆盖；隔离环境/两企业账号/审核员账号未提供，联合验收未执行；未签收 | M1（环境/账号/迁移证据）、M2（前端/浏览器）、M3（执行） |
+| E2 | 政策发现验收准备 | [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)、[E2_PR64_REVIEW.md](E2_PR64_REVIEW.md)、[DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12 | M3 准备清单/静态审查，2026-11-13 更新；PR #64 已于 2026-11-13T12:09:36Z 合并（`c84b4b7`），E2 契约仍为草案；DISC-AT-01—07 未通过；E2 验收按 #66 排在 E3 后；S03/S04/S05 暂不纳入自动发现验收；未签收 | M1（抓取/契约/部署）、M2（候选 UI/契约）、M3（执行）、负责人（附件范围/发布口径） |
+| E3a | 结果分布、资格逻辑树、轨迹展示业务复核 | [E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) | M3 静态评审输入，2026-11-13 增补 §7；对象为 PR #60 head `9caa1e0` 与 M1 E3 方案草案 #67；#60 已合并但未验证同版部署；时间线（VIS-AT-04）明确延期；三块均未实际对账；未签收 | M2（展示/交互）、M1（轨迹/版本/日期数据）、负责人（时间线范围） |
 
 > **2026-11-12 状态更新（20:52）：** `origin/main` 已由 `ea44ae0` → `5d1adeb` → `05982a5`（2026-11-12T10:01:57Z 合并 PR #60；此前 #63 仅 M3 文档）；#61 的后端与候选契约 `1.1.0-rc.1`、迁移 `009_users_sessions.sql` 仍在 `main`。E1 验收准备见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md)。截至本日 AUTH-AT-01—06 均未完成联合验收；云端 `/health` 仍为 `1.0.0-rc.10`，**#60 已合并但同版部署、隔离环境与账号仍未确认**。D3/D4/D5 仍按本文状态待评审，不因 #60/#61/#63 合并而签收；本轮 D3 新增 2026 年度研发费用资助申请指南的官方原文核对（见 [DISCOVERY_SOURCES](DISCOVERY_SOURCES.md) §3.7 与 [POLICY_SCOPE](POLICY_SCOPE.md)），但**未写入 `source_register`/评测输入**（来源登记 CSV 的日期字段无法表达 18:00 截止；正式契约 `ApplicationWindow` 用 `Timestamp`，可表达时间，待 M1/M2 确认承载与消费）。D4 本轮没有新的实现或数据证据；D5 依据 Hya-555 二次复核再次修正 API-12 的 404 事实，METRICS_SPEC 仍为草案。E3a 的静态复核见新文档，不代表 E3a 验收通过。
 >
-> **2026-11-12 E2 更新（23:42 后）：** PR #64 最新 head `00c02f1`，E2 契约仍为草案、迁移 010 未执行。M3 静态审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md)，验收准备见 [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)。DISC-AT-01—07 **均未执行**；S03/S04/S05 按 2026-11-12 范围决定暂不纳入 E2 自动发现验收；附件不下载、不解析，`ATTACHMENT_NOT_EXTRACTED` 不阻断发布且不等于附件已核对。当前仍有两个 P1：同 URL 短句变化可能被长句指纹误判为重复（DISC-AT-04），HTTP-only 附件会显示 0 附件且无提示（DISC-AT-05）。真实抓取器、真实模型、云端部署、010 迁移和三方联合验收均无证据，不能签收。
+> **2026-11-12 E2 更新（23:42 后，保留历史）：** PR #64 最新 head `00c02f1`，E2 契约仍为草案、迁移 010 未执行。M3 静态审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md)，验收准备见 [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)。DISC-AT-01—07 **均未执行**；S03/S04/S05 按 2026-11-12 范围决定暂不纳入 E2 自动发现验收；附件不下载、不解析，`ATTACHMENT_NOT_EXTRACTED` 不阻断发布且不等于附件已核对。当前仍有两个 P1：同 URL 短句变化可能被长句指纹误判为重复（DISC-AT-04），HTTP-only 附件会显示 0 附件且无提示（DISC-AT-05）。真实抓取器、真实模型、云端部署、010 迁移和三方联合验收均无证据，不能签收。
+>
+> **2026-11-13 20:45 状态更新：**
+>
+> - **基线：** `origin/main` = **`c84b4b7`**（2026-11-13T12:09:36Z 合并 PR #64）；PR #64 最终 head `a8b7e4e`，合并时 M2 最后复审停在 `7eb48dd`，未对 `c95dc3b`/`a8b7e4e` 留新记录。E2 契约仍为 `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），正式契约仍 `1.1.0-rc.1`。
+> - **E2：** PR #64 已合并，但 **DISC-AT-01—07 仍无“通过”项**；issue #66 明确 **E2 验收排在 E3 之后**，云端保持 `enabled=true` + timer，M3 未修改 timer/来源/候选数据。首版可用来源清单见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；S01/S02/S06/S07/S08/S09/S10 正文 2026-11-13 复核均 200 且哈希一致；A/G 栏目 403；B/C/E 入口 200 但未跑 runner；D/F 为框架页；S03/S04/S05 仍排除。
+> - **E1：** 云端 `/health=1.1.0-rc.1`，`/auth/me`、`/enterprises` 403 `DEMO_SESSION_REQUIRED`，`POST /auth/login` 空体 403 同码（门禁先于请求体校验），与旧版 rc.10 的 422 不同；这是 M3 2026-11-13 匿名探测，不是账号级验收。迁移 009/010 只有 M1 报告（`schema_migration` 10 行），M3 未独立查库；隔离环境、两企业账号、审核员账号仍未提供。AUTH-AT-01—06 均未完成联合验收，AUTH-AT-04 仅门禁层部分覆盖。
+> - **E3：** M1 E3 方案草案（PR #67）列出九条决策；负责人已定 E3a 不含时间线，M3 已按评审补充 [COMPLETENESS_SPEC.md](COMPLETENESS_SPEC.md) §3.1 `not_due` 方案 C 边界样例、[METRICS_SPEC.md](METRICS_SPEC.md) §9 D5 对账、[POLICY_SCOPE.md](POLICY_SCOPE.md) 2026-11-13 日期来源回填核对、[E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) §7。**D4/D5、VIS 契约、E3 验收仍未签收；`not_due` 方案 C 是 M3 提案，不是三方结论。**
+> - **本轮未改** `data/**`、`source_register.csv`、标签、代码、契约或迁移；未提交/推送，等待明确同意。
 
 ## 2. D3/D4/D5 已明确与仍待确认
 
@@ -56,7 +64,7 @@
 - 智能终端附件 2/3、PDF 全文；专精特新 3 个 DOCX 逐条；绿色制造 `.doc` 完整逐条条件。
 - 双人复核与真实抓取器验证。
 
-> **2026-11-12 观察（未评审，20:52 核对）：** M1 的 **PR #64**（`m1/e2-policy-discovery`，open、base `main`）包含迁移 010、**8 个**发现/候选端点（DISC-01—08）、`python -m app.discovery` CLI 与 systemd timer；20:52 拉取 head 为 `45d4c5c`（M2 复审时记录为 `9791978`，其后又有提交）；**尚未合入 `main`，迁移 010 未在任何环境执行**。
+> **2026-11-12 观察（保留历史；20:52 核对）：** M1 的 **PR #64**（`m1/e2-policy-discovery`，当时 open、base `main`）包含迁移 010、**8 个**发现/候选端点（DISC-01—08）、`python -m app.discovery` CLI 与 systemd timer；20:52 拉取 head 为 `45d4c5c`（M2 复审时记录为 `9791978`，其后又有提交）；**当时尚未合入 `main`，迁移 010 未在任何环境执行。该 PR 已于 2026-11-13T12:09:36Z 合并为 `c84b4b7`，010 随后由 M1 报告在云端执行；以本文 2026-11-13 更新为准。**
 >
 > **候选元数据更正：** 我此前只看了抽取层 `discovery/metadata.py`，那里只摘原文写着的 `publishedAt/effectiveFrom`；候选模型 `CandidateMetadata` 实际有 `effective_to`、`application_window`（`schemas.py:718-719`），DISC-06 PATCH 可写并校验 `effective_to >= effective_from`，提交时原样带进草稿。**抽取器不代填，留给审核员补**，不是字段缺失。M1 决定本轮不收紧必填，提交仍只要求 `REQUIRED_FIELDS` 的 9 项；是否在下一版契约收紧，需在 E2 契约签收前决定。
 >
@@ -83,7 +91,7 @@
 **仍待 M1/M2/M3 确认**
 
 - 分组定稿、`creditRecord` 归组、默认 scope。
-- VIS-01 是否能返回每个单位的六种状态；能否区分“行存在且 null”与“无行”。
+- VIS-01 是否能返回每个单位的七种状态；能否区分“行存在且 null”与“无行”。
 - 分支可达性判断 vs 静态统计；两者分母不同。
 - `specificMarketSince` 多细分市场的单键限制。
 - `rdExpenseRevenueRatio` 自动计算是否落事实行。
@@ -122,9 +130,10 @@
 | 等级 | 内容 | 记录位置 | 是否可作为实现依据 |
 | --- | --- | --- | --- |
 | **负责人已明确** | #46：一账号一家企业；审核员可查看所有信息；注册即新建企业；预置保底管理员 + 服务端密钥注册审核员；首版只做注册/登录/登出/改密 + 两角色 + 权限边界。 #47：来源从现有政策网站选择；网址列表；审核员后台配周期；首版提交草稿前抽取；候选保存到下一次自动抓取新政策前。 #48：第 1—5 项 + 审核工作量 + 系统运行趋势；第 6 项暂缓；完整度按“已填适用/适用总数”，未知不计、不适用不入分母；趋势按北京时间、可追溯审核事件、日终快照、运行三态。 | #46/#47/#48 的 2026-11-09 负责人评论；[开发计划](../DEVELOPMENT_PLAN.md) §2 | 业务范围可用；具体字段/接口仍需评审 |
-| **M1 提案，待评审** | D1—D6 技术方案；`review_event`/`baseline` 结构；完整度计数单位；D3 的 6 小时/2MB/30 分钟/token 初始值；迁移 009/010 占号；版本 `1.1.0-rc.1` 待签。**2026-11-12 核实：** #61 已实现迁移 009；`1.1.0-rc.1` 已并入正式契约，但仍是候选版；010 与 `review_event` 尚未落地 | [M1 E0 提案](../devlog/M1-11-10-E0决策提案.md) v5.1；PR #54；PR #61 | 只能作评审输入，不能称已签收 |
-| **M3 建议（本文）** | 四组分组与 `creditRecord` 单列；默认 scope；`not_due`/`answered_unknown` 区分；分支可达性优先；首版“发布=人工审核完成”；`review_revision` 正常为 1；当天暂计数 + `dayOpen`；D3 业务参数意见 | COMPLETENESS_SPEC、METRICS_SPEC、DISCOVERY_SOURCES、本文 | 只能作评审输入，需 M1/M2/M3 确认 |
-| **未签收** | 上述所有 D3/D4/D5 细节、日期字段承载、趋势接口、完整度接口 | — | 实现应按“待评审设计”处理 |
+| **M1 提案，待评审** | D1—D6 技术方案；`review_event`/`baseline` 结构；完整度计数单位；D3 的 6 小时/2MB/30 分钟/token 初始值；迁移 009/010 占号；版本 `1.1.0-rc.1` 待签。**2026-11-13 核实：** #61 已实现迁移 009；`1.1.0-rc.1` 已并入正式契约，但仍是候选版；010 已随 PR #64 合并到 `main`（`c84b4b7`）并由 M1 报告在云端执行；`review_event` 仍未落地 | [M1 E0 提案](../devlog/M1-11-10-E0决策提案.md) v5.1；PR #54；PR #61；PR #64 | 只能作评审输入，不能称已签收 |
+| **M3 建议（本文）** | 四组分组与 `creditRecord` 单列（键名 `credit`）；默认 scope 排除 `closed`；`not_due` 方案 C（季度/年度/跨年分层，N1—N7 边界样例）；`answered_unknown` 与 `not_answered` 区分；首版静态引用 `d4.static.v1` 为过渡、样例 B/C 不宣称通过；首版“发布=人工审核完成”；`review_revision` 正常为 1；当天暂计数 + `dayOpen`；D3 业务参数意见；VIS-06 日期来源逐项回填建议 | COMPLETENESS_SPEC §3.1、METRICS_SPEC §9、POLICY_SCOPE 2026-11-13 节、DISCOVERY_SOURCES §12、本文 | 只能作评审输入，需 M1/M2/M3 确认 |
+| **M1 E3 方案（PR #67，待签收）** | 结果分布/逻辑树/轨迹只读核对；时间线延期；D5 事件表/基线/生命周期/两个 metrics 端点；D4 `scope=profile|run`、v1 静态引用；VIS-06 `date_provenance jsonb` 与 `011`/`012` 迁移；契约 `1.2.0-rc.1` 同窗生成 | [M1 E3 方案草案（PR #67）](https://github.com/sgase233/huice/pull/67)、PR #67 | 方案不是业务口径；D4/D5/VIS 契约/联合验收均未签收 |
+| **未签收** | 上述所有 D3/D4/D5 细节、`not_due` 方案 C、`d4.static.v1` 过渡口径、日期字段承载、趋势接口、完整度接口、VIS-06 回填状态 | — | 实现应按“待评审设计”处理；不得把方案合并/样例对账写成验收通过 |
 
 **已有明确成员确认的只到“负责人 2026-11-09 的范围/方向”这一层**；M1 提案中的技术细节、M3 本次的具体清单都还没有三方签收记录。不能把“文档已进仓库”或“PR #54 已合并”当成接口已实现或已验收。
 
@@ -187,7 +196,7 @@
 
 | 工作包 | 关联 D/验收 ID | 文件与状态 | 输入样本 | 预期输出 | 未决问题 | 接收人 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 完整度 | D4；VIS-AT-02；VIS-01 | [COMPLETENESS_SPEC.md](COMPLETENESS_SPEC.md)，M3 草案 | 18 键、`criteria_review.csv`、6 政策/9 版本 | 分组、逐键适用性、六种单位状态、5 个手算样例（A—E） | scope 默认、`creditRecord` 归组、分支可达性、null/无行区分、多细分市场 | M1、M2、M3 |
+| 完整度 | D4；VIS-AT-02；VIS-01 | [COMPLETENESS_SPEC.md](COMPLETENESS_SPEC.md)，M3 草案 | 18 键、`criteria_review.csv`、6 政策/9 版本 | 分组、逐键适用性、七种单位状态、5 个手算样例（A—E） | scope 默认、`creditRecord` 归组、分支可达性、null/无行区分、多细分市场 | M1、M2、M3 |
 | 审核/运行趋势 | D5；VIS-AT-06/07/08；VIS-04/05 | [METRICS_SPEC.md](METRICS_SPEC.md)，M3 草案 | #48 决定、`publish()` 实现、`assessment_run` | 事件定义、日终公式、北京时间边界、逐日样例 | 发布=审核完成、revision、跨午夜回填、采集前 partial、当天暂计数 | M1、M2、M3 |
 | 首批来源 | D3；DISC-AT-01—07 | [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) + CSV，M3 草案 | `source_register.csv`、9 个正文 URL、3 组附件 | 来源清单、附件大小/类型/哈希、重复/版本/正文附件样本、日期风险 | 栏目 403、固定 URL 列表（仅样本验证）、发现机制、附件限额、多窗口、token 测量 | M1、M2、负责人 |
 | 日期可信度 | D4/时间线；VIS-AT-04；VIS-06 | [POLICY_SCOPE.md](POLICY_SCOPE.md) 新节，命令行核查 | 官方正文/附件 | 每项发布日、窗口、有效期起止的已核实/推算/未知 | 年度指南、长期实施依据、有效期终点口径 | M1、M2 |
@@ -200,7 +209,7 @@
 ### 6.1 M1 可立即使用
 
 - **D3 CSV**：拿 10 个样本做单篇抓取、附件下载、正文哈希、日期字段对照；先验证单篇，不要先假设栏目可列取。固定 URL 列表只是样本验证/受限方案，**不提供新政策发现能力**；不能据此宣称发现能力已达标，发现机制另按 #47 与负责人确认。
-- **D4 清单**：按 §5 的 18 键 × 期间 × 适用性设计 VIS-01；重点确认六种单位状态、`null` vs 无行、未来季度、分支可达性。
+- **D4 清单**：按 §5 的 18 键 × 期间 × 适用性设计 VIS-01；重点确认七种单位状态、`null` vs 无行、未来季度、分支可达性。
 - **D5 清单**：按 §2 设计 `review_event`/日终回放/运行生命周期；按 §6 样例做数据库对账测试。
 - **日期核查**：按 `documentDate`/`pagePublishedAt` 双字段设计 VIS-06；不要把窗口当有效期。
 
@@ -229,11 +238,12 @@
 
 ## 8. 建议的下一步（按优先级）
 
-1. **M1 先回 D3 技术可行性**：单篇抓取、附件解析、2MB/多窗口、日期双字段；这决定 E2 能否按首批来源开工。
-2. **三方评审 D4**：先定分组/`creditRecord`/scope/分支规则；M1 再定 VIS-01 字段。
-3. **M1/M3 评审 D5**：先定“发布是否等于审核完成”和 revision；M2 再定展示。
-4. **M1 提供 E1 隔离环境、两个企业账号、一个审核员与合成数据清单**：M3 才能执行 AUTH-AT 用例。2026-11-12 核实：#61 已合并、迁移 009 已入库，但云端部署仍为 `1.0.0-rc.10`，且尚无验收账号；详见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) §7。
-5. **负责人汇总 D6 估工与目标日**：本文的 10–14 人日只是 M3 初步值。
+1. **M1 先回 D3 技术可行性**：单篇抓取、附件解析、2MB/多窗口、日期双字段；这决定 E2 能否按首批来源开工。2026-11-13 可用来源清单见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12。
+2. **三方评审 D4**：先定分组/`creditRecord`/scope/`not_due` 方案 C/静态引用过渡范围；M1 再定 VIS-01 字段。M3 已补 §3.1 边界样例，仍待 M1/M2 确认。
+3. **M1/M3 评审 D5**：先定“发布是否等于审核完成”、revision、两个覆盖起点、运行上限；M2 再定展示。M1 方案 §2 已对齐大部分口径，见 [METRICS_SPEC.md](METRICS_SPEC.md) §9。
+4. **M1 提供 E1 隔离环境、两个企业账号、一个审核员与合成数据清单**：M3 才能执行 AUTH-AT 用例。2026-11-13 核实：云端 `/health=1.1.0-rc.1` 与门禁层已对上，但隔离环境、账号、迁移 009/010 现场证据仍未提供；详见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) §7。
+5. **M1 出 E3a 对账样本**：结果分布四态+stale、逻辑树 GXJS v1/v2+manual_review、轨迹离线/在线；M3 复核后才能把 VIS-AT-01/03/05 从“未执行”推进。
+6. **负责人汇总 D6 估工与目标日**：本文的 10–14 人日只是 M3 初步值。
 
 ---
 

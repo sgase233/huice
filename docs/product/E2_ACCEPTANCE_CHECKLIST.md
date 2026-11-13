@@ -3,28 +3,30 @@
 > **状态：M3 执行准备，2026-11-13 更新。不是验收通过记录，也不是任何成员的签收。**
 > 本文把 [ACCEPTANCE.md](ACCEPTANCE.md) 扩展矩阵中的 DISC-AT-01—07 展开为可执行步骤；用例编号沿用原矩阵，`-A/-B/...` 只是同一用例下的执行步骤，不另立验收标准。实际结果只回填 ACCEPTANCE 的执行记录表；未执行项保持未执行。
 >
-> **本轮基线：** PR #64 最新 head `a8b7e4ecf83d1a773795c11c671862f66f94c6a8`（2026-11-13 16:31:42 +0800；11 个提交，base `5d1adeb`；40 文件 +10,129/−159；CI 3 项通过，2026-11-13 08:32–08:33Z）。E2 契约仍为草案 `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），未并入正式 `contracts/openapi.yaml`（`1.1.0-rc.1`）；迁移 `infra/sql/010_policy_discovery.sql` 已由 M1 报告在云端执行（`schema_migration` 10 行，M1 证据，M3 未独立复核）；`origin/main` 为 `44a637d`。M3 审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §10。
+> **本轮基线（2026-11-13 20:45 +0800 更新）：** PR #64 最终 head `a8b7e4ecf83d1a773795c11c671862f66f94c6a8`，**已于 2026-11-13T12:09:36Z 合并到 `main`（merge commit `c84b4b7`）**；11 个提交，base `5d1adeb`；40 文件 +10,129/−159；CI 3 项通过（2026-11-13 08:32–08:33Z）。E2 契约仍为草案 `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），未并入正式 `contracts/openapi.yaml`（`1.1.0-rc.1`）；迁移 `infra/sql/010_policy_discovery.sql` 已由 M1 报告在云端执行（`schema_migration` 10 行，M1 证据，M3 未独立复核）。**E2 验收按 issue #66 排在 E3 之后；本清单是执行准备，不是已排期或已执行。** 可用来源清单见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；M3 审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §11。
 >
-> **边界：** 本文只写准备、步骤、预期与证据形式；不写真实口令、审核员密钥、演示 cookie 或连接串。M3 本机没有项目 Python 依赖（`fastapi`/`psycopg`/`jsonschema` 未安装）、没有隔离 PostgreSQL、没有云端访问；不能把静态阅读、作者自述、CI 通过或另一版本环境当成联合验收。M3 2026-11-13 实际执行的是 curl、`d5e12f8` 的真实 `Fetcher` 和 `c95dc3b` 的纯函数离线复算，**没有跑 runner/隔离库/真实模型**。
+> **边界：** 本文只写准备、步骤、预期与证据形式；不写真实口令、审核员密钥、演示 cookie 或连接串。M3 本机没有项目 Python 依赖（`fastapi`/`psycopg`/`jsonschema` 未安装）、没有隔离 PostgreSQL、没有云端账号或 ECS 数据库访问；2026-11-13 只做了匿名 `/health`/门禁探测，不能把静态阅读、作者自述、CI 通过或另一版本环境当成联合验收。M3 2026-11-13 实际执行的是 curl、`d5e12f8` 的真实 `Fetcher` 和 `c95dc3b` 的纯函数离线复算，**没有跑 runner/隔离库/真实模型**。
 
 ## 1. 本轮已核对的事实与未决状态
 
 | 项 | 2026-11-13 实际状态 | 对验收的影响 |
 |---|---|---|
-| 代码基线 | PR #64 head `a8b7e4e`（open，`mergeable_state=clean`）；11 个提交；40 个文件、+10,129/−159；CI 3 项通过（2026-11-13 08:32–08:33Z） | 代码是最新评审对象；合并未发生；M1 报告云端已部署 `a8b7e4e`（M1 证据）；`a8b7e4e` 尚未经 M2 复审 |
+| 代码基线 | PR #64 最终 head `a8b7e4e`，**已于 2026-11-13T12:09:36Z 合并到 `main`（`c84b4b7`）**；11 个提交；40 个文件、+10,129/−159；CI 3 项通过（2026-11-13 08:32–08:33Z） | 代码已进入 `main`；合并不等于契约签收/E2 验收；M2 最后复审停在 `7eb48dd`，未对 `c95dc3b`/`a8b7e4e` 留新记录 |
 | E2 契约 | `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），未并入正式 `contracts/openapi.yaml`（`1.1.0-rc.1`）；`CandidateSummary` 含 `attachmentCount`/`unsupportedAttachmentCount`/`suspectedDuplicateOf`/`suspectedDuplicateSourceUrl`；`DiscoveryRun` 含 `suspectedDuplicates` | 只能用于评审；正式集成/类型生成待契约签收，不能按草案宣称对外契约完成 |
 | 迁移 010 | `a8b7e4e` 补齐 `discovery_run.failed_articles` 的 `ALTER` 与升级用例；唯一索引为 `(content_hash, source_url)`；M1 报告云端已执行 010（`schema_migration` 10 行，五表/五列/索引核对通过），**M3 未独立访问 ECS 复核** | P1-3 已闭合（代码/迁移/用例）；空库/旧库回滚、重启恢复、云端的 M3 独立复核仍未做 |
 | 云端 fixture 冒烟 | M1 报告 `a8b7e4e` 已部署，`/health=1.1.0-rc.1`；`runId 5a563ec4-…`、`sources_checked=1`、`links_seen=10`、`new_candidates=10`、`duplicates=0`、`failed_articles=0`；9 `extraction_failed` + 1 `pending_review`，无一进政策库；timer 已 enable | 这是 M1 提供的 fixture 证据，不是真实模型/真实用户验收；M3 未独立复核云端 |
 | 附件范围 | M1 已采纳 M3 建议 B：S03/S04/S05 这类“条件主要在附件”的来源**暂不纳入 E2 自动发现验收**；附件不下载、不解析，附件内容不能作为草稿引用；人工导入仅 PDF/UTF-8 文本，DOC/DOCX/ZIP 需离线转换 | 验收清单必须按此排除；不能用“提示已显示”代替附件已核对；若负责人要求纳入，需另补附件链路 |
 | 发布口径 | `ATTACHMENT_NOT_EXTRACTED` **不阻断发布**；没有逐附件 disposition/确认 | 这是有意的缩小范围；验收记录必须写明“提示不等于附件已核对”，不得算作 DISC-AT-05 的附件覆盖 |
 | 本地测试 | M1 报告本地 PostgreSQL 16 全量 1337 passed / 13 skipped（2026-11-13 08:34Z）；CI 在 `a8b7e4e` 上运行后端/契约测试通过 | M2 未独立复跑数据库测试；M3 未复跑；只能作为作者/CI 声明，不是 M3 验收证据 |
-| 真实环境 | M1 报告云端已部署 `a8b7e4e`、执行 010、`/health=1.1.0-rc.1`，并用 fixture 跑通一轮候选链路；M3 2026-11-13 实际跑了 curl、`d5e12f8` 的真实 `Fetcher`、`c95dc3b` 的纯函数离线复算，但**未访问 ECS、未跑 runner/真实模型**；`www.sz.gov.cn` 在服务器 OpenSSL 3.0.13 上仍 `bad ecpoint` | DISC-AT-01—07 均不能写“通过”；云端 fixture 冒烟不等于真实模型/真实用户验收；sz 来源仍需目标环境复测 |
+| 真实环境 | M1 报告云端已部署 `a8b7e4e`、执行 010、`/health=1.1.0-rc.1`，并用 fixture 跑通一轮候选链路；M3 2026-11-13 20:45 匿名探测同一地址 `/health=1.1.0-rc.1`（trace `569eff9e-…`），并实际跑了 curl、`d5e12f8` 的真实 `Fetcher`、`c95dc3b` 的纯函数离线复算，但**未访问 ECS 数据库、未跑 runner/真实模型**；`www.sz.gov.cn` 在服务器 OpenSSL 3.0.13 与本机 Python 3.14 均报 `bad ecpoint`（curl 可访问） | DISC-AT-01—07 均不能写“通过”；云端 fixture 冒烟不等于真实模型/真实用户验收；sz 来源仍需目标环境复测 |
+| E2 验收排期 | issue #66（open，0 评论）明确 E2 验收**排在 E3 之后**；云端保持 `enabled=true` + timer，未记录复位方式前不改配置 | 本轮只做来源梳理和验收准备；不提前宣布 E2 完成，不改云端 timer/来源/候选数据 |
+| 可用来源 | 2026-11-13 20:45–20:48 重新核验 S01/S02/S06/S07/S08/S09/S10 正文均 200 且哈希与登记一致；A/G 栏目 403；B/C/E 入口 200 但未跑 runner；D/F 为框架页；S03/S04/S05 仍因附件排除 | 详见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；单篇 URL 可访问 ≠ 栏目可自动发现，也不等于抓取授权 |
 
 ## 2. 验收前置条件
 
 | 前置条件 | 状态 | 证据来源 | 说明/下一步 |
 |---|---|---|---|
-| 同版后端 + E2 契约 | 部分确认（M1 证据） | M1 报告云端 `a8b7e4e`、`/health=1.1.0-rc.1`；E2 草案 | M3 未访问 ECS；正式契约未并入 `openapi.yaml`；M2 尚未复审 `a8b7e4e` |
+| 同版后端 + E2 契约 | 部分确认（M1 证据 + M3 匿名健康探测） | M1 报告云端 `a8b7e4e`、`/health=1.1.0-rc.1`；M3 2026-11-13 20:45 匿名确认 `/health=1.1.0-rc.1`；E2 草案 | M3 未访问 ECS 数据库；正式契约未并入 `openapi.yaml`；M2 最后复审停在 `7eb48dd`，未对 `c95dc3b`/`a8b7e4e` 留新记录 |
 | 隔离数据库/ schema | 部分确认（M1 证据） | M1 报告 010 已在云端执行，`schema_migration` 10 行，五表/五列/索引核对通过 | M3 未独立复核；回滚/重启恢复未测 |
 | 审核员账号与演示门禁 | 部分确认（M1 证据） | M1 冒烟 reviewer 登录 200、CSRF 正常 | M3 未取得账号/演示 cookie；不记录口令/cookie |
 | 管理员可修改发现设置 | 部分确认（M1 证据） | M1 `PUT` 启用并加来源 200（`X-CSRF-Token` + `If-Match`） | M3 未独立执行；并发 PUT 未测 |
@@ -34,6 +36,22 @@
 | 清理与回滚 | 未确认 | 010 已在云端执行；P1-3 已闭合 | 回滚/重启恢复未测；验收后清理测试候选/草稿；不得删除已提交政策/审计 |
 
 ## 3. 样本矩阵
+
+### 3.0 E2 首版可用来源摘要（2026-11-13 复核）
+
+> 完整字段（URL、原文定位、正文/附件判断、访问时间/方式/响应/环境、能支持/不能支持的 DISC-AT、栏目发现是否验证、robots/403/TLS 约束）见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12。这里只给验收选源摘要，**不把任何单篇 URL 200 写成栏目可自动发现**。
+
+| 来源 | 正文是否足以支撑 E2 首版 | 不能支持/限制 | 建议用途 |
+| --- | --- | --- | --- |
+| S01 / S10（2023 年第 7 号公告，gov.cn / chinatax） | 是：正文含加计扣除比例、执行起算日、引用文件；无附件 | 税收制度性政策无申报窗口；A/G 栏目 403；S01/S10 只是跨站同文样本 | DISC-AT-03/04/05 正文路径；S01/S10 判重 |
+| S02（2023 年第 12 号公告） | 是：正文含小型微利条件、执行期 2023-01-01 至 2027-12-31；无附件 | 无申报窗口；A 栏目 403 | DISC-AT-03/05 正文路径 |
+| S06（高企培育资助办法，2021） | 是：办法正文含条件与有效期条款；无附件 | 年度申请指南未取得，申报窗口未知；D 根页是框架页；本机 Python TLS `bad ecpoint` | DISC-AT-03/05 正文路径；版本/日期样本；不作时间线验收 |
+| S07（研发投入补助办法，2026） | 是：办法正文含条件与 5 年有效期条款；无附件 | 办法正文不含 2026 年度窗口；年度指南是另一个 URL，未登记；D 根页框架；TLS 同 S06 | DISC-AT-03/05 正文路径；日期来源样本 |
+| S08 / S09（高企认定 2008 / 2016） | 是：两版办法正文含条件、施行日期与废止关系；无附件 | 两个不同 URL/版本，不是“同 URL 内容变化”；S08 已废止；F 根页框架 | DISC-AT-03/04 版本对照；S08 只能作历史版本 |
+| S03 / S04 / S05 | **否**：条件/窗口主要在附件 | S03 ZIP 2,487,736B、两批窗口；S04 3 个 DOCX；S05 `.doc`；本轮不下载、不解析附件 | 不纳入 E2 自动发现验收；只能按“未纳入”记录 |
+| B / C / E 栏目根页 | 仅入口 HTML，不是单篇正文 | 未跑真实 runner；分页/JS/robots 未验证；B/C 仍有导航链接混入；E 年度页已由 `c95dc3b` 两层拦截但仍需目标环境复测 | 待验证来源/负样本；不写成“可自动发现” |
+| A / G 栏目根页 | 否 | 403（未绕过）；单篇正文可读 | 负样本；不作为自动发现来源 |
+| D / F 栏目根页 | 否 | 框架页（D 959B/0 links；F 898B/1 link） | 负样本；验证 `unsupported_list` |
 
 ### 3.1 自动发现验收样本（正文足以支撑）
 
@@ -183,7 +201,7 @@
 
 每个用例至少记录：
 
-- 代码/契约/迁移版本：`c95dc3b`、`contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`）、`infra/sql/010_policy_discovery.sql`（实际部署版本另记）。
+- 代码/契约/迁移版本：`a8b7e4e`（已并入 `main` `c84b4b7`）、`contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`）、`infra/sql/010_policy_discovery.sql`（实际部署版本另记）。
 - 环境：地址/库 schema/是否同版/010 是否执行；M3 2026-11-13 的 curl/Fetcher/离线复算环境为 Windows + Python 3.14，不是项目 3.12/Linux 测试环境。
 - 样本：S01/S10/S02/S06/S07/S08/S09/D/F/B/C/E/HTTP-only/短句变更/A→B→A/两网址同内容；附件依赖样本单独标注“未纳入”。
 - 预期与实际：逐项写，不用“正常/OK”概括。
@@ -209,4 +227,4 @@
 | DISC-AT-06 | 部分覆盖 | 提交 vs 过期竞争无并发测试；云端/多进程 |
 | DISC-AT-07 | 部分覆盖（仅后端） | 无前端/UI 证据；手动导入端到端未回归；disabled/not_due 与“无新政策”的 UI 区分未实现 |
 
-**结论：DISC-AT-01—07 当前均未完成联合验收，不产生“通过”项。** P1-A/P1-B 已在 `24daee0` 修复；P1-1（栏目根页链接范围/列表页）已在 `c95dc3b` 修复并被 M3 用真实页面独立复算；P1-2 的判重口径 M1 已确认、M3 文档已更新；**P1-3（010 旧库升级）已在 `a8b7e4e` 闭合**（补 `failed_articles` 的 `ALTER` + 升级用例）。M1 报告云端已部署 `a8b7e4e`、执行 010、fixture 跑通一轮（`runId 5a563ec4-…`），但这是 M1 证据，M3 未独立复核；**真实模型、S01/S10 判重、提交/过期并发、前端联调、三方签收仍未完成**。S03/S04/S05 只能按“未纳入自动发现验收”记录。
+**结论：DISC-AT-01—07 当前均未完成联合验收，不产生“通过”项。** P1-A/P1-B 已在 `24daee0` 修复；P1-1（栏目根页链接范围/列表页）已在 `c95dc3b` 修复并被 M3 用真实页面独立复算；P1-2 的判重口径 M1 已确认、M3 文档已更新；**P1-3（010 旧库升级）已在 `a8b7e4e` 闭合**（补 `failed_articles` 的 `ALTER` + 升级用例）。PR #64 已于 2026-11-13T12:09:36Z 合并到 `main`（`c84b4b7`），但 M2 最后复审停在 `7eb48dd`，未对 `c95dc3b`/`a8b7e4e` 留新记录；E2 契约仍是草案。M1 报告云端已部署 `a8b7e4e`、执行 010、fixture 跑通一轮（`runId 5a563ec4-…`），M3 2026-11-13 20:45 匿名探测确认 `/health=1.1.0-rc.1`，但未独立查库；**真实模型、S01/S10 判重、提交/过期并发、前端联调、三方签收仍未完成**。S03/S04/S05 只能按“未纳入自动发现验收”记录。**E2 验收按 issue #66 排在 E3 之后，本轮不提前宣布完成。**
