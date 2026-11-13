@@ -51,6 +51,7 @@ from discovery_support import (
     make_runner,
     page,
 )
+from support import MIGRATIONS
 
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
 
@@ -620,6 +621,127 @@ def test_a_frame_page_link_to_an_empty_issue_page_is_an_article_failure(
     assert run[0] == 1
     assert run[1][0]["articleFailures"] == 1
     assert _candidates(database_url_schema) == []
+
+
+def test_a_column_root_does_not_fetch_year_or_navigation_indexes(
+    db, discovery, database_url_schema
+):
+    """E 组根页：50 多条官方链接里，年度分类/栏目导航占绝大多数。
+
+    这些目录页正文超过 60 字，旧逻辑会按 DOM 顺序先抓先抽取，既花预算又可能产出
+    伪候选。链接范围过滤必须在抓取之前生效：目录链接不进抓取队列。
+    """
+
+    root_url = "https://www.most.gov.cn/xxgk/xinxifenlei/fdzdgknr/fgzc/gfxwj/"
+    pages, article_links = article_pages(11)
+    article_urls = [url for url in pages if url != LIST_URL]
+    listing = [
+        ("./gfxwj2026/", "2026年"),
+        ("./gfxwj2025/", "2025年"),
+        ("./gfxwj2010before/", "2010年之前"),
+        ("../../zfxxgkzn/", "政府信息公开指南"),
+        ("../../qtwj/", "其他文件"),
+        ("/nav/default.html", "更多"),
+    ]
+    markup = "".join(f'<a href="{href}">{text}</a>' for href, text in listing)
+    markup += "".join(article_links)
+    pages[root_url] = page(
+        root_url, "规范性文件列表", markup=f"<html><body>{markup}</body></html>"
+    )
+
+    configure(discovery, sources=(root_url,))
+    fetcher = FakeFetcher(pages)
+    llm = FakeLlm()
+    outcome = make_runner(db, discovery, fetcher, llm=llm).run(trigger="timer")
+
+    assert fetcher.calls[0] == root_url
+    assert set(fetcher.calls[1:]) == set(article_urls)
+    assert llm.calls == 11
+    status, reason, new, duplicates, _failed_sources, *_ = _run_row(
+        database_url_schema, outcome.run_id
+    )
+    assert (status, reason) == ("succeeded", "completed")
+    assert (new, duplicates) == (11, 0)
+    assert len(_candidates(database_url_schema)) == 11
+
+
+def test_a_root_that_only_lists_directories_is_a_source_failure(
+    db, discovery, database_url_schema
+):
+    """过滤后一条正文链接都不剩：不能退回「整页当单篇正文」做伪候选。"""
+
+    configure(discovery)
+    root = page(
+        LIST_URL,
+        "规范性文件：" + "目录按年度分类，请选择年份查看。" * 5,
+        markup=(
+            '<html><body><a href="./gfxwj2026/">2026年</a>'
+            '<a href="./gfxwj2025/">2025年</a></body></html>'
+        ),
+    )
+    fetcher = FakeFetcher({LIST_URL: root})
+    llm = FakeLlm()
+    outcome = make_runner(db, discovery, fetcher, llm=llm).run(trigger="timer")
+
+    status, reason, new, _duplicates, failed_sources, *_ = _run_row(
+        database_url_schema, outcome.run_id
+    )
+    assert (status, reason) == ("failed", "fetch_failed")
+    assert (new, failed_sources) == (0, 1)
+    assert fetcher.calls == [LIST_URL]
+    assert llm.calls == 0
+    assert _candidates(database_url_schema) == []
+    source_status = query_one(
+        database_url_schema,
+        "SELECT source_status FROM discovery_run WHERE id = %s",
+        (outcome.run_id,),
+    )[0]
+    assert source_status[0]["errorCategory"] == "unsupported_list"
+
+
+def test_a_link_heavy_index_page_is_skipped_before_extraction(
+    db, discovery, database_url_schema
+):
+    """URL 不像目录、正文又超过 60 字的入口页，按链接占比在抽取前拦下。
+
+    年度页正文约 500 字、50 条链接、锚文本占八成：不拦就会花掉一次抽取预算，
+    抽不出条款时还会落一条 ``extraction_failed`` 伪候选。
+    """
+
+    configure(discovery)
+    nav_url = "https://www.gov.cn/zhengce/nav/2025n.htm"
+    nav_markup = "".join(
+        f'<a href="https://www.gov.cn/a/{index}.htm">第{index}号文件</a>'
+        for index in range(15)
+    )
+    nav_text = "政策文件列表" + "".join(f"第{index}号文件" for index in range(15))
+    root = page(
+        LIST_URL,
+        "政策文件列表",
+        markup=(
+            f'<html><body><a href="{nav_url}">导航</a>'
+            f'<a href="{ARTICLE_URL}">措施</a></body></html>'
+        ),
+    )
+    pages = {
+        LIST_URL: root,
+        nav_url: page(
+            nav_url, nav_text, markup=f"<html><body>{nav_markup}</body></html>"
+        ),
+        ARTICLE_URL: ARTICLE_PAGE,
+    }
+    llm = FakeLlm()
+    outcome = make_runner(db, discovery, FakeFetcher(pages), llm=llm).run(trigger="timer")
+
+    assert llm.calls == 1
+    assert nav_url not in [row[1] for row in _candidates(database_url_schema)]
+    run = query_one(
+        database_url_schema,
+        "SELECT failed_articles, source_status FROM discovery_run WHERE id = %s",
+        (outcome.run_id,),
+    )
+    assert run[0] == 1
+    assert run[1][0]["articleFailures"] == 1
 
 
 #: 两段足够长的条款句；两站只差导航、页脚，正文逐字相同。
@@ -1206,3 +1328,70 @@ def test_an_http_only_attachment_is_still_recorded_on_the_candidate(
     )
     assert recorded == []
     assert unsupported == [attachment]
+
+
+# ------------------------------------------------------------------ 迁移升级
+
+
+def test_010_upgrades_a_database_that_ran_an_older_version(database_url_schema):
+    """旧版 010 的库：缺列、索引只按 content_hash；重跑 010 必须补齐并改索引。
+
+    ``CREATE TABLE IF NOT EXISTS`` 不会补列，``CREATE UNIQUE INDEX IF NOT EXISTS``
+    也不会修改已有索引的定义。迁移里因此显式写了 ALTER 与 DROP INDEX——没有这些
+    语句时，任何执行过旧版 010 的库升级后应用查新列都会 500（#64 复审 P1）。
+    """
+
+    script = next(path for path in MIGRATIONS if path.name.startswith("010_")).read_text(
+        encoding="utf-8"
+    )
+    with psycopg.connect(database_url_schema, autocommit=True) as conn:
+        # 把库退回旧版 010 的形状：列不存在，唯一索引只按 content_hash。
+        conn.execute("DROP INDEX IF EXISTS idx_policy_candidate_fingerprint_body")
+        conn.execute("DROP INDEX IF EXISTS policy_candidate_active_hash")
+        conn.execute(
+            "ALTER TABLE policy_candidate DROP COLUMN IF EXISTS suspected_duplicate_of"
+        )
+        conn.execute(
+            "ALTER TABLE policy_candidate DROP COLUMN IF EXISTS unsupported_attachment_urls"
+        )
+        conn.execute(
+            "ALTER TABLE discovery_run DROP COLUMN IF EXISTS suspected_duplicates"
+        )
+        conn.execute(
+            "ALTER TABLE policy_candidate_fingerprint DROP COLUMN IF EXISTS body_fingerprint"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX policy_candidate_active_hash "
+            "ON policy_candidate (content_hash) "
+            "WHERE status IN ('pending_review', 'extraction_failed')"
+        )
+
+    try:
+        with psycopg.connect(database_url_schema, autocommit=True) as conn:
+            conn.execute(script)
+    finally:
+        # 断言失败也不能把模块 schema 留在旧版；重跑本文件是幂等的。
+        with psycopg.connect(database_url_schema, autocommit=True) as conn:
+            conn.execute(script)
+
+    columns = {
+        row[0]
+        for row in query_all(
+            database_url_schema,
+            "SELECT table_name || '.' || column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name IN "
+            "('discovery_run', 'policy_candidate', 'policy_candidate_fingerprint')",
+        )
+    }
+    assert {
+        "discovery_run.suspected_duplicates",
+        "policy_candidate.unsupported_attachment_urls",
+        "policy_candidate.suspected_duplicate_of",
+        "policy_candidate_fingerprint.body_fingerprint",
+    } <= columns
+    definition = query_one(
+        database_url_schema,
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() "
+        "AND indexname = 'policy_candidate_active_hash'",
+    )[0]
+    assert "(content_hash, source_url)" in definition

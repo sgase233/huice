@@ -36,7 +36,9 @@
 --      next_run_at 三件事一起提交或一起回滚（E0 D3.5）。中途失败时旧候选仍为 expired，
 --      不自动恢复——页面显示本轮失败原因，而不是把过期候选变回可提交。
 --
--- 可重复执行：建表用 IF NOT EXISTS；触发器用 CREATE OR REPLACE；重复跑是空操作。
+-- 可重复执行、也能升级旧库：建表用 IF NOT EXISTS；下面另有 ALTER TABLE ... ADD
+-- COLUMN IF NOT EXISTS 与 DROP INDEX IF EXISTS，用来补齐「执行过本文件早期版本」
+-- 的库（CREATE TABLE IF NOT EXISTS 不会补列，IF NOT EXISTS 的索引也不会改定义）。
 
 BEGIN;
 
@@ -116,6 +118,10 @@ CREATE TABLE IF NOT EXISTS discovery_run (
         OR (status <> 'running' AND finished_at IS NOT NULL AND terminal_reason IS NOT NULL)
     )
 );
+
+-- 旧版 010 没有这一列：重跑本文件时补上。新库上是空操作。
+ALTER TABLE discovery_run
+    ADD COLUMN IF NOT EXISTS suspected_duplicates integer NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS discovery_run_started_idx
     ON discovery_run (started_at DESC);
@@ -207,9 +213,17 @@ CREATE TABLE IF NOT EXISTS policy_candidate (
     )
 );
 
+-- 旧版 010 没有这两列：重跑本文件时补上。suspected_duplicate_of 的语义见上面注释。
+ALTER TABLE policy_candidate
+    ADD COLUMN IF NOT EXISTS unsupported_attachment_urls jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE policy_candidate
+    ADD COLUMN IF NOT EXISTS suspected_duplicate_of uuid REFERENCES policy_candidate (id);
+
 -- 同一网址同内容只进一条；不同网址允许内容哈希相同（版本变化各算各的，跨来源重复由
 -- fingerprint 表在写候选前先拦，见文件头第 3 条取舍）。
-CREATE UNIQUE INDEX IF NOT EXISTS policy_candidate_active_hash
+-- 先删后建：旧版 010 的索引只按 content_hash，IF NOT EXISTS 不会改已有索引的定义。
+DROP INDEX IF EXISTS policy_candidate_active_hash;
+CREATE UNIQUE INDEX policy_candidate_active_hash
     ON policy_candidate (content_hash, source_url)
     WHERE status IN ('pending_review', 'extraction_failed');
 
@@ -242,6 +256,12 @@ CREATE TABLE IF NOT EXISTS policy_candidate_fingerprint (
     candidate_id        uuid,
     submitted_policy_id uuid
 );
+
+-- 旧版 010 没有这一列：补上时一并带 CHECK（列已存在则整条是空操作）。
+ALTER TABLE policy_candidate_fingerprint
+    ADD COLUMN IF NOT EXISTS body_fingerprint text CHECK (
+        body_fingerprint IS NULL OR body_fingerprint ~ '^[0-9a-f]{64}$'
+    );
 
 -- 换 URL 同内容是按正文指纹查的；旧行该列为空，只在新写入时补上。
 CREATE INDEX IF NOT EXISTS idx_policy_candidate_fingerprint_body

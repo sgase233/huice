@@ -21,7 +21,9 @@ from app.discovery.fetch import (
     extract_links,
     find_attachments,
     html_to_text,
+    listing_links,
     looks_like_article,
+    looks_like_listing,
     normalize_text,
     require_official_url,
     resolve_public_addresses,
@@ -305,6 +307,69 @@ def test_extract_links_keeps_only_official_articles():
     assert "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm" in links
     assert "https://example.com/x.htm" not in links
     assert not any(link.endswith(".pdf") for link in links)
+
+
+def test_extract_links_skips_year_and_navigation_entries():
+    """E 组根页的真实形状：年度分类与栏目导航都指向目录，不是单篇正文。
+
+    这些链接的正文页也可能超过 60 字（年度页约 500 字），旧逻辑会照抓并抽取。
+    """
+
+    markup = """
+    <html><body>
+    <a href="./gfxwj2026/">2026年</a>
+    <a href="./gfxwj2010before/">2010年之前</a>
+    <a href="../../zfxxgkzn/">政府信息公开指南</a>
+    <a href="/policy/2025n">2025年</a>
+    <a href="/nav/default.html">更多</a>
+    <a href="http://www.gov.cn/zhengce/http-only.htm">只有 http</a>
+    <a href="/zhengce/content/2026-11/12/content_1.htm">关于支持小微企业的通知</a>
+    </body></html>
+    """
+
+    links = extract_links(markup, "https://www.most.gov.cn/xxgk/fgzc/gfxwj/")
+
+    assert links == [
+        "https://www.most.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    ]
+
+
+def test_listing_links_reports_what_the_link_scope_dropped():
+    """运行器靠它区分「框架页」与「只列出下一级目录」两种来源。"""
+
+    markup = '<a href="./gfxwj2025/">2025年</a><a href="/a/1.htm">正文</a>'
+    assert listing_links(markup, "https://www.most.gov.cn/x/") == [
+        "https://www.most.gov.cn/x/gfxwj2025/"
+    ]
+
+
+def test_looks_like_listing_rejects_a_link_heavy_year_page():
+    """年度分类页：正文超过 60 字，但锚文本占 80% 以上。"""
+
+    links = "".join(f'<a href="/a/{i}.htm">第{i}号文件</a>' for i in range(15))
+    text = "政策文件列表" + "".join(f"第{i}号文件" for i in range(15))
+
+    assert looks_like_listing(f"<html><body>{links}</body></html>", text)
+
+
+def test_looks_like_listing_accepts_a_real_article_with_navigation():
+    """真实正文页：即使带整排导航，正文远多于链接文字。"""
+
+    nav = "".join(f'<a href="/nav/{i}.htm">栏目{i}</a>' for i in range(20))
+    body = "一、" + "政策条款内容" * 200
+
+    assert not looks_like_listing(
+        f"<html><body>{nav}<p>{body}</p></body></html>", "栏目" + body
+    )
+
+
+def test_looks_like_listing_needs_enough_links():
+    """链接少时占比再高也不判列表页：正文里的引用链接不该误伤。"""
+
+    links = "".join(f'<a href="/a/{i}.htm">第{i}号文件</a>' for i in range(5))
+    text = "".join(f"第{i}号文件" for i in range(5))
+
+    assert not looks_like_listing(f"<html><body>{links}</body></html>", text)
 
 
 def test_extract_links_is_deduplicated_and_capped():

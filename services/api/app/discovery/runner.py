@@ -49,7 +49,9 @@ from .fetch import (
     canonicalize_url,
     estimate_tokens,
     extract_links,
+    listing_links,
     looks_like_article,
+    looks_like_listing,
 )
 from .metadata import extract_metadata
 
@@ -262,6 +264,20 @@ class DiscoveryRunner:
 
             links = extract_links(page.markup or "", page.url) if page.markup else []
             if not links:
+                if listing_links(page.markup or "", page.url):
+                    # 页面只列出下一级目录（年度分类、栏目索引），过滤后一条正文都
+                    # 没有。不能退回「整页当单篇正文」——那会把目录页做成伪候选。
+                    entry.update(
+                        status="failed",
+                        errorCategory="unsupported_list",
+                        message=(
+                            "页面只列出目录/导航链接，没有可直接抓取的正文链接；"
+                            "请改配能列出政策正文的栏目页。"
+                        ),
+                    )
+                    counts.failed_sources += 1
+                    source_status.append(entry)
+                    continue
                 if not looks_like_article(page.text):
                     # 框架页 / 跳转页：页面 200 但正文为空或只有几个字。老逻辑会把
                     # 它当单篇正文，产出一条 extraction_failed 伪候选；这里按来源级
@@ -328,6 +344,18 @@ class DiscoveryRunner:
                     counts.failed_articles += 1
                     logger.warning(
                         "发现运行命中非正文页面 run=%s url=%s", run_id, link
+                    )
+                    continue
+
+                if looks_like_listing(article.markup or "", article.text):
+                    # 年度分类页/导航页正文也可能超过 60 字，只靠长度挡不住。链接文字
+                    # 占大半页就是入口页：**在抽取之前**跳过，不花模型预算、不产生
+                    # 伪候选；计一次正文失败，来源状态仍然如实（#64 复审 P1）。
+                    article_failures += 1
+                    article_categories.add("unsupported_list")
+                    counts.failed_articles += 1
+                    logger.warning(
+                        "发现运行命中列表/导航页 run=%s url=%s", run_id, link
                     )
                     continue
 

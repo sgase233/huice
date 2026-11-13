@@ -77,6 +77,24 @@ _NON_ARTICLE_HINTS = (
     "/search",
 )
 
+#: 锚文本整段就是一个年份（「2025年」「2025」）的链接，几乎一定是年度分类入口。
+_YEAR_ANCHOR = re.compile(r"^(19|20)\d{2}\s*(年(度)?)?$")
+
+#: 常见「更多/翻页」入口的锚文本；它们指向列表页而不是正文。
+_LIST_ANCHORS = frozenset(
+    {"更多", "查看更多", "查看全部", "上一页", "下一页", "首页", "尾页", "返回列表", "网站地图"}
+)
+
+#: 目录入口文件名。``index``/``list`` 已由 ``_NON_ARTICLE_HINTS`` 覆盖，这里补常见的别名。
+_LISTING_FILENAMES = frozenset(
+    {"default.htm", "default.html", "default.shtml", "more.htm", "more.html", "more.shtml"}
+)
+
+#: 判定「列表/导航页」的最小链接数：少于这个数时，链接占比再高也可能只是正文里的引用。
+_LISTING_MIN_LINKS = 12
+#: 锚文本字数占正文比例达到这个值（百分比）就按列表页处理：正文页的链接通常远低于此。
+_LISTING_LINK_TEXT_PERCENT = 40
+
 
 class FetchError(Exception):
     """抓取失败。``category`` 是写进运行记录的**可区分终态**，不是内部异常名。"""
@@ -475,13 +493,28 @@ class _LinkParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.links: list[str] = []
+        #: 与 ``links`` 一一对应的锚文本，用来识别「2025年」这类年度分类入口。
+        self.anchors: list[list[str]] = []
+        self._current: list[str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag != "a":
             return
         for name, value in attrs:
             if name == "href" and value:
-                self.links.append(value.strip())
+                href = value.strip()
+                self.links.append(href)
+                self.anchors.append([href, ""])
+                self._current = self.anchors[-1]
+                break
+
+    def handle_data(self, data: str) -> None:
+        if self._current is not None:
+            self._current[1] += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self._current = None
 
 
 class _TextParser(HTMLParser):
@@ -602,6 +635,28 @@ def looks_like_article(text: str) -> bool:
     return len(text.strip()) >= MIN_ARTICLE_CHARS
 
 
+def looks_like_listing(markup: str, text: str) -> bool:
+    """链接文字占大半页的页面是列表/导航页，不是单篇正文。
+
+    URL 过滤挡不住所有入口页：站点可能把目录挂在没有斜杠、也没有 ``index``/``list``
+    的路径上。这一层在**抽取之前**按页面结构再拦一次，避免把年度分类页/导航页
+    当成正文花掉模型预算、产出伪候选（#64 复审 P1）。阈值取「不少于 12 条链接且
+    锚文本占正文 40% 以上」：真实条目页的链接文字占比通常只有几个百分点。
+    """
+
+    body = text.strip()
+    parser = _LinkParser()
+    try:
+        parser.feed(markup)
+        parser.close()
+    except Exception:  # noqa: BLE001 - 解析不了就交给正文长度判断
+        return False
+    if len(parser.anchors) < _LISTING_MIN_LINKS:
+        return False
+    anchor_chars = sum(len(re.sub(r"\s+", "", anchor)) for _, anchor in parser.anchors)
+    return anchor_chars * 100 >= len(body) * _LISTING_LINK_TEXT_PERCENT
+
+
 def _fingerprint_sentences(text: str) -> set[str]:
     """参与正文指纹的句子：长条款 + 带数字的短句（排除站点元数据）。"""
 
@@ -642,29 +697,81 @@ def body_fingerprint(text: str) -> str | None:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def extract_links(markup: str, base_url: str) -> list[str]:
-    """页面里的候选链接：规范化、去重、只留官方域名、排除导航与附件。"""
+def _is_listing_link(url: str, anchor: str) -> bool:
+    """目录/导航入口而不是单篇正文。
+
+    栏目根页上常见的两类噪声：``./gfxwj2025/`` 这样的**年度分类**（正文页的链接
+    一般指向 ``.../202504/t20250401_123456.html``），以及 ``../../zfxxgkzn/``
+    这样的**栏目导航**。两者都以 ``/`` 结尾；个别站点不用斜杠时，靠锚文本补判。
+    """
+
+    path = urlsplit(url).path
+    if path.endswith("/"):
+        return True
+    last = path.rsplit("/", 1)[-1].lower()
+    if last in _LISTING_FILENAMES:
+        return True
+    text = re.sub(r"\s+", "", anchor)
+    if _YEAR_ANCHOR.match(text) or text in _LIST_ANCHORS:
+        return True
+    return False
+
+
+def _iter_candidates(markup: str, base_url: str) -> Iterable[tuple[str, str]]:
+    """通过白名单/附件/导航过滤的链接及锚文本（尚未排除目录入口）。"""
 
     parser = _LinkParser()
     try:
         parser.feed(markup)
         parser.close()
     except Exception:  # noqa: BLE001 - 解析失败就当这一页没有链接
-        return []
-
-    seen: list[str] = []
-    for href in parser.links:
+        return
+    for href, anchor in parser.anchors:
         absolute = urljoin(base_url, href)
         canonical = canonicalize_url(absolute)
-        if canonical is None or canonical in seen:
+        if canonical is None:
             continue
         if not _is_official(canonical):
+            continue
+        # 正文抓取只接受 https（``require_official_url``），http 链接必然在连接前被拒；
+        # 留在列表里只会把它每轮都算成一次正文失败。
+        if urlsplit(canonical).scheme != "https":
             continue
         path = urlsplit(canonical).path.lower()
         if path.endswith(_ATTACHMENT_SUFFIXES):
             continue
         lowered = canonical.lower()
         if any(hint in lowered for hint in _NON_ARTICLE_HINTS):
+            continue
+        yield canonical, anchor
+
+
+def listing_links(markup: str, base_url: str) -> list[str]:
+    """被链接范围过滤掉的目录/导航入口（年度分类、栏目索引）。
+
+    运行器发现「过滤后一条正文链接都不剩」时用它区分两种来源：页面根本没有可用
+    链接（框架页），还是只列出了下一级目录（需要改配正文入口）。
+    """
+
+    seen: list[str] = []
+    for canonical, anchor in _iter_candidates(markup, base_url):
+        if canonical in seen:
+            continue
+        if _is_listing_link(canonical, anchor):
+            seen.append(canonical)
+    return seen
+
+
+def extract_links(markup: str, base_url: str) -> list[str]:
+    """页面里的候选链接：规范化、去重、只留官方域名、排除导航与附件。"""
+
+    seen: list[str] = []
+    for canonical, anchor in _iter_candidates(markup, base_url):
+        if canonical in seen:
+            continue
+        # 栏目页上的年度分类、栏目导航不是正文。旧逻辑会照抓，年度页正文虽短但
+        # 仍过得了 60 字门槛，先花掉抽取预算、再产出伪候选（#64 复审 P1）。
+        if _is_listing_link(canonical, anchor):
             continue
         seen.append(canonical)
         if len(seen) >= MAX_LINKS_PER_PAGE:
