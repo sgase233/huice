@@ -186,7 +186,7 @@
 
 ## 10. 2026-11-12 复核与 E2 范围决定
 
-> 本节是 PR #64 审查期间的复核记录，仍不是抓取器实测或验收通过。审查对象为 PR #64 head `00c02f1`；详细业务审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md)，可执行验收清单见 [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)。
+> 本节是 PR #64 2026-11-12 审查期间的复核记录，仍不是抓取器实测或验收通过。审查对象为 PR #64 head `00c02f1`；**该 head 的结论已被 2026-11-13 对 `d5e12f8` 的复审更新，当前状态见 §11**。详细业务审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md)，可执行验收清单见 [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)。
 
 ### 10.1 正文/附件可达性复核
 
@@ -204,9 +204,9 @@
 
 ### 10.2 跨站同文与框架页
 
-- S01/S10 两页正文规范化长度分别为 1,976 / 1,258 字符；按 PR #64 `00c02f1` 的 `body_fingerprint` 复现，两者同为 `6bf01b236c584db2ff32eb319dc13bcf2293704362cb5aecd4a47608789f0d38`。**换 URL 同内容判重在代码层成立**，但仍需通过真实 runner/隔离库执行，不能只用离线哈希写成验收通过。
-- D 组 `https://www.sz.gov.cn/zfgb/`：200 / 959B / 0 links；F 组 `https://www.gov.cn/gongbao/`：200 / 898B / 1 link（`currentissue.htm`）。两者都不是政策正文；PR #64 已用 `looks_like_article` 的 60 字闸门把短框架页记为 `unsupported_list`。60 字只是启发式，长导航页仍需真实栏目样本验证。
-- 同 URL 短句变化风险：PR #64 的 `body_fingerprint` 只取 ≥40 字长句，且在同 URL 的 `versionChanged` 判断之前查重；只改短句中的截止日/金额/人数/范围时，指纹不变，可能被误判为重复。该问题已列入 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) P1-A，修复前不能把 DISC-AT-04 写成通过。
+- S01/S10 两页正文规范化长度分别为 1,976 / 1,258 字符；按 PR #64 `d5e12f8` 的 `body_fingerprint` 复现，两者同为 `df596906263ae846bdcfb9f6ebe4006ddb37747d60c5389f419f941877213efb`（整页 `content_hash` 不同）。**换 URL 同内容在代码层改为“疑似重复、保留候选”**：两条候选都保留，第二条 `suspectedDuplicateOf` 指向第一条，`duplicates=0`、`suspectedDuplicates=1`。仍需通过真实 runner/隔离库执行，不能只用离线哈希写成验收通过。
+- D 组 `https://www.sz.gov.cn/zfgb/`：200 / 959B / 0 links / 0 字；F 组 `https://www.gov.cn/gongbao/`：200 / 898B / 1 link（`currentissue.htm`）/ 4 字。两者都不是政策正文；`looks_like_article` 的 60 字闸门把短框架页记为 `unsupported_list`。**但 60 字只是启发式**：2026-11-13 实测 E 的年度分类页 532 字、导航页 572 字仍会通过；长导航页仍需真实栏目样本验证。
+- 同 URL 短句变化风险已在 `24daee0` 修复：同 URL 的 `versionChanged` 判断先于哈希去重，且 `body_fingerprint` 纳入 ≥12 字且含数字的短句；截止日/金额/人数变化会改变指纹。非数字短句（如“适用范围：深圳市/广东省”）和条款顺序变化仍会是同指纹，但当前代码只把它作为疑似重复提示、保留候选，不再跳过。A→B→A 已在 `7eb48dd` 修复；两网址同轮同内容已在 `d5e12f8` 修复。
 
 ### 10.3 E2 范围决定（2026-11-12）
 
@@ -221,4 +221,49 @@ M1 已采纳 M3 的建议 B，并在 `docs/IMPLEMENTATION_AND_INTERFACE.md` §4.
 
 ### 10.4 仍未执行
 
-真实 `Fetcher` 抓取、真实模型抽取、云端 E2 部署、010 迁移、三方联合验收、栏目列表分页/robots/授权、浏览器渲染/JS、附件的逐条读取（S04 DOCX、S03 附件 2/3/PDF、S05 完整条件）均未执行。本节不改变第 7 节“未执行/未取得”的范围。
+2026-11-13 已实际执行真实 `Fetcher`（S01/S10/F/E 200；A/G 403；B/C/S03/D 在本机 TLS `BAD_ECPOINT`）、curl 和纯函数离线复算；**仍未执行** runner/隔离库、真实模型抽取、云端 E2 部署、010 迁移、三方联合验收、栏目列表分页/robots/授权结论、浏览器渲染/JS、附件的逐条读取（S04 DOCX、S03 附件 2/3/PDF、S05 完整条件）。本节不改变第 7 节“未执行/未取得”的范围。详细证据见 §11。
+
+## 11. 2026-11-13 复审补充（head `d5e12f8`）
+
+> 本节是 PR #64 `d5e12f8` 复审期间的真实页面/附件核对，**不是抓取器 runner、模型或联合验收结论**。M3 环境为 Windows 11 / Python 3.14 / Git Bash；项目依赖、隔离 PostgreSQL、云端均未使用。
+
+### 11.1 正文与附件复核
+
+| 样本 | 2026-11-13 结果 | 与 CSV 对比 |
+|---|---|---|
+| S01 | 200 / 27,618B / `b73e7d26…` | 一致 |
+| S10 | 200 / 27,492B / `72804449…` | 一致 |
+| S03 | 200 / 38,992B / `7ce0fc3a…` | 一致 |
+| S04 | 200 / 64,474B / `2136b0be…` | 一致 |
+| S05 | 200 / 36,775B / `cb066bc1…` | 一致 |
+| S03 ZIP | 2,487,736B / `8ce9d400…`；2 DOCX + 1 PDF | 一致 |
+| S04 三 DOCX | 23,196 / 103,906 / 12,119B；哈希全部一致 | 一致 |
+| S05 `.doc` | 95,232B / `7d021ee0…` | 一致 |
+
+- S03 附件 1 DOCX 逐字确认两批网络填报窗口：2025-06-13 至 06-30 18 时、2025-06-20 至 07-07 18 时；书面材料 06-23 至 07-04、06-30 至 07-11。
+- S05 `.doc` 复核到 2024-12-21 至 2025-01-06 18 时的日期模式（中文映射不完整，仅确认日期）。
+- S01/S10 的 `body_fingerprint` 均为 `df596906263ae846bdcfb9f6ebe4006ddb37747d60c5389f419f941877213efb`；整页哈希不同。
+
+### 11.2 栏目入口复核
+
+| 组 | 2026-11-13 结果 | 链接/内容观察 | 判断 |
+|---|---|---|---|
+| A | 403 / 441B | 无 | 栏目不可列取；单篇正文可读 |
+| B | 200 / 36,124B | 27 links，约 10 条 `content/post_` | 入口可下载，含政策链接；分页/JS 未验证；本机 Fetcher TLS 失败 |
+| C | 200 / 33,840B | 24 links，约 10 条 `content/post_` | 同上 |
+| D | 200 / 959B / 0 links / 0 字 | 框架页 | 不可作栏目；60 字闸门已拦 |
+| E | 200 / 24,960B | 52 links，约 11 条正文，其余导航/年度分类 | **噪声大**：年度分类 532 字、导航 572 字均通过 60 字闸门；不建议直接作自动发现来源 |
+| F | 200 / 898B / 1 link / 4 字 | 框架页 | 不可作栏目；60 字闸门已拦 |
+| G | 403 / 143,924B | 无 | 栏目不可列取；单篇正文可读 |
+
+### 11.3 真实 Fetcher 与 robots
+
+- `d5e12f8` 的真实 `Fetcher`：S01/S10/F/E 200；A/G 403；B/C/S03/D 在本机 `tls_failed`，底层 `SSLError BAD_ECPOINT`。标准 Python `ssl.create_default_context` 直连同一 IP 也失败，`curl` 成功；需在目标 Linux/Python 3.12 复测，不能把本机 TLS 失败写成 Fetcher 代码缺陷，也不能用 curl 成功替代 Fetcher 验收。
+- robots：`https://www.gov.cn/robots.txt` 200，未发现对本次样本 `/zhengce/`、`/gongbao/` 路径的 Disallow；`www.sz.gov.cn`、`www.most.gov.cn`、`www.chinatax.gov.cn` 的 `/robots.txt` 返回 404（没有返回规则）。**robots 不是授权结论**；书面授权/服务条款仍未取得。
+- A/G 的 403 仍存在，未绕过；B/C/E 的分页、Cookie、JS、反爬未验证；F 的 2016 子栏目仍 403。
+
+### 11.4 结论
+
+- **没有任何栏目经过真实 runner 验证可以自动列取政策。** B/C/E 入口 200 且含正文链接，但 B/C 本机 Fetcher TLS 失败、E 的导航/年度分类会进入抽取；A/G 403，D/F 是框架页。
+- S03/S04/S05 仍按方案 B **不纳入 E2 自动发现验收**；附件只记录、不下载/解析，不能作为候选草稿引用来源。
+- 自动化发现能力未达标；固定正文 URL 列表只是样本验证/受限方案。真实模型、runner、云端、010 与三方联合验收仍未执行。

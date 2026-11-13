@@ -1,15 +1,17 @@
 # E2 政策发现 PR #64 M3 业务审查（政策事实、口径与验收）
 
-> **状态：M3 静态评审输入，2026-11-12。不是验收通过记录，也不是 M1/M2 的签收。**
-> 本文核对 PR 代码、接口草案、首批来源样本与 DISC-AT 验收边界；不修改 M1/M2 代码，不代替三方联合验收。
+> **状态：M3 静态评审输入。2026-11-13 复审对象为 PR #64 head `d5e12f87df24a807bd75d58bcb08c022937b3b42`；不是验收通过记录，也不是 M1/M2 的签收。**
+> **当前结论见 §8；§1—§7 是 2026-11-12 对 `00c02f1` 的历史审查，保留用于追溯，不再代表当前 head。**
 >
-> **评审对象：** PR #64 `接口：实现 E2 政策发现、候选暂存与后台配置`，最新 head `00c02f19f6d5ca2c361bdc016598be3f16e373de`（2026-11-12T15:42Z，北京时间 23:42）。5 个提交：`0005c88` → `9791978` → `45d4c5c` → `70e00d5` → **`00c02f1`**；相对 base `5d1adeb` 共 40 个文件、+8,728/−159。PR 仍为 open，`mergeable_state=clean`。
+> **评审对象：** PR #64 `接口：实现 E2 政策发现、候选暂存与后台配置`，最新 head **`d5e12f8`**（2026-11-13 11:12:49 +0800），9 个提交：`0005c88` → `9791978` → `45d4c5c` → `70e00d5` → `00c02f1` → `24daee0` → `2325586` → `7eb48dd` → **`d5e12f8`**；相对 base `5d1adeb` 共 40 个文件、+9,701/−159。PR 仍为 open，`mergeable_state=clean`。CI 在 `d5e12f8` 上 3 项通过（`CSV format`、`Frontend`、`Backend and contract`，2026-11-13 03:13–03:14Z，run `43357442676`）。
 >
-> **审查依据：** [WORKING_GUIDE](../../WORKING_GUIDE.md)、[开发计划](../DEVELOPMENT_PLAN.md) E2/D3、[扩展接口设计](../EXTENSION_INTERFACES.md) §4、[验收矩阵](ACCEPTANCE.md) DISC-AT-01—07、[首批来源](DISCOVERY_SOURCES.md)、[`discovery_sources_phase1.csv`](../../data/policies/discovery_sources_phase1.csv)、[政策范围](POLICY_SCOPE.md)、PR 描述及 M1/M2 全部评审回复。
+> **审查依据：** [WORKING_GUIDE](../../WORKING_GUIDE.md)、[开发计划](../DEVELOPMENT_PLAN.md) E2/D3、[扩展接口设计](../EXTENSION_INTERFACES.md) §4、[验收矩阵](ACCEPTANCE.md) DISC-AT-01—07、[首批来源](DISCOVERY_SOURCES.md)、[`discovery_sources_phase1.csv`](../../data/policies/discovery_sources_phase1.csv)、[政策范围](POLICY_SCOPE.md)、PR 描述、全部 18 条 issue comments 及 CI 结果。
 >
-> **本地更新说明：** 本机 `git fetch` 曾因 `github.com:443` 代理不可用失败；后以 `-c http.proxy= -c https.proxy=` 成功更新 `origin/main` 至 `44a637d`、`origin/m1/e2-policy-discovery` 至 `00c02f1`。本文不采用旧 head `45d4c5c` 或 `70e00d5` 的结论。
+> **本地更新说明：** 2026-11-13 `git fetch --all --prune` 更新 `origin/main` 至 `44a637d`、`origin/m1/e2-policy-discovery` 至 `d5e12f8`；本地 `main` 已快进到 `44a637d`。M3 未改 M1/M2 代码、契约或迁移。
 
-## 1. 结论
+## 1. 结论（2026-11-12，历史）
+
+> **以下 §1—§7 是 2026-11-12 对 `00c02f1` 的历史审查。** 其中 P1-A（同 URL 短句变化）和 P1-B（HTTP-only 附件提示）已在 `24daee0` 修复；跨站指纹命中已改为“疑似重复、保留候选”（`2325586`）；A→B→A 已在 `7eb48dd` 修复；两网址同轮同内容已在 `d5e12f8` 修复。**当前结论见 §8。**
 
 **M3 不签收 E2，也不把 DISC-AT-01—07 任何一项写成“通过”。**
 
@@ -221,3 +223,114 @@ M2 在 `45d4c5c` 指出的“草稿再次保存/重抽后提示丢失”已在 `
 - 没有修改任何 M1/M2 代码、契约、迁移或数据；没有自行宣称三方签收。
 - M3 本机没有项目 Python 依赖（`fastapi`/`psycopg` 未安装），未复跑 M1 报告的 1311 项 pytest；本地测试结果按 M1 声明记录，M2 也未独立复跑数据库测试。
 - 没有把未执行的真实网站、真实模型、云端部署、010 迁移和联合验收写成“通过”。
+
+## 8. 2026-11-13 复审（head `d5e12f8`，当前结论）
+
+> **结论：M3 仍不签收 E2；DISC-AT-01—07 无一项“通过”。**
+> `d5e12f8` 已修复 2026-11-12 复审提出的两项 P1（同 URL 短句变化、HTTP-only 附件提示），也修复了 M2 后续提出的跨 URL 指纹误跳过、A→B→A 回退、两网址同轮同内容三个问题。当前没有新的 M3 **代码合并**阻塞；但新增/剩余 3 个 P1 业务与部署问题（栏目根页噪声、验收文档口径、010 升级路径），以及并发、真实环境与契约/前端/云端缺口，详见 §8.4。
+
+### 8.1 证据类型与测试环境
+
+M3 本机为 Windows 11 / Git Bash / Python 3.14（`py -3 -I`），**没有 `fastapi`/`psycopg`/`jsonschema`、没有隔离 PostgreSQL、没有云端访问、没有真实 DeepSeek**。本轮实际执行并区分：
+
+| 证据类型 | 是否执行 | 说明 |
+|---|---|---|
+| `curl` 真实页面/附件 | 是 | 2026-11-13 11:24–11:31 +0800 |
+| `d5e12f8` 的真实 `Fetcher` | 是 | 精确导入 `fetch.py`；真实 DNS/TLS/重定向/大小/类型 |
+| `d5e12f8` 纯函数（`html_to_text`/`body_fingerprint`/`scan_attachments`/`require_official_url`） | 是 | 离线复算 |
+| `runner` + 隔离库 + 真实模型 | 否 | 只有 CI 与 M1 声明 |
+| M1 报告 1328 passed / 13 skipped | 未独立复跑 | 不作为 M3 验收证据 |
+
+### 8.2 真实样本复核（2026-11-13）
+
+| 样本 | 2026-11-13 结果 | 与 CSV 对比 | 证据 |
+|---|---|---|---|
+| S01 | 200 / 27,618B / `b73e7d26…` | 一致 | curl + Fetcher |
+| S10 | 200 / 27,492B / `72804449…` | 一致 | curl + Fetcher |
+| S03 | 200 / 38,992B / `7ce0fc3a…` | 一致 | curl；Fetcher 本机 TLS 失败 |
+| S04 | 200 / 64,474B / `2136b0be…` | 一致 | curl |
+| S05 | 200 / 36,775B / `cb066bc1…` | 一致 | curl |
+| S03 ZIP | 2,487,736B / `8ce9d400…`；2 DOCX + 1 PDF | 一致 | curl + unzip |
+| S04 三 DOCX | 23,196 / 103,906 / 12,119B；哈希全部一致 | 一致 | curl |
+| S05 `.doc` | 95,232B / `7d021ee0…` | 一致 | curl + antiword |
+| D 根页 | 200 / 959B / 0 links / 0 字 | 框架页 | curl；Fetcher TLS 失败 |
+| F 根页 | 200 / 898B / 1 link / 4 字 | 框架页 | curl + Fetcher |
+| A 栏目 | 403 / 441B | 不可列取 | curl + Fetcher |
+| G 栏目 | 403 / 143,924B | 不可列取 | curl + Fetcher |
+| B 栏目 | 200 / 36,124B / 27 links（约 10 条 `content/post_`） | 入口可下载，含政策链接 | curl；Fetcher TLS 失败 |
+| C 栏目 | 200 / 33,840B / 24 links（约 10 条 `content/post_`） | 同上 | curl；Fetcher TLS 失败 |
+| E 栏目 | 200 / 24,960B / 52 links（约 11 条正文，其余导航/年度分类） | 入口可下载，噪声大 | curl + Fetcher |
+
+**复算结果：**
+
+- S01/S10 规范化文本分别 1,976 / 1,258 字；`body_fingerprint` 同为 `df596906263ae846bdcfb9f6ebe4006ddb37747d60c5389f419f941877213efb`；整页 `content_hash` 不同（`e1c0417a…` / `e6ba1e2b…`）。
+- S03 附件 1 DOCX 逐字确认两批网络填报窗口：2025-06-13 至 06-30 18 时、2025-06-20 至 07-07 18 时；书面材料 06-23 至 07-04、06-30 至 07-11。
+- S05 `.doc` 复核到 2024-12-21 至 2025-01-06 18 时的日期模式。
+- S03/S04/S05 页面用精确 `scan_attachments`：https 附件分别 1/3/1 个；unsupported 均为 0。
+- 真实 `Fetcher`：S01/S10/F/E 200；A/G 403；B/C/S03/D 本机 `tls_failed`（底层 `SSLError BAD_ECPOINT`）。标准 Python SSL 直连同一 IP 也失败、`curl` 成功，说明更可能是本机 Python/OpenSSL 与 `www.sz.gov.cn` 的兼容性问题，**不是 Fetcher 自定义连接代码独有的缺陷**；目标 Linux/Python 3.12 必须复测。
+- `require_official_url` 拒绝 `http://`、`127.0.0.1`、`localhost`、`www.gov.cn.evil.com`、`www.gov.cn@127.0.0.1`、`:8443`；接受官方 https。`resolve_public_addresses("localhost")` 被拒。
+
+### 8.3 判重语义（当前代码）
+
+| 场景 | 判定 | 是否建候选 | 计数/关联 |
+|---|---|---|---|
+| 同 URL、整页规范化文本未变化 | 确认重复 | 否 | `duplicates++` |
+| 同 URL、整页内容变化（含 A→B→A、或新内容等于别站历史） | 版本变化 | 是 | `versionChanged=true`，`duplicateOf=` 本 URL 上一版；上一版已提交则填 `existingPolicyId/version`；若指纹命中另一候选，另给 `suspectedDuplicateOf`，`suspectedDuplicates++` |
+| 两个已记录 URL 同轮变成相同内容 | 两条版本变化 | 是，两条都保留 | 各自 `duplicateOf` 指向自己上一版；后处理的一条 `suspectedDuplicateOf` 指向前一条；`duplicates=0`、`suspectedDuplicates=1` |
+| 新 URL 与已记录 URL 同轮出现相同内容 | 取决于整页哈希与顺序 | 见说明 | 整页哈希相同且已记录 URL 未变化：新 URL 计确认重复跳过；新 URL 先处理、已记录 URL 随后变同内容：两条都保留；已记录 URL 先变同内容、新 URL 后出现：新 URL 命中本轮 `seen_hashes`，计确认重复跳过 |
+| 不同 URL 整页不同、正文指纹相同（非数字短句/条款顺序差异） | 疑似重复 | 是，两条都保留 | `suspectedDuplicateOf` + `suspectedDuplicateSourceUrl`；`suspectedDuplicates++`；不合并、不覆盖 |
+| 不同 URL 正文指纹不同（截止日/金额/人数等带数字短句，或长句变化） | 新候选 | 是 | 无重复关联 |
+| 同 URL 同内容并发/重复处理 | 确认重复（唯一索引兜底） | 否 | `duplicates++` |
+
+**要点：**
+
+- “正文指纹相似”不等于“政策内容已确认完全相同”；`suspectedDuplicateOf` 只是提示。
+- S01/S10 是“整页不同、正文指纹相同”，按当前代码应产生 **2 条候选、第二条疑似重复**，不是旧清单的“1 条候选、1 次重复”。
+- 同 URL 内容变化优先于指纹判重；A→B→A 第三轮仍建 `versionChanged` 候选。
+- 附件变化不参与判重；同 URL 只改附件时仍会被计为确认重复。
+
+### 8.4 当前问题
+
+**P1-1 栏目根页会把导航页/年度分类页带进抽取。** E 栏目 52 条官方链接中约 11 条正文链接，其余为导航/年度分类；E 的年度分类页 532 字、导航页 572 字均通过 60 字 `looks_like_article`，且排在正文链接之前。运行器会把它们当正文抓取并送抽取，消耗 50,000 token 预算，可能先 `budget_exceeded`，并产生伪候选/`extraction_failed`。D/F 短框架页已被拦住，但 60 字只是启发式，长导航页仍通过；合法短通知（<60 字）也可能被误判。**建议：** 链接范围约束/列表页识别，或首版只用人工维护的条目 URL；修复前不要把 B/C/E 根页作为自动发现验收来源。责任：M1 + M3。
+
+**P1-2 验收文档与判重语义不一致。** `ACCEPTANCE.md` DISC-AT-04 仍写“换 URL 同内容……正确去重”；`E2_ACCEPTANCE_CHECKLIST.md` 仍写 S01/S10“只产生一条候选”；`E2_PR64_REVIEW.md` 旧 §、`DISCOVERY_SOURCES.md` §10.2 仍用旧 head/旧指纹；`EXTENSION_INTERFACES.md` §4.3(3) 未区分确认/疑似，§2 幂等作用域仍写“包含操作者”。**影响：** 按旧文档验收会记错结论。**拟定口径：** 见 §8.3；S01/S10 预期改为 2 条候选、第二条疑似重复、`duplicates=0`、`suspectedDuplicates=1`。责任：M3 更新文档；M1/M2 确认；不自行宣称三方签收。
+
+**P1-3 迁移 010 对执行过旧版 010 的环境不可升级（条件性）。** 010 在不同提交间追加了 `unsupported_attachment_urls`、`suspected_duplicate_of`、`suspected_duplicates`，并把唯一索引从 `(content_hash)` 改为 `(content_hash, source_url)`；最终脚本只用 `CREATE TABLE IF NOT EXISTS`/`CREATE UNIQUE INDEX IF NOT EXISTS`，没有 `ALTER TABLE`/`DROP INDEX`。若任何本地/测试/预发库执行过旧版 010，重跑最终 010 不会补列/改索引，应用查询新列会 500。M1 称 010 未在任何环境执行；需明确所有执行过 010 的库是否可丢弃，或补增量迁移。责任：M1。
+
+**P2：** 提交 vs 过期竞争无并发测试；配置并发 PUT 无两客户端测试；`www.sz.gov.cn` 在本机 Fetcher 下 TLS `BAD_ECPOINT`（需目标环境复测）；附件-only 变化不参与判重、非官方附件链接静默丢弃；无逐附件处置、附件提示不阻断发布（已知取舍）；正式 OpenAPI/前端类型/同版联调/前端 UI/云端 E2/真实模型未完成。
+
+**P3：** `suspectedDuplicateSourceUrl` 不直接给出对方已提交政策版本；`record_fingerprint` 的 `canonical_url` 与 `candidate_id` 在两网址同内容时可能不一致；`mark_submitted`/`mark_discarded` 只更新一个共享指纹行；`source_status` 无来源级重复/疑似/版本计数；`discovery_page` 只保留最后一次哈希。PR 描述仍写 1161/142 且漏 PATCH。
+
+### 8.5 上一轮问题状态
+
+| 来源 | 问题 | 状态 | 依据 |
+|---|---|---|---|
+| M3 @ `00c02f1` | P1-A 同 URL 短句变化被误判重复 | **已修复** | `24daee0` 同 URL 变化优先；截止日/金额/人数纳入指纹；`7eb48dd` 修 A→B→A |
+| M3 @ `00c02f1` | P1-B HTTP-only 附件提示消失 | **已修复** | `24daee0` 新增 `unsupported_attachment_urls`/`unsupportedAttachmentCount` |
+| M3 @ `70e00d5` | 跨站同文判重失效 | **已修复，语义变更** | `00c02f1` 指纹；`2325586` 改为疑似重复、保留候选 |
+| M3 @ `70e00d5` | 框架页被当正文 | **部分修复** | D/F 已拦；E 长导航/年度分类仍通过 |
+| M3 @ `70e00d5` | 附件条件无法引用 | **部分修复/口径收敛** | 方案 B 排除 S03/S04/S05；附件链路未实现 |
+| M2 @ `7eb48dd` | 两网址同轮同内容被唯一索引吞掉 | **已修复，M2 未复审** | `d5e12f8` 索引改为 `(content_hash, source_url)` |
+| M2 @ `24daee0` | 跨 URL 指纹命中直接跳过 | **已修复** | `2325586` |
+| M2 @ `2325586` | A→B→A 被跳过 | **已修复** | `7eb48dd` |
+| M2 | 幂等作用域文档分叉 / PR 描述旧数字 | **部分 / 未修复** | `EXTENSION_INTERFACES.md:31`、PR 正文 |
+
+### 8.6 DISC-AT-01—07 结论（当前）
+
+| ID | 结论 | 主要缺口 |
+|---|---|---|
+| DISC-AT-01 | **未执行** | 真实 timer、30 分钟超时、配置并发、多进程、停机补跑、云端、010 |
+| DISC-AT-02 | **部分覆盖**（不构成通过） | 真实 DNS/重定向/robots/频率/prompt-injection/模型预算；sz TLS 本机失败 |
+| DISC-AT-03 | **部分覆盖**（正文路径） | 真实模型/页面/runner；附件路径不具备 |
+| DISC-AT-04 | **部分覆盖** | 未用真实 runner/DB 跑 S01/S10；无真实同 URL 变化样本；旧验收口径未改；附件不参与判重 |
+| DISC-AT-05 | **部分覆盖**（正文路径） | 无 candidate→publish E2E；附件条件不能引用；无逐附件处置 |
+| DISC-AT-06 | **部分覆盖** | 提交 vs 过期竞争无并发测试；多进程/云端无证据 |
+| DISC-AT-07 | **部分覆盖（仅后端）** | 无 E2 前端/UI；无“推荐停止时手动导入”E2E；disabled/not_due 与“无新政策”的 UI 区分未实现 |
+
+**真实网站、真实模型、云端部署、010 迁移、三方联合验收：均未完成。**
+
+### 8.7 合并意见与边界
+
+- **M3 有条件同意合并后端代码，不同意把合并写成“E2 完成”或“E2 正式验收通过”。**
+- 条件：M2 复审 `d5e12f8`；M1 明确 010 执行/升级路径；验收/演示只用正文足以支撑的单篇来源，B/C/E 根页在链接范围修复前不作自动发现来源，S03/S04/S05 继续排除；E2 草案签收后再并入正式 OpenAPI、重生成前端类型、做同版联调；更新 PR 描述。
+- 边界：合并 ≠ 部署 ≠ 契约签收 ≠ E2 验收通过 ≠ 三方签收。M3 未改代码/契约/迁移，未自行宣称三方签收。
