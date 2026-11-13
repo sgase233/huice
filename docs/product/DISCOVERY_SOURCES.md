@@ -268,4 +268,15 @@ M1 已采纳 M3 的建议 B，并在 `docs/IMPLEMENTATION_AND_INTERFACE.md` §4.
 - **没有任何栏目经过真实 runner 验证可以自动列取政策。** B/C/E 入口 200 且含正文链接；`c95dc3b` 已在代码层收窄链接范围并用 `looks_like_listing` 拦截 E 年度/导航页，但 B/C 本机 Fetcher TLS 失败、B/C 仍有约 2 条导航混入，仍需目标环境 runner 复测；A/G 403，D/F 是框架页。
 - S03/S04/S05 仍按方案 B **不纳入 E2 自动发现验收**；附件只记录、不下载/解析，不能作为候选草稿引用来源。
 - 自动化发现能力未达标；固定正文 URL 列表只是样本验证/受限方案。真实模型、runner、云端、010 与三方联合验收仍未执行。链接范围修复不改变“栏目未经验收”的结论。
-- `c95dc3b` 的 010 旧库升级仍漏 `discovery_run.failed_articles`（见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §9.4），与来源可用性无关，但属于合并前应补的迁移问题。
+- `c95dc3b` 的 010 旧库升级曾漏 `discovery_run.failed_articles`；`a8b7e4e` 已补 `ALTER` 与升级用例（见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §10.2）。
+
+### 11.5 云端 fixture 冒烟（M1 提供，M3 未独立复核）
+
+M1 2026-11-13 09:28Z 报告：
+
+- 云端 ECS `139.9.33.46` 已部署 `a8b7e4e`，`/health=1.1.0-rc.1`；`schema_migration` 10 行，010 已执行，五表/五列/`(content_hash, source_url)` 部分唯一索引核对通过。
+- 用 `https://www.most.gov.cn/xxgk/xinxifenlei/fdzdgknr/fgzc/gfxwj/`（200 / 24,960B）跑了一轮 fixture：`runId 5a563ec4-4d46-49a9-93b5-8e781dae78d3`，`sources_checked=1`、`links_seen=10`、`new_candidates=10`、`duplicates=0`、`failed_sources=0`、`failed_articles=0`；候选 9 条 `extraction_failed` + 1 条 `pending_review`，`submitted_policy_id` 全为空，无一进政策库。
+- `www.sz.gov.cn` 在服务器 OpenSSL 3.0.13 上仍报 `bad ecpoint`（对端证书链问题）；`www.gov.cn/zhengce/zhengceku/` 返回 403。
+- 证据文件在 ECS `/root/e2-evidence-20261113.txt`（600，无密钥）。
+
+**边界：** 这是 M1 提供的 fixture 冒烟，不是真实模型、真实用户或 M3 独立复核；它证明云端环境、010、候选隔离与 fixture 链路可跑，**不证明 DISC-AT-01—07 通过**，也不证明栏目可自动发现。

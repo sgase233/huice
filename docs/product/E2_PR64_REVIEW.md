@@ -1,13 +1,13 @@
 # E2 政策发现 PR #64 M3 业务审查（政策事实、口径与验收）
 
-> **状态：M3 静态评审输入。2026-11-13 12:15 复审对象为 PR #64 head `c95dc3ba6b0e8008b6c0f5267b9bc3172f4fbb25`；不是验收通过记录，也不是 M1/M2 的签收。**
-> **当前结论见 §9；§8 是对 `d5e12f8` 的历史复审；§1—§7 是对 `00c02f1` 的历史审查，保留用于追溯，不再代表当前 head。**
+> **状态：M3 静态评审输入。2026-11-13 16:31 复审对象为 PR #64 head `a8b7e4ecf83d1a773795c11c671862f66f94c6a8`；不是验收通过记录，也不是 M1/M2 的签收。**
+> **当前结论见 §10；§9 是对 `c95dc3b` 的历史复审；§8 是对 `d5e12f8` 的历史复审；§1—§7 是对 `00c02f1` 的历史审查。**
 >
-> **评审对象：** PR #64 `接口：实现 E2 政策发现、候选暂存与后台配置`，最新 head **`c95dc3b`**（2026-11-13 12:15:42 +0800），10 个提交：`0005c88` → `9791978` → `45d4c5c` → `70e00d5` → `00c02f1` → `24daee0` → `2325586` → `7eb48dd` → `d5e12f8` → **`c95dc3b`**；相对 base `5d1adeb` 共 40 个文件、+10,119/−159。PR 仍为 open，`mergeable_state=clean`。CI 在 `c95dc3b` 上 3 项通过（`CSV format`、`Frontend`、`Backend and contract`，2026-11-13 04:16–04:17Z）。
+> **评审对象：** PR #64 `接口：实现 E2 政策发现、候选暂存与后台配置`，最新 head **`a8b7e4e`**（2026-11-13 16:31:42 +0800），11 个提交：`0005c88` → `9791978` → `45d4c5c` → `70e00d5` → `00c02f1` → `24daee0` → `2325586` → `7eb48dd` → `d5e12f8` → `c95dc3b` → **`a8b7e4e`**；相对 base `5d1adeb` 共 40 个文件、+10,129/−159。PR 仍为 open，`mergeable_state=clean`。CI 在 `a8b7e4e` 上 3 项通过（`CSV format`、`Frontend`、`Backend and contract`，2026-11-13 08:32–08:33Z）。
 >
-> **审查依据：** [WORKING_GUIDE](../../WORKING_GUIDE.md)、[开发计划](../DEVELOPMENT_PLAN.md) E2/D3、[扩展接口设计](../EXTENSION_INTERFACES.md) §4、[验收矩阵](ACCEPTANCE.md) DISC-AT-01—07、[首批来源](DISCOVERY_SOURCES.md)、[`discovery_sources_phase1.csv`](../../data/policies/discovery_sources_phase1.csv)、[政策范围](POLICY_SCOPE.md)、PR 描述、全部 20 条 issue comments 及 CI 结果。
+> **审查依据：** [WORKING_GUIDE](../../WORKING_GUIDE.md)、[开发计划](../DEVELOPMENT_PLAN.md) E2/D3、[扩展接口设计](../EXTENSION_INTERFACES.md) §4、[验收矩阵](ACCEPTANCE.md) DISC-AT-01—07、[首批来源](DISCOVERY_SOURCES.md)、[`discovery_sources_phase1.csv`](../../data/policies/discovery_sources_phase1.csv)、[政策范围](POLICY_SCOPE.md)、PR 描述、全部 24 条 issue comments 及 CI 结果。
 >
-> **本地更新说明：** 2026-11-13 `git fetch --all --prune` 更新 `origin/main` 至 `44a637d`、`origin/m1/e2-policy-discovery` 至 `c95dc3b`；本地 `main` 已快进到 `44a637d`。M3 未改 M1/M2 代码、契约或迁移。
+> **本地更新说明：** 2026-11-13 `git fetch --all --prune` 更新 `origin/main` 至 `44a637d`、`origin/m1/e2-policy-discovery` 至 `a8b7e4e`；本地 `main` 已快进到 `44a637d`。M3 未改 M1/M2 代码、契约或迁移。
 
 ## 1. 结论（2026-11-12，历史）
 
@@ -337,7 +337,9 @@ M3 本机为 Windows 11 / Git Bash / Python 3.14（`py -3 -I`），**没有 `fas
 - 条件：M2 复审 `d5e12f8`；M1 明确 010 执行/升级路径；验收/演示只用正文足以支撑的单篇来源，B/C/E 根页在链接范围修复前不作自动发现来源，S03/S04/S05 继续排除；E2 草案签收后再并入正式 OpenAPI、重生成前端类型、做同版联调；更新 PR 描述。
 - 边界：合并 ≠ 部署 ≠ 契约签收 ≠ E2 验收通过 ≠ 三方签收。M3 未改代码/契约/迁移，未自行宣称三方签收。
 
-## 9. 2026-11-13 12:15 复审（head `c95dc3b`，当前结论）
+## 9. 2026-11-13 12:15 复审（head `c95dc3b`，历史）
+
+> **以下 §9 是对 `c95dc3b` 的复审，保留用于追溯；当前 head `a8b7e4e` 的结论见 §10。** §9 中 P1-3 当时仍未闭环；`a8b7e4e` 已补 `failed_articles` 的 `ALTER` 与升级用例，见 §10。
 
 > **结论：M3 仍不签收 E2；DISC-AT-01—07 无一项“通过”。**
 > `c95dc3b` 对 P1-1（栏目根页链接范围/列表页）的代码修复，M3 用真实页面和 `c95dc3b` 的精确纯函数独立复算成立；P1-2 的判重口径 M1 已确认；**P1-3（010 旧库升级）仍未闭环**：迁移补列漏了 `discovery_run.failed_articles`，升级用例也未覆盖该列。M2 尚未复审 `c95dc3b`。
@@ -406,3 +408,71 @@ M1 已确认 M3 上轮口径正确：S01/S10 应为 **2 条候选、第二条 `s
 - **M3 同意在 M2 复审 `c95dc3b` 后合并后端代码，不同意写成“E2 完成/验收通过”。**
 - 建议合并前补 `failed_articles` 的 `ALTER` 与升级用例（一行迁移 + 用例）；验收仍只用正文足以支撑的单篇来源，B/C/E 根页保持“待验证来源/负样本”，不写成可自动发现。
 - 边界：合并 ≠ 部署 ≠ 契约签收 ≠ E2 验收通过 ≠ 三方签收。M3 未改代码/契约/迁移，未跑 runner/隔离库/真实模型/云端/010/三方联合验收，不宣称三方签收。
+
+## 10. 2026-11-13 16:31 复审（head `a8b7e4e`，当前结论）
+
+> **结论：M3 仍不签收 E2；DISC-AT-01—07 无一项“通过”。**
+> `a8b7e4e` 已闭合 P1-3：补了 `discovery_run.failed_articles` 的 `ALTER`，升级用例的 `DROP` 与断言也覆盖该列；M3 已核对 diff，CI 在 `a8b7e4e` 上 3 项通过。M1 另报告云端已部署 `a8b7e4e` 并执行 010，且用 fixture 模式跑通一轮候选链路；**这些云端/010/运行记录是 M1 提供的证据，M3 未独立访问 ECS 复核**。M2 仍未复审 `c95dc3b` / `a8b7e4e`。
+
+### 10.1 基线
+
+- head `a8b7e4e`（2026-11-13 16:31:42 +0800），11 个提交，40 文件，+10,129/−159；CI 3 项在 `a8b7e4e` 上全部成功（2026-11-13 08:32–08:33Z）。
+- `c95dc3b → a8b7e4e` 只改 2 个文件、+10 行：`infra/sql/010_policy_discovery.sql` 与 `services/api/tests/test_discovery_runner_db.py`；没有碰契约、`apps/web/**`、迁移编号或其他文档。
+- M2 最后一条复审仍停在 `7eb48dd`（03:03Z）；M1 于 08:34Z 回 P1-3、09:28Z 报告云端、09:36Z 更新 PR 描述；M2 未回复。
+
+### 10.2 P1-3 已闭合（M3 核对 diff）
+
+- `010_policy_discovery.sql:126-129` 新增：
+  `ALTER TABLE discovery_run ADD COLUMN IF NOT EXISTS failed_articles integer NOT NULL DEFAULT 0;`
+- `test_discovery_runner_db.py` 的升级用例：`DROP COLUMN IF EXISTS discovery_run.failed_articles`，断言集合加入 `discovery_run.failed_articles`。
+- M1 给出红证明：只改用例、不改迁移时，断言报 `Extra items: discovery_run.failed_articles`；补 `ALTER` 后同用例通过。
+- CI 在 `a8b7e4e` 上通过；M1 报告本地 PostgreSQL 16 全量 1337 passed / 13 skipped / 90 subtests。M3 未独立复跑该测试。
+
+**M3 判断：** P1-3 的代码/迁移/用例三处已闭环，M3 上轮“合并前补一行”的建议已落实。当前没有新的 M3 代码合并阻塞。
+
+### 10.3 云端部署与 010（M1 提供，M3 未独立复核）
+
+M1 2026-11-13 09:28Z 报告：
+
+- ECS `139.9.33.46` 已整目录替换为 `a8b7e4e`（`git archive`，`core.autocrlf=false`；本机重打包 SHA-256 与 ECS 包逐位相同）。
+- `migrate.sh`：001—009 已登记跳过，只应用 `010_policy_discovery`，`COMMIT` 成功；`schema_migration` 10 行。
+- 迁移后核对：五表齐（`discovery_settings`、`discovery_run`、`discovery_page`、`policy_candidate`、`policy_candidate_fingerprint`）；五列齐（`failed_articles`、`suspected_duplicates`、`unsupported_attachment_urls`、`suspected_duplicate_of`、`body_fingerprint`）；`policy_candidate_active_hash` 是 `(content_hash, source_url)` 的部分唯一索引；`discovery_settings` 单行、`enabled=f`、`interval_minutes=1440`、来源 0 条。
+- `/health` 从 `1.0.0-rc.10` 变为 `1.1.0-rc.1`；本轮也是 E1 代码第一次在云端运行。
+- fixture 冒烟：reviewer 登录 200、CSRF 正常；`GET /admin/discovery/settings` 200 + ETag + limits；`PUT`（`X-CSRF-Token` + `If-Match`）启用并加一个来源 200；`python -m app.discovery --trigger cli --force --json` 退出码 0，`runId 5a563ec4-4d46-49a9-93b5-8e781dae78d3`，`newCandidates=10`。
+- `discovery_run`：`cli | succeeded | completed | sources_checked=1 | links_seen=10 | new_candidates=10 | duplicates=0 | failed_sources=0 | failed_articles=0`。
+- 候选：9 条 `extraction_failed`、1 条 `pending_review`，`submitted_policy_id` 全为空——候选没有一条进政策库。fixture 下不走 DeepSeek，本地规则抽不出条件的落 `extraction_failed`，不编造条件。
+- `next_run_at` 推进到 24 小时后，`huice-discovery.timer` 已 enable。
+- 来源用 `https://www.most.gov.cn/xxgk/xinxifenlei/fdzdgknr/fgzc/gfxwj/`（200 / 24,960B）；`www.sz.gov.cn` 在服务器 OpenSSL 3.0.13 上也报 `bad ecpoint`（对端证书链问题），`www.gov.cn/zhengce/zhengceku/` 返回 403。
+- 证据文件在服务器 `/root/e2-evidence-20261113.txt`（600，无密钥）。
+
+**M3 边界：** 上述部署/迁移/运行记录未经 M3 独立访问 ECS 复核；M3 只核对了仓库中的 `a8b7e4e` diff、CI 和 M1 的文字证据。**云端已执行 010，不等于 DISC-AT-01—07 通过。**
+
+### 10.4 DISC-AT-01—07 当前状态
+
+| ID | 结论 | 本轮新增/仍缺 |
+|---|---|---|
+| DISC-AT-01 | **未执行** | 云端已部署、timer 已 enable（M1 证据），但真实 timer 到点/禁用/停机补跑、30 分钟超时、配置并发 PUT、多进程重叠仍未按清单执行 |
+| DISC-AT-02 | **部分覆盖** | 链接范围/列表页已在 `c95dc3b` 收窄；云端 `failed_articles=0`；仍缺真实 DNS/重定向/robots/授权/频率/prompt-injection/真实模型预算；`sz.gov.cn` TLS `bad ecpoint`、`gov.cn` 403 |
+| DISC-AT-03 | **部分覆盖（正文路径）** | 云端 fixture 跑通一轮：10 候选、9 `extraction_failed` + 1 `pending_review`、无一进政策库；**未跑真实 DeepSeek**，附件路径不具备 |
+| DISC-AT-04 | **部分覆盖** | S01/S10 真实页面指纹已离线复算；**未在云端 runner/隔离库跑 S01/S10 判重**；A→B→A/两网址同内容只有隔离库测试；附件不参与判重 |
+| DISC-AT-05 | **部分覆盖（正文路径）** | 云端候选未提交、未发布；**无 candidate→publish 端到端**；附件条件不能引用；无逐附件处置 |
+| DISC-AT-06 | **部分覆盖** | 云端轮换/空轮询路径有代码/单测；提交 vs 过期竞争仍无并发测试；云端未做多进程/竞争 |
+| DISC-AT-07 | **部分覆盖（仅后端）** | 云端 fixture 跑通后端链路；**无 E2 前端/UI**；“推荐停止时手动导入”E2E 未回归；disabled/not_due 与“无新政策”的 UI 区分未实现 |
+
+**结论：** 云端部署与 010 执行解除了“环境不存在”的阻塞，但没有把任何 DISC-AT 用例变成“通过”。真实模型、S01/S10 判重、并发竞争、前端联调、三方签收仍缺。
+
+### 10.5 残余 P2
+
+- 链接过滤的审计可见性与短正文误伤（见 §9.2）。
+- 提交 vs 过期、配置并发 PUT 仍无并发用例。
+- `www.sz.gov.cn` TLS `bad ecpoint` 在服务器 OpenSSL 3.0.13 上仍存在；`gov.cn/zhengce/zhengceku/` 403。
+- 附件不参与判重、无逐附件处置。
+- 正式 OpenAPI 并入、前端类型重生成、M2 同版联调、前端 UI、真实模型仍未完成。
+- M1 已在 09:36Z 更新 PR 描述（1337/13、链接范围/判重口径、云端状态）；M2 尚未复审 `c95dc3b` / `a8b7e4e`。
+
+### 10.6 合并意见
+
+- **M3 同意在 M2 复审 `a8b7e4e` 后合并后端代码，不同意写成“E2 完成/验收通过”。**
+- P1-3 已闭合；M3 上轮建议的 `failed_articles` `ALTER` + 用例已落实。当前没有新的 M3 代码合并阻塞。
+- 合并前仍需 M2 复审 `a8b7e4e`；验收仍只用正文足以支撑的单篇来源，B/C/E 根页保持“待验证来源/负样本”，S03/S04/S05 继续排除。
+- 边界：合并 ≠ 部署 ≠ 契约签收 ≠ E2 验收通过 ≠ 三方签收。云端 fixture 冒烟不是真实模型验收；010 已执行是 M1 证据，不是 M3 独立复核。
