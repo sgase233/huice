@@ -55,9 +55,23 @@ def write(tmp_path: Path, entries: list[dict], review_status: str = "approved-by
 def test_shipped_data_file_is_valid() -> None:
     """仓库里那份回填数据自身必须过校验，否则部署时才发现就晚了。"""
     payload = backfill.load_data(DATA)
-    assert len(payload.entries) == 8
+    # 按政策版本计：8 个 policy_id，GXJS 有 2008/2016 两版，共 9 条
+    assert len(payload.entries) == 9
     keys = {(entry.source_url, entry.version) for entry in payload.entries}
     assert len(keys) == len(payload.entries)
+    versions = {entry.version for entry in payload.entries}
+    # M3 复核 F1：登记的 9 个版本一个都不能漏，漏了就是某版本没有来源记录
+    assert versions == {
+        "深工信规〔2025〕4号",
+        "深工信规〔2024〕12号",
+        "深工信规〔2025〕8号",
+        "深科创规〔2026〕1号",
+        "深科技创新规〔2021〕5号",
+        "财政部 税务总局公告2023年第7号",
+        "财政部 税务总局公告2023年第12号",
+        "国科发火〔2008〕172号",
+        "国科发火〔2016〕32号",
+    }
 
 
 def test_shipped_data_is_not_approved_for_apply() -> None:

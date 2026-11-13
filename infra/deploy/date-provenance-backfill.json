@@ -1,7 +1,7 @@
 {
   "version": 1,
   "reviewStatus": "draft-pending-m3",
-  "sourceNote": "状态取值依据 docs/product/POLICY_SCOPE.md 与 data/policies/source_register.csv 的核对结论整理，逐条仍待 M3 对官方原文复核。复核通过前只允许干跑：这些不是验收证据。申报窗口一律不得当作政策有效期，登记表里与窗口同值的有效期为 unverified。",
+  "sourceNote": "状态取值依据 docs/product/POLICY_SCOPE.md、POLICY_SOURCE_ATTACHMENTS_1113.md 与 data/policies/source_register.csv 的核对结论整理，逐条仍待 M3 对官方原文复核。复核通过前只允许干跑：这些不是验收证据。申报窗口一律不得当作政策有效期，登记表里与窗口同值的有效期为 unverified。条目按政策版本计：9 个版本（8 个 policy_id，GXJS 有 2008/2016 两版）。",
   "entries": [
     {
       "sourceUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_12201125.html",
@@ -11,11 +11,11 @@
         "applicationWindow": {
           "status": "verified",
           "source": { "kind": "attachment", "ordinal": 1 },
-          "locator": "附件 1「（二）受理时间」"
+          "locator": "附件1 七、受理时间（二）1/2"
         },
         "effectiveFrom": { "status": "unverified" },
         "effectiveTo": { "status": "unverified" },
-        "note": "两批受理，办理方式分网络填报与书面材料两种：网络填报第一批 2025-06-13—06-30 18 时、第二批 2025-06-20—07-07 18 时；书面材料第一批 2025-06-23—07-04、第二批 2025-06-30—07-11（工作时间）。两批有重叠，不得压平成一条区间；该窗口不是政策有效期。"
+        "note": "两批受理，办理方式分网络填报与书面材料两种：网络填报第一批 2025-06-13—06-30 18 时（技术攻关、公共服务平台、爆款单品），第二批 2025-06-20—07-07 18 时（国家配套、全屋智能、国产标准）；书面材料第一批 2025-06-23—07-04、第二批 2025-06-30—07-11（工作时间）。两批有重叠，不得压平成一条区间；原文只写「18 时」未写时区，按北京时间；该窗口不是政策有效期。窗口来源是年度申报通知的附件，不是版本文号对应的操作规程（深工信规〔2025〕4号）；通知附件包为 ZIP，若导入时整包算一份附件，「第 1 份附件」指向的是附件包，需干跑确认实际来源行。"
       }
     },
     {
@@ -26,10 +26,26 @@
         "applicationWindow": {
           "status": "verified",
           "source": { "kind": "attachment", "ordinal": 1 },
-          "locator": ".doc 第 78 行"
+          "locator": "附件 .doc 七、受理时间（二）1"
         },
         "effectiveFrom": { "status": "unverified" },
-        "effectiveTo": { "status": "unverified" }
+        "effectiveTo": { "status": "unverified" },
+        "note": "窗口 2024-12-21—2025-01-06 18 时只在申报通知的 .doc 附件里，正文较薄；来源是附件不是正文。原文只写「18 时」未写时区，按北京时间。窗口来源是年度申报通知附件，不是版本文号对应的操作规程（深工信规〔2024〕12号）。原文未单列有效期，登记值等于申报窗口，窗口不能当有效期。附件文件 11845882.doc，SHA-256 7d021ee0…。"
+      }
+    },
+    {
+      "sourceUrl": "https://www.sz.gov.cn/cn/xxgk/zfxxgj/tzgg/content/post_12433720.html",
+      "version": "深工信规〔2025〕8号",
+      "provenance": {
+        "version": 1,
+        "applicationWindow": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "正文「三、申报时间」"
+        },
+        "effectiveFrom": { "status": "unverified" },
+        "effectiveTo": { "status": "unverified" },
+        "note": "申报窗口 2025-10-15—2025-11-10；各区初审 2025-12-10 前是初审节点，不是申报截止，须与主窗口分开。窗口来源是年度申报通知正文，不是版本文号对应的实施细则（深工信规〔2025〕8号）。原文未单列有效期，登记值等于申报窗口，窗口不能当有效期。"
       }
     },
     {
@@ -37,13 +53,18 @@
       "version": "深科创规〔2026〕1号",
       "provenance": {
         "version": 1,
-        "applicationWindow": { "status": "unverified" },
+        "effectiveFrom": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "第十七条「自印发之日起施行」"
+        },
         "effectiveTo": {
           "status": "derived",
-          "basis": "办法第十七条「有效期 5 年」",
+          "basis": "办法第十七条「有效期 5 年」；按 2026-02-24 起算得 2031-02-23，满 5 年口径可能差一日",
           "derivedFrom": "2026-02-24"
         },
-        "note": "窗口依据 2026 年度申报指南第七条，但该版本的 policy_source 只有《管理办法》正文（无附件），指南不由本版本来源承载，按「source 必须属于本版本」的规则不能标 verified。把指南补录为该版本附件后可升级。"
+        "applicationWindow": { "status": "unknown" },
+        "note": "2026 年度窗口（2026-06-10—07-09 18:00）见年度申报指南：通知 https://stic.sz.gov.cn/gkmlpt/content/12/12826/mpost_12826107.html 正文「一、网上填报受理时间」，附件1 https://stic.sz.gov.cn/attachment/1/1720/1720551/12826107.doc 第七条同。该指南不属于本版本的 policy_source（本版本只有《管理办法》正文），按「来源必须属于本版本」不能标 verified，所以这里记 unknown（本版本没有窗口依据），不是「有值未核实」。把指南补录为该版本附件后可升级。后续年度指南未取得，不能推及 2027 及以后。"
       }
     },
     {
@@ -51,12 +72,18 @@
       "version": "深科技创新规〔2021〕5号",
       "provenance": {
         "version": 1,
+        "effectiveFrom": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "第二十一条「自2021年9月8日起施行」"
+        },
         "effectiveTo": {
           "status": "derived",
-          "basis": "办法第二十一条「有效期 5 年」；终点与登记表的 2026-09-08 存在一日差异，待复核",
+          "basis": "办法第二十一条「有效期 5 年」；按 2021-09-08 起算得 2026-09-08，满 5 年口径得 2026-09-07，一日差异待复核",
           "derivedFrom": "2021-09-08"
         },
-        "applicationWindow": { "status": "unknown" }
+        "applicationWindow": { "status": "unknown" },
+        "note": "年度申请指南未取得（2023 年度只有官方索引摘要，不代表当前年度；2024—2026 年度未命中），不得从办法日期推算窗口。"
       }
     },
     {
@@ -67,10 +94,11 @@
         "effectiveFrom": {
           "status": "verified",
           "source": { "kind": "body" },
-          "locator": "公告第三条"
+          "locator": "公告第三条「自2023年1月1日起执行」"
         },
         "effectiveTo": { "status": "unknown" },
-        "applicationWindow": { "status": "not_applicable" }
+        "applicationWindow": { "status": "not_applicable" },
+        "note": "公告未写截止日；「长期实施」不在公告正文，外部依据未取得，不得显示确定截止日。"
       }
     },
     {
@@ -86,7 +114,7 @@
         "effectiveTo": {
           "status": "verified",
           "source": { "kind": "body" },
-          "locator": "公告第二条"
+          "locator": "公告第一、二条"
         },
         "applicationWindow": { "status": "not_applicable" }
       }
@@ -96,12 +124,18 @@
       "version": "国科发火〔2008〕172号",
       "provenance": {
         "version": 1,
+        "effectiveFrom": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "第二十条"
+        },
         "effectiveTo": {
           "status": "derived",
-          "basis": "被 2016 年版（国科发火〔2016〕32号）替代",
+          "basis": "2016 版第二十三条自 2016-01-01 实施并明文废止 v1；推导终点 2015-12-31",
           "derivedFrom": "2016-01-01"
         },
-        "applicationWindow": { "status": "unknown" }
+        "applicationWindow": { "status": "not_applicable" },
+        "note": "资格认定类政策，无申报窗口。"
       }
     },
     {
@@ -109,8 +143,14 @@
       "version": "国科发火〔2016〕32号",
       "provenance": {
         "version": 1,
+        "effectiveFrom": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "第二十三条"
+        },
         "effectiveTo": { "status": "unknown" },
-        "applicationWindow": { "status": "unknown" }
+        "applicationWindow": { "status": "not_applicable" },
+        "note": "原文未写截止日；资格认定类政策，无申报窗口。"
       }
     }
   ]
