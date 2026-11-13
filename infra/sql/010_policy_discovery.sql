@@ -123,6 +123,11 @@ CREATE TABLE IF NOT EXISTS discovery_run (
 ALTER TABLE discovery_run
     ADD COLUMN IF NOT EXISTS suspected_duplicates integer NOT NULL DEFAULT 0;
 
+-- 首个提交的 010 没有这一列（`9791978` 才加进 CREATE TABLE）。只补 suspected_duplicates
+-- 不够：`_RUN_COLUMNS` 与 `finish_run` 都读它，旧库升级后第一次运行就 UndefinedColumn。
+ALTER TABLE discovery_run
+    ADD COLUMN IF NOT EXISTS failed_articles integer NOT NULL DEFAULT 0;
+
 CREATE INDEX IF NOT EXISTS discovery_run_started_idx
     ON discovery_run (started_at DESC);
 

@@ -1357,6 +1357,10 @@ def test_010_upgrades_a_database_that_ran_an_older_version(database_url_schema):
         conn.execute(
             "ALTER TABLE discovery_run DROP COLUMN IF EXISTS suspected_duplicates"
         )
+        # 首个提交的 010 里没有这一列（`9791978` 才加）：只写在 CREATE TABLE 里补不回来。
+        conn.execute(
+            "ALTER TABLE discovery_run DROP COLUMN IF EXISTS failed_articles"
+        )
         conn.execute(
             "ALTER TABLE policy_candidate_fingerprint DROP COLUMN IF EXISTS body_fingerprint"
         )
@@ -1385,6 +1389,7 @@ def test_010_upgrades_a_database_that_ran_an_older_version(database_url_schema):
     }
     assert {
         "discovery_run.suspected_duplicates",
+        "discovery_run.failed_articles",
         "policy_candidate.unsupported_attachment_urls",
         "policy_candidate.suspected_duplicate_of",
         "policy_candidate_fingerprint.body_fingerprint",
