@@ -9,6 +9,7 @@
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
 | `issue-session.py` | 不安装，直接`/opt/huice/venv/bin/python` 跑 | 签发演示会话 cookie 并写 `demo_quota` 起始行（§3.1） |
 | `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
+| `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version.date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库；数据复核前只干跑（§2.1 迁移段） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
 | `nginx-huice-site.conf` | 同上，`enable-tls.sh --web-root` 时改装这一份 | 443 同源站点：前端静态文件 + `/api/v1/` 反代（与上一行**互斥**，同一个文件名） |
@@ -111,7 +112,7 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 
 ### 2.1 数据库结构必须先于服务启动（硬前提）
 
-代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），`1.0.0-rc.8` 起判断运行会读材料要求（`008_material_requirements.sql` 建 `material_requirement` / `material_requirement_policy`），E1 的账号与会话见 `009_users_sessions.sql`（`app_user` / `user_session` / `demo_quota`），E2 的政策发现见 `010_policy_discovery.sql`（`discovery_settings` / `discovery_run` / `policy_candidate` / `policy_candidate_fingerprint` / `discovery_page`），**服务启动前云 RDS 必须已执行 001—010 全部迁移**。
+代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），`1.0.0-rc.8` 起判断运行会读材料要求（`008_material_requirements.sql` 建 `material_requirement` / `material_requirement_policy`），E1 的账号与会话见 `009_users_sessions.sql`（`app_user` / `user_session` / `demo_quota`），E2 的政策发现见 `010_policy_discovery.sql`（`discovery_settings` / `discovery_run` / `policy_candidate` / `policy_candidate_fingerprint` / `discovery_page`），VIS-06 的日期来源见 `011_date_provenance.sql`（旁表 `policy_version_date_provenance`：一条版本一行，`provenance` jsonb；没有行表示「没有记录过来源」，不表示「来源未知」；已发布版本保持不可变，来源不回写 `policy_version`），**服务启动前云 RDS 必须已执行 001—011 全部迁移**。
 
 **取值交给 `migrate.sh`，不要 `source` 整个文件，也不要自己解析。** `systemd` 的 `EnvironmentFile` 不是 shell——不做变量展开、不执行命令，只处理引号、转义与续行。`set -a; . /etc/huice/api.env; set +a` 会让 shell 按 shell 规则解析**整个文件**：口令或密钥里出现 `$`、反引号、`!`、未配对引号时，读到的值可能和 systemd 实际传给服务进程的不一样（迁移就打到错的库），甚至把文件内容当命令执行。
 
@@ -156,7 +157,7 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 要 **root** 执行：读 `/proc/<PID>/environ` 与调用 `systemd-run` 都需要（`huice` 用户读不到别人的进程环境）。
 
-脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—010 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对十个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
+脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—011 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对十一个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
 
 **为什么不是「从 001 全量重放」**：迁移文件各自幂等，但**幂等不等于能跳过中间状态**。库已到 `008` 时重放 `005`，事实字典约束会被收回到 16 键，撞上库里已有的 `specificMarketSince` 行而报错（2026-11-06 云端实测）。所以「有新序号就重跑脚本」在旧版里根本推不动，新版按登记表判断。
 

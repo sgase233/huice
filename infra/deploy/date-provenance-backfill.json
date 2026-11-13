@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "reviewStatus": "draft-pending-m3",
+  "sourceNote": "状态取值依据 docs/product/POLICY_SCOPE.md 与 data/policies/source_register.csv 的核对结论整理，逐条仍待 M3 对官方原文复核。复核通过前只允许干跑：这些不是验收证据。申报窗口一律不得当作政策有效期，登记表里与窗口同值的有效期为 unverified。",
+  "entries": [
+    {
+      "sourceUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_12201125.html",
+      "version": "深工信规〔2025〕4号",
+      "provenance": {
+        "version": 1,
+        "applicationWindow": {
+          "status": "verified",
+          "source": { "kind": "attachment", "ordinal": 0 },
+          "locator": "附件 1「（二）受理时间」"
+        },
+        "effectiveFrom": { "status": "unverified" },
+        "effectiveTo": { "status": "unverified" },
+        "note": "两批受理：第一批 2025-06-13—06-30，第二批 06-20—07-07；办理方式与批次以附件 1 原文为准。该窗口不是政策有效期。"
+      }
+    },
+    {
+      "sourceUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_11845882.html",
+      "version": "深工信规〔2024〕12号",
+      "provenance": {
+        "version": 1,
+        "applicationWindow": {
+          "status": "verified",
+          "source": { "kind": "attachment", "ordinal": 0 },
+          "locator": ".doc 第 78 行"
+        },
+        "effectiveFrom": { "status": "unverified" },
+        "effectiveTo": { "status": "unverified" }
+      }
+    },
+    {
+      "sourceUrl": "https://www.sz.gov.cn/zfgb/2026/gb1405/content/post_12679122.html",
+      "version": "深科创规〔2026〕1号",
+      "provenance": {
+        "version": 1,
+        "applicationWindow": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "2026 年度申报指南第七条"
+        },
+        "effectiveTo": {
+          "status": "derived",
+          "basis": "办法第十七条「有效期 5 年」",
+          "derivedFrom": "2026-02-24"
+        }
+      }
+    },
+    {
+      "sourceUrl": "https://www.sz.gov.cn/zfgb/2021/gb1215/content/post_9146987.html",
+      "version": "深科技创新规〔2021〕5号",
+      "provenance": {
+        "version": 1,
+        "effectiveTo": {
+          "status": "derived",
+          "basis": "办法第二十一条「有效期 5 年」；终点与登记表的 2026-09-08 存在一日差异，待复核",
+          "derivedFrom": "2021-09-08"
+        },
+        "applicationWindow": { "status": "unknown" }
+      }
+    },
+    {
+      "sourceUrl": "https://www.gov.cn/zhengce/zhengceku/2023-03/28/content_5748747.htm",
+      "version": "财政部 税务总局公告2023年第7号",
+      "provenance": {
+        "version": 1,
+        "effectiveFrom": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "公告第三条"
+        },
+        "effectiveTo": { "status": "unknown" },
+        "applicationWindow": { "status": "not_applicable" }
+      }
+    },
+    {
+      "sourceUrl": "https://www.gov.cn/zhengce/zhengceku/202308/content_6896379.htm",
+      "version": "财政部 税务总局公告2023年第12号",
+      "provenance": {
+        "version": 1,
+        "effectiveFrom": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "公告第一条"
+        },
+        "effectiveTo": {
+          "status": "verified",
+          "source": { "kind": "body" },
+          "locator": "公告第二条"
+        },
+        "applicationWindow": { "status": "not_applicable" }
+      }
+    },
+    {
+      "sourceUrl": "https://www.most.gov.cn/xxgk/xinxifenlei/fdzdgknr/fgzc/gfxwj/gfxwj2010before/200811/t20081129_65744.html",
+      "version": "国科发火〔2008〕172号",
+      "provenance": {
+        "version": 1,
+        "effectiveTo": {
+          "status": "derived",
+          "basis": "被 2016 年版（国科发火〔2016〕32号）替代",
+          "derivedFrom": "2016-01-01"
+        },
+        "applicationWindow": { "status": "unknown" }
+      }
+    },
+    {
+      "sourceUrl": "https://www.gov.cn/gongbao/content/2016/content_5076985.htm",
+      "version": "国科发火〔2016〕32号",
+      "provenance": {
+        "version": 1,
+        "effectiveTo": { "status": "unknown" },
+        "applicationWindow": { "status": "unknown" }
+      }
+    }
+  ]
+}
