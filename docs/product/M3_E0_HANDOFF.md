@@ -28,7 +28,7 @@
 > - **基线：** `origin/main` = **`c84b4b7`**（2026-11-13T12:09:36Z 合并 PR #64）；PR #64 最终 head `a8b7e4e`，合并时 M2 最后复审停在 `7eb48dd`，未对 `c95dc3b`/`a8b7e4e` 留新记录。E2 契约仍为 `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），正式契约仍 `1.1.0-rc.1`。
 > - **E2：** PR #64 已合并，但 **DISC-AT-01—07 仍无“通过”项**；issue #66 明确 **E2 验收排在 E3 之后**，云端保持 `enabled=true` + timer，M3 未修改 timer/来源/候选数据。首版可用来源清单见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；S01/S02/S06/S07/S08/S09/S10 正文 2026-11-13 复核均 200 且哈希一致；A/G 栏目 403；B/C/E 入口 200 但未跑 runner；D/F 为框架页；S03/S04/S05 仍排除。
 > - **E1：** 云端 `/health=1.1.0-rc.1`，`/auth/me`、`/enterprises` 403 `DEMO_SESSION_REQUIRED`，`POST /auth/login` 空体 403 同码（门禁先于请求体校验），与旧版 rc.10 的 422 不同；这是 M3 2026-11-13 匿名探测，不是账号级验收。迁移 009/010 只有 M1 报告（`schema_migration` 10 行），M3 未独立查库；隔离环境、两企业账号、审核员账号仍未提供。AUTH-AT-01—06 均未完成联合验收，AUTH-AT-04 仅门禁层部分覆盖。
-> - **E3：** M1 E3 方案草案（PR #67）列出九条决策；负责人已定 E3a 不含时间线，M3 已按评审补充 [COMPLETENESS_SPEC.md](COMPLETENESS_SPEC.md) §3.1 `not_due` 方案 C 边界样例、[METRICS_SPEC.md](METRICS_SPEC.md) §9 D5 对账、[POLICY_SCOPE.md](POLICY_SCOPE.md) 2026-11-13 日期来源回填核对、[E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) §7。**D4/D5、VIS 契约、E3 验收仍未签收；`not_due` 方案 C 是 M3 提案，不是三方结论。**
+> - **E3：** M1 E3 方案草案（PR #67）列出九条决策；负责人已定 E3a 不含时间线，M3 已按评审补充 [COMPLETENESS_SPEC.md](COMPLETENESS_SPEC.md) §3.1 `not_due` 方案 C 边界样例与 §3.1.1 季度期初/期末结论、[METRICS_SPEC.md](METRICS_SPEC.md) §9 D5 对账、[POLICY_SCOPE.md](POLICY_SCOPE.md) 2026-11-13 日期来源回填核对、[E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) §7/§7.5。**D4/D5、VIS 契约、E3 验收仍未签收；`not_due` 方案 C 与期初/期末结论是 M3 业务复核意见，不是三方结论。**
 > - **本轮未改** `data/**`、`source_register.csv`、标签、代码、契约或迁移；未提交/推送，等待明确同意。
 
 ## 2. D3/D4/D5 已明确与仍待确认
@@ -131,7 +131,7 @@
 | --- | --- | --- | --- |
 | **负责人已明确** | #46：一账号一家企业；审核员可查看所有信息；注册即新建企业；预置保底管理员 + 服务端密钥注册审核员；首版只做注册/登录/登出/改密 + 两角色 + 权限边界。 #47：来源从现有政策网站选择；网址列表；审核员后台配周期；首版提交草稿前抽取；候选保存到下一次自动抓取新政策前。 #48：第 1—5 项 + 审核工作量 + 系统运行趋势；第 6 项暂缓；完整度按“已填适用/适用总数”，未知不计、不适用不入分母；趋势按北京时间、可追溯审核事件、日终快照、运行三态。 | #46/#47/#48 的 2026-11-09 负责人评论；[开发计划](../DEVELOPMENT_PLAN.md) §2 | 业务范围可用；具体字段/接口仍需评审 |
 | **M1 提案，待评审** | D1—D6 技术方案；`review_event`/`baseline` 结构；完整度计数单位；D3 的 6 小时/2MB/30 分钟/token 初始值；迁移 009/010 占号；版本 `1.1.0-rc.1` 待签。**2026-11-13 核实：** #61 已实现迁移 009；`1.1.0-rc.1` 已并入正式契约，但仍是候选版；010 已随 PR #64 合并到 `main`（`c84b4b7`）并由 M1 报告在云端执行；`review_event` 仍未落地 | [M1 E0 提案](../devlog/M1-11-10-E0决策提案.md) v5.1；PR #54；PR #61；PR #64 | 只能作评审输入，不能称已签收 |
-| **M3 建议（本文）** | 四组分组与 `creditRecord` 单列（键名 `credit`）；默认 scope 排除 `closed`；`not_due` 方案 C（季度/年度/跨年分层，N1—N7 边界样例）；`answered_unknown` 与 `not_answered` 区分；首版静态引用 `d4.static.v1` 为过渡、样例 B/C 不宣称通过；首版“发布=人工审核完成”；`review_revision` 正常为 1；当天暂计数 + `dayOpen`；D3 业务参数意见；VIS-06 日期来源逐项回填建议 | COMPLETENESS_SPEC §3.1、METRICS_SPEC §9、POLICY_SCOPE 2026-11-13 节、DISCOVERY_SOURCES §12、本文 | 只能作评审输入，需 M1/M2/M3 确认 |
+| **M3 建议（本文）** | 四组分组与 `creditRecord` 单列（键名 `credit`）；默认 scope 排除 `closed`；`not_due` 方案 C（季度/年度/跨年分层，N1—N9 边界样例；季度期初/期末不分层）；`answered_unknown` 与 `not_answered` 区分；首版静态引用 `d4.static.v1` 为过渡、样例 B/C 不宣称通过；首版“发布=人工审核完成”；`review_revision` 正常为 1；当天暂计数 + `dayOpen`；D3 业务参数意见；VIS-06 日期来源逐项回填建议 | COMPLETENESS_SPEC §3.1、METRICS_SPEC §9、POLICY_SCOPE 2026-11-13 节、DISCOVERY_SOURCES §12、本文 | 只能作评审输入，需 M1/M2/M3 确认 |
 | **M1 E3 方案（PR #67，待签收）** | 结果分布/逻辑树/轨迹只读核对；时间线延期；D5 事件表/基线/生命周期/两个 metrics 端点；D4 `scope=profile|run`、v1 静态引用；VIS-06 `date_provenance jsonb` 与 `011`/`012` 迁移；契约 `1.2.0-rc.1` 同窗生成 | [M1 E3 方案草案（PR #67）](https://github.com/sgase233/huice/pull/67)、PR #67 | 方案不是业务口径；D4/D5/VIS 契约/联合验收均未签收 |
 | **未签收** | 上述所有 D3/D4/D5 细节、`not_due` 方案 C、`d4.static.v1` 过渡口径、日期字段承载、趋势接口、完整度接口、VIS-06 回填状态 | — | 实现应按“待评审设计”处理；不得把方案合并/样例对账写成验收通过 |
 
@@ -239,7 +239,7 @@
 ## 8. 建议的下一步（按优先级）
 
 1. **M1 先回 D3 技术可行性**：单篇抓取、附件解析、2MB/多窗口、日期双字段；这决定 E2 能否按首批来源开工。2026-11-13 可用来源清单见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12。
-2. **三方评审 D4**：先定分组/`creditRecord`/scope/`not_due` 方案 C/静态引用过渡范围；M1 再定 VIS-01 字段。M3 已补 §3.1 边界样例，仍待 M1/M2 确认。
+2. **三方评审 D4**：先定分组/`creditRecord`/scope/`not_due` 方案 C/静态引用过渡范围；M1 再定 VIS-01 字段。M3 已补 §3.1/§3.1.1 边界样例与期初/期末结论，仍待 M1/M2 确认。
 3. **M1/M3 评审 D5**：先定“发布是否等于审核完成”、revision、两个覆盖起点、运行上限；M2 再定展示。M1 方案 §2 已对齐大部分口径，见 [METRICS_SPEC.md](METRICS_SPEC.md) §9。
 4. **M1 提供 E1 隔离环境、两个企业账号、一个审核员与合成数据清单**：M3 才能执行 AUTH-AT 用例。2026-11-13 核实：云端 `/health=1.1.0-rc.1` 与门禁层已对上，但隔离环境、账号、迁移 009/010 现场证据仍未提供；详见 [E1_ACCEPTANCE_CHECKLIST.md](E1_ACCEPTANCE_CHECKLIST.md) §7。
 5. **M1 出 E3a 对账样本**：结果分布四态+stale、逻辑树 GXJS v1/v2+manual_review、轨迹离线/在线；M3 复核后才能把 VIS-AT-01/03/05 从“未执行”推进。
