@@ -477,6 +477,7 @@ paths:
                   existingVersion: null
                   versionChanged: false
                   attachmentCount: 0
+                  unsupportedAttachmentCount: 0
                   submittedPolicyId: null
                   submittedVersion: null
                   createdAt: '2026-11-12T01:00:12Z'
@@ -538,6 +539,7 @@ paths:
                   applicationWindow: null
                   officialEntryUrl: https://www.gov.cn/zhengce/content/2026-11/12/content_0000001.htm
                 attachmentUrls: []
+                unsupportedAttachmentUrls: []
                 missingFields:
                 - version
                 - applicableEntities
@@ -693,8 +695,10 @@ paths:
         候选一旦已是 submitted，无论带不带幂等键都返回 409 CANDIDATE_STATE_CONFLICT 并带上
         已提交的 policyId/version，不重复建版本。
 
-        候选的 attachmentUrls 非空时，草稿的 validationFindings 里会多一条 criterionId 为 null 的
-        ATTACHMENT_NOT_EXTRACTED：附件首版不下载、不解析，提示必须跟着草稿走到发布复核。
+        候选的 attachmentUrls 或 unsupportedAttachmentUrls 非空时，草稿的 validationFindings 里
+        会多一条 criterionId 为 null 的 ATTACHMENT_NOT_EXTRACTED：附件首版不下载、不解析，
+        提示必须跟着草稿走到发布复核。后者是页面上 http:// 等不能进候选的附件链接——只留档，
+        同样要提示，不能因为过滤后 attachmentUrls 为空就当成这一页没有附件。
         它是来源级结论，后续 API-05 重新抽取、API-06 保存条款整体替换 findings 时由服务端保留，
         不会因某条条件被改好而消失，也不会重复累积。
 
@@ -1146,6 +1150,7 @@ components:
       - issuer
       - missingFields
       - attachmentCount
+      - unsupportedAttachmentCount
       - duplicateOf
       - existingPolicyId
       - existingVersion
@@ -1191,8 +1196,14 @@ components:
         attachmentCount:
           type: integer
           minimum: 0
-          description: 页面上的附件数量。大于 0 时该候选的 validationFindings 必带
+          description: 页面上记录的附件数量（https，见 CandidateDetail.attachmentUrls）。
+            两个附件计数之和大于 0 时该候选的 validationFindings 必带
             ATTACHMENT_NOT_EXTRACTED；列表页据此标出「必须打开附件人工核对」的候选。
+        unsupportedAttachmentCount:
+          type: integer
+          minimum: 0
+          description: 页面上看起来是附件、但地址不能进候选的链接数量（如 http://）。
+            大于 0 同样要提示：过滤后的 attachmentUrls 为空不代表这一页没有附件。
         duplicateOf:
           anyOf:
           - $ref: ./openapi.yaml#/components/schemas/UUID
@@ -1249,6 +1260,7 @@ components:
       - rawHash
       - metadata
       - attachmentUrls
+      - unsupportedAttachmentUrls
       - missingFields
       - bodyText
       - criteria
@@ -1292,9 +1304,19 @@ components:
             $ref: ./openapi.yaml#/components/schemas/OfficialUrl
           description: >-
             页面上识别到的附件地址（只收 https），首版不下载、不解析，附件内容不作为草稿来源。
-            非空时 validationFindings 必然附带一条 ATTACHMENT_NOT_EXTRACTED（criterionId 为 null）：
+            本字段与 unsupportedAttachmentUrls 任一非空时，validationFindings 必然附带一条
+            ATTACHMENT_NOT_EXTRACTED（criterionId 为 null）：
             候选侧由本字段派生、不写候选的 validationFindings 列，所以保存 criteriaDrafts 之后仍在；
             提交后它作为来源级 finding 随草稿落库，API-05/06 重算时不丢失。
+        unsupportedAttachmentUrls:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: >-
+            页面上看起来是附件、但地址不能进 attachmentUrls 的链接（如 http://：OfficialUrl 要求
+            https）。只留档供人工打开，不抓取；它的存在同样会派生 ATTACHMENT_NOT_EXTRACTED，
+            避免「过滤后为空」被读成「这一页没有附件」。
         missingFields:
           type: array
           items:

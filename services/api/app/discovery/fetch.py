@@ -236,6 +236,9 @@ class FetchedPage:
     content_hash: str
     fetched_at: datetime
     attachments: tuple[str, ...] = field(default=())
+    #: 页面上看起来是附件、但地址不能进候选的链接（例如 http://）。不抓取，只用来
+    #: 让审核员知道「这一页确实还有附件」，避免把过滤后的空列表当成没有附件。
+    unsupported_attachments: tuple[str, ...] = field(default=())
     #: 解码后的 HTML 原文；正文页用它找附件链接，列表页用它找候选链接。
     markup: str | None = None
 
@@ -366,6 +369,7 @@ class Fetcher:
         raw = response.body
         markup: str | None = None
         attachments: tuple[str, ...] = ()
+        unsupported_attachments: tuple[str, ...] = ()
         if looks_like_pdf(raw, content_type):
             content_type = "application/pdf"
             text = extract_pdf_text(raw)
@@ -374,7 +378,7 @@ class Fetcher:
             if _is_html(content_type, decoded):
                 markup = decoded
                 text = html_to_text(decoded)
-                attachments = find_attachments(decoded, url)
+                attachments, unsupported_attachments = scan_attachments(decoded, url)
             elif _is_textual(content_type) and not _looks_binary(raw):
                 text = decoded
             else:
@@ -395,6 +399,7 @@ class Fetcher:
             content_hash=sha256_hex(normalized.encode("utf-8")),
             fetched_at=datetime.now(timezone.utc),
             attachments=attachments,
+            unsupported_attachments=unsupported_attachments,
             markup=markup,
         )
 
@@ -543,8 +548,30 @@ MIN_ARTICLE_CHARS = 60
 #: 阈值取 40 是为了把「一、……」「二、……」这类完整条款留在集合里，同时滤掉页脚。
 _FINGERPRINT_SENTENCE_CHARS = 40
 
-#: 正文指纹至少要有几句长句才可靠；少于这个数（例如只有一句话的通知）退回整页哈希。
+#: 正文指纹至少要有两句可比较的句子才可靠；少于这个数（例如只有一句话的通知）退回整页哈希。
 _FINGERPRINT_MIN_SENTENCES = 2
+
+#: 短句纳入正文指纹的下限：再短就与导航条目分不开。带数字的短句要参与比较——
+#: 截止日期、金额、人数、比例常常单独成句，只比长句会把「2026 改 2027」这类
+#: 实质变更当成同一份公告。
+_FINGERPRINT_SHORT_CHARS = 12
+
+#: 这些前缀的短句是站点元数据（各站的日期格式、字段名并不统一），不参与比较。
+_METADATA_PREFIXES = (
+    "发文字号",
+    "文号",
+    "成文日期",
+    "发布日期",
+    "印发日期",
+    "索引号",
+    "主题分类",
+    "发文机关",
+    "有效性",
+    "来源：",
+)
+
+#: 只有日期的整句（``2023年03月26日`` / ``2023年3月26日``）同样是元数据。
+_DATE_ONLY = re.compile(r"^[0-9]{4}\s*年\s*[0-9]{1,2}\s*月\s*[0-9]{1,2}\s*日$")
 
 #: 页脚、备案、版权这类「长但 Everybody 都一样或各站不同」的句子不进正文指纹。
 #: 只排除明确的站点样板文字，不做关键词联想：正文里出现这些词的概率极低。
@@ -575,20 +602,40 @@ def looks_like_article(text: str) -> bool:
     return len(text.strip()) >= MIN_ARTICLE_CHARS
 
 
+def _fingerprint_sentences(text: str) -> set[str]:
+    """参与正文指纹的句子：长条款 + 带数字的短句（排除站点元数据）。"""
+
+    picked: set[str] = set()
+    for raw in re.split(r"[。！？；\n]", text):
+        item = raw.strip()
+        if not item or any(marker in item for marker in _CHROME_MARKERS):
+            continue
+        if len(item) >= _FINGERPRINT_SENTENCE_CHARS:
+            picked.add(item)
+        elif (
+            len(item) >= _FINGERPRINT_SHORT_CHARS
+            and any(character.isdigit() for character in item)
+            and not item.startswith(_METADATA_PREFIXES)
+            and not _DATE_ONLY.match(item)
+        ):
+            picked.add(item)
+    return picked
+
+
 def body_fingerprint(text: str) -> str | None:
-    """与导航、页脚无关的正文指纹：长句集合去重排序后取 SHA-256。
+    """与导航、页脚无关的正文指纹：句子集合去重排序后取 SHA-256。
 
     同一个公告被不同站点转载时，整页文本（导航、页脚各不相同）哈希不同，但正文
-    条款逐字相同。按「长句集合」比对能把这类跨站转载认成同一份内容。句子太少或
-    太短时无法可靠区分，返回 ``None``，调用方退回整页文本哈希判重。
+    条款逐字相同。按句子集合比对能把这类跨站转载认成同一份内容。
+
+    集合里既有长条款，也有**带数字的短句**（截止日、金额、人数、比例常单独成句）：
+    只比长句会让「截止日 2026 改 2027」这种实质变更在判重时看不出来。站点元数据
+    （发文字号、成文日期、纯日期行）各站写法不一致，排除在外。
+
+    句子不足两句时无法可靠区分，返回 ``None``，调用方退回整页文本哈希判重。
     """
 
-    sentences = {
-        item.strip()
-        for item in re.split(r"[。！？；\n]", text)
-        if len(item.strip()) >= _FINGERPRINT_SENTENCE_CHARS
-        and not any(marker in item for marker in _CHROME_MARKERS)
-    }
+    sentences = _fingerprint_sentences(text)
     if len(sentences) < _FINGERPRINT_MIN_SENTENCES:
         return None
     payload = "\n".join(sorted(sentences))
@@ -625,12 +672,18 @@ def extract_links(markup: str, base_url: str) -> list[str]:
     return seen
 
 
-def find_attachments(markup: str, base_url: str) -> tuple[str, ...]:
-    """页面上指向附件的链接：只记录、不下载，留给审核员人工打开。
+def scan_attachments(
+    markup: str, base_url: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """页面上指向附件的链接：分成「能进候选的」和「只能提示的」两组。
 
-    只保留 **https** 链接：契约里的 ``OfficialUrl`` 要求 https，页面上的 ``http://``
-    附件地址若原样带进候选，详情响应就会不符合契约。首版不抓附件，因此这里只需过滤，
-    不需要逐跳复检（将来真下载附件时必须补上与正文相同的 SSRF 防护）。
+    契约里的 ``OfficialUrl`` 要求 https，所以页面上的 ``http://`` 附件地址不能进
+    ``attachmentUrls``。但它**不能就此消失**：如果页面只有 http 附件，过滤后列表为空，
+    列表页会显示 0 个附件、也没有未抽取提示，审核员就会把只覆盖正文的草稿当成完整
+    政策。因此这里把这类链接单独返回，由候选记下来并给出可见提示。
+
+    首版不下载附件，所以只需过滤，不需要逐跳复检（将来真下载附件时必须补上与正文
+    相同的 SSRF 防护）。
     """
 
     parser = _LinkParser()
@@ -638,20 +691,26 @@ def find_attachments(markup: str, base_url: str) -> tuple[str, ...]:
         parser.feed(markup)
         parser.close()
     except Exception:  # noqa: BLE001
-        return ()
-    found: list[str] = []
+        return (), ()
+    supported: list[str] = []
+    unsupported: list[str] = []
     for href in parser.links:
         absolute = urljoin(base_url, href)
         canonical = canonicalize_url(absolute)
         if canonical is None or not _is_official(canonical):
             continue
-        if urlsplit(canonical).scheme != "https":
-            continue
         if not urlsplit(canonical).path.lower().endswith(_ATTACHMENT_SUFFIXES):
             continue
-        if canonical not in found:
-            found.append(canonical)
-    return tuple(found[:20])
+        target = supported if urlsplit(canonical).scheme == "https" else unsupported
+        if canonical not in target:
+            target.append(canonical)
+    return tuple(supported[:20]), tuple(unsupported[:20])
+
+
+def find_attachments(markup: str, base_url: str) -> tuple[str, ...]:
+    """页面上能进候选的附件链接（https）：只记录、不下载，留给审核员人工打开。"""
+
+    return scan_attachments(markup, base_url)[0]
 
 
 def _is_official(url: str) -> bool:

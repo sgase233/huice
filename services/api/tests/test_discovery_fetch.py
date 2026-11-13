@@ -25,6 +25,7 @@ from app.discovery.fetch import (
     normalize_text,
     require_official_url,
     resolve_public_addresses,
+    scan_attachments,
 )
 
 PUBLIC_IP = "93.184.216.34"
@@ -333,6 +334,37 @@ def test_find_attachments_keeps_only_https_links():
     assert found == ("https://www.gov.cn/f/2.pdf",)
 
 
+def test_an_http_only_attachment_is_reported_but_not_recorded():
+    """只被 http 附件覆盖的页面不能显示成「没有附件」。
+
+    过滤掉 http 链接是为了满足 ``OfficialUrl``，但过滤后的空列表若被读成「这一页
+    没有附件」，审核员就会把只覆盖正文的草稿当成完整政策。这里要求它单独返回。
+    """
+
+    markup = '<a href="http://www.gov.cn/f/1.pdf">手册</a>'
+    supported, unsupported = scan_attachments(
+        f"<html><body>{markup}</body></html>", "https://www.gov.cn/"
+    )
+    assert supported == ()
+    assert unsupported == ("http://www.gov.cn/f/1.pdf",)
+
+
+def test_mixed_attachments_are_split_by_scheme():
+    markup = (
+        '<a href="/f/1.pdf">一</a>'
+        '<a href="http://www.gov.cn/f/2.docx">二</a>'
+        '<a href="https://www.gov.cn/f/3.xlsx">三</a>'
+    )
+    supported, unsupported = scan_attachments(
+        f"<html><body>{markup}</body></html>", "https://www.gov.cn/"
+    )
+    assert supported == (
+        "https://www.gov.cn/f/1.pdf",
+        "https://www.gov.cn/f/3.xlsx",
+    )
+    assert unsupported == ("http://www.gov.cn/f/2.docx",)
+
+
 #: 两段足够长的条款句：正文指纹至少要能认出两句长句。
 LONG_BODY = (
     "一、企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，再按照实际发生额的100%在税前加计扣除。"
@@ -347,6 +379,26 @@ def test_cross_site_copies_share_a_body_fingerprint():
     first = normalize_text("首页 > 政策 > 文件库\n" + LONG_BODY + "\n主办单位：国务院办公厅")
     second = normalize_text("税务公报\n" + LONG_BODY + "\n网站标识码：bm29000002")
     assert body_fingerprint(first) is not None
+    assert body_fingerprint(first) == body_fingerprint(second)
+
+
+def test_a_short_sentence_change_alone_changes_the_fingerprint():
+    """截止日、金额这类短句单独成句时也是实质内容，不能只看长条款。
+
+    只比 ≥40 字的长句时，把「2026 年 12 月 31 日」改成「2027 年」指纹不变，跨站
+    转载判重就会把改过的公告当成旧的那份。
+    """
+
+    base = normalize_text(LONG_BODY + "\n申报截止日期为2026年12月31日。")
+    changed = normalize_text(LONG_BODY + "\n申报截止日期为2027年12月31日。")
+    assert body_fingerprint(base) != body_fingerprint(changed)
+
+
+def test_site_metadata_lines_do_not_change_the_fingerprint():
+    """发文字号、成文日期各站写法不同，不能因此把同一份公告判成两份。"""
+
+    first = normalize_text("发文字号：财税〔2026〕7号\n" + LONG_BODY + "\n2026年03月26日")
+    second = normalize_text("文号：财税〔2026〕7号\n" + LONG_BODY + "\n2026年3月26日")
     assert body_fingerprint(first) == body_fingerprint(second)
 
 

@@ -26,7 +26,7 @@ import pytest
 
 from app.discovery import runner as runner_module
 from app.discovery.extraction import CODE_NO_CRITERIA
-from app.discovery.fetch import FetchError, estimate_tokens
+from app.discovery.fetch import FetchError, body_fingerprint, estimate_tokens
 from app.discovery.runner import (
     CANDIDATE_TOKEN_BUDGET,
     MAX_COMPLETION_TOKENS,
@@ -685,3 +685,108 @@ def test_a_changed_page_is_a_new_candidate_marked_version_changed(
     )
     assert version_changed is True
     assert str(duplicate_of) == str(first_id)
+
+
+def test_a_short_clause_change_on_the_same_url_is_a_new_version(
+    db, discovery, database_url_schema
+):
+    """同一 URL 只改了一个不带数字的短句，指纹完全可以不变——但它仍是新版本。
+
+    指纹只用来认「别的站点转载了同一份公告」；同 URL 的正文变了就是新版政策，
+    不能因为长句集合相同就当成重复跳过（M2/M3 在 00c02f1 上复现过）。
+    """
+
+    configure(discovery)
+    pages, _links = article_pages(1)
+    article_url = next(url for url in pages if url != LIST_URL)
+    before = page(article_url, BODY + "适用范围为深圳市。")
+    holder = {"now": NOW}
+    make_runner(
+        db,
+        discovery,
+        FakeFetcher({LIST_URL: pages[LIST_URL], article_url: before}),
+        llm=FakeLlm(),
+        holder=holder,
+    ).run(trigger="timer")
+    first_id = query_one(database_url_schema, "SELECT id FROM policy_candidate")[0]
+
+    changed = page(article_url, BODY + "适用范围为广东省。")
+    # 前提：这次改动确实不影响指纹，说明新候选不是靠指纹认出来的。
+    assert body_fingerprint(changed.text) == body_fingerprint(before.text) is not None
+
+    holder["now"] = NOW + timedelta(days=1)
+    outcome = make_runner(
+        db,
+        discovery,
+        FakeFetcher({LIST_URL: pages[LIST_URL], article_url: changed}),
+        llm=FakeLlm(),
+        holder=holder,
+    ).run(trigger="timer")
+
+    status, reason, new, duplicates, *_ = _run_row(database_url_schema, outcome.run_id)
+    assert (status, reason) == ("succeeded", "completed")
+    assert (new, duplicates) == (1, 0)
+    version_changed, duplicate_of = query_one(
+        database_url_schema,
+        "SELECT version_changed, duplicate_of FROM policy_candidate "
+        "ORDER BY created_at DESC LIMIT 1",
+    )
+    assert version_changed is True
+    assert str(duplicate_of) == str(first_id)
+
+
+def test_a_cross_site_copy_with_a_different_deadline_is_not_merged(
+    db, discovery, database_url_schema
+):
+    """两个站点转载同一份公告，但截止日不同：不是同一份内容，不能合并成一条。"""
+
+    configure(discovery)
+    first = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    second = "https://www.chinatax.gov.cn/chinatax/n810765/content_2.html"
+    pages = {
+        LIST_URL: page(
+            LIST_URL,
+            "政策文件列表",
+            markup=(
+                f'<html><body><a href="{first}">一</a><a href="{second}">二</a></body></html>'
+            ),
+        ),
+        first: page(
+            first,
+            "首页 > 政策 > 文件库\n"
+            + CROSS_SITE_BODY
+            + "\n申报截止日期为2026年12月31日。\n主办单位：国务院办公厅",
+        ),
+        second: page(
+            second,
+            "税务公报\n"
+            + CROSS_SITE_BODY
+            + "\n申报截止日期为2027年12月31日。\n网站标识码：bm29000002",
+        ),
+    }
+    outcome = make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm()).run(trigger="timer")
+
+    _status, _reason, new, duplicates, *_ = _run_row(database_url_schema, outcome.run_id)
+    assert (new, duplicates) == (2, 0)
+    assert len(_candidates(database_url_schema)) == 2
+
+
+def test_an_http_only_attachment_is_still_recorded_on_the_candidate(
+    db, discovery, database_url_schema
+):
+    """只被 http 附件覆盖的页面：附件链接单独留档，不能在候选上显示成「没有附件」。"""
+
+    configure(discovery)
+    attachment = "http://www.gov.cn/zhengce/content/2026-11/12/shouce.pdf"
+    pages = {
+        LIST_URL: LIST_PAGE,
+        ARTICLE_URL: page(ARTICLE_URL, BODY, unsupported=(attachment,)),
+    }
+    make_runner(db, discovery, FakeFetcher(pages), llm=FakeLlm()).run(trigger="timer")
+
+    recorded, unsupported = query_one(
+        database_url_schema,
+        "SELECT attachment_urls, unsupported_attachment_urls FROM policy_candidate",
+    )
+    assert recorded == []
+    assert unsupported == [attachment]

@@ -153,6 +153,9 @@ CREATE TABLE IF NOT EXISTS policy_candidate (
     official_entry_url  text,
     -- 页面上找到的附件链接（https）；首版只记录、不下载、不解析，内容需人工核对
     attachment_urls     jsonb NOT NULL DEFAULT '[]'::jsonb,
+    -- 看起来是附件、但地址不能进候选的链接（如 http://）：只留档并提示，
+    -- 避免过滤后为空被当成「这一页没有附件」
+    unsupported_attachment_urls jsonb NOT NULL DEFAULT '[]'::jsonb,
     -- 提交前仍缺哪些必填字段：前端据此高亮，服务端提交时再校验一次
     missing_fields      jsonb NOT NULL DEFAULT '[]'::jsonb,
 

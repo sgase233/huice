@@ -734,6 +734,8 @@ class CandidateSummary(WireModel):
     missing_fields: list[str]
     #: 页面上的附件数量：列表页据此标出「必须打开附件核对」的候选。
     attachment_count: int = Field(ge=0)
+    #: 看到了但无法记入候选的附件链接数（如 http://）：同样要提示，不能当没有附件。
+    unsupported_attachment_count: int = Field(ge=0)
     duplicate_of: UUID | None
     existing_policy_id: UUID | None
     existing_version: str | None
@@ -761,6 +763,8 @@ class CandidateDetail(WireModel):
     raw_hash: str | None
     metadata: CandidateMetadata
     attachment_urls: list[str]
+    #: 页面上看起来是附件、但地址不能进候选的链接（如 http://）；只留档与提示。
+    unsupported_attachment_urls: list[str]
     missing_fields: list[str]
     body_text: str
     criteria: list[Criterion]

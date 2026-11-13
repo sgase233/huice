@@ -516,6 +516,7 @@ def _candidate_summary(row: dict[str, Any]) -> CandidateSummary:
         issuer=row["issuer"],
         missing_fields=list(row["missing_fields"] or []),
         attachment_count=len(row["attachment_urls"] or []),
+        unsupported_attachment_count=len(row["unsupported_attachment_urls"] or []),
         duplicate_of=row["duplicate_of"],
         existing_policy_id=row["existing_policy_id"],
         existing_version=row["existing_version"],
@@ -541,13 +542,19 @@ def _attachment_finding(row: dict[str, Any]) -> dict[str, Any] | None:
     """
 
     attachments = list(row["attachment_urls"] or [])
-    if not attachments:
+    unsupported = list(row["unsupported_attachment_urls"] or [])
+    if not attachments and not unsupported:
         return None
+    parts = []
+    if attachments:
+        parts.append(f"{len(attachments)} 个附件（如 PDF/DOCX）")
+    if unsupported:
+        parts.append(f"{len(unsupported)} 个无法记入候选的附件链接（如 http:// 地址）")
     return {
         "criterionId": None,
         "code": ATTACHMENT_NOT_EXTRACTED,
         "message": (
-            f"该页面另有 {len(attachments)} 个附件（如 PDF/DOCX），本版不下载、不解析，"
+            f"该页面另有 {' 和 '.join(parts)}，本版不下载、不解析，"
             "附件内容也不能作为候选草稿的引用来源。条件若只写在附件里，请先离线转换附件，"
             "再走人工导入（仅接受可复制文本的 PDF 或 UTF-8 文本；DOC/DOCX/ZIP 需先转换），"
             "不要把只覆盖了正文的草稿当作完整政策发布。"
@@ -591,6 +598,7 @@ def _candidate_detail(row: dict[str, Any]) -> CandidateDetail:
         raw_hash=row["raw_hash"],
         metadata=_candidate_metadata(row),
         attachment_urls=list(row["attachment_urls"] or []),
+        unsupported_attachment_urls=list(row["unsupported_attachment_urls"] or []),
         missing_fields=list(row["missing_fields"] or []),
         body_text=row["body_text"],
         criteria=[Criterion.model_validate(item) for item in row["criteria"] or []],

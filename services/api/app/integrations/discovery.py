@@ -48,7 +48,8 @@ _CANDIDATE_COLUMNS = (
     "storage_key, body_text, policy_id, version, title, policy_type, issuer, region, "
     "document_number, "
     "applicable_entities, published_at, effective_from, effective_to, application_window, "
-    "official_entry_url, attachment_urls, missing_fields, criteria, validation_findings, "
+    "official_entry_url, attachment_urls, unsupported_attachment_urls, missing_fields, "
+    "criteria, validation_findings, "
     "extraction, duplicate_of, existing_policy_id, existing_version, version_changed, "
     "submitted_policy_id, submitted_version, submitted_at, discarded_at, expired_at, "
     "discard_reason, created_at, updated_at"
@@ -287,12 +288,15 @@ class DiscoveryRepository:
             return cur.fetchone()
 
     def find_fingerprint_by_body(
-        self, conn: Connection, body_fingerprint: str
+        self, conn: Connection, body_fingerprint: str, *, exclude_url: str | None = None
     ) -> dict[str, Any] | None:
-        """按「正文长句集合」指纹找已经见过的内容（换 URL 同内容判重）。
+        """按「正文句子集合」指纹找已经见过的内容（换 URL 同内容判重）。
 
         与 ``content_hash`` 不同，这个指纹不含导航、页脚，因此同一份公告被不同站点
-        转载时仍然相同。旧数据（此列加入前写入的指纹行）为 NULL，不参与匹配。
+        转载时仍然相同。``exclude_url`` 用来排除同一个地址：同一 URL 内容变了是新版本，
+        不是转载，调用方不该拿旧指纹把它当重复跳过。
+
+        旧数据（此列加入前写入的指纹行）为 NULL，不参与匹配。
         """
 
         with conn.cursor(row_factory=dict_row) as cur:
@@ -300,8 +304,9 @@ class DiscoveryRepository:
                 "SELECT content_hash, canonical_url, outcome, candidate_id, "
                 "submitted_policy_id, first_seen_at, last_seen_at "
                 "FROM policy_candidate_fingerprint WHERE body_fingerprint = %s "
+                "AND (%s::text IS NULL OR canonical_url <> %s) "
                 "ORDER BY first_seen_at LIMIT 1",
-                (body_fingerprint,),
+                (body_fingerprint, exclude_url, exclude_url),
             )
             return cur.fetchone()
 

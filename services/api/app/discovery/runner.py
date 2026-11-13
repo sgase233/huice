@@ -345,10 +345,16 @@ class DiscoveryRunner:
                     self._touch_page(conn, canonical, content_hash, fingerprint["candidate_id"], run_id, now)
                     continue
                 # 换 URL 同内容：整页文本（含导航、页脚）哈希不同，但正文条款逐字相同。
-                # 按长句集合指纹再比一次，跨站转载不会被当成新政策再推荐一遍。
+                # 按句子集合指纹再比一次，跨站转载不会被当成新政策再推荐一遍。
+                #
+                # **同一 URL 内容变了不走这条**：那是新版政策，必须按新候选落库并标
+                # ``versionChanged``。指纹只认「见过的 URL 之外」的转载；同 URL 的
+                # 短句变化（截止日、金额、人数、适用范围）本就不该靠指纹兜底。
                 body_fp = body_fingerprint(article.text)
-                if body_fp is not None:
-                    twin = self._repository.find_fingerprint_by_body(conn, body_fp)
+                if page_row is None and body_fp is not None:
+                    twin = self._repository.find_fingerprint_by_body(
+                        conn, body_fp, exclude_url=canonical
+                    )
                     if twin is not None:
                         counts.duplicates += 1
                         self._touch_page(
@@ -490,6 +496,10 @@ class DiscoveryRunner:
             **metadata.as_columns(),
             "applicable_entities": None,
             "attachment_urls": json.dumps(list(article.attachments), ensure_ascii=False),
+            # http:// 等不能进候选的附件链接：只留档并提示，避免「过滤后为空 = 没附件」。
+            "unsupported_attachment_urls": json.dumps(
+                list(article.unsupported_attachments), ensure_ascii=False
+            ),
             "missing_fields": json.dumps(metadata.missing_fields(), ensure_ascii=False),
             "criteria": json.dumps(outcome.criteria, ensure_ascii=False),
             "validation_findings": json.dumps(outcome.findings, ensure_ascii=False),

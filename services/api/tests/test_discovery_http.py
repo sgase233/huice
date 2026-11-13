@@ -146,15 +146,20 @@ def _seed_run(app_db, *, count: int = 1, llm=None) -> None:
 
 #: 附件不进正文、也不下载，但只要它在页面上，候选就必须带着「附件未抽取」的提示。
 ATTACHMENT_URL = "https://www.gov.cn/zhengce/content/2026-11/12/shouce.pdf"
+#: 页面上的 http 附件：不能进 attachmentUrls（OfficialUrl 要 https），但要提示。
+HTTP_ATTACHMENT_URL = "http://www.gov.cn/zhengce/content/2026-11/12/shouce.pdf"
 
 
-def _seed_run_with_attachment(app_db) -> None:
-    """跑一轮，唯一那篇文章带一个附件。"""
+def _seed_run_with_attachment(app_db, *, http_only: bool = False) -> None:
+    """跑一轮，唯一那篇文章带一个附件（默认 https；``http_only`` 时只有一个 http 链接）。"""
 
     configure(app_db.state.discovery)
     pages, _links = article_pages(1)
     article_url = next(url for url in pages if url != LIST_URL)
-    pages[article_url] = page(article_url, BODY, attachments=(ATTACHMENT_URL,))
+    if http_only:
+        pages[article_url] = page(article_url, BODY, unsupported=(HTTP_ATTACHMENT_URL,))
+    else:
+        pages[article_url] = page(article_url, BODY, attachments=(ATTACHMENT_URL,))
     make_runner(
         app_db.state.db, app_db.state.discovery, FakeFetcher(pages), llm=FakeLlm()
     ).run(trigger="timer")
@@ -405,6 +410,56 @@ def test_the_attachment_note_survives_editing_and_reaches_the_draft(
         item["code"] for item in submitted.json()["validationFindings"]
     ], "草稿是审核员最终看到的东西，附件未覆盖不能只留在候选上"
     assert _policy_counts(database_url_schema) == (1, 1, 1)
+
+
+def test_an_http_only_attachment_is_visible_as_a_note_not_as_an_empty_list(
+    app_db, reviewer, database_url_schema
+):
+    """页面只挂了 http 附件时，附件列表为空不等于这一页没有附件。
+
+    ``attachmentUrls`` 只收 https（契约 OfficialUrl），过滤后的空数组如果同时让
+    ``attachmentCount`` 变 0、提示消失，审核员就会把只覆盖正文的草稿当成完整政策。
+    """
+
+    _seed_run_with_attachment(app_db, http_only=True)
+    [candidate] = _candidates(database_url_schema)
+
+    body, etag = _detail(reviewer, candidate["id"])
+    assert body["attachmentUrls"] == []
+    assert body["unsupportedAttachmentUrls"] == [HTTP_ATTACHMENT_URL]
+    notes = [
+        item for item in body["validationFindings"] if item["code"] == "ATTACHMENT_NOT_EXTRACTED"
+    ]
+    assert len(notes) == 1
+    assert "无法记入候选" in notes[0]["message"], "提示要说清这类链接只是留档"
+
+    listed = reviewer["client"].get("/api/v1/admin/policy-candidates").json()["items"]
+    assert [item["attachmentCount"] for item in listed] == [0]
+    assert [item["unsupportedAttachmentCount"] for item in listed] == [1], (
+        "列表页也要能看出「页面上有附件，只是没进候选」"
+    )
+
+    edited = reviewer["client"].patch(
+        f"/api/v1/admin/policy-candidates/{candidate['id']}",
+        headers=_headers(reviewer, revision=etag),
+        json={
+            "metadata": {**FULL_METADATA, "officialEntryUrl": candidate["source_url"]},
+            "criteriaDrafts": [
+                {key: value for key, value in item.items() if key != "validationStatus"}
+                for item in body["criteria"]
+            ],
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    assert "ATTACHMENT_NOT_EXTRACTED" in [
+        item["code"] for item in edited.json()["validationFindings"]
+    ], "编辑条件后提示不能消失"
+
+    submitted = _submit(reviewer, candidate["id"], _etag(edited))
+    assert submitted.status_code == 201, submitted.text
+    assert "ATTACHMENT_NOT_EXTRACTED" in [
+        item["code"] for item in submitted.json()["validationFindings"]
+    ]
 
 
 def test_the_attachment_note_survives_saving_criteria_and_re_extraction(

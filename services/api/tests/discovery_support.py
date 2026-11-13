@@ -37,7 +37,14 @@ THRESHOLD = {
 }
 
 
-def page(url: str, text: str, *, markup: str | None = None, attachments=()) -> FetchedPage:
+def page(
+    url: str,
+    text: str,
+    *,
+    markup: str | None = None,
+    attachments=(),
+    unsupported=(),
+) -> FetchedPage:
     normalized = normalize_text(text)
     raw = normalized.encode("utf-8")
     return FetchedPage(
@@ -50,6 +57,7 @@ def page(url: str, text: str, *, markup: str | None = None, attachments=()) -> F
         content_hash=sha256_hex(normalized.encode("utf-8")),
         fetched_at=NOW,
         attachments=tuple(attachments),
+        unsupported_attachments=tuple(unsupported),
         markup=markup,
     )
 
@@ -63,14 +71,23 @@ ARTICLE_PAGE = page(ARTICLE_URL, BODY)
 
 
 def article_pages(count: int) -> tuple[dict[str, FetchedPage], list[str]]:
-    """一个列表页 + ``count`` 篇文章（正文互不相同，因此不会被判重合并）。"""
+    """一个列表页 + ``count`` 篇文章（正文互不相同，因此不会被判重合并）。
+
+    差异必须落在**长条款**上：跨站判重只认长句与带数字的短句，两份正文若只差一个
+    短标签（如「附表 0/1」），会被正确地当成同一份内容合并掉。
+    """
 
     links: list[str] = []
     pages: dict[str, FetchedPage] = {}
     for index in range(count):
         url = f"https://www.gov.cn/zhengce/content/2026-11/12/content_{index}.htm"
         links.append(f'<a href="{url}">第{index}号</a>')
-        pages[url] = page(url, f"{BODY}附表 {index}")
+        pages[url] = page(
+            url,
+            BODY
+            + f"本通知第 {index} 份办理指南适用于第 {index} 类申报情形，"
+            "具体材料清单与报送要求以附件目录中的说明为准。",
+        )
     pages[LIST_URL] = page(
         LIST_URL, "政策文件列表", markup=f"<html><body>{''.join(links)}</body></html>"
     )
