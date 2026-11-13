@@ -83,8 +83,9 @@ def test_restricted_mode_never_bypasses_a_documented_gate():
             error = response.json().get("error", {}) if response.content else {}
             assert error.get("code") != "DEMO_SESSION_REQUIRED", (method, path)
 
-    # 16 个现行操作 + 7 个 E1 操作里，只有 health 与 logout 两侧豁免。
-    assert checked == 21
+    # 16 个现行操作 + 7 个 E1 操作 + 8 个 E2 发现/候选操作里，只有 health 与 logout 两侧豁免。
+    # E2 的 8 个虽只在 `contracts/openapi.e2-draft.yaml` 里，门禁同样不能漏。
+    assert checked == 21 + 8
 
 
 def test_the_exempt_endpoints_reach_their_handlers():

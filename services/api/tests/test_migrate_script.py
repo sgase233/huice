@@ -28,6 +28,7 @@ MIGRATION_IDS = (
     "007_idempotency_usage_semantics",
     "008_material_requirements",
     "009_users_sessions",
+    "010_policy_discovery",
 )
 
 #: 含空格与 ``$``：若脚本用 ``$(...)`` 直接拼命令行，这个值会被拆成多个参数或被展开。

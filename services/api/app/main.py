@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -15,17 +14,26 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
-from .config import APP_VERSION, Settings
+from .config import APP_VERSION, Settings, cursor_secret
 from .db import Database
 from .errors import TraceIdMiddleware, register_error_handlers
 from .identity import LoginLimiter
 from .integrations.accounts import AccountsRepository
 from .integrations.cache import build_cache
+from .integrations.discovery import DiscoveryRepository
 from .integrations.llm import build_llm_client
 from .integrations.obs import build_object_store
 from .integrations.storage import PolicyRepository
 from .logging_setup import configure_logging
-from .routes import admin_policies, assessment_runs, auth, enterprises, health, policies
+from .routes import (
+    admin_policies,
+    assessment_runs,
+    auth,
+    discovery,
+    enterprises,
+    health,
+    policies,
+)
 
 API_PREFIX = "/api/v1"
 
@@ -49,6 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging()
     database = Database(resolved.database_url)
     repository = PolicyRepository(database, cursor_secret=_cursor_secret(resolved))
+    discovery_repository = DiscoveryRepository(database, cursor_secret=_cursor_secret(resolved))
     accounts = AccountsRepository(database)
     object_store = build_object_store(resolved)
     llm_client = build_llm_client(resolved)
@@ -70,6 +79,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "契约见 contracts/openapi.yaml；本服务实现契约全部 23 个操作：API-01—API-16，"
             "以及 E1 的 AUTH-01—AUTH-07（账号与会话 5 个、按身份与归属过滤的列表 2 个）。"
             "其中 API-13 报告与 API-14 轨迹只读既有历史，不重新求值。"
+            "另有 E2（#47）的 8 个发现/候选操作已经在跑、但只在 contracts/openapi.e2-draft.yaml "
+            "里：草案评审通过并并入契约之前，它们不构成对外承诺，前端类型也不据此生成。"
         ),
         lifespan=lifespan,
     )
@@ -77,6 +88,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
     app.state.db = database
     app.state.repository = repository
+    # 发现候选是独立暂存区：仓储分开，避免「候选写进政策库」在代码里变成顺手的事。
+    app.state.discovery = discovery_repository
     app.state.accounts = accounts
     # 进程内限流：单 worker 部署够用，重启清零是接受的代价（#54 D1.7）。
     app.state.login_limiter = LoginLimiter()
@@ -96,6 +109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(assessment_runs.router)
     api.include_router(assessment_runs.admin_router)
     api.include_router(admin_policies.router)
+    api.include_router(discovery.router)
     app.include_router(api, prefix=API_PREFIX)
 
     # 先加 TraceId、后加 CORS：CORS 位于最外层，错误响应也能带上跨域头。
@@ -251,7 +265,8 @@ def _security_for(path: str, method: str, tags: list[str]) -> list[dict[str, lis
 
 def _cursor_secret(settings: Settings) -> str:
     """Derive the pagination-cursor key from ADMIN_TOKEN without storing a new secret."""
-    return hashlib.sha256(f"huice-cursor:{settings.admin_token}".encode("utf-8")).hexdigest()
+
+    return cursor_secret(settings)
 
 
 def __getattr__(name: str) -> Any:

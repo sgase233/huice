@@ -608,3 +608,194 @@ class RunSummary(WireModel):
 class RunSummaryList(WireModel):
     items: list[RunSummary]
     next_cursor: str | None
+
+
+# ------------------------------------- 政策发现（E2 / #47，DISC-01—08）
+#
+# 候选阶段允许「字段还不知道」：原文没给的字段留空并进 ``missingFields``，
+# 审核员补齐后才能提交。因此这里不能复用 ``PolicyImportMetadata``——那套 schema 里
+# 标题、机关、日期全是必填，拿它当候选模型就只能编造缺失值。
+
+DiscoveryRunStatus = Literal["running", "succeeded", "partial_failed", "failed"]
+DiscoveryTerminalReason = Literal[
+    "completed",
+    "no_new_policy",
+    "fetch_failed",
+    "partial_failed",
+    "budget_exceeded",
+    "oversize",
+    "timeout",
+    "lock_lost",
+]
+CandidateStatus = Literal[
+    "pending_review", "extraction_failed", "submitted", "discarded", "expired"
+]
+
+
+class DiscoveryLimits(WireModel):
+    """服务端可配置范围：设置接口回显它，前端据此禁用非法输入，不靠提示文案。"""
+
+    min_interval_minutes: int
+    max_interval_minutes: int
+    max_source_urls: int
+    max_candidates_per_run: int
+    run_timeout_minutes: int
+    run_token_budget: int
+    candidate_token_budget: int
+    max_response_bytes: int
+    min_host_interval_seconds: int
+    max_redirects: int
+
+
+class DiscoverySettings(WireModel):
+    enabled: bool
+    source_urls: list[str]
+    interval_minutes: int
+    time_zone: str
+    next_run_at: AwareDatetime | None
+    limits: DiscoveryLimits
+
+
+class DiscoverySettingsUpdate(WireModel):
+    enabled: bool
+    source_urls: list[str]
+    interval_minutes: int
+    time_zone: NonEmptyStr
+
+
+class DiscoverySourceStatus(WireModel):
+    url: str
+    status: Literal["ok", "failed", "skipped"]
+    links: int = 0
+    candidates: int = 0
+    #: 该来源下正文页抓取失败的篇数；栏目页成功、正文全挂时用它区分「无新政」。
+    article_failures: int = 0
+    error_category: str | None = None
+    message: str | None = None
+
+
+class DiscoveryRun(WireModel):
+    id: UUID
+    started_at: AwareDatetime
+    finished_at: AwareDatetime | None
+    status: DiscoveryRunStatus
+    terminal_reason: DiscoveryTerminalReason | None
+    sources_checked: int
+    links_seen: int
+    duplicates: int
+    #: 正文指纹疑似重复的条数。这些页照常生成候选（页面也在 newCandidates 里），
+    #: 只提示审核员比对，不自动合并；``duplicates`` 只统计确认重复。
+    suspected_duplicates: int
+    new_candidates: int
+    failed_sources: int
+    failed_articles: int
+    tokens_used: int
+    tokens_unknown: bool
+    late_by_seconds: int | None
+    source_status: list[DiscoverySourceStatus]
+    detail: str | None
+
+
+class DiscoveryRunList(WireModel):
+    items: list[DiscoveryRun]
+    next_cursor: str | None
+
+
+class CandidateMetadata(WireModel):
+    """候选阶段的元数据：字段名与 ``PolicyImportMetadata`` 一致，但都可以为空。
+
+    比导入多两项：``version``（政策版本号，提交时必填）与 ``policyId``（提交到既有的
+    哪条政策；为空表示新建一条）。两项都不由抓取器猜——原文没写就留给审核员。
+    """
+
+    version: str | None = None
+    policy_id: UUID | None = None
+    title: str | None = None
+    policy_type: PolicyType | None = Field(default=None, alias="type")
+    issuer: str | None = None
+    region: str | None = None
+    document_number: str | None = None
+    applicable_entities: list[str] | None = None
+    published_at: date | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    application_window: ApplicationWindow | None = None
+    official_entry_url: str | None = None
+
+
+class CandidateSummary(WireModel):
+    id: UUID
+    run_id: UUID
+    revision: UUID
+    status: CandidateStatus
+    source_url: str
+    fetched_at: AwareDatetime
+    content_hash: Sha256Hex
+    title: str | None
+    policy_type: PolicyType | None = Field(default=None, alias="type")
+    issuer: str | None
+    missing_fields: list[str]
+    #: 页面上的附件数量：列表页据此标出「必须打开附件核对」的候选。
+    attachment_count: int = Field(ge=0)
+    #: 看到了但无法记入候选的附件链接数（如 http://）：同样要提示，不能当没有附件。
+    unsupported_attachment_count: int = Field(ge=0)
+    duplicate_of: UUID | None
+    #: 正文指纹命中的另一条候选。只表示「疑似重复」，不是已确认同文：不合并、不覆盖，
+    #: 由审核员比对后决定丢弃还是分别提交。只有在能指到一条候选时才非空。
+    suspected_duplicate_of: UUID | None
+    suspected_duplicate_source_url: str | None
+    existing_policy_id: UUID | None
+    existing_version: str | None
+    version_changed: bool
+    submitted_policy_id: UUID | None
+    submitted_version: str | None
+    created_at: AwareDatetime
+
+
+class CandidateList(WireModel):
+    items: list[CandidateSummary]
+    next_cursor: str | None
+
+
+class CandidateDetail(WireModel):
+    """候选详情：元数据、正文与抽取结果。``bodyText`` 是抓到的规范化正文，供人工核对。"""
+
+    id: UUID
+    run_id: UUID
+    revision: UUID
+    status: CandidateStatus
+    source_url: str
+    fetched_at: AwareDatetime
+    content_hash: Sha256Hex
+    raw_hash: str | None
+    metadata: CandidateMetadata
+    attachment_urls: list[str]
+    #: 页面上看起来是附件、但地址不能进候选的链接（如 http://）；只留档与提示。
+    unsupported_attachment_urls: list[str]
+    missing_fields: list[str]
+    body_text: str
+    criteria: list[Criterion]
+    validation_findings: list[ValidationFinding]
+    usage: ModelUsage | None
+    duplicate_of: UUID | None
+    suspected_duplicate_of: UUID | None
+    suspected_duplicate_source_url: str | None
+    existing_policy_id: UUID | None
+    existing_version: str | None
+    version_changed: bool
+    submitted_policy_id: UUID | None
+    submitted_version: str | None
+    discard_reason: str | None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
+class CandidateUpdate(WireModel):
+    """PATCH 候选：只改「人工确认的部分」，取证字段（URL/哈希/抓取时间）只读。"""
+
+    metadata: CandidateMetadata
+    criteria_drafts: list[CriterionDraft] | None = None
+
+
+class DiscardCandidateInput(WireModel):
+    reason: str | None = Field(default=None, max_length=500)

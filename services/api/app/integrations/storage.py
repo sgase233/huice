@@ -12,9 +12,10 @@ import hashlib
 import hmac
 import json
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -33,6 +34,7 @@ from ..agents.profile import (
 from ..db import Database
 from ..demo_quota import DemoQuota
 from ..domain import versioning
+from ..domain.findings import PRESERVED_SOURCE_FINDING_CODES
 from ..domain.rules import CriterionRule
 from ..domain.versioning import ChangedEvent, PolicyBoundary
 from ..errors import ApiProblem
@@ -379,6 +381,22 @@ class PolicyRepository:
 
     # ------------------------------------------------------------------ write
 
+    @contextmanager
+    def _transaction(self, connection: Connection | None) -> Iterator[Connection]:
+        """在自己的事务里跑，或并入调用方已经打开的那个事务。
+
+        E2 的候选提交要求「建草稿、存条件、标记候选已提交」三件事事务一致
+        （EXTENSION_INTERFACES §4.3.6）。如果本方法每次都自带事务，调用方就只能
+        在提交之后再补一步，失败时留下孤儿草稿——所以这里允许传入外部连接，事务
+        边界由调用方划。
+        """
+
+        if connection is not None:
+            yield connection
+            return
+        with self._db.connection() as own, own.transaction():
+            yield own
+
     def create_policy_version(
         self,
         *,
@@ -387,6 +405,7 @@ class PolicyRepository:
         storage_keys: Sequence[str],
         trace_id: str,
         started_at: datetime | None = None,
+        connection: Connection | None = None,
     ) -> PolicyDraft:
         if len(storage_keys) != len(sources):
             raise ValueError("storage_keys 与 sources 数量不一致")
@@ -397,7 +416,7 @@ class PolicyRepository:
         revision = uuid4()
         source_ids = [uuid4() for _ in sources]
 
-        with self._db.connection() as conn, conn.transaction():
+        with self._transaction(connection) as conn:
             policy_id = metadata.policy_id
             if policy_id is None:
                 policy_id = uuid4()
@@ -699,6 +718,7 @@ class PolicyRepository:
         extraction_model: str | None = None,
         extraction_elapsed_ms: int = 0,
         extraction_input_chars: int = 0,
+        connection: Connection | None = None,
     ) -> PolicyDraft:
         """整体替换某版本的条款与校验发现（compare-and-swap）。
 
@@ -708,14 +728,22 @@ class PolicyRepository:
         ``extraction_model`` 只有「本次真的做了抽取」的调用方才会传：传了就在同一事务
         里、引用校验步骤之前补一条 ``extraction`` 轨迹。手工保存条款（API-06）不传，
         因此不会凭空多出一条抽取记录。幂等重放不会走到这里，也就不会重复留痕。
+
+        调用方传进来的 ``findings`` 是**重新计算**出来的条件级结论，本方法整体替换
+        该版本的 findings；唯一的例外是 :data:`PRESERVED_SOURCE_FINDING_CODES` 里的
+        来源级码（如 ``ATTACHMENT_NOT_EXTRACTED``）——它们描述来源本身，与条件校验
+        无关，重算时从库里原样保留。保留只按服务端已有记录，不看客户端传了什么，
+        也不会把过时的条件错误一起留下。
         """
 
         started = started_at or datetime.now(timezone.utc)
         new_revision = uuid4()
 
-        with self._db.connection() as conn, conn.transaction():
+        with self._transaction(connection) as conn:
             row = self._lock_version(conn, policy_id, version)
             self._assert_editable(row, expected_revision)
+
+            preserved = self._preserved_source_findings(conn, row["id"], findings)
 
             self._execute(
                 conn,
@@ -729,7 +757,7 @@ class PolicyRepository:
             )
             for criterion in criteria:
                 self._execute(conn, _INSERT_CRITERION, criterion.to_params(row["id"]))
-            for ordinal, finding in enumerate(findings):
+            for ordinal, finding in enumerate([*findings, *preserved]):
                 self._execute(
                     conn,
                     _INSERT_FINDING,
@@ -912,10 +940,21 @@ class PolicyRepository:
 
     # ------------------------------------------------------------ idempotency
 
-    def read_idempotent(self, scope: str, key: UUID) -> dict[str, Any] | None:
-        """取回同一作用域下同键的已完成结果；没有则返回 ``None``。"""
+    def read_idempotent(
+        self,
+        scope: str,
+        key: UUID,
+        *,
+        connection: Connection | None = None,
+    ) -> dict[str, Any] | None:
+        """取回同一作用域下同键的已完成结果；没有则返回 ``None``。
 
-        with self._db.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        传入 ``connection`` 时在调用方的事务里读，看到的是该事务此刻的快照——
+        候选提交要在**同一把键锁**下先读后写，不能各读各的连接（见
+        :meth:`lock_idempotency_key`）。
+        """
+
+        with self._transaction(connection) as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT request_fingerprint, response, revision, usage_semantics "
                 "FROM idempotency_record WHERE scope = %s AND idempotency_key = %s",
@@ -931,6 +970,22 @@ class PolicyRepository:
             "usage_semantics": row["usage_semantics"],
         }
 
+    def lock_idempotency_key(self, conn: Connection, scope: str, key: UUID) -> None:
+        """按 (scope, key) 取事务级 advisory lock，串行化同键请求。
+
+        幂等要求「读记录 → 决定重放还是执行 → 写记录」是一个原子动作。只在事务外
+        先读一次不够：两个并发请求会同时读到空，各自把活干完，而 ``save_idempotent``
+        的 ``ON CONFLICT DO NOTHING`` 只保留其中一条——另一个客户端拿到的结果没有任何
+        幂等记录，重试时会变成「键被复用」。
+
+        锁随事务结束自动释放，等待方拿到锁时前者已提交，随后的一次读就能看到那条记录。
+        """
+
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (scope, str(key)),
+        )
+
     def save_idempotent(
         self,
         scope: str,
@@ -940,6 +995,7 @@ class PolicyRepository:
         revision: UUID,
         *,
         usage_semantics: str,
+        connection: Connection | None = None,
     ) -> None:
         """记录一次抽取结果。表只追加，重复键保留首次写入的那条。
 
@@ -949,7 +1005,7 @@ class PolicyRepository:
         视为未确认——只看数值判不出来（见 ``routes/admin_policies.py``）。
         """
 
-        with self._db.connection() as conn, conn.transaction():
+        with self._transaction(connection) as conn:
             self._execute(
                 conn,
                 _INSERT_IDEMPOTENT,
@@ -1903,6 +1959,50 @@ class PolicyRepository:
             criteria=criteria,
             preparation_template=_preparation_template(draft),
         )
+
+    @staticmethod
+    def _preserved_source_findings(
+        conn: Connection, version_id: UUID, findings: Sequence[FindingRecord]
+    ) -> list[FindingRecord]:
+        """取出库里已有的来源级提示，供重算条件 findings 时原样保留。
+
+        API-05 重新抽取、API-06 保存条款都只产出条件级结论；保存是整体替换，若不先
+        把来源级码捞出来，DISC-07 写进草稿的附件提示会在第一次保存时消失。只保留
+        :data:`PRESERVED_SOURCE_FINDING_CODES`，找得到的旧条件结论与其它政策级结论
+        一律不保留。调用方恰好也传了同一条时按 ``(code, message)`` 去重。
+        """
+
+        if not PRESERVED_SOURCE_FINDING_CODES:
+            return []
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT code, message, source_spans
+                FROM policy_validation_finding
+                WHERE policy_version_id = %(id)s
+                  AND criterion_id IS NULL
+                  AND code = ANY(%(codes)s)
+                ORDER BY ordinal
+                """,
+                {"id": version_id, "codes": sorted(PRESERVED_SOURCE_FINDING_CODES)},
+            )
+            rows = cur.fetchall()
+        seen = {(item.criterion_id, item.code, item.message) for item in findings}
+        preserved: list[FindingRecord] = []
+        for item in rows:
+            key = (None, item["code"], item["message"])
+            if key in seen:
+                continue
+            seen.add(key)
+            preserved.append(
+                FindingRecord(
+                    criterion_id=None,
+                    code=item["code"],
+                    message=item["message"],
+                    spans=list(item["source_spans"] or []),
+                )
+            )
+        return preserved
 
     def _lock_version(self, conn: Connection, policy_id: UUID, version: str) -> dict[str, Any]:
         with conn.cursor(row_factory=dict_row) as cur:

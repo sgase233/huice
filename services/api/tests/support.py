@@ -300,7 +300,10 @@ class FakeRepository:
                     )
         raise ApiProblem(404, "POLICY_NOT_FOUND", "没有找到对应的已发布政策。")
 
-    def read_idempotent(self, scope: str, key):
+    def lock_idempotency_key(self, conn, scope: str, key) -> None:
+        """内存替身没有并发可言：真库的键锁在这里是空操作（见 storage.py 同名方法）。"""
+
+    def read_idempotent(self, scope: str, key, *, connection=None):
         return self.idempotency.get((scope, key))
 
     def save_idempotent(
