@@ -730,6 +730,143 @@ def test_a_copy_with_reordered_clauses_is_flagged_not_swallowed(
     ) == (1,)
 
 
+#: A → B → A 用例里的三版正文：每版两句长条款，互不相同（指纹与整页哈希都不同）。
+POLICY_V1 = (
+    "一、企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，"
+    "再按照实际发生额的100%在税前加计扣除。\n"
+    "二、企业享受研发费用加计扣除政策的其他政策口径和管理要求，按照现行规定以及本公告第三条执行。\n"
+)
+POLICY_V2 = (
+    "一、企业开展研发活动中实际发生的研发费用，形成无形资产的，"
+    "按照无形资产成本的200%在税前摊销。\n"
+    "二、企业享受研发费用加计扣除政策的其他政策口径和管理要求，按照国家统一规定以及本公告第四条执行。\n"
+)
+POLICY_V3 = (
+    "一、企业开展研发活动中实际发生的研发费用，未形成无形资产计入当期损益的，"
+    "再按照实际发生额的75%在税前加计扣除。\n"
+    "二、企业享受研发费用加计扣除政策的其他政策口径和管理要求，按照本公告口径以及主管税务机关解释执行。\n"
+)
+
+
+def test_a_page_that_reverts_to_an_older_version_is_a_new_version(
+    db, discovery, database_url_schema
+):
+    """同一 URL 走 A → B → A：第三轮仍是版本变化，不能被第一轮的哈希跳过。
+
+    #64 复审 P1：旧实现先查全局历史哈希，第三轮的 A 命中第一轮 A 的指纹表记录，
+    被记成确认重复；``versionChanged`` 候选永远出不来。现在「这个 URL 内容变了」先判，
+    历史哈希只作为疑似重复的附加提示（指向第一轮那条候选）。
+    """
+
+    configure(discovery)
+    url = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    list_page = page(
+        LIST_URL,
+        "政策文件列表",
+        markup=f'<html><body><a href="{url}">一</a></body></html>',
+    )
+    holder = {"now": NOW}
+
+    def _run(body: str, *, days: int):
+        holder["now"] = NOW + timedelta(days=days)
+        pages = {LIST_URL: list_page, url: page(url, body)}
+        return make_runner(
+            db, discovery, FakeFetcher(pages), llm=FakeLlm(), holder=holder
+        ).run(trigger="timer")
+
+    first = _run(POLICY_V1, days=0)
+    second = _run(POLICY_V2, days=1)
+    third = _run(POLICY_V1, days=2)
+
+    _s, _r, new2, duplicates2, *_rest2 = _run_row(database_url_schema, second.run_id)
+    assert (new2, duplicates2, _rest2[-1]) == (1, 0, 0), "B 是新版本，不是重复"
+
+    _s, _r, new3, duplicates3, *_rest3 = _run_row(database_url_schema, third.run_id)
+    assert (new3, duplicates3, _rest3[-1]) == (1, 0, 1), "回退到 A 也要建候选并提示疑似重复"
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT id, version_changed, duplicate_of, suspected_duplicate_of "
+        "FROM policy_candidate ORDER BY created_at, id",
+    )
+    assert len(rows) == 3
+    first_id, second_id, third_id = (row[0] for row in rows)
+    assert rows[0][1] is False and rows[0][2] is None
+    assert (rows[1][1], rows[1][2]) == (True, first_id)
+    assert (rows[2][1], rows[2][2]) == (True, second_id)
+    assert rows[2][3] == first_id, "第三轮的内容与第一轮相同，要作为疑似重复提示"
+
+
+def test_a_changed_page_matching_another_sites_history_is_a_new_version(
+    db, discovery, database_url_schema
+):
+    """同一 URL 的新内容恰好等于另一网址的历史内容：仍按版本变化建候选。
+
+    这是「同 URL 变了」优先于「历史哈希命中」的另一条路径：旧实现会拿别站的指纹
+    指纹把这一条记成重复，审核员于是看不到本 URL 的版本变化。
+    """
+
+    configure(discovery)
+    first_url = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    second_url = "https://www.chinatax.gov.cn/chinatax/n810765/content_2.html"
+    list_page = page(
+        LIST_URL,
+        "政策文件列表",
+        markup=(
+            f'<html><body><a href="{first_url}">一</a><a href="{second_url}">二</a></body></html>'
+        ),
+    )
+    # 第二轮 first_url 的正文与第一轮 second_url 的正文**逐字相同**（整页哈希也相同）。
+    shared = "税务公报\n" + POLICY_V3 + "\n网站标识码：bm29000002"
+    holder = {"now": NOW}
+
+    def _run(pages: dict, *, days: int):
+        holder["now"] = NOW + timedelta(days=days)
+        return make_runner(
+            db, discovery, FakeFetcher(pages), llm=FakeLlm(), holder=holder
+        ).run(trigger="timer")
+
+    _run(
+        {
+            LIST_URL: list_page,
+            first_url: page(
+                first_url,
+                "首页 > 政策 > 文件库\n" + POLICY_V1 + "\n主办单位：国务院办公厅",
+            ),
+            second_url: page(second_url, shared),
+        },
+        days=0,
+    )
+    outcome = _run(
+        {
+            LIST_URL: list_page,
+            first_url: page(first_url, shared),
+            second_url: page(second_url, shared),
+        },
+        days=1,
+    )
+
+    _status, _reason, new, duplicates, *_tail = _run_row(database_url_schema, outcome.run_id)
+    assert (new, duplicates, _tail[-1]) == (1, 1, 1), (
+        "first_url 变了要建候选；second_url 未变化记确认重复"
+    )
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT id, source_url, version_changed, duplicate_of, suspected_duplicate_of "
+        "FROM policy_candidate ORDER BY created_at, source_url",
+    )
+    # 第一轮两条的 created_at 相同，按 id 排序不稳定，按来源 URL 取。
+    old_first = next(row[0] for row in rows if row[1] == first_url and row[2] is False)
+    old_second = next(row[0] for row in rows if row[1] == second_url and row[2] is False)
+    changed = next(row for row in rows if row[2] is True)
+    assert changed[1] == first_url
+    assert changed[3] == old_first, "版本变化要指向本 URL 的上一版"
+    assert changed[4] == old_second, "与别站历史内容相同只作疑似重复提示"
+    assert len({row[0] for row in rows}) == 3
+    assert rows[0][2] is False and rows[1][2] is False, "第一轮两条都不是版本变化"
+
+
 def test_an_identical_page_is_still_automatically_deduplicated(
     db, discovery, database_url_schema
 ):

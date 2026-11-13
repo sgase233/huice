@@ -334,19 +334,44 @@ class DiscoveryRunner:
                 canonical = canonicalize_url(article.url) or article.url
                 content_hash = article.content_hash
 
-                if content_hash in seen_hashes:
-                    counts.duplicates += 1
-                    continue
                 page_row = self._repository.find_page(conn, canonical)
-                if page_row is not None and page_row["last_content_hash"] == content_hash:
-                    counts.duplicates += 1
-                    self._touch_page(conn, canonical, content_hash, page_row["last_candidate_id"], run_id, now)
-                    continue
-                fingerprint = self._repository.find_fingerprint(conn, content_hash)
-                if fingerprint is not None:
-                    counts.duplicates += 1
-                    self._touch_page(conn, canonical, content_hash, fingerprint["candidate_id"], run_id, now)
-                    continue
+                # 同一 URL 内容变了 = 新版政策，**包括 A → B → A 这种回退旧版本**。
+                # 这个判断必须排在指纹判重之前：否则第三轮 A 会命中第一轮 A 的整页
+                # 哈希（指纹表），被当成确认重复跳过，versionChanged 候选永远出不来
+                # （#64 复审 P1）。同一 URL 的新内容恰好等于另一网址的历史内容也一样。
+                version_changed = (
+                    page_row is not None and page_row["last_content_hash"] != content_hash
+                )
+
+                if not version_changed:
+                    if content_hash in seen_hashes:
+                        counts.duplicates += 1
+                        continue
+                    if page_row is not None:
+                        # 同 URL 未变化：确认重复。
+                        counts.duplicates += 1
+                        self._touch_page(
+                            conn, canonical, content_hash, page_row["last_candidate_id"], run_id, now
+                        )
+                        continue
+                    fingerprint = self._repository.find_fingerprint(conn, content_hash)
+                    if fingerprint is not None:
+                        counts.duplicates += 1
+                        self._touch_page(
+                            conn, canonical, content_hash, fingerprint["candidate_id"], run_id, now
+                        )
+                        continue
+
+                prior_candidate_id: UUID | None = None
+                prior_policy_id: UUID | None = None
+                prior_version: str | None = None
+                if version_changed and page_row["last_candidate_id"]:
+                    prior_candidate_id = page_row["last_candidate_id"]
+                    prior = self._repository.candidate_policy_ref(conn, prior_candidate_id)
+                    if prior is not None:
+                        prior_policy_id = prior["submitted_policy_id"]
+                        prior_version = prior["submitted_version"]
+
                 # 换 URL 同内容：整页文本（含导航、页脚）哈希不同，但正文条款逐字相同。
                 # 按句子集合指纹再比一次，但**只当提示，不当结论**：跨站转载里常见
                 # 「长条款照抄、适用范围或截止日等短句不同」的孪生文件，直接跳过会把
@@ -355,29 +380,24 @@ class DiscoveryRunner:
                 # 由审核员比对后决定丢弃还是分别提交；只有整页哈希（含同 URL 未变化页）
                 # 才算确认重复，记 ``duplicates``。
                 #
-                # **同一 URL 内容变了不走这条**：那是新版政策，必须按新候选落库并标
-                # ``versionChanged``。指纹只认「见过的 URL 之外」的转载；同 URL 的
-                # 短句变化（截止日、金额、人数、适用范围）本就不该靠指纹兜底。
+                # 内容变了的同一 URL 也不跳过，只是同一份提示也要给出：A → B → A 时
+                # 这份内容和第一轮的 A 相同，审核员需要看到。此时不能排除本 URL——
+                # 要找的正是它自己历史上那条候选。
                 suspected_of: UUID | None = None
                 body_fp = body_fingerprint(article.text)
-                if page_row is None and body_fp is not None:
+                if body_fp is not None and (page_row is None or version_changed):
                     twin = self._repository.find_fingerprint_by_body(
-                        conn, body_fp, exclude_url=canonical
+                        conn,
+                        body_fp,
+                        exclude_url=None if version_changed else canonical,
                     )
                     if twin is not None:
-                        suspected_of = twin["candidate_id"]
+                        candidate = twin["candidate_id"]
+                        # 指向本 URL 上一版时，duplicateOf / versionChanged 已经表达了，
+                        # 不再重复标注。
+                        if candidate is not None and candidate != prior_candidate_id:
+                            suspected_of = candidate
                 seen_hashes.add(content_hash)
-
-                version_changed = page_row is not None
-                prior_candidate_id: UUID | None = None
-                prior_policy_id: UUID | None = None
-                prior_version: str | None = None
-                if page_row is not None and page_row["last_candidate_id"]:
-                    prior_candidate_id = page_row["last_candidate_id"]
-                    prior = self._repository.candidate_policy_ref(conn, prior_candidate_id)
-                    if prior is not None:
-                        prior_policy_id = prior["submitted_policy_id"]
-                        prior_version = prior["submitted_version"]
 
                 candidate_id = uuid4()
                 estimate = estimate_tokens(article.text)

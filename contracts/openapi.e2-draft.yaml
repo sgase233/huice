@@ -98,8 +98,9 @@ x-e2-runtime-model:
     计数记 suspectedDuplicates，候选的 suspectedDuplicateOf / suspectedDuplicateSourceUrl
     指向指纹命中的那条，由审核员比对。原因：跨站转载里常见长条款逐字相同、而适用范围或
     截止日等短句不同的孪生文件，直接跳过会把另一份政策静默吞掉。同一 URL 内容变化
-    （版本变更）一律建新候选，带 versionChanged=true 与既有 policyId/version，供审核员
-    决定是新建还是追加版本。
+    （版本变更，含 A → B → A 这种回退）一律建新候选，带 versionChanged=true 与既有
+    policyId/version，供审核员决定是新建还是追加版本；这个判断先于哈希去重——历史哈希
+    命中只作疑似重复提示，不跳过版本变化。
   candidate-lifecycle:
     states:
     - pending_review
@@ -1237,8 +1238,10 @@ components:
           description: >-
             正文指纹命中的**另一条候选**。只表示「疑似重复」，不是已确认同文：本候选照常
             存在、照常可编辑提交，不合并、不覆盖任何已有候选或政策；审核员比对后决定丢弃
-            还是分别提交。只有在能指到一条候选时才非空（内容早已提交/丢弃、只留在指纹表里的
-            不算，那些情况该页仍会建候选，但这里为空）。
+            还是分别提交。同一 URL 内容回退到旧版本（A → B → A）时也指向那条旧候选——此时
+            versionChanged 与 duplicateOf 指向的是上一版 B，两者一起给出完整沿革。
+            只有在能指到一条候选时才非空（内容早已提交/丢弃、只留在指纹表里的不算，
+            那些情况该页仍会建候选，但这里为空）。
         suspectedDuplicateSourceUrl:
           anyOf:
           - $ref: ./openapi.yaml#/components/schemas/OfficialUrl
@@ -1381,7 +1384,7 @@ components:
           - type: 'null'
           description: >-
             正文指纹命中的另一条候选（疑似重复，未确认）。语义与 CandidateSummary 同名
-            字段一致：不合并、不覆盖，供人工比对。
+            字段一致：不合并、不覆盖，供人工比对；同一 URL 回退旧版本时指向那条旧候选。
         suspectedDuplicateSourceUrl:
           anyOf:
           - $ref: ./openapi.yaml#/components/schemas/OfficialUrl
