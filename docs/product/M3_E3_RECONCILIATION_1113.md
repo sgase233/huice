@@ -130,14 +130,16 @@
 | 项 | 值 |
 | --- | --- |
 | `id` | `RUN-RECON-001`（**业务演示标签**；正式响应是 UUID，不用此串） |
-| `createdAt` | `2026-11-13T04:00:00Z`（= 北京时间 2026-11-13 12:00:00；固定该值避免刷新差异；`createdAt` 是正式 `AssessmentRun` 字段） |
-| `factVersion` | 固定 SHA-256（合成，不落真实值）；`stale` 读取时重算，固定 `factVersion` 后两次刷新计数才稳定 |
+| `createdAt` | `2026-11-13T04:00:00Z`（= 北京时间 2026-11-13 12:00:00；`createdAt` 是正式 `AssessmentRun` 字段，但它是 **run 创建时间，不是读取时时钟**） |
+| `factVersion` | 固定 SHA-256（合成，不落真实值）；只固定 run 输入的事实版本，不固定读取时的失效判定 |
 | 评估期间 | 2026-01-01 至 2026-12-31 |
 | 页面条件 | `runFresh=true`，`resultNeedsRefresh=false` |
 | `assessments.length` | 6 |
 | 未分析候选 | 0（不进入 `assessments`） |
 
-> **`generatedAt` 不是正式契约字段：** 正式 `AssessmentRun`（`contracts/openapi.yaml`）只有 `id`/`enterpriseId`/`period`/`asOf`/`createdAt`/`policyVersionMap`/`factVersion`/`ruleVersion`/`supersedesRunId`/`assessments`，且 `additionalProperties: false`，没有 `generatedAt`。本文用 `createdAt` 固定“本次分析”的时间基准；“响应生成时间”若需区别于 `createdAt`，属**新增契约字段（候选）**，须在 `1.2.0-rc.1` 逐项确认后再写，当前不指向接口返回 `generatedAt`。
+> **`generatedAt` 不是正式契约字段：** 正式 `AssessmentRun`（`contracts/openapi.yaml`）只有 `id`/`enterpriseId`/`period`/`asOf`/`createdAt`/`policyVersionMap`/`factVersion`/`ruleVersion`/`supersedesRunId`/`assessments`，且 `additionalProperties: false`，没有 `generatedAt`。“响应生成时间”若需区别于 `createdAt`，属**新增契约字段（候选）**，须在 `1.2.0-rc.1` 逐项确认后再写，当前不指向接口返回 `generatedAt`。
+>
+> **`stale` 是读取时重算，`createdAt`/`factVersion` 固定不能保证两次读取一致：** `stale` 的失效来源除“企业事实变化”外，还包括**时间边界**（申报窗口关闭、政策有效期到期）和**新政策版本发布**。`createdAt` 是 run 创建时间、`factVersion` 只是 run 输入的事实版本，二者都不固定读取时的政策状态与当前时钟。因此要断言两次读取的 `stale` 计数一致，前提是「读同一 run 且两次读取之间没有影响该 run 的失效事件/版本变化」；仅固定 `createdAt`/`factVersion` 不足以保证。跨时间边界的反例见 §3.2。
 
 | # | `policyId` | 版本 | 预期 `result` | 预期 `validity` | 说明 |
 | --- | --- | --- | --- | --- | --- |
@@ -165,7 +167,9 @@
 
 **依据：** E3A_BUSINESS_REVIEW §2.1（四态、`stale` 单独计算、`total=assessments.length`）；#67 方案 §2.1（`assessment` 主键 `(run_id, policy_id)`、`assessments` 为 `min_length=1`、`stale` 读取时重算）。
 
-**依赖：** M1 的 `/assessment-runs/{id}` 必须让 `assessments` 恰好包含这 6 项、不混入候选；同一 run 的 `createdAt` 固定（正式字段），两次刷新下计数应一致——但 `stale` 是读取时重算的独立字段，若两次刷新间企业事实变更，`stale` 计数可能变化，需固定 `factVersion` 才能稳定（见下）。M2 的分布图只读 `run.assessments`，不读当前筛选后的列表；空态只在 `total=0` 时显示“本次分析没有结果”，不能显示 0%。
+**依赖：** M1 的 `/assessment-runs/{id}` 必须让 `assessments` 恰好包含这 6 项、不混入候选；四态计数由 `run.assessments` 决定，只要读同一 run 就稳定。**`stale` 例外**：它是读取时重算的独立字段，除“企业事实变化”外，跨时间边界（申报窗口关闭、政策到期）或新政策版本发布都会让 `stale` 变化，`createdAt`/`factVersion` 固定不能替代读取时时钟。对账样本若要断言 `stale=1` 不变，前提是「两次读取之间没有影响该 run 的失效事件/版本变化」。跨时间边界反例见下。M2 的分布图只读 `run.assessments`，不读当前筛选后的列表；空态只在 `total=0` 时显示“本次分析没有结果”，不能显示 0%。
+
+**`stale` 跨时间边界反例（说明 `createdAt` 不能当读取时时钟）：** 若样本 B 的政策版本有效期在两次读取之间到期（如 `effectiveTo` 从“未来”变为“已过”），第二次读取时 B 的 `validity` 会从“正常”变为 `stale`，即使该 run 的 `createdAt`/`factVersion` 一字未变。因此分布图的「本次读取时点」必须在响应/页面记录（候选字段，正式契约暂无），近期日期可能随失效事件变化；固定 `createdAt` 只固定“这是哪个 run”，不固定“此刻政策是否已失效”。
 
 ## 4. 资格逻辑树对账差额（VIS-AT-01）
 
@@ -317,7 +321,7 @@
 
 1. 完整度：VIS-01 是否能返回 `(FactKey, period_start, period_end)` 的七态；能否区分“行存在且值为 null”与“无行”；`d4.static.v1` 与分支可达性的分母差异。
 2. 完整度：`asOf` 精度、`period_end` 日期型语义、`not_due` 是否按方案 C 实现（定稿前不实现）。
-3. 结果分布：`/assessment-runs/{id}` 的 `assessments` 是否恰好等于本次分析、不含候选；`stale` 是否读取时重算；同一 run 的 `createdAt`（正式字段）与 `factVersion` 固定后，两次读取的四态/`stale` 计数是否一致。**注意**：`AssessmentRun` 正式契约无 `generatedAt`（`additionalProperties: false`），任何额外时间戳字段都是新增契约字段，须在 `1.2.0-rc.1` 逐项确认，当前不指向接口返回 `generatedAt`。
+3. 结果分布：`/assessment-runs/{id}` 的 `assessments` 是否恰好等于本次分析、不含候选；`stale` 是否读取时重算。四态计数读同一 run 即稳定；`stale` 依赖读取时的失效判定（时间边界：申报窗口关闭/政策到期，或新版本发布），**`createdAt`/`factVersion` 固定不等于 `stale` 稳定**——要断言稳定，需保证两次读取之间没有影响该 run 的失效事件/版本变化。**注意**：`AssessmentRun` 正式契约无 `generatedAt`（`additionalProperties: false`），任何“读取时点”额外时间戳字段都是新增契约字段，须在 `1.2.0-rc.1` 逐项确认，当前不指向接口返回 `generatedAt`。
 4. 逻辑树：`get_run` 是否按 `assessment.policy_version_id` 取版本；是否提供节点级结果（若不提供，页面不得编造）。
 5. 趋势：`policy_review_event`、`collection_baseline`、`run_lifecycle_from`/`review_events_from`、运行生命周期事务、`interrupted` 扫描、API-12 409；`queued` 不落行的契约描述。
 6. 趋势：提供只读 SQL 结果（事件行、运行行、逐日计数）供 M3 按 §5 核对；未提供前不能把 VIS-AT-06/07 写成通过。
