@@ -3,27 +3,27 @@
 > **状态：M3 执行准备，2026-11-13 更新。不是验收通过记录，也不是任何成员的签收。**
 > 本文把 [ACCEPTANCE.md](ACCEPTANCE.md) 扩展矩阵中的 DISC-AT-01—07 展开为可执行步骤；用例编号沿用原矩阵，`-A/-B/...` 只是同一用例下的执行步骤，不另立验收标准。实际结果只回填 ACCEPTANCE 的执行记录表；未执行项保持未执行。
 >
-> **本轮基线：** PR #64 最新 head `d5e12f87df24a807bd75d58bcb08c022937b3b42`（2026-11-13 11:12:49 +0800；9 个提交，base `5d1adeb`；40 文件 +9,701/−159；CI 3 项通过，run `43357442676`）。E2 契约仍为草案 `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），未并入正式 `contracts/openapi.yaml`（`1.1.0-rc.1`）；迁移 `infra/sql/010_policy_discovery.sql` **未在任何环境执行**；`origin/main` 为 `44a637d`。M3 审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §8。
+> **本轮基线：** PR #64 最新 head `c95dc3ba6b0e8008b6c0f5267b9bc3172f4fbb25`（2026-11-13 12:15:42 +0800；10 个提交，base `5d1adeb`；40 文件 +10,119/−159；CI 3 项通过，2026-11-13 04:16–04:17Z）。E2 契约仍为草案 `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），未并入正式 `contracts/openapi.yaml`（`1.1.0-rc.1`）；迁移 `infra/sql/010_policy_discovery.sql` **未在任何环境执行**；`origin/main` 为 `44a637d`。M3 审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §9。
 >
-> **边界：** 本文只写准备、步骤、预期与证据形式；不写真实口令、审核员密钥、演示 cookie 或连接串。M3 本机没有项目 Python 依赖（`fastapi`/`psycopg`/`jsonschema` 未安装）、没有隔离 PostgreSQL、没有云端访问；不能把静态阅读、作者自述、CI 通过或另一版本环境当成联合验收。M3 2026-11-13 实际执行的是 curl、`d5e12f8` 的真实 `Fetcher` 和纯函数离线复算，**没有跑 runner/隔离库/真实模型**。
+> **边界：** 本文只写准备、步骤、预期与证据形式；不写真实口令、审核员密钥、演示 cookie 或连接串。M3 本机没有项目 Python 依赖（`fastapi`/`psycopg`/`jsonschema` 未安装）、没有隔离 PostgreSQL、没有云端访问；不能把静态阅读、作者自述、CI 通过或另一版本环境当成联合验收。M3 2026-11-13 实际执行的是 curl、`d5e12f8` 的真实 `Fetcher` 和 `c95dc3b` 的纯函数离线复算，**没有跑 runner/隔离库/真实模型**。
 
 ## 1. 本轮已核对的事实与未决状态
 
 | 项 | 2026-11-13 实际状态 | 对验收的影响 |
 |---|---|---|
-| 代码基线 | PR #64 head `d5e12f8`（open，`mergeable_state=clean`）；9 个提交；40 个文件、+9,701/−159；CI 3 项通过（run `43357442676`） | 代码是最新评审对象；合并/部署均未发生；`d5e12f8` 尚未经 M2 复审 |
+| 代码基线 | PR #64 head `c95dc3b`（open，`mergeable_state=clean`）；10 个提交；40 个文件、+10,119/−159；CI 3 项通过（2026-11-13 04:16–04:17Z） | 代码是最新评审对象；合并/部署均未发生；`c95dc3b` 尚未经 M2 复审 |
 | E2 契约 | `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），未并入正式 `contracts/openapi.yaml`（`1.1.0-rc.1`）；`CandidateSummary` 含 `attachmentCount`/`unsupportedAttachmentCount`/`suspectedDuplicateOf`/`suspectedDuplicateSourceUrl`；`DiscoveryRun` 含 `suspectedDuplicates` | 只能用于评审；正式集成/类型生成待契约签收，不能按草案宣称对外契约完成 |
-| 迁移 010 | 脚本含 `discovery_settings`、`policy_candidate`、`discovery_run`、`policy_candidate_fingerprint.body_fingerprint`，以及 `unsupported_attachment_urls`、`suspected_duplicate_of`、`suspected_duplicates`；唯一索引为 `(content_hash, source_url)`；**未在任何环境执行** | 空库/旧库升级、回滚、重启恢复均未验证；若执行过旧版 010，最终脚本不会补列/改索引（见 P1-3） |
+| 迁移 010 | 脚本含 `discovery_settings`、`policy_candidate`、`discovery_run`、`policy_candidate_fingerprint.body_fingerprint`，以及 `unsupported_attachment_urls`、`suspected_duplicate_of`、`suspected_duplicates`；唯一索引为 `(content_hash, source_url)`；**未在任何环境执行** | 空库/旧库升级、回滚、重启恢复均未验证；若执行过旧版 010，最终脚本对 `unsupported_attachment_urls`/`suspected_duplicate_of`/`suspected_duplicates`/`body_fingerprint` 有 `ALTER`，但**漏了 `discovery_run.failed_articles`**（见 P1-3） |
 | 附件范围 | M1 已采纳 M3 建议 B：S03/S04/S05 这类“条件主要在附件”的来源**暂不纳入 E2 自动发现验收**；附件不下载、不解析，附件内容不能作为草稿引用；人工导入仅 PDF/UTF-8 文本，DOC/DOCX/ZIP 需离线转换 | 验收清单必须按此排除；不能用“提示已显示”代替附件已核对；若负责人要求纳入，需另补附件链路 |
 | 发布口径 | `ATTACHMENT_NOT_EXTRACTED` **不阻断发布**；没有逐附件 disposition/确认 | 这是有意的缩小范围；验收记录必须写明“提示不等于附件已核对”，不得算作 DISC-AT-05 的附件覆盖 |
-| 本地测试 | M1 报告本地 PostgreSQL 16 全量 1328 passed / 13 skipped（2026-11-13）；CI 在 `d5e12f8` 上运行后端/契约测试通过 | M2 未独立复跑数据库测试；M3 未复跑；只能作为作者/CI 声明，不是 M3 验收证据 |
+| 本地测试 | M1 报告本地 PostgreSQL 16 全量 1337 passed / 13 skipped（2026-11-13 04:15Z）；CI 在 `c95dc3b` 上运行后端/契约测试通过 | M2 未独立复跑数据库测试；M3 未复跑；只能作为作者/CI 声明，不是 M3 验收证据 |
 | 真实环境 | M3 2026-11-13 实际跑了 curl、真实 `Fetcher`、纯函数离线复算；未跑 runner/真实模型/云端；010 未执行；`www.sz.gov.cn` 在本机 Fetcher 下 TLS `BAD_ECPOINT` | DISC-AT-01—07 均不能写“通过”；sz 来源的真实 Fetcher 结果需目标环境复测 |
 
 ## 2. 验收前置条件
 
 | 前置条件 | 状态 | 证据来源 | 说明/下一步 |
 |---|---|---|---|
-| 同版后端 + E2 契约 | 未确认 | PR #64 head `d5e12f8`；E2 草案 | 需 M1 部署同版；正式契约签收并并入 `openapi.yaml` 后再做前端类型联调；M2 尚未复审 `d5e12f8` |
+| 同版后端 + E2 契约 | 未确认 | PR #64 head `c95dc3b`；E2 草案 | 需 M1 部署同版；正式契约签收并并入 `openapi.yaml` 后再做前端类型联调；M2 尚未复审 `c95dc3b` |
 | 隔离数据库/ schema | 未确认 | 无环境地址/库 schema 交付记录 | 由 M1/负责人提供；记录 010 执行前后 `schema_migration`、表/索引行数 |
 | 审核员账号与演示门禁 | 未确认 | E1 账号链路仍在联合验收前 | 由 M1 通过机密渠道提供；M3 不记录口令/cookie |
 | 管理员可修改发现设置 | 未确认 | `DISC-01/02` 代码存在 | 需 reviewer 会话 + CSRF/If-Match；另测运维 Bearer 只读 |
@@ -42,8 +42,8 @@
 | S02 | 税收政策正文 | gov.cn HTML 正文，无附件 | 正文抽取、字段缺失/待补、发布复核可用 | 不伪造申报窗口 |
 | S06 / S07 | 深圳办法正文 | sz.gov.cn 政府公报 HTML 正文，无附件 | 正文抽取、日期可信度、人工补版本/适用主体 | 年度指南未取得；不得推算窗口 |
 | S08 / S09 | 同政策不同版本 | 科技部 2008 版、国务院公报 2016 版，不同 URL | 版本变化提示；旧版不得作为现行规则发布 | 不是“同 URL 内容变化”样本；当前代码不会把两个不同 URL 自动串成同一 `policy_id` |
-| D / F 根页 | 框架页负样本 | `https://www.sz.gov.cn/zfgb/`（959B、0 links、0 字）、`https://www.gov.cn/gongbao/`（898B、1 link、4 字） | 记来源级 `unsupported_list`，不得产伪候选 | 60 字闸门能拦 D/F；**E 的年度分类页 532 字、导航页 572 字仍会通过**，见 P1-1 |
-| B / C / E 栏目根页 | 栏目可列取性负样本/待验证样本 | `sz.gov.cn` 两个栏目入口、`most.gov.cn` 规范性文件入口 | 不得把“入口 200”写成“可自动列取”；B/C/E 只作待验证来源 | 2026-11-13：B 27 links（约 10 条 `content/post_`）、C 24 links（约 10 条）、E 52 links（约 11 条正文，其余导航/年度分类）；未跑真实 runner |
+| D / F 根页 | 框架页负样本 | `https://www.sz.gov.cn/zfgb/`（959B、0 links、0 字）、`https://www.gov.cn/gongbao/`（898B、1 link、4 字） | 记来源级 `unsupported_list`，不得产伪候选 | 60 字闸门能拦 D/F；E 年度页 531 字虽通过 60 字，但 `looks_like_listing` 在 `c95dc3b` 已拦截（见 `E2_PR64_REVIEW.md` §9.2）；待目标环境 runner 复测 |
+| B / C / E 栏目根页 | 栏目可列取性负样本/待验证样本 | `sz.gov.cn` 两个栏目入口、`most.gov.cn` 规范性文件入口 | 不得把“入口 200”写成“可自动列取”；B/C/E 只作待验证来源 | 2026-11-13 用 `c95dc3b` 精确函数复算：B `extract_links=14`（10 条 `content/post_`）、`listing_links=12`；C 14（10）、9；E 根页 10 条正文、`listing_links=41`；E `gfxwj2025/` 3 条正文、41 条目录。B/C/E 根页 `looks_like_listing=true`；未跑真实 runner |
 | HTTP-only 附件 | 附件提示样本（合成） | 合成页面：仅 `http://…gov.cn/…pdf` | `attachmentCount=0`、`unsupportedAttachmentCount=1`；详情/编辑/提交均有“存在但未纳入”提示 | 已于 `24daee0` 修复；仍需真实 HTTP/runner 验收 |
 | 短句变更 | 同 URL 内容变化（合成） | 同一 URL，只改短句中的截止日/金额/人数/适用范围 | 必须产生新候选/`versionChanged`，不得计重复 | 已于 `24daee0` 修复；截止日/金额/人数带数字短句会改变指纹；非数字短句/条款顺序只会命中疑似重复 |
 | A → B → A | 同 URL 回退旧版本（合成） | 同一 URL 三轮 A/B/A | 第三轮仍建候选；`versionChanged=true`，`duplicateOf=` 第二轮；`suspectedDuplicateOf=` 第一轮 | 已于 `7eb48dd` 修复；有隔离库测试，未跑真实网站 |
@@ -182,7 +182,7 @@
 
 每个用例至少记录：
 
-- 代码/契约/迁移版本：`d5e12f8`、`contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`）、`infra/sql/010_policy_discovery.sql`（实际部署版本另记）。
+- 代码/契约/迁移版本：`c95dc3b`、`contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`）、`infra/sql/010_policy_discovery.sql`（实际部署版本另记）。
 - 环境：地址/库 schema/是否同版/010 是否执行；M3 2026-11-13 的 curl/Fetcher/离线复算环境为 Windows + Python 3.14，不是项目 3.12/Linux 测试环境。
 - 样本：S01/S10/S02/S06/S07/S08/S09/D/F/B/C/E/HTTP-only/短句变更/A→B→A/两网址同内容；附件依赖样本单独标注“未纳入”。
 - 预期与实际：逐项写，不用“正常/OK”概括。
@@ -201,11 +201,11 @@
 | 用例 | 当前状态 | 主要阻塞 |
 |---|---|---|
 | DISC-AT-01 | 未执行 | 同版部署、真实 timer、配置并发、30 分钟超时、云端 |
-| DISC-AT-02 | 部分覆盖 | 真实 DNS/TLS/重定向、robots/授权、真实频率、prompt-injection、真实模型预算；`www.sz.gov.cn` 本机 Fetcher TLS 失败 |
-| DISC-AT-03 | 部分覆盖（正文路径） | 真实模型/页面/runner；附件路径不具备（已按 B 排除相关来源） |
+| DISC-AT-02 | 部分覆盖 | 链接范围/列表页已在 `c95dc3b` 收窄；仍缺真实 DNS/TLS/重定向、robots/授权、真实频率、prompt-injection、真实模型预算；`www.sz.gov.cn` 本机 Fetcher TLS 失败 |
+| DISC-AT-03 | 部分覆盖（正文路径） | 链接/列表页已在抽取前拦截；仍缺真实模型/页面/runner；附件路径不具备（已按 B 排除相关来源） |
 | DISC-AT-04 | 部分覆盖 | P1-A 已修复；仍缺真实 runner/DB 跑 S01/S10、真实同 URL 变化样本；旧验收口径未改；附件变化不参与判重 |
 | DISC-AT-05 | 部分覆盖（正文路径） | P1-B 已修复；仍无 candidate→publish 端到端；附件路径不具备；无逐附件处置 |
 | DISC-AT-06 | 部分覆盖 | 提交 vs 过期竞争无并发测试；云端/多进程 |
 | DISC-AT-07 | 部分覆盖（仅后端） | 无前端/UI 证据；手动导入端到端未回归；disabled/not_due 与“无新政策”的 UI 区分未实现 |
 
-**结论：DISC-AT-01—07 当前均未完成联合验收，不产生“通过”项。** P1-A/P1-B 已在 `24daee0` 修复，但真实 runner/真实模型/云端/010/三方验收仍缺；新增 P1-1（栏目根页噪声）、P1-2（验收文档口径）、P1-3（010 升级路径）需先处理。S03/S04/S05 只能按“未纳入自动发现验收”记录。
+**结论：DISC-AT-01—07 当前均未完成联合验收，不产生“通过”项。** P1-A/P1-B 已在 `24daee0` 修复；P1-1（栏目根页链接范围/列表页）已在 `c95dc3b` 修复并被 M3 用真实页面独立复算；P1-2 的判重口径 M1 已确认、M3 文档已更新。**P1-3（010 旧库升级）仍未闭环：迁移补列漏了 `discovery_run.failed_articles`，升级用例也未覆盖该列。** 真实 runner/真实模型/云端/010/三方验收仍缺；S03/S04/S05 只能按“未纳入自动发现验收”记录。

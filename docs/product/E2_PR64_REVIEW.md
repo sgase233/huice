@@ -1,17 +1,17 @@
 # E2 政策发现 PR #64 M3 业务审查（政策事实、口径与验收）
 
-> **状态：M3 静态评审输入。2026-11-13 复审对象为 PR #64 head `d5e12f87df24a807bd75d58bcb08c022937b3b42`；不是验收通过记录，也不是 M1/M2 的签收。**
-> **当前结论见 §8；§1—§7 是 2026-11-12 对 `00c02f1` 的历史审查，保留用于追溯，不再代表当前 head。**
+> **状态：M3 静态评审输入。2026-11-13 12:15 复审对象为 PR #64 head `c95dc3ba6b0e8008b6c0f5267b9bc3172f4fbb25`；不是验收通过记录，也不是 M1/M2 的签收。**
+> **当前结论见 §9；§8 是对 `d5e12f8` 的历史复审；§1—§7 是对 `00c02f1` 的历史审查，保留用于追溯，不再代表当前 head。**
 >
-> **评审对象：** PR #64 `接口：实现 E2 政策发现、候选暂存与后台配置`，最新 head **`d5e12f8`**（2026-11-13 11:12:49 +0800），9 个提交：`0005c88` → `9791978` → `45d4c5c` → `70e00d5` → `00c02f1` → `24daee0` → `2325586` → `7eb48dd` → **`d5e12f8`**；相对 base `5d1adeb` 共 40 个文件、+9,701/−159。PR 仍为 open，`mergeable_state=clean`。CI 在 `d5e12f8` 上 3 项通过（`CSV format`、`Frontend`、`Backend and contract`，2026-11-13 03:13–03:14Z，run `43357442676`）。
+> **评审对象：** PR #64 `接口：实现 E2 政策发现、候选暂存与后台配置`，最新 head **`c95dc3b`**（2026-11-13 12:15:42 +0800），10 个提交：`0005c88` → `9791978` → `45d4c5c` → `70e00d5` → `00c02f1` → `24daee0` → `2325586` → `7eb48dd` → `d5e12f8` → **`c95dc3b`**；相对 base `5d1adeb` 共 40 个文件、+10,119/−159。PR 仍为 open，`mergeable_state=clean`。CI 在 `c95dc3b` 上 3 项通过（`CSV format`、`Frontend`、`Backend and contract`，2026-11-13 04:16–04:17Z）。
 >
-> **审查依据：** [WORKING_GUIDE](../../WORKING_GUIDE.md)、[开发计划](../DEVELOPMENT_PLAN.md) E2/D3、[扩展接口设计](../EXTENSION_INTERFACES.md) §4、[验收矩阵](ACCEPTANCE.md) DISC-AT-01—07、[首批来源](DISCOVERY_SOURCES.md)、[`discovery_sources_phase1.csv`](../../data/policies/discovery_sources_phase1.csv)、[政策范围](POLICY_SCOPE.md)、PR 描述、全部 18 条 issue comments 及 CI 结果。
+> **审查依据：** [WORKING_GUIDE](../../WORKING_GUIDE.md)、[开发计划](../DEVELOPMENT_PLAN.md) E2/D3、[扩展接口设计](../EXTENSION_INTERFACES.md) §4、[验收矩阵](ACCEPTANCE.md) DISC-AT-01—07、[首批来源](DISCOVERY_SOURCES.md)、[`discovery_sources_phase1.csv`](../../data/policies/discovery_sources_phase1.csv)、[政策范围](POLICY_SCOPE.md)、PR 描述、全部 20 条 issue comments 及 CI 结果。
 >
-> **本地更新说明：** 2026-11-13 `git fetch --all --prune` 更新 `origin/main` 至 `44a637d`、`origin/m1/e2-policy-discovery` 至 `d5e12f8`；本地 `main` 已快进到 `44a637d`。M3 未改 M1/M2 代码、契约或迁移。
+> **本地更新说明：** 2026-11-13 `git fetch --all --prune` 更新 `origin/main` 至 `44a637d`、`origin/m1/e2-policy-discovery` 至 `c95dc3b`；本地 `main` 已快进到 `44a637d`。M3 未改 M1/M2 代码、契约或迁移。
 
 ## 1. 结论（2026-11-12，历史）
 
-> **以下 §1—§7 是 2026-11-12 对 `00c02f1` 的历史审查。** 其中 P1-A（同 URL 短句变化）和 P1-B（HTTP-only 附件提示）已在 `24daee0` 修复；跨站指纹命中已改为“疑似重复、保留候选”（`2325586`）；A→B→A 已在 `7eb48dd` 修复；两网址同轮同内容已在 `d5e12f8` 修复。**当前结论见 §8。**
+> **以下 §1—§7 是 2026-11-12 对 `00c02f1` 的历史审查。** 其中 P1-A（同 URL 短句变化）和 P1-B（HTTP-only 附件提示）已在 `24daee0` 修复；跨站指纹命中已改为“疑似重复、保留候选”（`2325586`）；A→B→A 已在 `7eb48dd` 修复；两网址同轮同内容已在 `d5e12f8` 修复。**当前结论见 §9。**
 
 **M3 不签收 E2，也不把 DISC-AT-01—07 任何一项写成“通过”。**
 
@@ -224,7 +224,9 @@ M2 在 `45d4c5c` 指出的“草稿再次保存/重抽后提示丢失”已在 `
 - M3 本机没有项目 Python 依赖（`fastapi`/`psycopg` 未安装），未复跑 M1 报告的 1311 项 pytest；本地测试结果按 M1 声明记录，M2 也未独立复跑数据库测试。
 - 没有把未执行的真实网站、真实模型、云端部署、010 迁移和联合验收写成“通过”。
 
-## 8. 2026-11-13 复审（head `d5e12f8`，当前结论）
+## 8. 2026-11-13 复审（head `d5e12f8`，历史）
+
+> **以下 §8 是对 `d5e12f8` 的复审，保留用于追溯；当前 head `c95dc3b` 的结论见 §9。** §8 中 P1-1（栏目根页噪声）当时尚未修复，`c95dc3b` 已修复，见 §9。§8 中 P1-3（010 旧库升级）当时判断为“条件性”；`c95dc3b` 补了部分列但仍漏 `failed_articles`，见 §9。
 
 > **结论：M3 仍不签收 E2；DISC-AT-01—07 无一项“通过”。**
 > `d5e12f8` 已修复 2026-11-12 复审提出的两项 P1（同 URL 短句变化、HTTP-only 附件提示），也修复了 M2 后续提出的跨 URL 指纹误跳过、A→B→A 回退、两网址同轮同内容三个问题。当前没有新的 M3 **代码合并**阻塞；但新增/剩余 3 个 P1 业务与部署问题（栏目根页噪声、验收文档口径、010 升级路径），以及并发、真实环境与契约/前端/云端缺口，详见 §8.4。
@@ -334,3 +336,73 @@ M3 本机为 Windows 11 / Git Bash / Python 3.14（`py -3 -I`），**没有 `fas
 - **M3 有条件同意合并后端代码，不同意把合并写成“E2 完成”或“E2 正式验收通过”。**
 - 条件：M2 复审 `d5e12f8`；M1 明确 010 执行/升级路径；验收/演示只用正文足以支撑的单篇来源，B/C/E 根页在链接范围修复前不作自动发现来源，S03/S04/S05 继续排除；E2 草案签收后再并入正式 OpenAPI、重生成前端类型、做同版联调；更新 PR 描述。
 - 边界：合并 ≠ 部署 ≠ 契约签收 ≠ E2 验收通过 ≠ 三方签收。M3 未改代码/契约/迁移，未自行宣称三方签收。
+
+## 9. 2026-11-13 12:15 复审（head `c95dc3b`，当前结论）
+
+> **结论：M3 仍不签收 E2；DISC-AT-01—07 无一项“通过”。**
+> `c95dc3b` 对 P1-1（栏目根页链接范围/列表页）的代码修复，M3 用真实页面和 `c95dc3b` 的精确纯函数独立复算成立；P1-2 的判重口径 M1 已确认；**P1-3（010 旧库升级）仍未闭环**：迁移补列漏了 `discovery_run.failed_articles`，升级用例也未覆盖该列。M2 尚未复审 `c95dc3b`。
+
+### 9.1 基线
+
+- head `c95dc3b`（2026-11-13 12:15:42 +0800），10 个提交，40 文件，+10,119/−159；CI 3 项（`Backend and contract`、`Frontend`、`CSV format`）在 `c95dc3b` 上全部成功（2026-11-13 04:16–04:17Z）。
+- M2 最后一条复审仍停在 `7eb48dd`（03:03Z）；M1 于 04:15Z 发布本轮 P1-1 修复说明，M2 未回复。
+- M3 上轮结论基于 `d5e12f8`；本节只对 `c95dc3b` 给出新结论。
+
+### 9.2 P1-1 已修复（M3 独立复算）
+
+**代码位置：** `fetch.py:638` `looks_like_listing`、`fetch.py:700` `_is_listing_link`、`fetch.py:749` `listing_links`、`fetch.py:720` `_iter_candidates`；`runner.py:267` 来源级 `listing_links` 检查、`runner.py:350` 正文级 `looks_like_listing` 检查（在抽取之前）。
+
+2026-11-13 用 `c95dc3b` 的精确纯函数 + curl 真实页复算（Windows 11 / Python 3.14；未使用项目 venv 的 Fetcher）：
+
+| 页面 | 结果 | 复算 |
+|---|---|---|
+| E 规范性文件根页 | 200 / 24,960B / 969 字 | `extract_links=10`（均为正文）、`listing_links=41`、`looks_like_listing=true` |
+| E `gfxwj2025/` 年度页 | 200 / 18,539B / 531 字 | `looks_like_article=true`、`looks_like_listing=true`、`extract_links=3`、`listing_links=41` |
+| E 真实正文页 | 200 / 23,172B / 4,125 字 | `looks_like_listing=false`（当前样本未见误伤） |
+| B 根页 | 200 / 36,124B / 873 字 | `extract_links=14`（10 条 `content/post_`）、`listing_links=12` |
+| C 根页 | 200 / 33,840B / 890 字 | `extract_links=14`（10 条 `content/post_`）、`listing_links=9` |
+
+**判断：** 旧实现会把 E 年度页当正文；`c95dc3b` 在来源级和正文级两层拦截，年度页不入队，即使被抓也在抽取前跳过一次正文失败，不花模型预算、不产伪候选。B/C 根页仍各有约 2 条导航链接（如 `/cn/fzgn/ydmhxc`、`/znjqr`）通过过滤，属启发式残余，不改变“代码层已收窄”的判断。
+
+**残留风险（不改变 P1-1 已修）：**
+
+1. `looks_like_listing` 用整页锚文本占 `html_to_text` 的比例；短正文 + 多导航的合法短通知（约 60—150 字）可能被 40% 阈值判成列表页。虽记 `unsupported_list`/正文失败、不静默，但仍会漏候选，需目标环境用真实短通知复测。
+2. `http://` 链接在 `_iter_candidates`（`fetch.py:738`）被直接丢弃，`source_status.links` 只给过滤后条数；运营看到的“链接少”分不清是来源本身少还是被过滤，建议至少给过滤计数/说明。
+3. B/C 根页仍有导航链接通过，说明这是收窄而非白名单。
+
+**测试边界：** 另一 M3 会话在隔离副本运行 PR 的 `test_discovery_fetch.py`，46/47 通过；唯一失败是 `test_pdf_response_is_decoded_as_pdf` 因缺少 `pypdf`，非代码缺陷。本会话未复跑该测试，也未跑 runner/隔离库/真实模型。
+
+### 9.3 P1-2 验收口径
+
+M1 已确认 M3 上轮口径正确：S01/S10 应为 **2 条候选、第二条 `suspectedDuplicateOf` 指向第一条、`duplicates=0`、`suspectedDuplicates=1`**。M3 文档已按此更新；E 年度页的旧表述改为“已在 `c95dc3b` 两层拦截，待目标环境 runner 复测”；010 结论按 §9.4 改写。仍需 M2/负责人确认，**不是三方签收**。
+
+### 9.4 P1-3 010 旧库升级仍未闭环
+
+**事实：**
+
+- 旧版 010（首个提交 `0005c88`）没有 `discovery_run.failed_articles`；该列在 `9791978` 才加入（`0005c88..c95dc3b` 的列对比：`discovery_run` 新增 `suspected_duplicates` 与 `failed_articles`）。
+- 最终 010 在 `CREATE TABLE` 中定义了 `failed_articles`（`infra/sql/010_policy_discovery.sql:105`），但补列语句只有 `suspected_duplicates`（`:124`），另有 `unsupported_attachment_urls`、`suspected_duplicate_of`、`body_fingerprint` 的 `ALTER`，**没有 `failed_articles`**。
+- `integrations/discovery.py:42-43` 的 `_RUN_COLUMNS` 和 `:293` 的 `finish_run` UPDATE 都引用 `failed_articles`。执行过旧版 010 的库重跑最终 010 后，第一次运行/查询即 `UndefinedColumn`（500）。
+- `test_010_upgrades_a_database_that_ran_an_older_version`（`test_discovery_runner_db.py:1336`）的 `DROP` 与断言只有 4 列（`suspected_duplicates`、`unsupported_attachment_urls`、`suspected_duplicate_of`、`body_fingerprint`），没有 `failed_articles`，所以红证明也发现不了。
+
+**影响：** M1 已说明当前没有持久库执行过旧版 010（云端停在 009），所以这不是现行部署故障；但“重跑最终 010 会补列”对 `failed_articles` 不成立，P1-3 作为“以后有人跑过草案 010”的兜底仍未闭环。
+
+**修法：** 补 `ALTER TABLE discovery_run ADD COLUMN IF NOT EXISTS failed_articles integer NOT NULL DEFAULT 0;`；在升级用例的 `DROP` 与断言中加入该列；重跑红证明。属 M1 范围，合并前建议补这一行。
+
+### 9.5 P2 与残余
+
+- 链接过滤的审计可见性与短正文误伤（见 §9.2 残留风险）。
+- 提交 vs 过期、配置并发 PUT 仍无并发用例。
+- `www.sz.gov.cn` 本机 Fetcher TLS `BAD_ECPOINT` 需目标环境复测。
+- 附件不参与判重、无逐附件处置；正式 OpenAPI/前端类型/同版联调/云端 E2/真实模型/010 执行均未完成。
+- PR 描述仍写 1161 passed / 142 skipped，与本轮 M1 的 1337/13 不一致，且未写链接范围与 010 升级；M2 尚未复审 `c95dc3b`。
+
+### 9.6 DISC-AT-01—07
+
+仍无一项“通过”。DISC-AT-01 未执行；DISC-AT-02—07 只有代码/单测/离线部分覆盖；S03/S04/S05 继续排除。链接范围修复只改善 DISC-AT-02/03 的代码路径，不改变验收结论。
+
+### 9.7 合并意见
+
+- **M3 同意在 M2 复审 `c95dc3b` 后合并后端代码，不同意写成“E2 完成/验收通过”。**
+- 建议合并前补 `failed_articles` 的 `ALTER` 与升级用例（一行迁移 + 用例）；验收仍只用正文足以支撑的单篇来源，B/C/E 根页保持“待验证来源/负样本”，不写成可自动发现。
+- 边界：合并 ≠ 部署 ≠ 契约签收 ≠ E2 验收通过 ≠ 三方签收。M3 未改代码/契约/迁移，未跑 runner/隔离库/真实模型/云端/010/三方联合验收，不宣称三方签收。

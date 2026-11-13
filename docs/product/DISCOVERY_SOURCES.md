@@ -186,7 +186,7 @@
 
 ## 10. 2026-11-12 复核与 E2 范围决定
 
-> 本节是 PR #64 2026-11-12 审查期间的复核记录，仍不是抓取器实测或验收通过。审查对象为 PR #64 head `00c02f1`；**该 head 的结论已被 2026-11-13 对 `d5e12f8` 的复审更新，当前状态见 §11**。详细业务审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md)，可执行验收清单见 [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)。
+> 本节是 PR #64 2026-11-12 审查期间的复核记录，仍不是抓取器实测或验收通过。审查对象为 PR #64 head `00c02f1`；**该 head 的结论已被 2026-11-13 对 `d5e12f8` 与 `c95dc3b` 的复审更新，当前状态见 §11**。详细业务审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md)，可执行验收清单见 [E2_ACCEPTANCE_CHECKLIST.md](E2_ACCEPTANCE_CHECKLIST.md)。
 
 ### 10.1 正文/附件可达性复核
 
@@ -223,9 +223,9 @@ M1 已采纳 M3 的建议 B，并在 `docs/IMPLEMENTATION_AND_INTERFACE.md` §4.
 
 2026-11-13 已实际执行真实 `Fetcher`（S01/S10/F/E 200；A/G 403；B/C/S03/D 在本机 TLS `BAD_ECPOINT`）、curl 和纯函数离线复算；**仍未执行** runner/隔离库、真实模型抽取、云端 E2 部署、010 迁移、三方联合验收、栏目列表分页/robots/授权结论、浏览器渲染/JS、附件的逐条读取（S04 DOCX、S03 附件 2/3/PDF、S05 完整条件）。本节不改变第 7 节“未执行/未取得”的范围。详细证据见 §11。
 
-## 11. 2026-11-13 复审补充（head `d5e12f8`）
+## 11. 2026-11-13 复审补充（head `d5e12f8` → `c95dc3b`）
 
-> 本节是 PR #64 `d5e12f8` 复审期间的真实页面/附件核对，**不是抓取器 runner、模型或联合验收结论**。M3 环境为 Windows 11 / Python 3.14 / Git Bash；项目依赖、隔离 PostgreSQL、云端均未使用。
+> 本节是 PR #64 `d5e12f8` → `c95dc3b` 复审期间的真实页面/附件核对，**不是抓取器 runner、模型或联合验收结论**。M3 环境为 Windows 11 / Python 3.14 / Git Bash；项目依赖、隔离 PostgreSQL、云端均未使用。
 
 ### 11.1 正文与附件复核
 
@@ -249,21 +249,23 @@ M1 已采纳 M3 的建议 B，并在 `docs/IMPLEMENTATION_AND_INTERFACE.md` §4.
 | 组 | 2026-11-13 结果 | 链接/内容观察 | 判断 |
 |---|---|---|---|
 | A | 403 / 441B | 无 | 栏目不可列取；单篇正文可读 |
-| B | 200 / 36,124B | 27 links，约 10 条 `content/post_` | 入口可下载，含政策链接；分页/JS 未验证；本机 Fetcher TLS 失败 |
-| C | 200 / 33,840B | 24 links，约 10 条 `content/post_` | 同上 |
+| B | 200 / 36,124B | `c95dc3b` 过滤后 14 links（10 条 `content/post_`），`listing_links=12` | 入口可下载，含政策链接；仍混入约 2 条导航；分页/JS 未验证；本机 Fetcher TLS 失败 |
+| C | 200 / 33,840B | 14 links（10 条 `content/post_`），`listing_links=9` | 同上 |
 | D | 200 / 959B / 0 links / 0 字 | 框架页 | 不可作栏目；60 字闸门已拦 |
-| E | 200 / 24,960B | 52 links，约 11 条正文，其余导航/年度分类 | **噪声大**：年度分类 532 字、导航 572 字均通过 60 字闸门；不建议直接作自动发现来源 |
+| E | 200 / 24,960B | `c95dc3b` 过滤后 10 条正文，`listing_links=41` | 根页仍 `looks_like_listing=true`；年度页 `gfxwj2025/` 18,539B/531 字，`extract_links=3`、`listing_links=41`、`looks_like_listing=true`——已在 `c95dc3b` 两层拦截，待目标环境 runner 复测；仍不建议直接作已验收来源 |
 | F | 200 / 898B / 1 link / 4 字 | 框架页 | 不可作栏目；60 字闸门已拦 |
 | G | 403 / 143,924B | 无 | 栏目不可列取；单篇正文可读 |
 
 ### 11.3 真实 Fetcher 与 robots
 
-- `d5e12f8` 的真实 `Fetcher`：S01/S10/F/E 200；A/G 403；B/C/S03/D 在本机 `tls_failed`，底层 `SSLError BAD_ECPOINT`。标准 Python `ssl.create_default_context` 直连同一 IP 也失败，`curl` 成功；需在目标 Linux/Python 3.12 复测，不能把本机 TLS 失败写成 Fetcher 代码缺陷，也不能用 curl 成功替代 Fetcher 验收。
+- `d5e12f8` 的真实 `Fetcher`：S01/S10/F/E 200；A/G 403；B/C/S03/D 在本机 `tls_failed`，底层 `SSLError BAD_ECPOINT`。标准 Python `ssl.create_default_context` 直连同一 IP 也失败，`curl` 成功；需在目标 Linux/Python 3.12 复测，不能把本机 TLS 失败写成 Fetcher 代码缺陷，也不能用 curl 成功替代 Fetcher 验收。**`c95dc3b` 的 Fetcher 未跑；其链接范围/列表页用纯函数 + 真实页面复算，见下一条。**
+- `c95dc3b` 链接范围/列表页：M3 用精确纯函数复算，E 根页 `extract_links=10`、`listing_links=41`；E `gfxwj2025/` `extract_links=3`、`listing_links=41`、`looks_like_listing=true`；E 真实正文页 `looks_like_listing=false`。运行器在来源级 `listing_links` 和正文级 `looks_like_listing` 两层拦截，年度页不入队、即使被抓也在抽取前跳过。B/C 根页仍各有约 2 条导航混入；`http://` 链接在 `_iter_candidates` 被丢弃，`source_status.links` 只给过滤后条数，运营看到的“链接少”分不清是来源少还是被过滤（残留风险）。
 - robots：`https://www.gov.cn/robots.txt` 200，未发现对本次样本 `/zhengce/`、`/gongbao/` 路径的 Disallow；`www.sz.gov.cn`、`www.most.gov.cn`、`www.chinatax.gov.cn` 的 `/robots.txt` 返回 404（没有返回规则）。**robots 不是授权结论**；书面授权/服务条款仍未取得。
 - A/G 的 403 仍存在，未绕过；B/C/E 的分页、Cookie、JS、反爬未验证；F 的 2016 子栏目仍 403。
 
 ### 11.4 结论
 
-- **没有任何栏目经过真实 runner 验证可以自动列取政策。** B/C/E 入口 200 且含正文链接，但 B/C 本机 Fetcher TLS 失败、E 的导航/年度分类会进入抽取；A/G 403，D/F 是框架页。
+- **没有任何栏目经过真实 runner 验证可以自动列取政策。** B/C/E 入口 200 且含正文链接；`c95dc3b` 已在代码层收窄链接范围并用 `looks_like_listing` 拦截 E 年度/导航页，但 B/C 本机 Fetcher TLS 失败、B/C 仍有约 2 条导航混入，仍需目标环境 runner 复测；A/G 403，D/F 是框架页。
 - S03/S04/S05 仍按方案 B **不纳入 E2 自动发现验收**；附件只记录、不下载/解析，不能作为候选草稿引用来源。
-- 自动化发现能力未达标；固定正文 URL 列表只是样本验证/受限方案。真实模型、runner、云端、010 与三方联合验收仍未执行。
+- 自动化发现能力未达标；固定正文 URL 列表只是样本验证/受限方案。真实模型、runner、云端、010 与三方联合验收仍未执行。链接范围修复不改变“栏目未经验收”的结论。
+- `c95dc3b` 的 010 旧库升级仍漏 `discovery_run.failed_articles`（见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §9.4），与来源可用性无关，但属于合并前应补的迁移问题。
