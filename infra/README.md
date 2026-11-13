@@ -147,7 +147,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/008_material_requirements.sql
 - **为什么不加到 `policy_version` 上**：001 的 `policy_version_guard_published` 禁止更新已发布行，而回填目标恰好全是已发布版本——加列再回填会在触发器上直接报 `check_violation`，只能靠临时禁用触发器绕过，那正是守卫要防的事。旁表方案下已发布行一个字节都不动（用例 `test_backfill_never_touches_published_version` 用 `xmin` 断言这一点，防止日后有人把列加回去）。
 - **没有行 = 没有记录过来源**，不等于「来源未知」。缺省状态由读取层按「有值 → `unverified`、无值 → `unknown`」派生，不落库——把派生值写进库会让「从未标注」和「审核员明确标了未核实」变成一回事。
 - **本迁移不对外暴露任何字段**：字段进 `PolicySummary`/`PolicyDetail`/`PolicyDraft` 与响应属于 B1b，随契约一次升版。迁移先合不会产生半成品契约，也不会让 `generate_types --check` 多红一次。
-- **回填不在迁移里**：由 `infra/deploy/backfill-date-provenance.py` + `date-provenance-backfill.json` 执行。脚本默认干跑，`--apply` 才写库；`verified` 必须给出来源与定位，出处按 `(kind, ordinal)` 绑定到该版本自己的 `policy_source` 行，`derived` 必须给出推算依据；任一条对不上号就整批停下、不写任何行。回填数据当前标记为 `draft-pending-m3`，M3 逐项复核原文前**只允许干跑**。
+- **回填不在迁移里**：由 `infra/deploy/backfill-date-provenance.py` + `date-provenance-backfill.json` 执行，步骤与退出码见 `infra/deploy/README.md` §2.2。脚本默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 未获批准时 `--apply` 同样拒绝；`verified` 必须给出来源与定位，出处写成「正文」或**第几份附件（从 1 起，不是数据库的绝对 `ordinal`）**，由脚本按该版本的 `policy_source` 顺序解析后绑定真实 id；`derived` 必须给出推算依据。任一条对不上号就整批停下、不写任何行；库里已有不同值时默认不覆盖（返回 `3`），要改写需显式 `--overwrite`。回填数据当前标记为 `draft-pending-m3`，M3 逐项复核原文前**只允许干跑**。
 
 结构校验只在 `jsonb_typeof(provenance) = 'object'` 这一层；字段级取值由写入路径与回填脚本校验，避免同一套规则在两处各写一遍。**云端 RDS 尚未执行 011**。
 

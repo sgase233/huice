@@ -41,30 +41,52 @@ def entry(**provenance) -> dict:
     }
 
 
-def write(tmp_path: Path, entries: list[dict]) -> Path:
+def write(tmp_path: Path, entries: list[dict], review_status: str = "approved-by-m3") -> Path:
     path = tmp_path / "data.json"
     path.write_text(
-        json.dumps({"version": 1, "entries": entries}, ensure_ascii=False), encoding="utf-8"
+        json.dumps(
+            {"version": 1, "reviewStatus": review_status, "entries": entries}, ensure_ascii=False
+        ),
+        encoding="utf-8",
     )
     return path
 
 
 def test_shipped_data_file_is_valid() -> None:
     """仓库里那份回填数据自身必须过校验，否则部署时才发现就晚了。"""
-    entries = backfill.load_data(DATA)
-    assert len(entries) == 8
-    keys = {(entry.source_url, entry.version) for entry in entries}
-    assert len(keys) == len(entries)
+    payload = backfill.load_data(DATA)
+    assert len(payload.entries) == 8
+    keys = {(entry.source_url, entry.version) for entry in payload.entries}
+    assert len(keys) == len(payload.entries)
+
+
+def test_shipped_data_is_not_approved_for_apply() -> None:
+    """仓库里那份是草案：M3 复核前连 --apply 都不该放行。"""
+    payload = backfill.load_data(DATA)
+    assert payload.review_status not in backfill.APPLY_REVIEW_STATUSES
+    assert backfill.review_block(payload, apply=True) is not None
+    assert backfill.review_block(payload, apply=False) is None
 
 
 def test_shipped_entries_never_treat_window_as_validity() -> None:
     """评审点名的口径：SMART／GREEN 的申报窗口不能充当政策有效期。"""
-    entries = {entry.version: entry for entry in backfill.load_data(DATA)}
+    entries = {entry.version: entry for entry in backfill.load_data(DATA).entries}
     smart = entries["深工信规〔2025〕4号"].provenance
     assert smart["applicationWindow"]["status"] == "verified"
     assert smart["effectiveFrom"]["status"] == "unverified"
     assert smart["effectiveTo"]["status"] == "unverified"
     assert "不是政策有效期" in smart["note"]
+
+
+def test_shipped_attachment_ordinals_are_one_based() -> None:
+    """数据里写的是「第几份附件」：从 1 起。写 0 会被当成正文那行，整批回填失败。"""
+    for entry in backfill.load_data(DATA).entries:
+        for name, spec in entry.sources.items():
+            if spec["kind"] == "attachment":
+                assert spec["ordinal"] >= 1, f"{entry.version} 的 {name} 序号非法"
+    assert "两批受理，办理方式分网络填报与书面材料两种" in {
+        entry.version: entry for entry in backfill.load_data(DATA).entries
+    }["深工信规〔2025〕4号"].provenance["note"]
 
 
 def test_verified_requires_locator() -> None:
@@ -99,7 +121,21 @@ def test_attachment_source_requires_ordinal() -> None:
             "source": {"kind": "attachment"},
         }
     )
-    with pytest.raises(backfill.DataError, match="附件必须给非负整数序号"):
+    with pytest.raises(backfill.DataError, match="附件序号从 1 起"):
+        backfill.validate_entry(0, raw)
+
+
+@pytest.mark.parametrize("ordinal", [0, -1, True, 1.0])
+def test_attachment_ordinal_must_be_one_based_int(ordinal) -> None:
+    """0 是最容易犯的错：库里 0 是正文，写成 0 会指向正文那行。"""
+    raw = entry(
+        applicationWindow={
+            "status": "verified",
+            "locator": "附件 1",
+            "source": {"kind": "attachment", "ordinal": ordinal},
+        }
+    )
+    with pytest.raises(backfill.DataError, match="附件序号从 1 起"):
         backfill.validate_entry(0, raw)
 
 
@@ -143,6 +179,22 @@ def test_duplicate_entries_rejected(tmp_path: Path) -> None:
     path = write(tmp_path, [entry(note="a"), entry(note="b")])
     with pytest.raises(backfill.DataError, match="与其他条目重复"):
         backfill.load_data(path)
+
+
+def test_missing_review_status_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "data.json"
+    path.write_text(
+        json.dumps({"version": 1, "entries": [entry(note="a")]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    with pytest.raises(backfill.DataError, match="reviewStatus"):
+        backfill.load_data(path)
+
+
+def test_approved_status_unblocks_apply() -> None:
+    payload = backfill.load_data(DATA)
+    approved = backfill.Payload(review_status="approved-by-m3", entries=payload.entries)
+    assert backfill.review_block(approved, apply=True) is None
 
 
 def test_missing_database_url_reports_variable_only(monkeypatch, capsys) -> None:

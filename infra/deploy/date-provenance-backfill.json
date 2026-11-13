@@ -10,12 +10,12 @@
         "version": 1,
         "applicationWindow": {
           "status": "verified",
-          "source": { "kind": "attachment", "ordinal": 0 },
+          "source": { "kind": "attachment", "ordinal": 1 },
           "locator": "附件 1「（二）受理时间」"
         },
         "effectiveFrom": { "status": "unverified" },
         "effectiveTo": { "status": "unverified" },
-        "note": "两批受理：第一批 2025-06-13—06-30，第二批 06-20—07-07；办理方式与批次以附件 1 原文为准。该窗口不是政策有效期。"
+        "note": "两批受理，办理方式分网络填报与书面材料两种：网络填报第一批 2025-06-13—06-30 18 时、第二批 2025-06-20—07-07 18 时；书面材料第一批 2025-06-23—07-04、第二批 2025-06-30—07-11（工作时间）。两批有重叠，不得压平成一条区间；该窗口不是政策有效期。"
       }
     },
     {
@@ -25,7 +25,7 @@
         "version": 1,
         "applicationWindow": {
           "status": "verified",
-          "source": { "kind": "attachment", "ordinal": 0 },
+          "source": { "kind": "attachment", "ordinal": 1 },
           "locator": ".doc 第 78 行"
         },
         "effectiveFrom": { "status": "unverified" },
@@ -37,16 +37,13 @@
       "version": "深科创规〔2026〕1号",
       "provenance": {
         "version": 1,
-        "applicationWindow": {
-          "status": "verified",
-          "source": { "kind": "body" },
-          "locator": "2026 年度申报指南第七条"
-        },
+        "applicationWindow": { "status": "unverified" },
         "effectiveTo": {
           "status": "derived",
           "basis": "办法第十七条「有效期 5 年」",
           "derivedFrom": "2026-02-24"
-        }
+        },
+        "note": "窗口依据 2026 年度申报指南第七条，但该版本的 policy_source 只有《管理办法》正文（无附件），指南不由本版本来源承载，按「source 必须属于本版本」的规则不能标 verified。把指南补录为该版本附件后可升级。"
       }
     },
     {

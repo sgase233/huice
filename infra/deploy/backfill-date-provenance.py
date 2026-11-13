@@ -11,20 +11,26 @@
    数据文件自洽——五个状态之一、``verified`` 必须给出来源与定位、``derived`` 必须
    给出推算依据。口径错了是数据文件的问题，脚本不替它猜。
 
-2. **出处必须绑定到该政策版本**：数据文件写的是来源类型（正文 / 附件第几份），脚本在
-   库里查该 ``policy_version_id`` 的 ``policy_source`` 行，把真实 id 写进 jsonb。这样
-   「能定位」与「定位到的是这个版本的原文」同时成立，评审提的第三条由结构保证，而不是
-   靠回填人自觉。
+2. **出处必须绑定到该政策版本**：数据文件写的是来源类型（正文 / **第几份附件，从 1
+   起**），脚本在库里查该 ``policy_version_id`` 的 ``policy_source`` 行，把真实 id 写进
+   jsonb。这样「能定位」与「定位到的是这个版本的原文」同时成立，评审提的第三条由结构
+   保证，而不是靠回填人自觉。
+
+   序号用的是「第几份附件」而不是数据库里的绝对 ``ordinal``：``policy_source`` 的
+   ordinal 在版本内连续编号，正文占 0、附件从 1 起，附件数一变绝对号就变。让数据文件
+   写绝对号，等于把存储细节漏给写数据的人——写错一次就是一个整批回填失败。
 
    写入的是旁表 ``policy_version_date_provenance``，**已发布版本一行都不改**：001 的
    ``policy_version_guard_published`` 禁止更新已发布行，把来源塞回 ``policy_version``
    只能靠临时禁用触发器，那正是守卫要防的事。
 
-3. **幂等**：值相同就不写。连跑两次第二次改动 0 行；执行前后都打印
-   「已带来源的行数」，作为可复核的证据。
+3. **幂等但绝不静默覆盖**：值相同就不写，连跑两次第二次改动 0 行；值**不同**则停下来
+   报冲突，要改写必须显式 ``--overwrite``。回填一次可能被 M3 复核后手工补充过，静默
+   整份替换会把复核痕迹抹掉。
 
-4. **默认干跑**：不加 ``--apply`` 只打印将要改动哪些版本，不写库。回填数据在 M3 复核
-   前只能当草案，误跑一次就会把未复核的取值写进审计表。
+4. **默认干跑，且草案状态不许写库**：不加 ``--apply`` 只打印将要改动哪些版本；
+   数据文件的 ``reviewStatus`` 不是批准值（``APPLY_REVIEW_STATUSES``）时，``--apply``
+   同样拒绝执行。防误写不能只靠「记得别加参数」。
 
 5. **不回显敏感信息**：``DATABASE_URL`` 只从环境读（不上命令行，避免进 ``ps`` 与
    shell 历史）；数据库异常只打印异常类名，不打印连接串、堆栈或 SQL 参数。
@@ -34,10 +40,11 @@
     DATABASE_URL=... services/api/.venv/Scripts/python.exe infra/deploy/backfill-date-provenance.py
     DATABASE_URL=... services/api/.venv/Scripts/python.exe infra/deploy/backfill-date-provenance.py --apply
     ECS: systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \\
+             -p WorkingDirectory=/opt/huice/app \\
              /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/backfill-date-provenance.py --apply
 
-退出码：0 成功（含干跑）；1 数据库读写失败；2 数据文件或环境不合法（只报字段路径与
-变量名，不报值）。
+退出码：0 成功（含干跑）；1 数据库读写失败；2 数据文件、环境不合法或数据未获批准
+（只报字段路径与变量名，不报值）；3 与库中已有值冲突且未加 ``--overwrite``。
 """
 
 from __future__ import annotations
@@ -60,6 +67,10 @@ DATE_FIELDS = ("effectiveFrom", "effectiveTo", "applicationWindow")
 SOURCE_KINDS = ("body", "attachment")
 PROVENANCE_VERSION = 1
 
+#: ``--apply`` 只在这些 ``reviewStatus`` 下执行。具体取值由 M3 与项目组确认复核证据的
+#: 形式后填进来；在此之前，仓库里那份 ``draft-pending-m3`` 永远只能干跑。
+APPLY_REVIEW_STATUSES = ("approved-by-m3",)
+
 
 class DataError(ValueError):
     """数据文件不合法。消息里只带字段路径，不带连接串或密钥。"""
@@ -73,8 +84,16 @@ class Entry:
     source_url: str
     version: str
     provenance: dict[str, Any]
-    #: 日期字段 → 来源声明 ``{"kind": "body"}`` / ``{"kind": "attachment", "ordinal": 0}``
+    #: 日期字段 → 来源声明 ``{"kind": "body"}`` / ``{"kind": "attachment", "ordinal": 1}``
     sources: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass
+class Payload:
+    """整份数据文件：批准状态 + 逐条回填。"""
+
+    review_status: str
+    entries: list[Entry]
 
 
 def _fail(index: int, path: str, reason: str) -> DataError:
@@ -107,8 +126,9 @@ def _validate_source_spec(index: int, path: str, spec: Any) -> dict[str, Any]:
         if ordinal is not None:
             raise _fail(index, f"{path}.ordinal", "正文不写序号（每个版本只有一份正文）")
         return {"kind": "body"}
-    if not isinstance(ordinal, int) or ordinal < 0:
-        raise _fail(index, f"{path}.ordinal", "附件必须给非负整数序号")
+    # 1 起：写的是「第几份附件」，不是数据库里的绝对 ordinal（正文占 0）
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
+        raise _fail(index, f"{path}.ordinal", "附件序号从 1 起（第几份附件），不是数据库绝对序号")
     return {"kind": "attachment", "ordinal": ordinal}
 
 
@@ -182,7 +202,7 @@ def validate_entry(index: int, raw: Any) -> Entry:
     return Entry(index=index, source_url=source_url, version=version, provenance=stored, sources=sources)
 
 
-def load_data(path: Path) -> list[Entry]:
+def load_data(path: Path) -> "Payload":
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -197,6 +217,10 @@ def load_data(path: Path) -> list[Entry]:
     if not isinstance(entries, list) or not entries:
         raise DataError("entries 必须是非空数组")
 
+    review_status = raw.get("reviewStatus")
+    if not isinstance(review_status, str) or not review_status.strip():
+        raise DataError("reviewStatus 必须是非空字符串（如 draft-pending-m3）")
+
     seen: set[tuple[str, str]] = set()
     result: list[Entry] = []
     for index, item in enumerate(entries):
@@ -206,7 +230,7 @@ def load_data(path: Path) -> list[Entry]:
             raise _fail(index, "sourceUrl+version", "与其他条目重复")
         seen.add(key)
         result.append(entry)
-    return result
+    return Payload(review_status=review_status.strip(), entries=result)
 
 
 def _redact(message: str) -> str:
@@ -214,8 +238,24 @@ def _redact(message: str) -> str:
     return message.split("://")[0] if "://" in message else message
 
 
-def run(data_path: Path, apply: bool) -> int:
-    entries = load_data(data_path)
+def review_block(payload: Payload, apply: bool) -> str | None:
+    """``--apply`` 前的批准门禁：返回拒绝理由，None 表示允许。干跑一律放行。"""
+    if not apply or payload.review_status in APPLY_REVIEW_STATUSES:
+        return None
+    return (
+        f"数据文件的 reviewStatus 是 {payload.review_status!r}，不是批准值"
+        f"（{', '.join(APPLY_REVIEW_STATUSES)}）。M3 复核通过并改掉这个字段之前只允许干跑："
+        "未复核的取值写进审计表，事后分不清哪条是人认过的。"
+    )
+
+
+def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
+    payload = load_data(data_path)
+
+    blocked = review_block(payload, apply)
+    if blocked is not None:
+        print(f"backfill-date-provenance: {blocked}", file=sys.stderr)
+        return 2
 
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
@@ -235,6 +275,7 @@ def run(data_path: Path, apply: bool) -> int:
 
     changed = 0
     skipped = 0
+    conflicts: list[Entry] = []
     try:
         with psycopg.connect(dsn) as conn:
             with conn.cursor() as cur:
@@ -247,7 +288,7 @@ def run(data_path: Path, apply: bool) -> int:
             # 两阶段：先把每条都对上号（政策版本、来源行），全部成立才开始写。任何一条
             # 对不上都整批停下——回填错位比回填缺失更难发现，写到一半停下更糟。
             resolved: list[tuple[Entry, Any, dict[str, Any]]] = []
-            for entry in entries:
+            for entry in payload.entries:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT id FROM policy_version WHERE source_url = %s AND version = %s",
@@ -274,17 +315,20 @@ def run(data_path: Path, apply: bool) -> int:
                                 (version_id,),
                             )
                         else:
+                            # 数据文件给的是「第几份附件」（1 起）；库里 ordinal 在版本内
+                            # 连续编号、正文占 0，所以按 ordinal 排序后取第 n 个，不拿绝对号硬匹配。
                             cur.execute(
                                 "SELECT id FROM policy_source "
-                                "WHERE policy_version_id = %s AND kind = 'attachment' AND ordinal = %s",
-                                (version_id, spec["ordinal"]),
+                                "WHERE policy_version_id = %s AND kind = 'attachment' "
+                                "ORDER BY ordinal OFFSET %s LIMIT 1",
+                                (version_id, spec["ordinal"] - 1),
                             )
                         source_rows = cur.fetchall()
                     if len(source_rows) != 1:
                         print(
                             f"backfill-date-provenance: entries[{entry.index}] 的 {name} 找不到"
                             f"对应的 {spec['kind']}"
-                            + (f" #{spec['ordinal']}" if spec["kind"] == "attachment" else "")
+                            + (f" 第 {spec['ordinal']} 份" if spec["kind"] == "attachment" else "")
                             + f" 来源（命中 {len(source_rows)} 行）。停止：不写任何行。",
                             file=sys.stderr,
                         )
@@ -304,6 +348,11 @@ def run(data_path: Path, apply: bool) -> int:
                     if row is not None and row[0] == stored:
                         skipped += 1
                         continue
+                    if row is not None and not overwrite:
+                        # 库里已有不同的值：可能是 M3 复核后补过。静默整份替换会把复核
+                        # 痕迹抹掉，所以停下要人显式决定。
+                        conflicts.append(entry)
+                        continue
                     if apply:
                         # 写旁表而不是 policy_version：已发布版本不可变由触发器保证，
                         # 回填不得以任何方式改动它。
@@ -319,6 +368,17 @@ def run(data_path: Path, apply: bool) -> int:
                         f"entries[{entry.index}] {'写入' if apply else '将写入'} "
                         f"{entry.version}（{entry.source_url}）"
                     )
+
+            if conflicts:
+                conn.rollback()
+                names = "、".join(f"entries[{entry.index}] {entry.version}" for entry in conflicts)
+                print(
+                    f"backfill-date-provenance: {len(conflicts)} 条与库里已有值不同（{names}）。"
+                    "默认不覆盖：确认要改写请加 --overwrite，且改写前先确认旧值是否已被复核补充。"
+                    "本次未写任何行。",
+                    file=sys.stderr,
+                )
+                return 3
             if apply:
                 conn.commit()
             else:
@@ -355,11 +415,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="真正写库；不加时只打印将要改动的条目（回填数据未经 M3 复核前保持干跑）",
+        help="真正写库；不加时只打印将要改动的条目。数据文件 reviewStatus 未获批准时照样拒绝",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="库里已有不同值时也改写；不加时遇冲突停止（默认不覆盖已复核的值）",
     )
     args = parser.parse_args(argv)
     try:
-        return run(args.data, args.apply)
+        return run(args.data, args.apply, args.overwrite)
     except DataError as exc:
         print(f"backfill-date-provenance: 数据不合法：{exc}", file=sys.stderr)
         return 2

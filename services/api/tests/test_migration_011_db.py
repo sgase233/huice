@@ -9,11 +9,14 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 import pytest
 import psycopg
 
-from db_support import create
+from app.schemas import PolicyImportMetadata
+from db_support import create, source
+from support import metadata_payload
 from test_backfill_date_provenance import backfill
 
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
@@ -41,9 +44,40 @@ def _publish(dsn: str, version_id) -> None:
         )
 
 
-def _write(tmp_path, provenance: dict, *, source_url: str = SOURCE_URL, version: str = "深工信规〔2025〕4号"):
+def _create_with_sources(repo, version: str, kinds: list[str]):
+    """按给定顺序造来源：``policy_source.ordinal`` 就是 ``kinds`` 的下标（正文通常为 0）。"""
+    metadata = PolicyImportMetadata.model_validate(
+        metadata_payload(version=version, sourceUrl=SOURCE_URL)
+    )
+    return repo.create_policy_version(
+        metadata=metadata,
+        sources=[source(f"来源 {i}", kind=kind) for i, kind in enumerate(kinds)],
+        storage_keys=[f"local/{i}.txt" for i in range(len(kinds))],
+        trace_id=str(uuid4()),
+    )
+
+
+def _attachment_ids(dsn: str, version_id) -> list[str]:
+    with psycopg.connect(dsn) as conn:
+        rows = conn.execute(
+            "SELECT id::text FROM policy_source "
+            "WHERE policy_version_id = %s AND kind = 'attachment' ORDER BY ordinal",
+            (version_id,),
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def _write(
+    tmp_path,
+    provenance: dict,
+    *,
+    source_url: str = SOURCE_URL,
+    version: str = "深工信规〔2025〕4号",
+    review_status: str = "approved-by-m3",
+):
     data = {
         "version": 1,
+        "reviewStatus": review_status,
         "entries": [
             {
                 "sourceUrl": source_url,
@@ -106,12 +140,7 @@ def test_new_version_has_no_provenance_row(database_url_schema: str, repo) -> No
 def test_backfill_binds_source_to_its_own_version(database_url_schema: str, repo, tmp_path, monkeypatch) -> None:
     create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
     version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
-    with psycopg.connect(database_url_schema) as conn:
-        attachment_ordinal = conn.execute(
-            "SELECT ordinal FROM policy_source "
-            "WHERE policy_version_id = %s AND kind = 'attachment'",
-            (version_id,),
-        ).fetchone()[0]
+    (attachment_id,) = _attachment_ids(database_url_schema, version_id)
 
     path = _write(
         tmp_path,
@@ -119,7 +148,7 @@ def test_backfill_binds_source_to_its_own_version(database_url_schema: str, repo
             "version": 1,
             "applicationWindow": {
                 "status": "verified",
-                "source": {"kind": "attachment", "ordinal": attachment_ordinal},
+                "source": {"kind": "attachment", "ordinal": 1},
                 "locator": "附件 1",
             },
             "effectiveTo": {"status": "unverified"},
@@ -134,11 +163,6 @@ def test_backfill_binds_source_to_its_own_version(database_url_schema: str, repo
             "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
             (version_id,),
         ).fetchone()[0]
-        attachment_id = conn.execute(
-            "SELECT id::text FROM policy_source "
-            "WHERE policy_version_id = %s AND kind = 'attachment' AND ordinal = %s",
-            (version_id, attachment_ordinal),
-        ).fetchone()[0]
 
     assert stored["applicationWindow"]["sourceId"] == attachment_id
     assert stored["effectiveTo"] == {"status": "unverified"}
@@ -151,6 +175,113 @@ def test_backfill_binds_source_to_its_own_version(database_url_schema: str, repo
             (version_id,),
         ).fetchone()[0]
     assert again == stored
+
+
+def test_attachment_ordinal_is_rank_not_absolute(database_url_schema: str, repo, tmp_path, monkeypatch) -> None:
+    """数据文件写「第几份附件」：没有正文时，第一份附件的绝对 ordinal 是 0，仍应命中它。"""
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["attachment", "attachment"])
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    first, second = _attachment_ids(database_url_schema, version_id)
+
+    path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件 1",
+            },
+        },
+    )
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    assert backfill.run(path, apply=True) == 0
+    with psycopg.connect(database_url_schema) as conn:
+        stored = conn.execute(
+            "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        ).fetchone()[0]
+    assert stored["applicationWindow"]["sourceId"] == first
+    assert stored["applicationWindow"]["sourceId"] != second
+
+
+def test_second_attachment_of_two_is_picked_by_rank(database_url_schema: str, repo, tmp_path, monkeypatch) -> None:
+    """仓库数据文件的形状：正文 + 两个附件，第 2 份附件要落到最后那份。"""
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["body", "attachment", "attachment"])
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    first, second = _attachment_ids(database_url_schema, version_id)
+
+    path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 2},
+                "locator": "附件 2",
+            },
+        },
+    )
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    assert backfill.run(path, apply=True) == 0
+    with psycopg.connect(database_url_schema) as conn:
+        stored = conn.execute(
+            "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        ).fetchone()[0]
+    assert stored["applicationWindow"]["sourceId"] == second
+    assert stored["applicationWindow"]["sourceId"] != first
+
+
+def test_backfill_apply_refused_until_data_is_approved(database_url_schema: str, repo, tmp_path, monkeypatch) -> None:
+    """``draft-pending-m3`` 连 ``--apply`` 都不放行；干跑照常，且一行不写。"""
+    create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    path = _write(
+        tmp_path,
+        {"version": 1, "effectiveTo": {"status": "unknown"}},
+        review_status="draft-pending-m3",
+    )
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    assert backfill.run(path, apply=True) == 2
+    assert backfill.run(path, apply=False) == 0
+
+    with psycopg.connect(database_url_schema) as conn:
+        count = conn.execute(
+            "SELECT count(*) FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_backfill_conflict_needs_overwrite(database_url_schema: str, repo, tmp_path, monkeypatch) -> None:
+    """库里已有不同的值：默认停下（返回 3）且不写；``--overwrite`` 才改写。"""
+    create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    first = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
+    assert backfill.run(first, apply=True) == 0
+
+    second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
+    assert backfill.run(second, apply=True) == 3
+    with psycopg.connect(database_url_schema) as conn:
+        stored = conn.execute(
+            "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        ).fetchone()[0]
+    assert stored["effectiveTo"] == {"status": "unknown"}
+
+    assert backfill.run(second, apply=True, overwrite=True) == 0
+    with psycopg.connect(database_url_schema) as conn:
+        stored = conn.execute(
+            "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        ).fetchone()[0]
+    assert stored["effectiveTo"] == {"status": "unverified"}
 
 
 def test_backfill_never_touches_published_version(database_url_schema: str, repo, tmp_path, monkeypatch) -> None:

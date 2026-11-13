@@ -9,7 +9,7 @@
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
 | `issue-session.py` | 不安装，直接`/opt/huice/venv/bin/python` 跑 | 签发演示会话 cookie 并写 `demo_quota` 起始行（§3.1） |
 | `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
-| `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version.date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库；数据复核前只干跑（§2.1 迁移段） |
+| `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version_date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 不是批准值时 `--apply` 照样拒绝；数据复核前只干跑（§2.1 迁移段） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
 | `nginx-huice-site.conf` | 同上，`enable-tls.sh --web-root` 时改装这一份 | 443 同源站点：前端静态文件 + `/api/v1/` 反代（与上一行**互斥**，同一个文件名） |
@@ -51,7 +51,7 @@
 | 1 | 传代码到 `/opt/huice/app`（§1） | Windows 侧 + ECS | 后面所有脚本都找不到 |
 | 2 | `provision.sh`（§2）：装包、建 `huice` 用户与 venv、装依赖、装 unit 与 80 配置 | ECS | — |
 | 3 | 填 `/etc/huice/api.env`（§3） | ECS | 第 2 步结束时模板里的必填项还是空值，服务会以「缺少变量名」启动失败，属预期（脚本那一步就算失败也继续执行下一步） |
-| 4 | 执行迁移 001—009（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 九行 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500、判断运行因 `material_requirement` 不存在 500；E1 起缺 009 则注册/登录 500（`app_user` / `user_session` / `demo_quota` 都不存在），发送演示会话也会因写不了配额行退出码 3（§2.1 末段） |
+| 4 | 执行迁移 001—011（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 十一行；再按 §2.2 干跑一次日期来源回填 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500、判断运行因 `material_requirement` 不存在 500；E1 起缺 009 则注册/登录 500（`app_user` / `user_session` / `demo_quota` 都不存在），发送演示会话也会因写不了配额行退出码 3（§2.1 末段） |
 | 5 | `systemctl restart huice-api`，再 `nginx -t && systemctl reload nginx` | ECS | 只 `enable` 不 `reload`：外网 404 且 `Server` 头暴露 nginx 版本（见 §8「外网 404」一行） |
 | 6 | 健康检查 200（§4 第 **1—4** 项）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
 | 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3）。**完成后**按 §4 的三批安排补跑第 **8—11** 项（第 5—7 项在第 6 步之后就能跑，不必等这里） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403；若先跑第 8—9 项，会因为 443 还不存在而误判成部署失败 |
@@ -182,6 +182,29 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 > **用 bundle 更新代码前，先删掉手工放进去的迁移文件。** 008 是 scp 进 `/opt/huice/app/infra/sql/` 的未跟踪文件，而分支合并后那个路径是**受版本控制**的：`git fetch` + 检出新提交时会报 `error: Untracked working tree files would be overwritten by checkout` 并停下（同一份内容也一样，git 不比内容）。先 `rm /opt/huice/app/infra/sql/008_material_requirements.sql` 再更新，随后它会随分支一起回来；迁移已入库，重跑任何迁移都是 no-op。
 
 顺序反了不会「降级运行」，而是直接报错：`PATCH /enterprises/{id}/facts/{key}` 的失效事件写入与 `GET /assessment-runs/{runId}` 的事件读取都会因缺列抛 `UndefinedColumn`，分别表现为 500 与历史判断读不出来。反向顺序（先迁移后升级代码）安全，脚本本身可重复执行。
+
+### 2.2 日期来源回填（VIS-06 B1a，迁移 `011` 之后、服务放行之前）
+
+`011_date_provenance.sql` 只建旁表；日期来源的取值由 `backfill-date-provenance.py` + `date-provenance-backfill.json` 回填。**顺序固定**：
+
+1. `bash /opt/huice/app/infra/deploy/migrate.sh`——建表；
+2. 不加 `--apply` 干跑一次，核对匹配到的版本数与被改动条目（干跑不写库）；
+3. M3 逐条对官方原文复核，把数据文件 `reviewStatus` 从 `draft-pending-m3` 改成批准值（`APPLY_REVIEW_STATUSES`，当前是 `approved-by-m3`）；
+4. 再 `--apply` 写库。
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/backfill-date-provenance.py           # 干跑
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/backfill-date-provenance.py --apply   # 第 3 步之后
+```
+
+- **数据文件里的附件序号是「第几份附件」，从 1 起**，不是数据库 `policy_source.ordinal`（那里正文占 0、附件从 1 起但会随份数变化）。脚本按 `ORDER BY ordinal` 的第 n 份去查，不拿绝对号硬匹配。
+- **`verified` 的出处必须属于该版本**：脚本在该 `policy_version_id` 下查 `policy_source`，把真实 id 写进 jsonb；找不到就整批停下、一行不写。年度指南若不在该版本的来源里，只能标 `unverified` 并写 note，不能拿别处的依据充数。
+- **幂等但不静默覆盖**：值相同不写；库里已有**不同**的值时停下返回 `3`，确认旧值不是复核后补的再加 `--overwrite`。
+- 退出码：`0` 成功（含干跑）；`1` 数据库读写失败；`2` 数据文件/环境不合法、版本或来源定位不到、或数据未获批准；`3` 与库里已有值冲突且未加 `--overwrite`。报错只给字段路径与变量名，不含连接串。
 
 ## 3. 填配置
 
