@@ -838,6 +838,62 @@ def test_concurrent_submits_with_one_key_on_two_candidates_create_one_draft(
     assert _policy_counts(database_url_schema) == (1, 1, 1)
 
 
+def test_concurrent_submits_with_different_keys_on_one_candidate_conflict_on_revision(
+    app_db, reviewer, database_url_schema, monkeypatch
+):
+    """不同键、同候选、同一个提交前修订号：后到的是 ``VERSION_CONFLICT``。
+
+    两个请求都带提交前的 ETag。先到的那个建完草稿后 ``mark_submitted`` 轮换
+    revision；后到的在 ``SELECT … FOR UPDATE`` 上等行锁，醒来读到的已是新修订号，
+    而 ``_ensure_submittable`` 先比修订号再比状态，所以回的是 ``VERSION_CONFLICT``
+    （带 ``details.currentRevision``），不是 ``CANDIDATE_STATE_CONFLICT``。
+
+    #71 的 M2 复核指出的就是这一条：描述里写的「不同键同候选 → 状态冲突」只在
+    「已用新修订号重试」时成立，并发同修订号时走的是版本冲突。两种都给用例锁住，
+    免得下一次改顺序又把口径改回去。
+    """
+
+    _seed_run(app_db)
+    [candidate] = _candidates(database_url_schema)
+    revision = _etag(_confirm(reviewer, candidate, candidate["revision"]))
+
+    other = _second_reviewer(app_db, reviewer)
+    first, second = _run_two_submits(
+        app_db,
+        reviewer,
+        monkeypatch,
+        [
+            {
+                "client": reviewer["client"],
+                "candidate": candidate["id"],
+                "revision": revision,
+                "key": uuid4(),
+            },
+            {
+                "client": other,
+                "candidate": candidate["id"],
+                "revision": revision,
+                "key": uuid4(),
+            },
+        ],
+    )
+
+    assert sorted([first.status_code, second.status_code]) == [201, 409], (
+        first.text + second.text
+    )
+    accepted = first if first.status_code == 201 else second
+    rejected = second if first.status_code == 201 else first
+    error = rejected.json()["error"]
+    assert error["code"] == "VERSION_CONFLICT"
+    # 冲突里给的是候选轮换后的修订号（候选 revision 与草稿 revision 是两个值）：
+    # 客户端刷新后拿它重试，才会走到「已提交」的状态判定
+    _body, refreshed = _detail(reviewer, candidate["id"])
+    assert error["details"]["currentRevision"] == refreshed
+    assert error["details"]["currentRevision"] != revision
+    assert accepted.status_code == 201
+    assert _policy_counts(database_url_schema) == (1, 1, 1), "只应建一份草稿"
+
+
 def test_submitting_an_already_submitted_candidate_is_a_state_conflict(
     app_db, reviewer, database_url_schema
 ):

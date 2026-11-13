@@ -19,11 +19,15 @@
 #   draft.2（2026-11-13）：按 M2 复审确认两处口径，不改 schema、不改实现——
 #     DISC-04 写清「不传 status 不过滤，返回全部状态（含终态），终态不清理」；
 #     DISC-07 写清「幂等重放先于候选状态判定」的判定顺序与前端原键重试约定。
+#   draft.3（2026-11-13）：M2 二次复核指出并发口径——两个**不同键**都带提交前同一修订号
+#     并发提交时，后到者拿到的是轮换后的修订号，按判定顺序返回 VERSION_CONFLICT，不是
+#     CANDIDATE_STATE_CONFLICT。DISC-07 补写这一段，并补用例
+#     test_concurrent_submits_with_different_keys_on_one_candidate_conflict_on_revision。
 
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约（E2 草案：政策发现）
-  version: 0.2.0-draft.2
+  version: 0.2.0-draft.3
   description: >-
     政策发现的三个对象：**配置**（审核员手动维护启用开关、抓取周期与来源网址列表）、
     **运行记录**（每轮抓取一条，终态码区分「没有新政策」与「抓取失败」）、
@@ -730,6 +734,13 @@ paths:
         （带 currentStatus；已提交时另带 submittedPolicyId 与 submittedVersion）。
         所以「已提交后再提交一次」：旧修订号 + 新键得到 VERSION_CONFLICT，刷新后的修订号 + 新键
         得到 CANDIDATE_STATE_CONFLICT；两种都不会重复建版本。
+
+        并发同候选、**两个不同键**：两个请求都带提交前的同一修订号时，先到的那个建完草稿就把
+        候选 revision 轮换了，后到者在候选行锁（``FOR UPDATE``）上等到的是新修订号，按上面的
+        顺序先比修订号再比状态，返回 **409 VERSION_CONFLICT**（``details.currentRevision`` 是
+        轮换后的新值），**不是** CANDIDATE_STATE_CONFLICT；草稿只建一份。客户端刷新到新修订号
+        再重试，才会因「已提交」得到 CANDIDATE_STATE_CONFLICT。同键的两个并发请求则都拿到 201
+        （后者是重放）。修复恢复只认原键原修订号，正确性不依赖这两个码的先后。
 
         前端恢复约定：请求结果未知（超时、断网、进程被杀）时**只能原键原修订号重试**，不要换键——
         换键会落进 VERSION_CONFLICT 或 CANDIDATE_STATE_CONFLICT，无法恢复；拿到 201 重放就直接
