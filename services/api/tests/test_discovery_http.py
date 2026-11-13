@@ -1000,3 +1000,40 @@ def test_the_next_rotation_expires_unsubmitted_but_keeps_submitted(
     assert statuses[submitted["id"]] == "submitted"
     assert statuses[pending["id"]] == "expired"
     assert _policy_counts(database_url_schema) == (1, 1, 1)
+
+
+def test_candidate_list_without_status_includes_terminal_states(app_db, reviewer, database_url_schema):
+    """DISC-04 缺省不过滤：已提交、已丢弃的候选仍出现在列表里，详情也取得到。
+
+    前端要「待办」必须自己传 status；服务端替它把终态藏起来，会让刚提交完的候选在刷新后
+    凭空消失，也让审核员找不到已经丢弃的那条。
+    """
+
+    _seed_run(app_db, count=3)
+    candidates = _candidates(database_url_schema)
+    revisions = {item["id"]: _etag(_confirm(reviewer, item, item["revision"])) for item in candidates}
+
+    submitted, discarded, pending = candidates
+    assert _submit(reviewer, submitted["id"], revisions[submitted["id"]]).status_code == 201
+    dropped = reviewer["client"].post(
+        f"/api/v1/admin/policy-candidates/{discarded['id']}/discard",
+        headers=_headers(reviewer, revision=revisions[discarded["id"]]),
+    )
+    assert dropped.status_code == 200, dropped.text
+
+    listing = reviewer["client"].get("/api/v1/admin/policy-candidates")
+    assert listing.status_code == 200
+    assert {item["id"]: item["status"] for item in listing.json()["items"]} == {
+        submitted["id"]: "submitted",
+        discarded["id"]: "discarded",
+        pending["id"]: "pending_review",
+    }
+
+    detail = reviewer["client"].get(f"/api/v1/admin/policy-candidates/{discarded['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "discarded"
+
+    only = reviewer["client"].get(
+        "/api/v1/admin/policy-candidates", params={"status": "submitted"}
+    )
+    assert [item["id"] for item in only.json()["items"]] == [submitted["id"]]

@@ -16,11 +16,14 @@
 #     启用/周期/网址列表；防重入并留运行记录、能区分「没有新政策」与「抓取失败」；首版提交
 #     草稿前必须抽结构化条件；候选保存到下一次自动抓取前）分别落在 DISC-02、DISC-03/运行时
 #     模型、DISC-07、候选状态机；原手动导入（API-04—API-07）一字未动。
+#   draft.2（2026-11-13）：按 M2 复审确认两处口径，不改 schema、不改实现——
+#     DISC-04 写清「不传 status 不过滤，返回全部状态（含终态），终态不清理」；
+#     DISC-07 写清「幂等重放先于候选状态判定」的判定顺序与前端原键重试约定。
 
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约（E2 草案：政策发现）
-  version: 0.2.0-draft.1
+  version: 0.2.0-draft.2
   description: >-
     政策发现的三个对象：**配置**（审核员手动维护启用开关、抓取周期与来源网址列表）、
     **运行记录**（每轮抓取一条，终态码区分「没有新政策」与「抓取失败」）、
@@ -167,7 +170,9 @@ x-e2-errors:
     when: If-Match 的修订号与当前不符（配置或候选都适用），details.currentRevision 给出当前值。
   - code: CANDIDATE_STATE_CONFLICT
     status: 409
-    when: 候选处于 submitted / discarded / expired，或 extraction_failed 直接提交。
+    when: >-
+      候选处于 submitted / discarded / expired，或 extraction_failed 直接提交。同键同候选同修订号
+      的重放先于这条判定（返回 201），见 DISC-07。
     details: 带 currentStatus；已提交时另带 submittedPolicyId 与 submittedVersion。
   - code: CANDIDATE_NOT_FOUND
     status: 404
@@ -442,9 +447,12 @@ paths:
       operationId: listPolicyCandidates
       summary: DISC-04
       description: >-
-        候选列表，按抓取时间倒序。status 可筛选候选状态（缺省=全部非终态之外的都返回，
-        分页游标与筛选条件绑定：换条件后旧游标失效，返回 400 INVALID_QUERY）。
+        候选列表，按抓取时间倒序。status 可筛选候选状态；**缺省不过滤，返回全部状态**——
+        包括 pending_review、extraction_failed，以及 submitted / discarded / expired 这三个终态。
+        终态候选不会被清理，列表与详情一直可查（本版没有保留期或删除任务）。
+        分页游标与筛选条件绑定：换条件后旧游标失效，返回 400 INVALID_QUERY。
         missingFields 直接给出「提交前还缺什么」，前端不需要自己推。
+        要「待办」请显式传 status=pending_review（需要同时看抽取失败时再请求 extraction_failed）。
       tags:
       - admin
       security:
@@ -706,13 +714,26 @@ paths:
         前置条件（任一不满足即拒绝，不落任何数据）：候选为 pending_review、修订号与 If-Match
         一致、missingFields 为空、至少一条结构化条件通过校验。
 
-        幂等：同一个 Idempotency-Key 对同一候选同一修订号重放时，直接返回首次创建的草稿
-        （201 语义按重放返回 200 的旧版式并不存在——响应码仍为 201，body 与 ETag 与首次一致）；
-        同键不同候选/不同修订号返回 409 IDEMPOTENCY_KEY_REUSED。作用域按**操作**划分（与
-        API-03 的 extract 一致），不含操作者：候选是全体审核员共享的资源，另一个审核员撞上同一
-        个键时，同候选同修订号拿到的是同一份草稿，换候选则明确 409，不会悄悄建出第二份。
-        候选一旦已是 submitted，无论带不带幂等键都返回 409 CANDIDATE_STATE_CONFLICT 并带上
-        已提交的 policyId/version，不重复建版本。
+        幂等：同一个 Idempotency-Key 对同一候选同一修订号重放时，直接返回首次创建的草稿。
+        重放不返回 200：响应码仍是 201，body 与 ETag 与首次一致，候选状态不变，不重复建版本。
+        重放路径**不再校验 If-Match 的修订号**——提交成功时候选 revision 已被轮换，用首次请求的
+        旧修订号重放仍然成立，否则「结果未知时原样重试」根本走不通。
+        同键不同候选/不同修订号返回 409 IDEMPOTENCY_KEY_REUSED（修订号在两次尝试之间变过也算，
+        例如中间 PATCH 过候选）。作用域按**操作**划分（与 API-03 的 extract 一致），不含操作者：
+        候选是全体审核员共享的资源，另一个审核员撞上同一个键时，同候选同修订号拿到的是同一份
+        草稿，换候选则明确 409，不会悄悄建出第二份。
+
+        判定顺序（决定前端看到哪个码）：**幂等重放先于候选状态判定**——同键同候选同修订号永远
+        重放 201，即使候选此时已是 submitted / discarded / expired。只有换了键的提交才继续走
+        下面的检查，顺序是：If-Match 修订号不符 → 409 VERSION_CONFLICT（details.currentRevision
+        给出当前值）；修订号相符但状态不是 pending_review → 409 CANDIDATE_STATE_CONFLICT
+        （带 currentStatus；已提交时另带 submittedPolicyId 与 submittedVersion）。
+        所以「已提交后再提交一次」：旧修订号 + 新键得到 VERSION_CONFLICT，刷新后的修订号 + 新键
+        得到 CANDIDATE_STATE_CONFLICT；两种都不会重复建版本。
+
+        前端恢复约定：请求结果未知（超时、断网、进程被杀）时**只能原键原修订号重试**，不要换键——
+        换键会落进 VERSION_CONFLICT 或 CANDIDATE_STATE_CONFLICT，无法恢复；拿到 201 重放就直接
+        使用响应体，不要再发一次 PATCH 去「纠正」。
 
         候选的 attachmentUrls 或 unsupportedAttachmentUrls 非空时，草稿的 validationFindings 里
         会多一条 criterionId 为 null 的 ATTACHMENT_NOT_EXTRACTED：附件首版不下载、不解析，
