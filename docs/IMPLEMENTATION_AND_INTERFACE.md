@@ -420,7 +420,7 @@ API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络�
 
 ### 4.5 政策发现与候选（E2 新增）
 
-**契约位置**：`contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`）。这 8 个操作已在跑，但**尚未并入** `contracts/openapi.yaml`——草案评审通过前不构成对外承诺，前端类型也不据此生成。自检两条：`python contracts/check_e2_draft.py`（草案结构、权限、错误码、运行时模型、样例校验）与 `pytest services/api/tests/test_e2_draft.py`（草案与服务实际发布的操作/组件/常量逐项对照）。
+**契约位置**：`contracts/openapi.e2-draft.yaml`（`0.2.0-draft.3`）。这 8 个操作已在跑，但**尚未并入** `contracts/openapi.yaml`——草案评审通过前不构成对外承诺，前端类型也不据此生成。自检两条：`python contracts/check_e2_draft.py`（草案结构、权限、错误码、运行时模型、样例校验）与 `pytest services/api/tests/test_e2_draft.py`（草案与服务实际发布的操作/组件/常量逐项对照）。
 
 **实现位置**：`app/discovery/{fetch,metadata,extraction,runner}.py`（抓取、元数据启发式、结构化抽取、一轮运行）、`app/integrations/discovery.py`（仓储）、`app/routes/discovery.py`（HTTP）、迁移 `010_policy_discovery.sql`、部署件 `huice-discovery.{service,timer}`。
 

@@ -23,7 +23,7 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 
 ## E2 契约草案（2026-11-12）
 
-[`openapi.e2-draft.yaml`](openapi.e2-draft.yaml) 是 #47 政策发现（DISC-01—08）的**评审草案**（`0.2.0-draft.1`）。这 8 个操作已在 `services/api` 实现，但**尚未并入** `openapi.yaml`：并入会新增 schema，`apps/web/src/api/types.ts` 必须由 M2 重新生成，属消费者切换窗口，与 E1 的节奏一致。
+[`openapi.e2-draft.yaml`](openapi.e2-draft.yaml) 是 #47 政策发现（DISC-01—08）的**评审草案**（`0.2.0-draft.3`）。这 8 个操作已在 `services/api` 实现，但**尚未并入** `openapi.yaml`：并入会新增 schema，`apps/web/src/api/types.ts` 必须由 M2 重新生成，属消费者切换窗口，与 E1 的节奏一致。
 
 - 内容：配置读/写、运行记录列表、候选列表/详情/修改/提交/丢弃；顶层 `x-e2-runtime-model` 写死运行时口径（15 分钟唤醒只看是否到点、周期 360—43200 分钟、单轮 30 分钟、会话级 advisory lock 与全部写入共用一条专用连接、50,000/8,000 token 预算、抓取护栏、8 个终态码、候选状态机），`x-e2-errors` 汇总 E2 新增错误码。
 - 与 #47 的四条对齐点：审核员可配启用/周期/网址列表（DISC-02）；防重入并有运行记录、能机器区分「没有新政策」与「抓取失败」（DISC-03 + `succeeded/partial_failed/failed` × `terminalReason`）；提交草稿前必须有结构化条件（DISC-06/07）；候选保留到下一次自动抓取前（轮转只把旧的 `pending_review`/`extraction_failed` 置 `expired`，`submitted`/`discarded` 不动）。

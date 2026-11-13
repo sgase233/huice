@@ -838,6 +838,62 @@ def test_concurrent_submits_with_one_key_on_two_candidates_create_one_draft(
     assert _policy_counts(database_url_schema) == (1, 1, 1)
 
 
+def test_concurrent_submits_with_different_keys_on_one_candidate_conflict_on_revision(
+    app_db, reviewer, database_url_schema, monkeypatch
+):
+    """不同键、同候选、同一个提交前修订号：后到的是 ``VERSION_CONFLICT``。
+
+    两个请求都带提交前的 ETag。先到的那个建完草稿后 ``mark_submitted`` 轮换
+    revision；后到的在 ``SELECT … FOR UPDATE`` 上等行锁，醒来读到的已是新修订号，
+    而 ``_ensure_submittable`` 先比修订号再比状态，所以回的是 ``VERSION_CONFLICT``
+    （带 ``details.currentRevision``），不是 ``CANDIDATE_STATE_CONFLICT``。
+
+    #71 的 M2 复核指出的就是这一条：描述里写的「不同键同候选 → 状态冲突」只在
+    「已用新修订号重试」时成立，并发同修订号时走的是版本冲突。两种都给用例锁住，
+    免得下一次改顺序又把口径改回去。
+    """
+
+    _seed_run(app_db)
+    [candidate] = _candidates(database_url_schema)
+    revision = _etag(_confirm(reviewer, candidate, candidate["revision"]))
+
+    other = _second_reviewer(app_db, reviewer)
+    first, second = _run_two_submits(
+        app_db,
+        reviewer,
+        monkeypatch,
+        [
+            {
+                "client": reviewer["client"],
+                "candidate": candidate["id"],
+                "revision": revision,
+                "key": uuid4(),
+            },
+            {
+                "client": other,
+                "candidate": candidate["id"],
+                "revision": revision,
+                "key": uuid4(),
+            },
+        ],
+    )
+
+    assert sorted([first.status_code, second.status_code]) == [201, 409], (
+        first.text + second.text
+    )
+    accepted = first if first.status_code == 201 else second
+    rejected = second if first.status_code == 201 else first
+    error = rejected.json()["error"]
+    assert error["code"] == "VERSION_CONFLICT"
+    # 冲突里给的是候选轮换后的修订号（候选 revision 与草稿 revision 是两个值）：
+    # 客户端刷新后拿它重试，才会走到「已提交」的状态判定
+    _body, refreshed = _detail(reviewer, candidate["id"])
+    assert error["details"]["currentRevision"] == refreshed
+    assert error["details"]["currentRevision"] != revision
+    assert accepted.status_code == 201
+    assert _policy_counts(database_url_schema) == (1, 1, 1), "只应建一份草稿"
+
+
 def test_submitting_an_already_submitted_candidate_is_a_state_conflict(
     app_db, reviewer, database_url_schema
 ):
@@ -1000,3 +1056,40 @@ def test_the_next_rotation_expires_unsubmitted_but_keeps_submitted(
     assert statuses[submitted["id"]] == "submitted"
     assert statuses[pending["id"]] == "expired"
     assert _policy_counts(database_url_schema) == (1, 1, 1)
+
+
+def test_candidate_list_without_status_includes_terminal_states(app_db, reviewer, database_url_schema):
+    """DISC-04 缺省不过滤：已提交、已丢弃的候选仍出现在列表里，详情也取得到。
+
+    前端要「待办」必须自己传 status；服务端替它把终态藏起来，会让刚提交完的候选在刷新后
+    凭空消失，也让审核员找不到已经丢弃的那条。
+    """
+
+    _seed_run(app_db, count=3)
+    candidates = _candidates(database_url_schema)
+    revisions = {item["id"]: _etag(_confirm(reviewer, item, item["revision"])) for item in candidates}
+
+    submitted, discarded, pending = candidates
+    assert _submit(reviewer, submitted["id"], revisions[submitted["id"]]).status_code == 201
+    dropped = reviewer["client"].post(
+        f"/api/v1/admin/policy-candidates/{discarded['id']}/discard",
+        headers=_headers(reviewer, revision=revisions[discarded["id"]]),
+    )
+    assert dropped.status_code == 200, dropped.text
+
+    listing = reviewer["client"].get("/api/v1/admin/policy-candidates")
+    assert listing.status_code == 200
+    assert {item["id"]: item["status"] for item in listing.json()["items"]} == {
+        submitted["id"]: "submitted",
+        discarded["id"]: "discarded",
+        pending["id"]: "pending_review",
+    }
+
+    detail = reviewer["client"].get(f"/api/v1/admin/policy-candidates/{discarded['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "discarded"
+
+    only = reviewer["client"].get(
+        "/api/v1/admin/policy-candidates", params={"status": "submitted"}
+    )
+    assert [item["id"] for item in only.json()["items"]] == [submitted["id"]]
