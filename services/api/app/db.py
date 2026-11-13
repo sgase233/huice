@@ -81,6 +81,31 @@ class Database:
             except Exception:  # noqa: BLE001 - 坏的连接可能归还失败，不能掩盖原始异常
                 logger.debug("归还数据库连接失败，已忽略", exc_info=True)
 
+    @contextmanager
+    def dedicated_connection(self) -> Iterator[Connection]:
+        """单开一条**不走池**的连接，供发现运行持 advisory lock 并承担本轮全部写入。
+
+        E0 D3.1 要求「锁与写共用同一条连接」：池里的连接可能被归还、被别处复用、
+        被池的健康检查替换，而会话级 advisory lock 跟着连接走。只有一条独立连接
+        才能保证「连接断了 = 锁没了 = 未提交的写入一起没了」这个等式成立。
+
+        这里不开事务：调用方自己用 ``conn.transaction()`` 划事务边界，运行器借此把
+        「置旧候选过期 + 插运行行 + 推进 next_run_at」放进同一个事务。
+        """
+
+        try:
+            conn = Connection.connect(self._dsn, autocommit=True)
+        except (OperationalError, ValueError) as exc:
+            raise StorageUnavailable("数据库连接不可用") from exc
+        try:
+            _configure(conn)
+            yield conn
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - 关闭失败不能盖掉本轮的真实结果
+                logger.debug("关闭发现运行专用连接失败，已忽略", exc_info=True)
+
     def close(self) -> None:
         if self._pool is not None:
             self._pool.close()

@@ -37,6 +37,19 @@ IMPLEMENTED = {
     ("get", "/assessment-runs"): "listRuns",
 }
 
+#: E2（#47）的 8 个发现/候选操作。首版只写在 ``contracts/openapi.e2-draft.yaml``，
+#: 尚未并入正式契约（沿用 E1 的做法：草案独立 PR，合并后再进 openapi.yaml）。
+E2_OPERATIONS = {
+    ("get", "/admin/discovery/settings"): "getDiscoverySettings",
+    ("put", "/admin/discovery/settings"): "updateDiscoverySettings",
+    ("get", "/admin/discovery/runs"): "listDiscoveryRuns",
+    ("get", "/admin/policy-candidates"): "listPolicyCandidates",
+    ("get", "/admin/policy-candidates/{candidateId}"): "getPolicyCandidate",
+    ("patch", "/admin/policy-candidates/{candidateId}"): "updatePolicyCandidate",
+    ("post", "/admin/policy-candidates/{candidateId}/submit"): "submitPolicyCandidate",
+    ("post", "/admin/policy-candidates/{candidateId}/discard"): "discardPolicyCandidate",
+}
+
 #: E1（#46）新增的 7 个操作。它们同时写在正式契约与设计记录里，两边都要对得上。
 E1_OPERATIONS = {
     ("post", "/auth/register"): "registerUser",
@@ -197,7 +210,25 @@ def test_unimplemented_endpoints_are_not_served(schema):
         for path, operations in schema["paths"].items()
         for method in operations
     }
-    assert served == set(IMPLEMENTED)
+    # E2 的 8 个操作已经实现、但还没并入正式契约，属于「已实现、只在草案里」。
+    assert served == set(IMPLEMENTED) | set(E2_OPERATIONS)
+
+
+def test_e2_operations_match_the_draft(schema):
+    """E2 操作的服务端实现与 ``openapi.e2-draft.yaml`` 逐项对齐。"""
+
+    draft = yaml.safe_load(
+        (CONTRACT_PATH.parent / "openapi.e2-draft.yaml").read_text(encoding="utf-8")
+    )
+    for (method, path), operation_id in E2_OPERATIONS.items():
+        recorded = draft["paths"].get(path, {}).get(method)
+        assert recorded is not None, f"草案缺少 {method.upper()} {path}"
+        assert recorded["operationId"] == operation_id
+        served = schema["paths"][f"{API_PREFIX}{path}"][method]
+        assert served["operationId"] == operation_id
+        assert recorded["security"] == served["security"], path
+        for field in ("local", "restricted"):
+            assert recorded["x-e1-gate"][field] == served["x-e1-gate"][field], (path, field)
 
 
 def test_e1_operations_are_declared_in_the_contract_and_the_draft(contract, schema):

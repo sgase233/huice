@@ -1,0 +1,796 @@
+"""一次政策发现的编排：运行锁、批次轮换、抓取、判重、抽取与预算。
+
+# 并发正确性只靠一条连接
+
+E0 D3.1 的结论是「锁与写共用同一条连接」：运行器先在该连接上拿会话级
+``pg_try_advisory_lock``，之后**本轮全部数据库写入都走这条连接**。进程崩溃/被杀时
+连接断开，PostgreSQL 自动释放锁并回滚未提交事务，因此不存在「锁已经没了、旧任务却
+还能提交候选」的窗口——这不是靠事后检查得到的保证，而是机制上做不到。
+
+轮换（旧候选置 ``expired``、插入运行行、推进 ``next_run_at``）就是这个连接上的第一个
+事务：要么三件事一起生效，要么都不生效（D3.5）。
+
+# 三个时钟（D3.1）
+
+* **到点判断**：看 ``next_run_at``，不是看「距上次运行多久」——审核员改周期后立刻生效；
+* **运行上限**：30 分钟的墙钟，超时中止并记 ``timeout``，与锁的生命周期无关；
+* **停机补跑**：到点时若已过期，照跑一次并记 ``late_by_seconds``，不追历史周期。
+
+# 终态可区分（D3.5）
+
+``no_new_policy`` / ``fetch_failed`` / ``partial_failed`` / ``budget_exceeded`` /
+``oversize`` / ``timeout`` / ``lock_lost``，都能从 ``discovery_run`` 直接读出来，
+页面据此区分「没有新政策」和「抓取失败」，不用猜。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Sequence
+from uuid import UUID, uuid4
+
+from psycopg import Connection, OperationalError
+from psycopg.errors import UniqueViolation
+
+from ..db import Database
+from ..integrations.discovery import DiscoveryRepository
+from .extraction import CODE_BODY_EMPTY, CODE_NO_CRITERIA, CandidateExtraction, extract_candidate
+from .fetch import (
+    MAX_CANDIDATES_PER_RUN,
+    MAX_RUN_SECONDS,
+    FetchError,
+    FetchedPage,
+    Fetcher,
+    body_fingerprint,
+    canonicalize_url,
+    estimate_tokens,
+    extract_links,
+    listing_links,
+    looks_like_article,
+    looks_like_listing,
+)
+from .metadata import extract_metadata
+
+logger = logging.getLogger("huice.discovery")
+
+#: 运行锁的键。字符串常量而不是随机值：同一台库上的所有进程必须算出同一个键。
+LOCK_SQL = "SELECT pg_try_advisory_lock(hashtext('huice.discovery'))"
+UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('huice.discovery'))"
+
+#: 单次运行 50,000 token、单候选 8,000 token（D3.3 初始值，待 M3 用真实页面校准）。
+RUN_TOKEN_BUDGET = 50_000
+CANDIDATE_TOKEN_BUDGET = 8_000
+
+#: 抽取调用本身允许的最大输出（与 :mod:`app.agents.extraction` 的 ``max_tokens`` 一致）。
+#: 预算只按正文估算输入是不够的：余额刚好够输入时仍会发出调用，再往上加最多这么多次
+#: 输出 token，整轮就越过上限了。
+MAX_COMPLETION_TOKENS = 2_048
+#: 系统提示与 JSON 包装的保守余量（实际分词随模型而异，取整留足）。
+PROMPT_OVERHEAD_TOKENS = 1_000
+
+#: 单轮最多下载多少个正文页。新候选另有 50 条上限；这个更宽的值用来兜住「反复命中
+#: 重复链接」的情形，避免一轮把大量时间花在同一个站点的历史页面上。
+MAX_ARTICLE_FETCHES_PER_RUN = 200
+
+#: 抽取本身失败（不是「没抽到条件」）时的内部码，用来决定「本轮还要不要继续调模型」。
+_SOFT_EXTRACTION_CODES = frozenset(
+    {CODE_NO_CRITERIA, CODE_BODY_EMPTY, "EXTRACTION_BUDGET_EXCEEDED"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryOutcome:
+    """CLI 与运维脚本读的结果；不写库，不包含任何正文。"""
+
+    ran: bool
+    reason: str
+    run_id: UUID | None = None
+    new_candidates: int = 0
+    duplicates: int = 0
+    #: 只按正文指纹怀疑重复、但仍照常建候选的条数；与 ``duplicates``（确认重复）分开。
+    suspected_duplicates: int = 0
+    detail: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.reason in ("completed", "no_new_policy", "disabled", "not_due", "locked")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ran": self.ran,
+            "reason": self.reason,
+            "runId": str(self.run_id) if self.run_id else None,
+            "newCandidates": self.new_candidates,
+            "duplicates": self.duplicates,
+            "suspectedDuplicates": self.suspected_duplicates,
+            "detail": self.detail,
+        }
+
+
+class DiscoveryRunner:
+    def __init__(
+        self,
+        *,
+        database: Database,
+        repository: DiscoveryRepository,
+        llm: Any = None,
+        fetcher: Fetcher | None = None,
+        model_version: str | None = None,
+        now: Callable[[], datetime] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._db = database
+        self._repository = repository
+        self._llm = llm
+        self._fetcher = fetcher or Fetcher()
+        self._model_version = model_version
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._clock = clock
+
+    # ------------------------------------------------------------------ 入口
+
+    def run(self, trigger: str = "cli", *, force: bool = False) -> DiscoveryOutcome:
+        """按配置判断是否该跑；该跑就持锁跑完一轮并写运行记录。"""
+
+        settings = self._repository.get_settings()
+        if not settings["enabled"]:
+            return DiscoveryOutcome(ran=False, reason="disabled", detail="后台未启用自动发现。")
+
+        now = self._now()
+        next_run_at = settings["next_run_at"]
+        if not force and next_run_at is not None and now < next_run_at:
+            return DiscoveryOutcome(
+                ran=False,
+                reason="not_due",
+                detail=f"下一次计划时间为 {next_run_at.isoformat()}。",
+            )
+
+        late_by = (
+            int((now - next_run_at).total_seconds())
+            if next_run_at is not None and now > next_run_at
+            else None
+        )
+
+        try:
+            with self._db.dedicated_connection() as conn:
+                if not self._take_lock(conn):
+                    return DiscoveryOutcome(
+                        ran=False, reason="locked", detail="另一个发现运行正在进行，本轮跳过。"
+                    )
+                try:
+                    return self._run_locked(
+                        conn, settings=settings, trigger=trigger, now=now, late_by=late_by
+                    )
+                finally:
+                    self._release_lock(conn)
+        except OperationalError as exc:
+            # 连专用连接都开不起来：本轮一个字节都没写。
+            logger.warning("发现运行无法建立可用的数据库连接：%s", type(exc).__name__)
+            return DiscoveryOutcome(ran=False, reason="lock_lost", detail="数据库连接不可用。")
+
+    # ------------------------------------------------------------------ 锁
+
+    def _take_lock(self, conn: Connection) -> bool:
+        return bool(conn.execute(LOCK_SQL).fetchone()[0])
+
+    def _release_lock(self, conn: Connection) -> None:
+        try:
+            conn.execute(UNLOCK_SQL)
+        except OperationalError:
+            # 连接已经断了：会话级锁随连接一起消失，不需要（也做不到）再解锁。
+            logger.debug("运行锁所在连接已断开，锁随会话释放")
+
+    # -------------------------------------------------------------- 主流程
+
+    def _run_locked(
+        self,
+        conn: Connection,
+        *,
+        settings: dict[str, Any],
+        trigger: str,
+        now: datetime,
+        late_by: int | None,
+    ) -> DiscoveryOutcome:
+        run_id = uuid4()
+        source_urls = list(settings["source_urls"] or [])
+        interval = timedelta(minutes=int(settings["interval_minutes"]))
+
+        with conn.transaction():
+            # 本轮持锁，所以仍为 running 的行只可能来自已经死掉的进程（见仓储注释）。
+            self._repository.close_stale_runs(conn, now=now)
+            # 轮换：旧候选一律过期，即使本轮随后失败也不恢复（D3.5 / §4.1）。
+            self._repository.rotate_candidates(conn, now=now)
+            self._repository.start_run(
+                conn,
+                run_id=run_id,
+                started_at=now,
+                trigger=trigger,
+                next_run_at=now + interval,
+                late_by_seconds=late_by,
+            )
+
+        if not source_urls:
+            # 「已启用但没有来源」不是抓取失败，也不是新政策：明确记成一条空轮次，
+            # 同时把 next_run_at 推进，避免 timer 每 15 分钟反复重试同一配置错误。
+            detail = "尚未配置来源网址，本轮没有抓取。"
+            self._finish(
+                conn,
+                run_id=run_id,
+                status="succeeded",
+                reason="no_new_policy",
+                detail=detail,
+                source_status=[],
+                counts=_Counts(),
+                now=now,
+            )
+            return DiscoveryOutcome(ran=True, reason="no_new_policy", run_id=run_id, detail=detail)
+
+        started_mono = self._clock()
+        counts = _Counts()
+        source_status: list[dict[str, Any]] = []
+        seen_hashes: set[str] = set()
+        article_fetches = 0
+        tokens_used = 0
+        tokens_unknown = False
+        aborted: str | None = None
+        abort_detail: str | None = None
+        halt_links = False
+
+        for source_url in source_urls:
+            if aborted or halt_links:
+                source_status.append(_skipped(source_url, "本轮已提前结束，未检查"))
+                continue
+            entry: dict[str, Any] = {
+                "url": source_url,
+                "status": "ok",
+                "links": 0,
+                "candidates": 0,
+                "articleFailures": 0,
+                "errorCategory": None,
+                "message": None,
+            }
+            counts.sources_checked += 1
+            try:
+                page = self._fetcher.fetch(source_url)
+            except FetchError as exc:
+                entry.update(status="failed", errorCategory=exc.category, message=exc.message)
+                counts.failed_sources += 1
+                source_status.append(entry)
+                continue
+
+            links = extract_links(page.markup or "", page.url) if page.markup else []
+            if not links:
+                if listing_links(page.markup or "", page.url):
+                    # 页面只列出下一级目录（年度分类、栏目索引），过滤后一条正文都
+                    # 没有。不能退回「整页当单篇正文」——那会把目录页做成伪候选。
+                    entry.update(
+                        status="failed",
+                        errorCategory="unsupported_list",
+                        message=(
+                            "页面只列出目录/导航链接，没有可直接抓取的正文链接；"
+                            "请改配能列出政策正文的栏目页。"
+                        ),
+                    )
+                    counts.failed_sources += 1
+                    source_status.append(entry)
+                    continue
+                if not looks_like_article(page.text):
+                    # 框架页 / 跳转页：页面 200 但正文为空或只有几个字。老逻辑会把
+                    # 它当单篇正文，产出一条 extraction_failed 伪候选；这里按来源级
+                    # 失败记，提示改配能列出政策链接的栏目页或真正的正文页。
+                    entry.update(
+                        status="failed",
+                        errorCategory="unsupported_list",
+                        message="页面没有可列取的链接，内容也不像单篇正文（疑似框架页或入口页）。",
+                    )
+                    counts.failed_sources += 1
+                    source_status.append(entry)
+                    continue
+                # 单篇正文入口：这一页本身就是候选来源。
+                links = [canonicalize_url(page.url) or page.url]
+            entry["links"] = len(links)
+            counts.links_seen += len(links)
+
+            article_attempts = 0
+            article_failures = 0
+            article_categories: set[str] = set()
+
+            for link in links:
+                if aborted:
+                    break
+                if article_fetches >= MAX_ARTICLE_FETCHES_PER_RUN:
+                    halt_links = True
+                    abort_detail = "本轮正文下载达到上限，剩余链接留待下一轮。"
+                    break
+                if counts.new_candidates >= MAX_CANDIDATES_PER_RUN:
+                    halt_links = True
+                    abort_detail = (
+                        f"本轮新候选已达上限（{MAX_CANDIDATES_PER_RUN} 条），剩余链接留待下一轮。"
+                    )
+                    break
+                if self._clock() - started_mono > MAX_RUN_SECONDS:
+                    aborted = "timeout"
+                    abort_detail = "本轮超过 30 分钟上限，已中止后续抓取。"
+                    break
+
+                article_fetches += 1
+                article_attempts += 1
+                counts.articles_attempted += 1
+                try:
+                    article = self._fetcher.fetch(link)
+                except FetchError as exc:
+                    # 单篇正文抓不到不立刻算来源页失败（下一轮会重试），但**必须留痕**：
+                    # 不计入这里的话，栏目页成功、正文全挂的一轮会被报成「没有新政策」。
+                    article_failures += 1
+                    article_categories.add(exc.category)
+                    counts.failed_articles += 1
+                    logger.warning(
+                        "发现运行正文抓取失败 run=%s url=%s category=%s",
+                        run_id,
+                        link,
+                        exc.category,
+                    )
+                    continue
+
+                if not looks_like_article(article.text):
+                    # 列表页/跳转页被当成正文抓下来（例如栏目页里唯一的链接指向
+                    # 「本期目录」）：不生成候选，记成正文失败，让来源状态如实反映。
+                    article_failures += 1
+                    article_categories.add("unsupported_list")
+                    counts.failed_articles += 1
+                    logger.warning(
+                        "发现运行命中非正文页面 run=%s url=%s", run_id, link
+                    )
+                    continue
+
+                if looks_like_listing(article.markup or "", article.text):
+                    # 年度分类页/导航页正文也可能超过 60 字，只靠长度挡不住。链接文字
+                    # 占大半页就是入口页：**在抽取之前**跳过，不花模型预算、不产生
+                    # 伪候选；计一次正文失败，来源状态仍然如实（#64 复审 P1）。
+                    article_failures += 1
+                    article_categories.add("unsupported_list")
+                    counts.failed_articles += 1
+                    logger.warning(
+                        "发现运行命中列表/导航页 run=%s url=%s", run_id, link
+                    )
+                    continue
+
+                canonical = canonicalize_url(article.url) or article.url
+                content_hash = article.content_hash
+
+                page_row = self._repository.find_page(conn, canonical)
+                # 同一 URL 内容变了 = 新版政策，**包括 A → B → A 这种回退旧版本**。
+                # 这个判断必须排在指纹判重之前：否则第三轮 A 会命中第一轮 A 的整页
+                # 哈希（指纹表），被当成确认重复跳过，versionChanged 候选永远出不来
+                # （#64 复审 P1）。同一 URL 的新内容恰好等于另一网址的历史内容也一样。
+                version_changed = (
+                    page_row is not None and page_row["last_content_hash"] != content_hash
+                )
+
+                if not version_changed:
+                    if content_hash in seen_hashes:
+                        counts.duplicates += 1
+                        continue
+                    if page_row is not None:
+                        # 同 URL 未变化：确认重复。
+                        counts.duplicates += 1
+                        self._touch_page(
+                            conn, canonical, content_hash, page_row["last_candidate_id"], run_id, now
+                        )
+                        continue
+                    fingerprint = self._repository.find_fingerprint(conn, content_hash)
+                    if fingerprint is not None:
+                        counts.duplicates += 1
+                        self._touch_page(
+                            conn, canonical, content_hash, fingerprint["candidate_id"], run_id, now
+                        )
+                        continue
+
+                prior_candidate_id: UUID | None = None
+                prior_policy_id: UUID | None = None
+                prior_version: str | None = None
+                if version_changed and page_row["last_candidate_id"]:
+                    prior_candidate_id = page_row["last_candidate_id"]
+                    prior = self._repository.candidate_policy_ref(conn, prior_candidate_id)
+                    if prior is not None:
+                        prior_policy_id = prior["submitted_policy_id"]
+                        prior_version = prior["submitted_version"]
+
+                # 换 URL 同内容：整页文本（含导航、页脚）哈希不同，但正文条款逐字相同。
+                # 按句子集合指纹再比一次，但**只当提示，不当结论**：跨站转载里常见
+                # 「长条款照抄、适用范围或截止日等短句不同」的孪生文件，直接跳过会把
+                # 另一份政策静默吞掉（#64 用「适用范围：深圳市 → 广东省」复现过）。
+                # 因此这里照常建候选，用 ``suspectedDuplicateOf`` 指向指纹命中的那条，
+                # 由审核员比对后决定丢弃还是分别提交；只有整页哈希（含同 URL 未变化页）
+                # 才算确认重复，记 ``duplicates``。
+                #
+                # 内容变了的同一 URL 也不跳过，只是同一份提示也要给出：A → B → A 时
+                # 这份内容和第一轮的 A 相同，审核员需要看到。此时不能排除本 URL——
+                # 要找的正是它自己历史上那条候选。
+                suspected_of: UUID | None = None
+                body_fp = body_fingerprint(article.text)
+                if body_fp is not None and (page_row is None or version_changed):
+                    twin = self._repository.find_fingerprint_by_body(
+                        conn,
+                        body_fp,
+                        exclude_url=None if version_changed else canonical,
+                    )
+                    if twin is not None:
+                        candidate = twin["candidate_id"]
+                        # 指向本 URL 上一版时，duplicateOf / versionChanged 已经表达了，
+                        # 不再重复标注。
+                        if candidate is not None and candidate != prior_candidate_id:
+                            suspected_of = candidate
+                seen_hashes.add(content_hash)
+
+                candidate_id = uuid4()
+                estimate = estimate_tokens(article.text)
+                # 发调用的前提是「这一篇最多可能花多少」还装得下：正文估算 + 系统提示
+                # 余量 + 输出上限。只看输入的话，余额刚好够输入时仍会发请求，再叠上
+                # 最多 MAX_COMPLETION_TOKENS 的输出就把整轮顶过上限。
+                reserve = estimate + PROMPT_OVERHEAD_TOKENS + MAX_COMPLETION_TOKENS
+                if estimate > CANDIDATE_TOKEN_BUDGET:
+                    outcome = _budget_failed(estimate, CANDIDATE_TOKEN_BUDGET)
+                elif tokens_used + reserve > RUN_TOKEN_BUDGET:
+                    aborted = "budget"
+                    abort_detail = "本轮模型预算已用尽，剩余候选留待下一轮。"
+                    break
+                else:
+                    outcome = extract_candidate(
+                        candidate_id=candidate_id,
+                        source_url=article.url,
+                        text=article.text,
+                        llm=self._llm,
+                        model_version=self._model_version,
+                    )
+                    tokens_used += outcome.tokens_used
+                    if outcome.usage is not None and not outcome.tokens_known:
+                        tokens_unknown = True
+                        aborted = "budget"
+                        abort_detail = (
+                            "模型未返回可用的用量，已标记 tokensUnknown 并停止本轮后续抽取。"
+                        )
+
+                stored = self._store_candidate(
+                    conn,
+                    candidate_id=candidate_id,
+                    run_id=run_id,
+                    now=now,
+                    article=article,
+                    canonical=canonical,
+                    content_hash=content_hash,
+                    body_fp=body_fp,
+                    outcome=outcome,
+                    version_changed=version_changed,
+                    prior_candidate_id=prior_candidate_id,
+                    prior_policy_id=prior_policy_id,
+                    prior_version=prior_version,
+                    suspected_duplicate_of=suspected_of,
+                )
+                if stored:
+                    counts.new_candidates += 1
+                    entry["candidates"] += 1
+                    if suspected_of is not None:
+                        counts.suspected_duplicates += 1
+                else:
+                    # 同一个网址同内容已挂着有效候选（重复处理/并发）：这条才是确认重复。
+                    counts.duplicates += 1
+
+                if outcome.status != "pending_review":
+                    failure = (outcome.extraction or {}).get("failureCode")
+                    if failure not in _SOFT_EXTRACTION_CODES and aborted is None:
+                        # 模型层面出错：继续调用只会把一次故障放大成几十次。
+                        aborted = "model"
+                        abort_detail = "抽取调用失败，已停止本轮后续模型调用。"
+
+            entry["articleFailures"] = article_failures
+            if article_failures and article_failures == article_attempts:
+                # 这条来源的正文一篇都没下来：按来源失败记，否则整轮会被报成
+                # 「没有新政策」（DISC-AT-07 要求全失败与无新政策可区分）。
+                entry["status"] = "failed"
+                entry["errorCategory"] = (
+                    next(iter(article_categories))
+                    if len(article_categories) == 1
+                    else "fetch_failed"
+                )
+                entry["message"] = "该来源的正文页全部抓取失败。"
+                counts.failed_sources += 1
+
+            source_status.append(entry)
+
+        return self._finish_run(
+            conn,
+            run_id=run_id,
+            now=now,
+            counts=counts,
+            source_status=source_status,
+            aborted=aborted,
+            abort_detail=abort_detail,
+            tokens_used=tokens_used,
+            tokens_unknown=tokens_unknown,
+        )
+
+    # ------------------------------------------------------------- 写候选
+
+    def _store_candidate(
+        self,
+        conn: Connection,
+        *,
+        candidate_id: UUID,
+        run_id: UUID,
+        now: datetime,
+        article: FetchedPage,
+        canonical: str,
+        content_hash: str,
+        body_fp: str | None,
+        outcome: CandidateExtraction,
+        version_changed: bool,
+        prior_candidate_id: UUID | None,
+        prior_policy_id: UUID | None,
+        prior_version: str | None,
+        suspected_duplicate_of: UUID | None = None,
+    ) -> bool:
+        """一个候选一个事务：候选行、指纹、网址快照一起提交，不留半条。"""
+
+        metadata = extract_metadata(article.text, source_url=article.url)
+        values: dict[str, Any] = {
+            "id": candidate_id,
+            "run_id": run_id,
+            "revision": uuid4(),
+            "status": outcome.status,
+            "source_url": article.url,
+            "fetched_at": article.fetched_at,
+            "content_hash": content_hash,
+            "raw_hash": article.raw_hash,
+            "storage_key": None,
+            "body_text": article.text,
+            # 提交目标（新建政策/新版本）由审核员在 PATCH 里决定，抓取器不预设。
+            "policy_id": None,
+            "version": None,
+            **metadata.as_columns(),
+            "applicable_entities": None,
+            "attachment_urls": json.dumps(list(article.attachments), ensure_ascii=False),
+            # http:// 等不能进候选的附件链接：只留档并提示，避免「过滤后为空 = 没附件」。
+            "unsupported_attachment_urls": json.dumps(
+                list(article.unsupported_attachments), ensure_ascii=False
+            ),
+            "missing_fields": json.dumps(metadata.missing_fields(), ensure_ascii=False),
+            "criteria": json.dumps(outcome.criteria, ensure_ascii=False),
+            "validation_findings": json.dumps(outcome.findings, ensure_ascii=False),
+            "extraction": (
+                json.dumps(outcome.extraction, ensure_ascii=False)
+                if outcome.extraction is not None
+                else None
+            ),
+            "duplicate_of": prior_candidate_id if version_changed else None,
+            # 正文指纹命中的是**另一条候选**，不是本 URL 的上一版；只提示、不合并。
+            "suspected_duplicate_of": suspected_duplicate_of,
+            "existing_policy_id": prior_policy_id if version_changed else None,
+            "existing_version": prior_version if version_changed else None,
+            "version_changed": version_changed,
+            "created_at": now,
+            "updated_at": now,
+        }
+        try:
+            with conn.transaction():
+                self._repository.insert_candidate(conn, values)
+                self._repository.record_fingerprint(
+                    conn,
+                    content_hash=content_hash,
+                    body_fingerprint=body_fp,
+                    canonical_url=canonical,
+                    now=now,
+                    outcome="pending",
+                    candidate_id=candidate_id,
+                )
+                self._repository.upsert_page(
+                    conn,
+                    canonical_url=canonical,
+                    content_hash=content_hash,
+                    candidate_id=candidate_id,
+                    run_id=run_id,
+                    now=now,
+                )
+            return True
+        except UniqueViolation:
+            # 同一个网址同一内容已经挂着一条有效候选：重复处理/并发由部分唯一索引兜底。
+            # 不同网址的内容哈希相同不算冲突——两边各自可能是版本变化，都要生成候选。
+            return False
+
+    def _touch_page(
+        self,
+        conn: Connection,
+        canonical_url: str,
+        content_hash: str,
+        candidate_id: UUID | None,
+        run_id: UUID,
+        now: datetime,
+    ) -> None:
+        self._repository.upsert_page(
+            conn,
+            canonical_url=canonical_url,
+            content_hash=content_hash,
+            candidate_id=candidate_id,
+            run_id=run_id,
+            now=now,
+        )
+
+    # ------------------------------------------------------------- 收尾
+
+    def _finish_run(
+        self,
+        conn: Connection,
+        *,
+        run_id: UUID,
+        now: datetime,
+        counts: "_Counts",
+        source_status: list[dict[str, Any]],
+        aborted: str | None,
+        abort_detail: str | None,
+        tokens_used: int,
+        tokens_unknown: bool,
+    ) -> DiscoveryOutcome:
+        status, reason, detail = _verdict(
+            counts=counts,
+            aborted=aborted,
+            abort_detail=abort_detail,
+            source_status=source_status,
+        )
+        if tokens_unknown and reason == "budget_exceeded":
+            suffix = "（模型用量未知，已停止本轮后续消耗。）"
+            detail = f"{detail}{suffix}" if detail else suffix
+            if abort_detail == "本轮模型预算已用尽，剩余候选留待下一轮。":
+                detail = abort_detail + suffix
+        try:
+            self._finish(
+                conn,
+                run_id=run_id,
+                status=status,
+                reason=reason,
+                detail=detail,
+                source_status=source_status,
+                counts=counts,
+                now=self._now(),
+                tokens_used=tokens_used,
+                tokens_unknown=tokens_unknown,
+            )
+        except OperationalError:
+            # 连接在收尾时断开：这条运行行保持 running，下一次运行持锁后会把它收成
+            # failed / lock_lost（见 close_stale_runs）。此刻任何写入都进不去。
+            logger.warning("发现运行收尾写入失败，运行行留待下次收尾 run=%s", run_id)
+        return DiscoveryOutcome(
+            ran=True,
+            reason=reason,
+            run_id=run_id,
+            new_candidates=counts.new_candidates,
+            duplicates=counts.duplicates,
+            suspected_duplicates=counts.suspected_duplicates,
+            detail=detail,
+        )
+
+    def _finish(
+        self,
+        conn: Connection,
+        *,
+        run_id: UUID,
+        status: str,
+        reason: str,
+        detail: str | None,
+        source_status: list[dict[str, Any]],
+        counts: "_Counts",
+        now: datetime,
+        tokens_used: int = 0,
+        tokens_unknown: bool = False,
+    ) -> None:
+        with conn.transaction():
+            self._repository.finish_run(
+                conn,
+                run_id=run_id,
+                status=status,
+                terminal_reason=reason,
+                finished_at=now,
+                sources_checked=counts.sources_checked,
+                links_seen=counts.links_seen,
+                duplicates=counts.duplicates,
+                suspected_duplicates=counts.suspected_duplicates,
+                new_candidates=counts.new_candidates,
+                failed_sources=counts.failed_sources,
+                failed_articles=counts.failed_articles,
+                tokens_used=tokens_used,
+                tokens_unknown=tokens_unknown,
+                source_status=source_status,
+                detail=detail,
+            )
+
+
+@dataclass(slots=True)
+class _Counts:
+    sources_checked: int = 0
+    links_seen: int = 0
+    #: 确认重复（整页哈希 / 同 URL 未变化）。正文指纹命中不在此列。
+    duplicates: int = 0
+    #: 正文指纹疑似重复：仍建了候选，由审核员比对。
+    suspected_duplicates: int = 0
+    new_candidates: int = 0
+    failed_sources: int = 0
+    #: 真正发起过的正文下载次数与其中失败的次数。栏目页打不开和「栏目页打不开正文」
+    #: 是两种故障，后者过去被 `continue` 吞掉，整轮会被报成 no_new_policy（DISC-AT-07）。
+    articles_attempted: int = 0
+    failed_articles: int = 0
+
+
+def _skipped(url: str, message: str) -> dict[str, Any]:
+    return {
+        "url": url,
+        "status": "skipped",
+        "links": 0,
+        "candidates": 0,
+        "articleFailures": 0,
+        "errorCategory": None,
+        "message": message,
+    }
+
+
+def _verdict(
+    *,
+    counts: _Counts,
+    aborted: str | None,
+    abort_detail: str | None,
+    source_status: Sequence[dict[str, Any]],
+) -> tuple[str, str, str | None]:
+    """把本轮的过程事实翻译成契约里的 ``status`` + ``terminalReason``。"""
+
+    if aborted == "timeout":
+        return "failed", "timeout", abort_detail
+    if aborted == "budget":
+        status = "partial_failed" if counts.new_candidates else "failed"
+        return status, "budget_exceeded", abort_detail
+    if aborted == "model":
+        return "partial_failed", "partial_failed", abort_detail
+
+    checked = [item for item in source_status if item["status"] != "skipped"]
+    failed = [item for item in checked if item["status"] == "failed"]
+    if checked and len(failed) == len(checked):
+        categories = {item["errorCategory"] for item in failed}
+        reason = next(iter(categories)) if len(categories) == 1 else "fetch_failed"
+        if reason not in ("oversize", "timeout"):
+            reason = "fetch_failed"
+        return "failed", reason, "所有来源都抓取失败。"
+    if failed:
+        return (
+            "partial_failed",
+            "partial_failed",
+            f"{len(failed)} 个来源抓取失败，其余来源已处理。",
+        )
+    if counts.failed_articles:
+        # 栏目页都拿到了，但有正文没下来：既不是全失败，也不能说「没有新政策」。
+        return (
+            "partial_failed",
+            "partial_failed",
+            f"{counts.failed_articles} 篇正文抓取失败"
+            f"（共 {counts.articles_attempted} 篇），其余已处理。",
+        )
+    if counts.new_candidates:
+        return "succeeded", "completed", abort_detail
+    return "succeeded", "no_new_policy", abort_detail
+
+
+def _budget_failed(estimate: int, budget: int) -> CandidateExtraction:
+    """单候选超预算：不调用模型，候选明确落 ``extraction_failed``。
+
+    运行级预算耗尽才中止整轮；单个页面太大不是运行失败，而是这一条需要人工处理。
+    """
+
+    return CandidateExtraction(
+        status="extraction_failed",
+        extraction={
+            "failureCode": "EXTRACTION_BUDGET_EXCEEDED",
+            "failureMessage": (
+                f"正文估算 {estimate} token，超过单候选 {budget} token 预算，未调用模型。"
+            ),
+        },
+    )

@@ -53,6 +53,8 @@ fi
 
 log "4/6 安装 systemd unit 与 nginx 配置"
 install -m 0644 "${SCRIPT_DIR}/huice-api.service" /etc/systemd/system/huice-api.service
+install -m 0644 "${SCRIPT_DIR}/huice-discovery.service" /etc/systemd/system/huice-discovery.service
+install -m 0644 "${SCRIPT_DIR}/huice-discovery.timer" /etc/systemd/system/huice-discovery.timer
 install -m 0644 "${SCRIPT_DIR}/nginx-huice.conf" /etc/nginx/conf.d/huice-api.conf
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 chown -R "${APP_USER}:${APP_USER}" /opt/huice
@@ -103,6 +105,10 @@ systemctl reload-or-restart nginx
 systemctl enable huice-api >/dev/null
 # 配置未填写时首启会失败，这里不把它当作安装失败，只提示查看日志。
 systemctl restart huice-api || true
+# 政策发现只 enable timer：service 由 timer 每 15 分钟拉起，enable service 本身无意义。
+# 后台「启用自动发现」仍是关闭状态，定时器跑起来也只会「未到点/未启用」立即返回。
+systemctl enable huice-discovery.timer >/dev/null
+systemctl restart huice-discovery.timer || true
 
 cat <<EOF
 
@@ -115,4 +121,9 @@ cat <<EOF
   4) journalctl -u huice-api -n 50 --no-pager           # 失败时先看这里
   5) 评审演示需要 HTTPS（restricted 模式的会话 cookie 带 Secure，浏览器在
      http://<EIP> 下不保存）：sudo bash ${SCRIPT_DIR}/enable-tls.sh <公网IP>，见 README §3.2
+  6) 政策发现（E2）的定时器已装好，但在后台「启用自动发现」之前它只会空转：
+     systemctl list-timers huice-discovery.timer           # 看下次唤醒时间
+     sudo systemctl start huice-discovery.service          # 手工立刻跑一轮（记 trigger=cli 用 CLI）
+     journalctl -u huice-discovery -n 50 --no-pager        # 每轮一行结论
+     发布新版本后先跑迁移：sudo bash ${SCRIPT_DIR}/migrate.sh（010 会建候选暂存区）
 EOF
