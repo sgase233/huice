@@ -26,10 +26,10 @@
 > **2026-11-13 20:45 状态更新：**
 >
 > - **基线：** `origin/main` = **`c84b4b7`**（2026-11-13T12:09:36Z 合并 PR #64）；PR #64 最终 head `a8b7e4e`，合并时 M2 最后复审停在 `7eb48dd`，未对 `c95dc3b`/`a8b7e4e` 留新记录。E2 契约仍为 `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），正式契约仍 `1.1.0-rc.1`。
-> - **E2：** PR #64 已合并，但 **DISC-AT-01—07 仍无“通过”项**；issue #66 明确 **E2 验收排在 E3 之后**，云端保持 `enabled=true` + timer，M3 未修改 timer/来源/候选数据。首版可用来源清单见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；S01/S02/S06/S07/S08/S09/S10 正文 2026-11-13 复核均 200 且哈希一致；A/G 栏目 403；B/C/E 入口 200 但未跑 runner；D/F 为框架页；S03/S04/S05 仍排除。
-> - **E1：** 云端 `/health=1.1.0-rc.1`，`/auth/me`、`/enterprises` 403 `DEMO_SESSION_REQUIRED`，`POST /auth/login` 空体 403 同码（门禁先于请求体校验），与旧版 rc.10 的 422 不同；这是 M3 2026-11-13 匿名探测，不是账号级验收。迁移 009/010 只有 M1 报告（`schema_migration` 10 行），M3 未独立查库；隔离环境、两企业账号、审核员账号仍未提供。AUTH-AT-01—06 均未完成联合验收，AUTH-AT-04 仅门禁层部分覆盖。
+> - **E2：** PR #64 已合并，但 **DISC-AT-01—07 仍无“通过”项**；issue #66 明确 **E2 验收排在 E3 之后**，云端保持 `enabled=true` + timer，M3 未修改 timer/来源/候选数据。首版可用来源清单见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；S01/S02/S06/S07/S08/S09/S10 正文 2026-11-13 复核均 200，原始 HTML SHA-256 与 `discovery_sources_phase1.csv` 的 `body_sha256` 一致（不是 `source_register.csv`，也不是规范化正文）；A/G 栏目 403；B/C/E 入口 200 但未跑 runner；D/F 为框架页；S03/S04/S05 仍排除。
+> - **E1：** M1 报告云端部署 `a8b7e4e`（PR #64 head）；M3 2026-11-13 匿名只观察到 `/health=1.1.0-rc.1`，`/auth/me`、`/enterprises` 403 `DEMO_SESSION_REQUIRED`，`POST /auth/login` 空体 403 同码（门禁先于请求体校验），与旧版 rc.10 的 422 不同。**这不证明部署 Git SHA/指纹，也不是账号级验收。** 迁移 009/010 只有 M1 报告（`schema_migration` 10 行），M3 未独立查库；隔离环境、两企业账号、审核员账号仍未提供。AUTH-AT-01—06 均未完成联合验收，AUTH-AT-04 仅门禁层部分覆盖。
 > - **E3：** M1 E3 方案草案（PR #67）列出九条决策；负责人已定 E3a 不含时间线，M3 已按评审补充 [COMPLETENESS_SPEC.md](COMPLETENESS_SPEC.md) §3.1 `not_due` 方案 C 边界样例与 §3.1.1 季度期初/期末结论、[METRICS_SPEC.md](METRICS_SPEC.md) §9 D5 对账、[POLICY_SCOPE.md](POLICY_SCOPE.md) 2026-11-13 日期来源回填核对、[E3A_BUSINESS_REVIEW.md](E3A_BUSINESS_REVIEW.md) §7/§7.5。**D4/D5、VIS 契约、E3 验收仍未签收；`not_due` 方案 C 与期初/期末结论是 M3 业务复核意见，不是三方结论。**
-> - **本轮未改** `data/**`、`source_register.csv`、标签、代码、契约或迁移；未提交/推送，等待明确同意。
+> - **本轮未改** `data/**`、`source_register.csv`、标签、代码、契约或迁移；文档已提交 `a52644e`、`49c62e6` 并推送到 `m3/e2-pr64-review-1112`，PR #68 仍 open，等待复审。
 
 ## 2. D3/D4/D5 已明确与仍待确认
 

@@ -295,7 +295,7 @@ M3 本机为 Windows 11 / Git Bash / Python 3.14（`py -3 -I`），**没有 `fas
 
 **P1-1 栏目根页会把导航页/年度分类页带进抽取。** E 栏目 52 条官方链接中约 11 条正文链接，其余为导航/年度分类；E 的年度分类页 532 字、导航页 572 字均通过 60 字 `looks_like_article`，且排在正文链接之前。运行器会把它们当正文抓取并送抽取，消耗 50,000 token 预算，可能先 `budget_exceeded`，并产生伪候选/`extraction_failed`。D/F 短框架页已被拦住，但 60 字只是启发式，长导航页仍通过；合法短通知（<60 字）也可能被误判。**建议：** 链接范围约束/列表页识别，或首版只用人工维护的条目 URL；修复前不要把 B/C/E 根页作为自动发现验收来源。责任：M1 + M3。
 
-**P1-2 验收文档与判重语义不一致。** `ACCEPTANCE.md` DISC-AT-04 仍写“换 URL 同内容……正确去重”；`E2_ACCEPTANCE_CHECKLIST.md` 仍写 S01/S10“只产生一条候选”；`E2_PR64_REVIEW.md` 旧 §、`DISCOVERY_SOURCES.md` §10.2 仍用旧 head/旧指纹；`EXTENSION_INTERFACES.md` §4.3(3) 未区分确认/疑似，§2 幂等作用域仍写“包含操作者”。**影响：** 按旧文档验收会记错结论。**拟定口径：** 见 §8.3；S01/S10 预期改为 2 条候选、第二条疑似重复、`duplicates=0`、`suspectedDuplicates=1`。责任：M3 更新文档；M1/M2 确认；不自行宣称三方签收。
+**P1-2 验收文档与判重语义不一致。** `ACCEPTANCE.md` DISC-AT-04 仍写“换 URL 同内容……正确去重”；`E2_ACCEPTANCE_CHECKLIST.md` 仍写 S01/S10“只产生一条候选”；`E2_PR64_REVIEW.md` 旧 §、`DISCOVERY_SOURCES.md` §10.2 仍用旧 head/旧指纹；`EXTENSION_INTERFACES.md` §4.3(3) 未区分确认/疑似，§2 幂等作用域仍写“包含操作者”。**影响：** 按旧文档验收会记错结论。**拟定口径：** 见 §8.3；S01/S10 预期改为 2 条候选、第二条疑似重复、`duplicates=0`、`suspectedDuplicates=1`。责任：M3 更新文档；M1/M2 确认；不自行宣称三方签收。**2026-11-13 更新：** `ACCEPTANCE.md` 与 `E2_ACCEPTANCE_CHECKLIST.md` 的 S01/S10 旧口径已在本次文档修正；`EXTENSION_INTERFACES.md` 的幂等作用域与确认/疑似区分仍待 M1/M2 处理。
 
 **P1-3 迁移 010 对执行过旧版 010 的环境不可升级（条件性）。** 010 在不同提交间追加了 `unsupported_attachment_urls`、`suspected_duplicate_of`、`suspected_duplicates`，并把唯一索引从 `(content_hash)` 改为 `(content_hash, source_url)`；最终脚本只用 `CREATE TABLE IF NOT EXISTS`/`CREATE UNIQUE INDEX IF NOT EXISTS`，没有 `ALTER TABLE`/`DROP INDEX`。若任何本地/测试/预发库执行过旧版 010，重跑最终 010 不会补列/改索引，应用查询新列会 500。M1 称 010 未在任何环境执行；需明确所有执行过 010 的库是否可丢弃，或补增量迁移。责任：M1。
 
@@ -324,7 +324,7 @@ M3 本机为 Windows 11 / Git Bash / Python 3.14（`py -3 -I`），**没有 `fas
 | DISC-AT-01 | **未执行** | 真实 timer、30 分钟超时、配置并发、多进程、停机补跑、云端、010 |
 | DISC-AT-02 | **部分覆盖**（不构成通过） | 真实 DNS/重定向/robots/频率/prompt-injection/模型预算；sz TLS 本机失败 |
 | DISC-AT-03 | **部分覆盖**（正文路径） | 真实模型/页面/runner；附件路径不具备 |
-| DISC-AT-04 | **部分覆盖** | 未用真实 runner/DB 跑 S01/S10；无真实同 URL 变化样本；旧验收口径未改；附件不参与判重 |
+| DISC-AT-04 | **部分覆盖** | 未用真实 runner/DB 跑 S01/S10；无真实同 URL 变化样本；当时旧验收口径未改（已于 2026-11-13 文档修正，见 §11）；附件不参与判重 |
 | DISC-AT-05 | **部分覆盖**（正文路径） | 无 candidate→publish E2E；附件条件不能引用；无逐附件处置 |
 | DISC-AT-06 | **部分覆盖** | 提交 vs 过期竞争无并发测试；多进程/云端无证据 |
 | DISC-AT-07 | **部分覆盖（仅后端）** | 无 E2 前端/UI；无“推荐停止时手动导入”E2E；disabled/not_due 与“无新政策”的 UI 区分未实现 |
@@ -515,3 +515,13 @@ M1 2026-11-13 09:28Z 报告：
 | DISC-AT-07 | 部分覆盖（仅后端） | E2 前端 UI；`disabled`/`not_due` 与“无新政策”的界面区分；手动导入 E2E |
 
 **边界：** 本节只确认合并事实和后续安排；没有把任何 DISC-AT 写成通过，没有把 M1 的云端/010/fixture 证据写成 M3 独立复核，也没有代替 M1/M2/负责人签收。
+
+### 11.4 2026-11-13 PR #68 复审修正
+
+M2 于 2026-11-13T13:41:50Z 对 PR #68（最新 head `49c62e6`）提出三项意见，M3 已按以下方式修正，仍不是 E2 验收：
+
+1. **S01/S10 旧口径（P1）**：`E2_ACCEPTANCE_CHECKLIST.md` 的 DISC-AT-03 步骤已改为“整页哈希不同、正文指纹相同 → 两条候选、第二条 `suspectedDuplicateOf`；只有整页规范化文本哈希完全相同才计确认重复并跳过”；DISC-AT-04 当前状态中“旧验收口径未改”已改为“已在本次文档修正”。历史 §8 的相关表述保留并标注“当时”状态。
+2. **哈希比对对象（P2）**：`POLICY_SCOPE.md` 已改为明确比对“2026-11-13 下载的原始 HTML SHA-256”与 `data/policies/discovery_sources_phase1.csv` 的 `body_sha256`；不再写“与 `source_register.csv` 一致”，并列出 S01/S02/S06/S07/S08/S09/S10 的前缀值。
+3. **部署提交与核对基线（P2）**：`ACCEPTANCE.md` 已分开记录“核对基线 `main@c84b4b7`”与“M1 报告部署 `a8b7e4e`、M3 未独立核验部署 Git SHA/指纹”；同版结论限定为“观察到的 `/health` 版本字符串与门禁行为符合 `1.1.0-rc.1`”，不再把 `c84b4b7` 写成被测部署提交。
+
+**结论不变：** 这三项是文档口径修正，不改变 DISC-AT-01—07 的“未通过”状态，也不改变 E2 验收排在 E3 之后的安排。

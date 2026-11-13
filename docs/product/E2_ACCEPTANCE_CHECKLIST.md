@@ -5,6 +5,8 @@
 >
 > **本轮基线（2026-11-13 20:45 +0800 更新）：** PR #64 最终 head `a8b7e4ecf83d1a773795c11c671862f66f94c6a8`，**已于 2026-11-13T12:09:36Z 合并到 `main`（merge commit `c84b4b7`）**；11 个提交，base `5d1adeb`；40 文件 +10,129/−159；CI 3 项通过（2026-11-13 08:32–08:33Z）。E2 契约仍为草案 `contracts/openapi.e2-draft.yaml`（`0.2.0-draft.1`），未并入正式 `contracts/openapi.yaml`（`1.1.0-rc.1`）；迁移 `infra/sql/010_policy_discovery.sql` 已由 M1 报告在云端执行（`schema_migration` 10 行，M1 证据，M3 未独立复核）。**E2 验收按 issue #66 排在 E3 之后；本清单是执行准备，不是已排期或已执行。** 可用来源清单见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；M3 审查见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §11。
 >
+> **2026-11-13 PR #68 复审修正：** M2 指出 S01/S10 旧验收口径仍存在；本清单已统一为“整页哈希相同才算确认重复；整页不同、正文指纹相同则保留两条候选并标 `suspectedDuplicateOf`”。历史 §8 中“旧验收口径未改”的表述只对应当时状态，已加注说明。详见 [E2_PR64_REVIEW.md](E2_PR64_REVIEW.md) §11.4。
+>
 > **边界：** 本文只写准备、步骤、预期与证据形式；不写真实口令、审核员密钥、演示 cookie 或连接串。M3 本机没有项目 Python 依赖（`fastapi`/`psycopg`/`jsonschema` 未安装）、没有隔离 PostgreSQL、没有云端账号或 ECS 数据库访问；2026-11-13 只做了匿名 `/health`/门禁探测，不能把静态阅读、作者自述、CI 通过或另一版本环境当成联合验收。M3 2026-11-13 实际执行的是 curl、`d5e12f8` 的真实 `Fetcher` 和 `c95dc3b` 的纯函数离线复算，**没有跑 runner/隔离库/真实模型**。
 
 ## 1. 本轮已核对的事实与未决状态
@@ -20,7 +22,7 @@
 | 本地测试 | M1 报告本地 PostgreSQL 16 全量 1337 passed / 13 skipped（2026-11-13 08:34Z）；CI 在 `a8b7e4e` 上运行后端/契约测试通过 | M2 未独立复跑数据库测试；M3 未复跑；只能作为作者/CI 声明，不是 M3 验收证据 |
 | 真实环境 | M1 报告云端已部署 `a8b7e4e`、执行 010、`/health=1.1.0-rc.1`，并用 fixture 跑通一轮候选链路；M3 2026-11-13 20:45 匿名探测同一地址 `/health=1.1.0-rc.1`（trace `569eff9e-…`），并实际跑了 curl、`d5e12f8` 的真实 `Fetcher`、`c95dc3b` 的纯函数离线复算，但**未访问 ECS 数据库、未跑 runner/真实模型**；`www.sz.gov.cn` 在服务器 OpenSSL 3.0.13 与本机 Python 3.14 均报 `bad ecpoint`（curl 可访问） | DISC-AT-01—07 均不能写“通过”；云端 fixture 冒烟不等于真实模型/真实用户验收；sz 来源仍需目标环境复测 |
 | E2 验收排期 | issue #66（open，0 评论）明确 E2 验收**排在 E3 之后**；云端保持 `enabled=true` + timer，未记录复位方式前不改配置 | 本轮只做来源梳理和验收准备；不提前宣布 E2 完成，不改云端 timer/来源/候选数据 |
-| 可用来源 | 2026-11-13 20:45–20:48 重新核验 S01/S02/S06/S07/S08/S09/S10 正文均 200 且哈希与登记一致；A/G 栏目 403；B/C/E 入口 200 但未跑 runner；D/F 为框架页；S03/S04/S05 仍因附件排除 | 详见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；单篇 URL 可访问 ≠ 栏目可自动发现，也不等于抓取授权 |
+| 可用来源 | 2026-11-13 20:45–20:48 重新核验 S01/S02/S06/S07/S08/S09/S10 正文均 200；下载的**原始 HTML** SHA-256 与 `data/policies/discovery_sources_phase1.csv` 的 `body_sha256` 一致（不是 `source_register.csv`，也不是规范化正文哈希）；A/G 栏目 403；B/C/E 入口 200 但未跑 runner；D/F 为框架页；S03/S04/S05 仍因附件排除 | 详见 [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md) §12；单篇 URL 可访问 ≠ 栏目可自动发现，也不等于抓取授权 |
 
 ## 2. 验收前置条件
 
@@ -126,7 +128,7 @@
 2. 候选详情含 `sourceUrl/fetchedAt/contentHash/rawHash/bodyText/criteria/validationFindings/missingFields/attachmentCount`。
 3. 检查每条条件的 `sourceSpans` 可回到原文（quote 可定位、textHash 一致）；缺失字段进 `missingFields`，已抽到的不重复列。
 4. 构造无正文/无条件/模型失败：候选落 `extraction_failed`，原因可辨，不伪装成完整候选。
-5. 对 S01/S10 跨站同文：只产生一条候选；对 S08/S09 版本：版本关系清楚，不覆盖旧政策。
+5. 对 S01/S10 跨站同文：整页规范化文本哈希不同、正文指纹相同，应产生**两条候选**，第二条 `suspectedDuplicateOf` 指向第一条；只有整页规范化文本哈希完全相同才计“确认重复”并跳过。对 S08/S09 版本：版本关系清楚，不覆盖旧政策。
 6. 附件依赖样本 S03/S04/S05：按本轮排除，不纳入自动发现验收；记录“未纳入”而不是“通过”。
 
 **预期：** 候选先结构化抽取；来源/时间/哈希/原文定位齐全；失败可辨；未提交不进政策库。
@@ -222,7 +224,7 @@
 | DISC-AT-01 | 未执行 | 云端已部署、timer 已 enable（M1 证据）；真实 timer 到点/禁用/停机补跑、30 分钟超时、配置并发、多进程仍未执行 |
 | DISC-AT-02 | 部分覆盖 | 链接范围/列表页已在 `c95dc3b` 收窄；仍缺真实 DNS/TLS/重定向、robots/授权、真实频率、prompt-injection、真实模型预算；`www.sz.gov.cn` 服务器/本机均 TLS `bad ecpoint`，`gov.cn/zhengce/zhengceku/` 403 |
 | DISC-AT-03 | 部分覆盖（正文路径） | 云端 fixture 跑通一轮：10 候选、9 `extraction_failed` + 1 `pending_review`、无一进政策库；**未跑真实 DeepSeek**；附件路径不具备 |
-| DISC-AT-04 | 部分覆盖 | P1-A 已修复；仍缺真实 runner/DB 跑 S01/S10、真实同 URL 变化样本；旧验收口径未改；附件变化不参与判重 |
+| DISC-AT-04 | 部分覆盖 | P1-A 已修复；仍缺真实 runner/DB 跑 S01/S10、真实同 URL 变化样本；S01/S10 旧口径已在本次文档修正（确认为整页哈希相同才跳过，指纹命中保留候选并标疑似重复）；附件变化不参与判重 |
 | DISC-AT-05 | 部分覆盖（正文路径） | P1-B 已修复；仍无 candidate→publish 端到端；附件路径不具备；无逐附件处置 |
 | DISC-AT-06 | 部分覆盖 | 提交 vs 过期竞争无并发测试；云端/多进程 |
 | DISC-AT-07 | 部分覆盖（仅后端） | 无前端/UI 证据；手动导入端到端未回归；disabled/not_due 与“无新政策”的 UI 区分未实现 |
