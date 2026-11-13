@@ -867,6 +867,180 @@ def test_a_changed_page_matching_another_sites_history_is_a_new_version(
     assert rows[0][2] is False and rows[1][2] is False, "第一轮两条都不是版本变化"
 
 
+def test_two_recorded_urls_that_change_to_the_same_content_both_keep_changes(
+    db, discovery, database_url_schema
+):
+    """两个已记录网址同一轮变成同一份正文：两条版本变化都要留下。
+
+    #64 复审 P1：``policy_candidate_active_hash`` 只按 ``content_hash`` 唯一时，第一条 C
+    落库成功、第二条 C 插入即违反唯一索引，``_store_candidate`` 返回 False 被记成确认
+    重复，它那一页的快照也随事务回滚——审核员只看到一个网址的变化。
+    """
+
+    configure(discovery)
+    first_url = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    second_url = "https://www.chinatax.gov.cn/chinatax/n810765/content_2.html"
+    list_page = page(
+        LIST_URL,
+        "政策文件列表",
+        markup=(
+            f'<html><body><a href="{first_url}">一</a><a href="{second_url}">二</a></body></html>'
+        ),
+    )
+    shared = "政策文件正文\n" + POLICY_V3
+    holder = {"now": NOW}
+
+    def _run(pages: dict, *, days: int):
+        holder["now"] = NOW + timedelta(days=days)
+        return make_runner(
+            db, discovery, FakeFetcher(pages), llm=FakeLlm(), holder=holder
+        ).run(trigger="timer")
+
+    _run(
+        {
+            LIST_URL: list_page,
+            first_url: page(first_url, POLICY_V1),
+            second_url: page(second_url, POLICY_V2),
+        },
+        days=0,
+    )
+    outcome = _run(
+        {
+            LIST_URL: list_page,
+            first_url: page(first_url, shared),
+            second_url: page(second_url, shared),
+        },
+        days=1,
+    )
+
+    _status, _reason, new, duplicates, *_tail = _run_row(database_url_schema, outcome.run_id)
+    assert (new, duplicates, _tail[-1]) == (2, 0, 1), (
+        "两条都是版本变化；内容相同只作疑似重复提示，不能少一条"
+    )
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT id, source_url, content_hash, version_changed, duplicate_of "
+        "FROM policy_candidate ORDER BY created_at, source_url",
+    )
+    assert len(rows) == 4
+    old = {row[1]: row[0] for row in rows if row[3] is False}
+    changed = [row for row in rows if row[3] is True]
+    assert {row[1] for row in changed} == {first_url, second_url}
+    assert len({row[2] for row in changed}) == 1, "两条新候选内容哈希相同"
+    for row in changed:
+        assert row[4] == old[row[1]], "版本变化要指向本网址的上一版"
+
+    expected = page(first_url, shared).content_hash
+    pages = query_all(
+        database_url_schema,
+        "SELECT canonical_url, last_content_hash FROM discovery_page ORDER BY canonical_url",
+    )
+    assert {url: item for url, item in pages}[first_url] == expected
+    assert {url: item for url, item in pages}[second_url] == expected
+
+
+def test_a_new_url_seen_before_a_recorded_url_changes_to_the_same_content(
+    db, discovery, database_url_schema
+):
+    """新网址的 C 先处理、已记录网址随后也变成 C：已记录网址的变化仍要留下。"""
+
+    configure(discovery)
+    recorded = "https://www.gov.cn/zhengce/content/2026-11/12/content_1.htm"
+    fresh = "https://www.chinatax.gov.cn/chinatax/n810765/content_2.html"
+    first_list = page(
+        LIST_URL,
+        "政策文件列表",
+        markup=f'<html><body><a href="{recorded}">一</a></body></html>',
+    )
+    # 第二轮把新网址放在前面：先落一条 C，再让已记录网址从 A 变到同一份 C。
+    second_list = page(
+        LIST_URL,
+        "政策文件列表",
+        markup=f'<html><body><a href="{fresh}">新</a><a href="{recorded}">旧</a></body></html>',
+    )
+    shared = "政策文件正文\n" + POLICY_V3
+    holder = {"now": NOW}
+
+    holder["now"] = NOW
+    make_runner(
+        db,
+        discovery,
+        FakeFetcher({LIST_URL: first_list, recorded: page(recorded, POLICY_V1)}),
+        llm=FakeLlm(),
+        holder=holder,
+    ).run(trigger="timer")
+
+    holder["now"] = NOW + timedelta(days=1)
+    outcome = make_runner(
+        db,
+        discovery,
+        FakeFetcher(
+            {
+                LIST_URL: second_list,
+                fresh: page(fresh, shared),
+                recorded: page(recorded, shared),
+            }
+        ),
+        llm=FakeLlm(),
+        holder=holder,
+    ).run(trigger="timer")
+
+    _status, _reason, new, duplicates, *_tail = _run_row(database_url_schema, outcome.run_id)
+    assert (new, duplicates, _tail[-1]) == (2, 0, 1)
+
+    rows = query_all(
+        database_url_schema,
+        "SELECT id, source_url, version_changed, duplicate_of FROM policy_candidate "
+        "ORDER BY created_at, source_url",
+    )
+    old = next(row for row in rows if row[1] == recorded and row[2] is False)
+    changed = next(row for row in rows if row[1] == recorded and row[2] is True)
+    fresh_row = next(row for row in rows if row[1] == fresh)
+    assert changed[3] == old[0], "已记录网址的版本变化要指向自己的上一版"
+    assert fresh_row[2] is False, "新网址只是一条普通候选"
+
+
+def test_the_active_hash_index_still_blocks_the_same_url_and_content(
+    db, discovery, database_url_schema
+):
+    """约束收窄到 (content_hash, source_url)：同一网址同内容仍然只允许一条有效候选。"""
+
+    configure(discovery)
+    outcome = make_runner(
+        db, discovery, FakeFetcher({LIST_URL: LIST_PAGE, ARTICLE_URL: ARTICLE_PAGE}), llm=FakeLlm()
+    ).run(trigger="timer")
+    assert outcome.reason == "completed"
+
+    run_id, source_url, content_hash = query_one(
+        database_url_schema,
+        "SELECT run_id, source_url, content_hash FROM policy_candidate",
+    )
+    sql = (
+        "INSERT INTO policy_candidate "
+        "(id, run_id, revision, source_url, fetched_at, content_hash, body_text) "
+        "VALUES (%s, %s, %s, %s, now(), %s, %s)"
+    )
+    with psycopg.connect(database_url_schema, autocommit=True) as conn:
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            conn.execute(
+                sql, (uuid4(), run_id, uuid4(), source_url, content_hash, "正文")
+            )
+        conn.execute(
+            sql,
+            (
+                uuid4(),
+                run_id,
+                uuid4(),
+                "https://www.chinatax.gov.cn/chinatax/n810765/content_9.html",
+                content_hash,
+                "正文",
+            ),
+        )
+        count = conn.execute("SELECT count(*) FROM policy_candidate").fetchone()[0]
+    assert count == 2, "不同网址允许同内容；同一网址重放被索引挡住"
+
+
 def test_an_identical_page_is_still_automatically_deduplicated(
     db, discovery, database_url_schema
 ):

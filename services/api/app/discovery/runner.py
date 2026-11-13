@@ -449,7 +449,7 @@ class DiscoveryRunner:
                     if suspected_of is not None:
                         counts.suspected_duplicates += 1
                 else:
-                    # 部分唯一索引拦下了同一批里的另一条同内容：这条才是确认重复。
+                    # 同一个网址同内容已挂着有效候选（重复处理/并发）：这条才是确认重复。
                     counts.duplicates += 1
 
                 if outcome.status != "pending_review":
@@ -569,7 +569,8 @@ class DiscoveryRunner:
                 )
             return True
         except UniqueViolation:
-            # 同一批里另一个链接刚刚写入了同内容：并发去重由部分唯一索引兜底。
+            # 同一个网址同一内容已经挂着一条有效候选：重复处理/并发由部分唯一索引兜底。
+            # 不同网址的内容哈希相同不算冲突——两边各自可能是版本变化，都要生成候选。
             return False
 
     def _touch_page(

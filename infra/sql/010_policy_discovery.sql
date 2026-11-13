@@ -16,8 +16,11 @@
 --      的 guard/reject 触发器）。「这次跑了什么、为什么失败」是审计证据，不能事后改写。
 --
 --   3. 判重分两层，跨批次也要挡住重复推荐：
---      · `policy_candidate.content_hash` 上建**部分唯一索引**——只约束仍待处理的候选
---        （pending_review / extraction_failed），让同一批里同内容只进一条；
+--      · `policy_candidate (content_hash, source_url)` 上建**部分唯一索引**——只约束仍
+--        待处理的候选（pending_review / extraction_failed），同一个网址同一时刻只挂一条
+--        同内容的有效候选。**不同来源允许内容哈希相同**：两个已记录的网址在同一轮各自
+--        变成同一份新正文时，两边都是「版本变化」，都是审核员要看的候选；跨来源的重复
+--        由指纹表在写候选前先判（见下一条），不能靠这个索引把它们压成一条；
 --      · `policy_candidate_fingerprint` 长期保留「这份内容已经出现过、后来怎么处理了」，
 --        候选正文被清理后仍然记得它提交过或丢弃过，下一轮不会再推荐一次。
 --      只靠候选表判重的话，候选过期清理一结束，同样的政策就会被反复推荐。
@@ -204,9 +207,10 @@ CREATE TABLE IF NOT EXISTS policy_candidate (
     )
 );
 
--- 同一批里同内容只进一条；跨批次由 fingerprint 表拦（见文件头第 3 条取舍）。
+-- 同一网址同内容只进一条；不同网址允许内容哈希相同（版本变化各算各的，跨来源重复由
+-- fingerprint 表在写候选前先拦，见文件头第 3 条取舍）。
 CREATE UNIQUE INDEX IF NOT EXISTS policy_candidate_active_hash
-    ON policy_candidate (content_hash)
+    ON policy_candidate (content_hash, source_url)
     WHERE status IN ('pending_review', 'extraction_failed');
 
 CREATE INDEX IF NOT EXISTS policy_candidate_status_idx
