@@ -10,7 +10,7 @@ M1 维护 OpenAPI，M2 审查前端可调用性，M3 审查业务含义。破坏
 
 [扩展接口设计](../docs/EXTENSION_INTERFACES.md) 定义账号/会话/对象归属、发现配置/运行/候选审核、完整度/轨迹/趋势的建议请求与响应，以及迁移、幂等、权限和错误边界。其中账号/会话/对象权限（E1）的 7 个端点已实现并并入 `openapi.yaml`（`1.1.0-rc.1`）；其余部分仍待评审、未实现，契约不提前声明不存在的客户端能力。开发顺序和未决项见[开发计划](../docs/DEVELOPMENT_PLAN.md)。
 
-M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实现 PR 将已签收部分同步进 OpenAPI、后端 schema、M2 生成类型/客户端及成功失败示例。鉴权改造必须附旧门禁/脚本和新账号数据隔离迁移方案。迁移当前到 `013`（`009_users_sessions` E1、`010_policy_discovery` E2、`011_date_provenance` 建来源旁表与回填、`012_e3_metrics` 审核事件/采集基线与运行生命周期、`013_collection_gap` 采集缺口），实施前核查最新序号再追加；不修改已部署 SQL。`011` 的旁表字段经 `openapi.e3-draft.yaml` 的 `dateProvenance` 对外提供，仍待并入正式契约。
+M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实现 PR 将已签收部分同步进 OpenAPI、后端 schema、M2 生成类型/客户端及成功失败示例。鉴权改造必须附旧门禁/脚本和新账号数据隔离迁移方案。迁移当前到 `013`（`009_users_sessions` E1、`010_policy_discovery` E2、`011_date_provenance` 建来源旁表与回填、`012_e3_metrics` 审核事件/采集基线与运行生命周期、`013_collection_gap` 采集缺口），实施前核查最新序号再追加；不修改已部署 SQL。`011` 的旁表字段自 `1.3.0-rc.1` 起以可选 `dateProvenance` 对外提供。
 
 ## E1 契约草案（2026-11-10）
 
@@ -33,12 +33,12 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 
 ## E3 契约草案（2026-11-15）
 
-[`openapi.e3-draft.yaml`](openapi.e3-draft.yaml) 是 E3 统计口径（D5 指标、D4 完整度）与日期来源 `dateProvenance` 的**评审草案**（`0.1.0-draft.1`）。3 个统计操作已在 `services/api` 实现，但**尚未并入** `openapi.yaml`：并入会新增 schema，`apps/web/src/api/types.ts` 必须由 M2 重新生成。
+[`openapi.e3-draft.yaml`](openapi.e3-draft.yaml) 是 E3 统计口径（D5 指标、D4 完整度）与日期来源 `dateProvenance` 的**设计记录**（`0.1.0-draft.1`）。自 `openapi.yaml` 的 `1.3.0-rc.1` 起，3 个统计操作与 `dateProvenance` 已并入正式契约，端点、schema 与 `security` 以 `openapi.yaml` 为准；本文件保留评审时的口径说明与响应样例。
 
 - 内容：`GET /admin/metrics/review-workload`、`GET /admin/metrics/assessment-runs`、`GET /admin/metrics/completeness`；既有 `PolicySummary`/`PolicyDetail`/`PolicyDraft` 上新增**可选** `dateProvenance`（旁表无记录时省略，旧消费者按 `additionalProperties: false` 也读得动）。
 - 口径：逐指标 `availability`（`precise`/`partial`/`not_collected`），缺测返回 `null` 不返回 0；完整度按 `(FactKey, period_start, period_end)` 单位给七状态，`definitionVersion=d4.static.v1`、`applicabilityMode=static`，`not_due` 优先于已填写，分母为 0 时 `ratio=null`。
-- 自检（可复跑）：`services/api/tests/test_e3_draft.py` 对照草案、服务端实际发布的 operationId/security/门禁，并断言草案尚未进正式契约；计算口径见 `test_completeness_units.py`、`test_db_metrics.py`、`test_db_completeness.py`。
-- 流程：M2 逐端点评审 → 版本号与切换安排共同签收 → 并入 `openapi.yaml` → M2 重新生成 `types.ts`。
+- 自检（可复跑）：`services/api/tests/test_e3_draft.py` 对照草案、正式契约与服务端实际发布的 operationId/security/门禁；计算口径见 `test_completeness_units.py`、`test_db_metrics.py`、`test_db_completeness.py`。
+- 中间状态：`apps/web/src/api/types.ts` 必须由 M2 按 `1.3.0-rc.1` 重新生成；在此之前 `contracts/generate_types.py --check` 与 `test_types_are_generated_from_current_contract` 会红。
 
 ## 已实现范围（后端：23/23；前 16 项 2026-10-27，AUTH 7 项 2026-11-11 并入契约）
 

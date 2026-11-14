@@ -2,8 +2,8 @@
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约
-  version: 1.1.0-rc.1
-  description: "2026-11-11 候选冻结版（1.1.0-rc.1：把 E1 的 7 个端点与账号/会话 schema 并入正式契约——AUTH-01 注册、AUTH-02 登录、AUTH-03 登出、AUTH-04 会话恢复、AUTH-05 改密，以及按身份与归属过滤的 AUTH-06 企业列表、AUTH-07 分析运行列表。版本从 1.0.0 升到 1.1.0 是因为这些新增改了组件、前端类型 `apps/web/src/api/types.ts` 必须重新生成，所以不是补丁级；生成脚本 `contracts/generate_types.py --check` 在类型重新生成前会红，这是本次并入的已知中间状态。兼容性必须分两层说，否则会被读成一个笼统的「向后兼容」：**相对本 PR 的 rc.10 是纯增量**——既有 16 个操作的 schema 与 security 一字未改；**相对 main 上的 rc.9 与按 rc.9 写的旧调用方则是破坏性鉴权变更**——rc.10 已把后台写权限从运维 Bearer 改为审核员会话（Bearer 只读，拿 Bearer 写后台会 403），从 rc.9 升级必须同时切换调用方。`1.1.0-rc.1` 是候选版本号，最终版本口径由 M1/M2 确认。rc.10 为 2026-11-11 版（rc.10：security 与 E1 的实际授权对齐——后台写操作只接受 UserSession，运维 Bearer 从「可写」改为「只读」；业务接口是 UserSession 或 DemoSession，不再声称 Bearer 能读；轨迹三个身份都可读。新增 securitySchemes.UserSession（cookie huice_session）。应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」；rc.9 为 2026-11-06 版（rc.9：PreparationItem.status 的取值改为事实口径 facts_filled / facts_missing / manual_check / policy_closed。原来的 provided 会被读成「材料已提交」，而服务端只读企业事实、不读材料，`provided` 实际只说「这份材料要证明的事实都有取值」——名字比它能证明的多说了一层；`missing` 同理，它说的是事实缺项，不是「材料没交」。missing 布尔字段的语义不变（保守口径，manual_check 也算 true）。应答 M2 对 PR #40 的 P1）。rc.8 为 2026-11-06 版（PreparationItem 新增必填 materialId 与 status，把「资料缺失」拆成 provided / missing / manual_check / policy_closed 四种明确状态——没有事实键的材料（申请书等）本就判断不了，不能显示成「资料缺失」；政策已关闭时材料不再提交，也不能记成缺失。missing 保留且仍是保守口径（manual_check 也算 true），展示以 status 为准。应答 M2 对 PR #37 的 P1；其中 provided / missing 两个名字在 rc.9 改为 facts_filled / facts_missing）。rc.7 为 2026-11-05 版（ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。现行 API-01—API-16 均已有实现；最终联合验收仍须留证，M1/M2 复核后定版。2026-11-09 的 issue #46—#48 扩展设计见 docs/EXTENSION_INTERFACES.md；7 个新端点自 1.1.0-rc.1 起已并入本契约，contracts/openapi.e1-draft.yaml 保留为设计记录（门禁/身份真值表、错误码与可复核请求样例）。restricted 模式需要网关会话；local 模式免 DemoSession，但业务接口仍需身份（UserSession 或 DemoSession），后台写操作只接受审核员 UserSession。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。每个操作另有 x-e1-gate：local 无门禁，restricted 部署要**先**过演示会话门禁（huice_demo_session），只有 GET /health 与 POST /auth/logout 豁免；标准 security 只表达身份，restricted 下的实际要求是「门禁 + 该操作的 security」，连 security 为空的注册/登录也不例外。门禁在**解析请求体之前**执行（服务端由路由类 GatedRoute 保证）：缺 cookie 时即使请求体缺字段、类型不对、为空或不是 JSON，也一律 403 DEMO_SESSION_REQUIRED，不会先回 422。前端约定：所有请求都带门禁 cookie；收到 403 DEMO_SESSION_REQUIRED 就回演示入口重取，不要把它当成「表单填错」或「登录失效」——前者是 422 VALIDATION_ERROR，后者是 401。语义/流程见 docs/IMPLEMENTATION_AND_INTERFACE.md。"
+  version: 1.3.0-rc.1
+  description: "2026-11-15 候选冻结版（1.3.0-rc.1：并入 E3 的 3 个只读统计端点——GET /admin/metrics/review-workload、/admin/metrics/assessment-runs、/admin/metrics/completeness——与 PolicySummary/PolicyDetail/PolicyDraft 上**可选**的 dateProvenance（旁表无记录时省略，既有响应逐字段不变）。本版是纯增量：既有 21 个操作的 schema、security 与错误码未改。E2 的 8 个发现/候选操作仍在 contracts/openapi.e2-draft.yaml，尚未并入，因此版本从 1.1.0 直接升到 1.3.0（跳过预留的 1.2.0）。前端类型 apps/web/src/api/types.ts 必须由 M2 重新生成，生成前 contracts/generate_types.py --check 与类型对齐用例会红，这是已知中间状态。上一版 1.1.0-rc.1（2026-11-11）：把 E1 的 7 个端点与账号/会话 schema 并入正式契约——AUTH-01 注册、AUTH-02 登录、AUTH-03 登出、AUTH-04 会话恢复、AUTH-05 改密，以及按身份与归属过滤的 AUTH-06 企业列表、AUTH-07 分析运行列表。版本从 1.0.0 升到 1.1.0 是因为这些新增改了组件、前端类型 `apps/web/src/api/types.ts` 必须重新生成，所以不是补丁级；生成脚本 `contracts/generate_types.py --check` 在类型重新生成前会红，这是本次并入的已知中间状态。兼容性必须分两层说，否则会被读成一个笼统的「向后兼容」：**相对本 PR 的 rc.10 是纯增量**——既有 16 个操作的 schema 与 security 一字未改；**相对 main 上的 rc.9 与按 rc.9 写的旧调用方则是破坏性鉴权变更**——rc.10 已把后台写权限从运维 Bearer 改为审核员会话（Bearer 只读，拿 Bearer 写后台会 403），从 rc.9 升级必须同时切换调用方。`1.1.0-rc.1` 是候选版本号，最终版本口径由 M1/M2 确认。rc.10 为 2026-11-11 版（rc.10：security 与 E1 的实际授权对齐——后台写操作只接受 UserSession，运维 Bearer 从「可写」改为「只读」；业务接口是 UserSession 或 DemoSession，不再声称 Bearer 能读；轨迹三个身份都可读。新增 securitySchemes.UserSession（cookie huice_session）。应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」；rc.9 为 2026-11-06 版（rc.9：PreparationItem.status 的取值改为事实口径 facts_filled / facts_missing / manual_check / policy_closed。原来的 provided 会被读成「材料已提交」，而服务端只读企业事实、不读材料，`provided` 实际只说「这份材料要证明的事实都有取值」——名字比它能证明的多说了一层；`missing` 同理，它说的是事实缺项，不是「材料没交」。missing 布尔字段的语义不变（保守口径，manual_check 也算 true）。应答 M2 对 PR #40 的 P1）。rc.8 为 2026-11-06 版（PreparationItem 新增必填 materialId 与 status，把「资料缺失」拆成 provided / missing / manual_check / policy_closed 四种明确状态——没有事实键的材料（申请书等）本就判断不了，不能显示成「资料缺失」；政策已关闭时材料不再提交，也不能记成缺失。missing 保留且仍是保守口径（manual_check 也算 true），展示以 status 为准。应答 M2 对 PR #37 的 P1；其中 provided / missing 两个名字在 rc.9 改为 facts_filled / facts_missing）。rc.7 为 2026-11-05 版（ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。现行 API-01—API-16 均已有实现；最终联合验收仍须留证，M1/M2 复核后定版。2026-11-09 的 issue #46—#48 扩展设计见 docs/EXTENSION_INTERFACES.md；7 个新端点自 1.1.0-rc.1 起已并入本契约，contracts/openapi.e1-draft.yaml 保留为设计记录（门禁/身份真值表、错误码与可复核请求样例）。restricted 模式需要网关会话；local 模式免 DemoSession，但业务接口仍需身份（UserSession 或 DemoSession），后台写操作只接受审核员 UserSession。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。每个操作另有 x-e1-gate：local 无门禁，restricted 部署要**先**过演示会话门禁（huice_demo_session），只有 GET /health 与 POST /auth/logout 豁免；标准 security 只表达身份，restricted 下的实际要求是「门禁 + 该操作的 security」，连 security 为空的注册/登录也不例外。门禁在**解析请求体之前**执行（服务端由路由类 GatedRoute 保证）：缺 cookie 时即使请求体缺字段、类型不对、为空或不是 JSON，也一律 403 DEMO_SESSION_REQUIRED，不会先回 422。前端约定：所有请求都带门禁 cookie；收到 403 DEMO_SESSION_REQUIRED 就回演示入口重取，不要把它当成「表单填错」或「登录失效」——前者是 422 VALIDATION_ERROR，后者是 401。语义/流程见 docs/IMPLEMENTATION_AND_INTERFACE.md。"
 servers:
 - url: /api/v1
 tags:
@@ -53,7 +53,7 @@ paths:
                 $ref: '#/components/schemas/HealthResponse'
               example:
                 status: ok
-                version: 1.1.0-rc.1
+                version: 1.3.0-rc.1
         default:
           $ref: '#/components/responses/ApiFailure'
         '400': &id004
@@ -1413,6 +1413,224 @@ paths:
         '503': *id008
         default:
           $ref: '#/components/responses/ApiFailure'
+  /admin/metrics/review-workload:
+    get:
+      operationId: getReviewWorkload
+      summary: 审核工作量（D5）
+      description: >-
+        按 from/to（Asia/Shanghai 当地日期，首尾包含，最多 31 天）逐日返回 newDrafts、
+        reviewsCompleted、pendingAtEndOfDay。每个指标各自带 availability：同一天可能
+        newDrafts 精确、reviewsCompleted 只覆盖审核基线之后、pendingAtEndOfDay 依赖基线
+        回放。not_collected 的计数返回 null，不是 0；当天未结算时 pendingAtEndOfDay
+        必为 null 且 dayOpen=true。审核完成只算带真实操作者的发布事件（actor_kind=user），
+        上线基线与没有账号的 legacy_unknown 旧发布都不计入。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      - AdminBearer: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定。
+      parameters:
+      - name: from
+        in: query
+        required: true
+        description: 起始日期（含），Asia/Shanghai 当地日期。
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        description: 结束日期（含）。区间最多 31 天；起始晚于结束或超限返回 400。
+        schema:
+          type: string
+          format: date
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewWorkloadResponse'
+              example:
+                from: '2026-11-20'
+                to: '2026-11-20'
+                timeZone: Asia/Shanghai
+                generatedAt: '2026-11-20T12:00:00+08:00'
+                days:
+                - date: '2026-11-20'
+                  newDrafts: 2
+                  reviewsCompleted: 1
+                  pendingAtEndOfDay: null
+                  availability:
+                    newDrafts:
+                      state: precise
+                    reviewsCompleted:
+                      state: partial
+                      coverageFrom: '2026-11-20T10:00:00+08:00'
+                    pendingAtEndOfDay:
+                      state: precise
+                  dayOpen: true
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '500': *id007
+        '503': *id008
+  /admin/metrics/assessment-runs:
+    get:
+      operationId: getAssessmentRunTrends
+      summary: 系统运行趋势（D5）
+      description: >-
+        按运行开始时间归入北京时间自然日；跨午夜完成后回看，开始日结果会从 unfinished
+        更新为 succeeded（响应带 generatedAt）。total = succeeded + failed + unfinished
+        只在三态都可用时成立。采集前历史只有 total/succeeded 记为已记录数并标 partial；
+        failed/unfinished 与耗时标 not_collected，计数为 null，不推断历史失败率为 0。
+        耗时只纳入可信起止（finished_at > created_at），无样本时 avgDurationMs 为 null，
+        不是 0ms。unfinished 含 queued/running/interrupted，不能并进 failed。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      - AdminBearer: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定。
+      parameters:
+      - name: from
+        in: query
+        required: true
+        description: 起始日期（含），Asia/Shanghai 当地日期。
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        description: 结束日期（含）。区间最多 31 天；起始晚于结束或超限返回 400。
+        schema:
+          type: string
+          format: date
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssessmentRunsResponse'
+              example:
+                from: '2026-11-20'
+                to: '2026-11-20'
+                timeZone: Asia/Shanghai
+                generatedAt: '2026-11-21T12:00:00+08:00'
+                days:
+                - date: '2026-11-20'
+                  total: 3
+                  succeeded: 1
+                  failed: 1
+                  unfinished: 1
+                  durationSampleCount: 2
+                  avgDurationMs: 300000
+                  availability:
+                    total:
+                      state: partial
+                      coverageFrom: '2026-11-20T10:00:00+08:00'
+                    succeeded:
+                      state: partial
+                      coverageFrom: '2026-11-20T10:00:00+08:00'
+                    failed:
+                      state: partial
+                      coverageFrom: '2026-11-20T10:00:00+08:00'
+                    unfinished:
+                      state: partial
+                      coverageFrom: '2026-11-20T10:00:00+08:00'
+                    durationSampleCount:
+                      state: partial
+                      coverageFrom: '2026-11-20T10:00:00+08:00'
+                    avgDurationMs:
+                      state: partial
+                      coverageFrom: '2026-11-20T10:00:00+08:00'
+                  dayOpen: false
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '500': *id007
+        '503': *id008
+  /admin/metrics/completeness:
+    get:
+      operationId: getProfileCompleteness
+      summary: 资料完整度（D4）
+      description: >-
+        按 (FactKey, period_start, period_end) 单位统计当前企业画像的填写情况，返回七状态
+        与分组计数。范围：不传 runId/policyIds 时用当前已发布政策的最新版本（排除 closed）；
+        传 runId 固定该 run 的政策版本集合；传 policyIds 固定政策集合。二者不能同时给
+        （400 INVALID_SCOPE）。分子始终读当前事实——这是「按该版本统计当前资料完整度」，
+        不是重现当时的完整度。适用性是静态引用（applicabilityMode=static，
+        definitionVersion=d4.static.v1）：scope 内条件直接引用的 FactKey 即适用，不做
+        OR/AND 分支可达性判断；manualReview 单列，不进分母。not_due 优先于已填写：
+        季度键以季度结束次日 00:00 为到期点，年度/跨年区间以 period_start 晚于 asOf
+        为未到期，未来单位不进分子分母。分母为 0 时 ratio=null，不是 0。
+      tags:
+      - admin
+      security:
+      - UserSession: []
+      - AdminBearer: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定。
+      parameters:
+      - name: enterpriseId
+        in: query
+        required: true
+        schema:
+          $ref: '#/components/schemas/UUID'
+      - $ref: '#/components/parameters/AsOf'
+      - name: runId
+        in: query
+        required: false
+        description: 按某次判断运行固定的政策版本集合统计。
+        schema:
+          $ref: '#/components/schemas/UUID'
+      - name: policyIds
+        in: query
+        required: false
+        description: 按指定政策集合统计；每项取其最新已发布版本。
+        style: form
+        explode: true
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/UUID'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id: *id001
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletenessResponse'
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '422': *id015
+        '500': *id007
+        '503': *id008
 components:
   securitySchemes:
     DemoSession:
@@ -2556,6 +2774,11 @@ components:
           - *id057
           - type: 'null'
         sourceUrl: *id036
+        dateProvenance:
+          anyOf:
+          - $ref: '#/components/schemas/DateProvenance'
+          - type: 'null'
+          description: 日期来源；旁表无记录时整个字段省略（不是 null）。
       examples:
       - *id058
     PolicyDetail:
@@ -2614,6 +2837,11 @@ components:
           minItems: 1
         preparationTemplate:
           $ref: '#/components/schemas/PreparationTemplate'
+        dateProvenance:
+          anyOf:
+          - $ref: '#/components/schemas/DateProvenance'
+          - type: 'null'
+          description: 日期来源；旁表无记录时整个字段省略（不是 null）。
       examples:
       - *id065
     PolicyDraft:
@@ -2668,6 +2896,11 @@ components:
           type: array
           items: &id076
             $ref: '#/components/schemas/ValidationFinding'
+        dateProvenance:
+          anyOf:
+          - $ref: '#/components/schemas/DateProvenance'
+          - type: 'null'
+          description: 日期来源；旁表无记录时整个字段省略（不是 null）。
       examples:
       - *id027
     PolicyList:
@@ -3443,4 +3676,416 @@ components:
         nextCursor:
           anyOf:
           - type: string
+          - type: 'null'
+    MetricAvailability:
+      type: object
+      additionalProperties: false
+      required:
+      - state
+      properties:
+        state:
+          type: string
+          enum: [precise, partial, not_collected]
+          description: precise 覆盖完整；partial 只覆盖部分时段（看 coverageFrom 或 reason）；
+            not_collected 该指标尚未采集，计数必须是 null。
+        coverageFrom:
+          anyOf:
+          - $ref: '#/components/schemas/Timestamp'
+          - type: 'null'
+          description: 覆盖起点（Asia/Shanghai 输出）。部分覆盖时才有。
+        reason:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          description: 缺测/降级原因，稳定枚举：NO_REVIEW_BASELINE、NO_RUN_BASELINE、
+            BEFORE_COLLECTION、DAY_OPEN、OPEN_GAP。
+    ReviewWorkloadDay:
+      type: object
+      additionalProperties: false
+      required:
+      - date
+      - newDrafts
+      - reviewsCompleted
+      - pendingAtEndOfDay
+      - availability
+      - dayOpen
+      properties:
+        date:
+          type: string
+          format: date
+        newDrafts:
+          type: integer
+          minimum: 0
+        reviewsCompleted:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          description: 可追溯的人工审核发布事件数；未采集时为 null，不是 0。
+        pendingAtEndOfDay:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          description: 日终未发布版本存量；当天未结算或未采集时为 null。
+        availability:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/MetricAvailability'
+          description: 键固定为 newDrafts / reviewsCompleted / pendingAtEndOfDay。
+        dayOpen:
+          type: boolean
+    ReviewWorkloadResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - from
+      - to
+      - timeZone
+      - generatedAt
+      - days
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        timeZone:
+          type: string
+          const: Asia/Shanghai
+        generatedAt:
+          $ref: '#/components/schemas/Timestamp'
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReviewWorkloadDay'
+    AssessmentRunsDay:
+      type: object
+      additionalProperties: false
+      required:
+      - date
+      - total
+      - succeeded
+      - failed
+      - unfinished
+      - durationSampleCount
+      - avgDurationMs
+      - availability
+      - dayOpen
+      properties:
+        date:
+          type: string
+          format: date
+        total:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+        succeeded:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+        failed:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+        unfinished:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          description: queued/running/interrupted，不能并进 failed。
+        durationSampleCount:
+          type: integer
+          minimum: 0
+          description: 可信起止样本数；旧记录 created_at=finished_at 不计入。
+        avgDurationMs:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          description: 无样本时为 null，不是 0。
+        availability:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/MetricAvailability'
+        dayOpen:
+          type: boolean
+    AssessmentRunsResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - from
+      - to
+      - timeZone
+      - generatedAt
+      - days
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        timeZone:
+          type: string
+          const: Asia/Shanghai
+        generatedAt:
+          $ref: '#/components/schemas/Timestamp'
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssessmentRunsDay'
+    CompletenessStatus:
+      type: string
+      enum:
+      - filled
+      - filled_unverified
+      - answered_unknown
+      - not_answered
+      - not_applicable
+      - applicability_unknown
+      - not_due
+    CompletenessUnit:
+      type: object
+      additionalProperties: false
+      required:
+      - factKey
+      - periodStart
+      - periodEnd
+      - group
+      - status
+      properties:
+        factKey:
+          type: string
+        periodStart:
+          type: string
+          format: date
+        periodEnd:
+          type: string
+          format: date
+        group:
+          type: string
+          enum: [basic, operation, rd, credit, other]
+        status:
+          $ref: '#/components/schemas/CompletenessStatus'
+    CompletenessGroup:
+      type: object
+      additionalProperties: false
+      required:
+      - key
+      - label
+      - applicableCount
+      - filledCount
+      - ratio
+      properties:
+        key:
+          type: string
+          enum: [basic, operation, rd, credit, other]
+        label:
+          type: string
+          minLength: 1
+        applicableCount:
+          type: integer
+          minimum: 0
+        filledCount:
+          type: integer
+          minimum: 0
+        ratio:
+          anyOf:
+          - type: number
+            minimum: 0
+            maximum: 1
+          - type: 'null'
+          description: 分组分母为 0 时为 null。
+    CompletenessManualReview:
+      type: object
+      additionalProperties: false
+      required:
+      - policyId
+      - policyVersion
+      - criterionId
+      - title
+      - reason
+      properties:
+        policyId:
+          $ref: '#/components/schemas/UUID'
+        policyVersion:
+          type: string
+          minLength: 1
+        criterionId:
+          anyOf:
+          - $ref: '#/components/schemas/UUID'
+          - type: 'null'
+        title:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+          minLength: 1
+    CompletenessTotals:
+      type: object
+      additionalProperties: false
+      required:
+      - applicableCount
+      - filledCount
+      - ratio
+      - answeredUnknownCount
+      - notDueCount
+      - notApplicableCount
+      - applicabilityUnknownCount
+      properties:
+        applicableCount:
+          type: integer
+          minimum: 0
+        filledCount:
+          type: integer
+          minimum: 0
+          description: filled + filled_unverified；answered_unknown 不算已填写。
+        ratio:
+          anyOf:
+          - type: number
+            minimum: 0
+            maximum: 1
+          - type: 'null'
+        answeredUnknownCount:
+          type: integer
+          minimum: 0
+        notDueCount:
+          type: integer
+          minimum: 0
+        notApplicableCount:
+          type: integer
+          minimum: 0
+        applicabilityUnknownCount:
+          type: integer
+          minimum: 0
+    CompletenessScope:
+      type: object
+      additionalProperties: false
+      required:
+      - mode
+      - policyVersions
+      properties:
+        mode:
+          type: string
+          enum: [profile, run, explicit]
+        policyVersions:
+          type: object
+          additionalProperties:
+            type: string
+            minLength: 1
+          description: policyId → 版本号，固定本次统计所用的版本。
+    CompletenessResponse:
+      type: object
+      additionalProperties: false
+      required:
+      - enterpriseId
+      - asOf
+      - scope
+      - definitionVersion
+      - applicabilityMode
+      - units
+      - groups
+      - totals
+      - manualReview
+      - generatedAt
+      properties:
+        enterpriseId:
+          $ref: '#/components/schemas/UUID'
+        asOf:
+          $ref: '#/components/schemas/Timestamp'
+        scope:
+          $ref: '#/components/schemas/CompletenessScope'
+        definitionVersion:
+          type: string
+          const: d4.static.v1
+        applicabilityMode:
+          type: string
+          const: static
+        units:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompletenessUnit'
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompletenessGroup'
+        totals:
+          $ref: '#/components/schemas/CompletenessTotals'
+        manualReview:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompletenessManualReview'
+        generatedAt:
+          $ref: '#/components/schemas/Timestamp'
+    DateProvenanceStatus:
+      type: string
+      enum: [verified, derived, unverified, not_applicable, unknown]
+    DateProvenanceField:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      properties:
+        status:
+          $ref: '#/components/schemas/DateProvenanceStatus'
+        source:
+          anyOf:
+          - type: string
+            enum: [body, attachment]
+          - type: 'null'
+          description: 只给来源种类，不暴露内部来源行 id。
+        locator:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          description: 条款号、页码等定位。
+        basis:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          description: 仅 derived：推导依据。
+        derivedFrom:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          description: 仅 derived：推导起点。
+        note:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+    DateProvenance:
+      type: object
+      additionalProperties: false
+      required:
+      - version
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        effectiveFrom:
+          anyOf:
+          - $ref: '#/components/schemas/DateProvenanceField'
+          - type: 'null'
+        effectiveTo:
+          anyOf:
+          - $ref: '#/components/schemas/DateProvenanceField'
+          - type: 'null'
+        applicationWindow:
+          anyOf:
+          - $ref: '#/components/schemas/DateProvenanceField'
+          - type: 'null'
+        note:
+          anyOf:
+          - type: string
+            minLength: 1
           - type: 'null'

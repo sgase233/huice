@@ -1,7 +1,8 @@
 """E3 草案与实现的对照：3 个统计操作、组件名、``dateProvenance`` 形状。
 
-草案只写在 ``contracts/openapi.e3-draft.yaml``，尚未并入正式契约。这里锁两件事：
-草案里的操作与实现发布的一致；草案修改后没有悄悄进 ``openapi.yaml``。
+E3 已随 ``openapi.yaml`` 的 ``1.3.0-rc.1`` 并入正式契约，``openapi.e3-draft.yaml``
+保留为设计记录。这里锁三件事：草案与实现发布的操作一致；3 个路径与 ``dateProvenance``
+确实进了正式契约；前端类型仍待 M2 重新生成（由 CI 的 ``generate_types --check`` 提示）。
 """
 
 from __future__ import annotations
@@ -85,11 +86,20 @@ def test_the_draft_defines_the_components_it_references() -> None:
     )
 
 
-def test_the_draft_has_not_been_merged_into_the_main_contract_yet() -> None:
+def test_the_operations_are_merged_into_the_main_contract() -> None:
     base = yaml.safe_load(BASE_PATH.read_text(encoding="utf-8"))
 
     for _method, path in E3_OPERATIONS:
-        assert path not in base["paths"], f"{path} 已进正式契约，先升版本并重新生成类型"
+        assert path in base["paths"], f"{path} 还没进正式契约"
+    for name in ("PolicySummary", "PolicyDetail", "PolicyDraft"):
+        assert "dateProvenance" in base["components"]["schemas"][name]["properties"]
+    assert {
+        "DateProvenance",
+        "DateProvenanceField",
+        "CompletenessResponse",
+        "ReviewWorkloadResponse",
+        "AssessmentRunsResponse",
+    } <= set(base["components"]["schemas"])
 
 
 def test_date_provenance_is_optional_in_the_three_policy_responses() -> None:

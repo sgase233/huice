@@ -36,11 +36,15 @@ class ContractTests(unittest.TestCase):
             ("post", "/auth/register"), ("post", "/auth/login"), ("post", "/auth/logout"),
             ("get", "/auth/me"), ("post", "/auth/password"),
             ("get", "/enterprises"), ("get", "/assessment-runs"),
+            # 1.3.0-rc.1 并入的 E3 统计端点。
+            ("get", "/admin/metrics/review-workload"),
+            ("get", "/admin/metrics/assessment-runs"),
+            ("get", "/admin/metrics/completeness"),
         }
         actual = {(method, path) for path, ops in CONTRACT["paths"].items() for method in ops}
         self.assertEqual(actual, expected)
         ids = [op["operationId"] for ops in CONTRACT["paths"].values() for op in ops.values()]
-        self.assertEqual(len(set(ids)), 23)
+        self.assertEqual(len(set(ids)), 26)
         self.assertEqual(CONTRACT["openapi"], "3.1.0")
         self.assertEqual(CONTRACT["servers"], [{"url": "/api/v1"}])
 
