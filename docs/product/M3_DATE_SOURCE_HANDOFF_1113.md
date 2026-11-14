@@ -41,7 +41,7 @@ PR #69 的 `provenance` 使用以下五个状态。M3 按同一口径核对，�
 | --- | --- | --- | --- |
 | **草案** | PR #69 head `a82caa5` 的 `date-provenance-backfill.json`，`reviewStatus=draft-pending-m3`；8 个条目，缺 SRDI，GXJS 窗口状态待改 | PR #69 数据文件与本文 §4 | 只能干跑/评审；不能写库，不能标 `approved-by-m3` |
 | **作者报告** | PR #69 作者称本地 PostgreSQL 16 上 `pytest` 23/11/1372 项通过、CI 通过；云端 `011` 未执行 | PR #69 正文与 2026-11-13T15:00:09Z 评论 | 不能替代 M3 复核、数据库实测或云端证据 |
-| **正式契约** | `contracts/openapi.yaml` 仍为 `1.1.0-rc.1`；`dateProvenance` 未进入正式契约；B1b 计划随 `1.2.0-rc.1` 进场 | `contracts/openapi.yaml`；PR #67 决策 7 | 当前字段对外不可用；未定稿字段不能按已实现消费 |
+| **正式契约** | `contracts/openapi.yaml` 仍为 `1.1.0-rc.1`；`dateProvenance` 未进入正式契约；B1b 计划随 **`1.3.0-rc.1`** 进场（M2 在 PR #71 复审 2026-11-13T15:53:04Z 写明；M1 在 PR #69 引用同一结论；2026-11-14 更正旧记录 `1.2.0-rc.1`） | `contracts/openapi.yaml`；PR #71 评论；[M3_DATE_SOURCE_ROUND4_1114.md](M3_DATE_SOURCE_ROUND4_1114.md) §5 | 当前字段对外不可用；未定稿字段不能按已实现消费 |
 | **已签收结论** | D4/D5、VIS-06、时间线（VIS-AT-04）、联合验收均无三方签收；PR #67 的九条结论是评审/M1 落实记录，不是签收 | PR #67 评论；DEVELOPMENT_PLAN E0 记录仍待回填 | 不得写成“已通过/已签收/已验收” |
 
 ## 2. 来源索引
