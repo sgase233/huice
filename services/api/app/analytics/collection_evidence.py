@@ -97,6 +97,7 @@ def inspect_journal(
     now: datetime,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
+    scopes: Iterable[str] = ("all",),
 ) -> JournalEvidence | None:
     """核验日志；``None`` 表示未配置目录，不参与覆盖判定。
 
@@ -122,6 +123,7 @@ def inspect_journal(
     if len(hosts) > 1 or current not in hosts:
         return JournalEvidence("HOST_CHANGED")
 
+    allowed_scopes = {str(item) for item in scopes}
     raw_imported = {str(item) for item in imported_event_ids}
     imported_bases = {_base_event_id(item) for item in raw_imported}
     times = list(imported_gap_times)
@@ -136,7 +138,12 @@ def inspect_journal(
         for _raw, item in entries:
             kind = item.get("kind")
             event_id = str(item.get("event_id") or "")
-            if kind in OPENING_KINDS and event_id:
+            event_scope = str(item.get("scope") or "all")
+            if (
+                kind in OPENING_KINDS
+                and event_id
+                and event_scope in allowed_scopes
+            ):
                 opening_ids.add(event_id)
             if kind in ("beat", "start", "stop") and item.get("at"):
                 try:

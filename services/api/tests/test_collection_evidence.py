@@ -19,14 +19,22 @@ from app.domain.versioning import SHANGHAI
 NOW = datetime(2026, 11, 15, 12, 0, tzinfo=SHANGHAI)
 
 
-def _line(seq: int, prev: str | None, *, kind: str, at: datetime, event_id: str) -> str:
+def _line(
+    seq: int,
+    prev: str | None,
+    *,
+    kind: str,
+    at: datetime,
+    event_id: str,
+    scope: str = "all",
+) -> str:
     return json.dumps(
         {
             "seq": seq,
             "prev": prev,
             "host": host_id(),
             "kind": kind,
-            "scope": "all",
+            "scope": scope,
             "at": at.isoformat(),
             "event_id": event_id,
             "note": None,
@@ -54,7 +62,7 @@ def _journal(tmp_path: Path, entries: list[dict]) -> Path:
     return directory
 
 
-def _evidence(directory: Path | None, *, imported=(), times=(), window=None):
+def _evidence(directory: Path | None, *, imported=(), times=(), window=None, scopes=("all",)):
     return inspect_journal(
         directory,
         imported_event_ids=imported,
@@ -62,6 +70,7 @@ def _evidence(directory: Path | None, *, imported=(), times=(), window=None):
         now=NOW,
         window_start=window[0] if window else None,
         window_end=window[1] if window else None,
+        scopes=scopes,
     )
 
 
@@ -230,3 +239,51 @@ def test_journal_ending_before_a_historical_window_end_is_flagged(tmp_path: Path
     assert _evidence(
         directory, window=(NOW - timedelta(hours=4), NOW - timedelta(hours=1))
     ).reason == "WINDOW_END_UNCOVERED"
+
+
+def test_opening_events_follow_the_metric_scope(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {"kind": "stop", "at": NOW - timedelta(hours=2), "event_id": "stop-1", "scope": "run"},
+            {"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"},
+        ],
+    )
+
+    # 只影响运行的停采事件，不应拖累审核指标；运行指标仍要求它已导入。
+    assert _evidence(directory, scopes=("review", "all")).ok
+    assert _evidence(directory, scopes=("run", "all")).reason == "JOURNAL_NOT_IMPORTED"
+    assert _evidence(
+        directory, imported={"stop-1:pair"}, scopes=("run", "all")
+    ).ok
+
+
+def test_review_scoped_opening_does_not_block_run_metrics(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {
+                "kind": "maintenance",
+                "at": NOW - timedelta(hours=2),
+                "event_id": "maint-1",
+                "scope": "review",
+            },
+            {"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"},
+        ],
+    )
+
+    assert _evidence(directory, scopes=("run", "all")).ok
+    assert _evidence(directory, scopes=("review", "all")).reason == "JOURNAL_NOT_IMPORTED"
+
+
+def test_all_scoped_opening_blocks_both_metrics(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {"kind": "stop", "at": NOW - timedelta(hours=2), "event_id": "stop-1", "scope": "all"},
+            {"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"},
+        ],
+    )
+
+    assert _evidence(directory, scopes=("review", "all")).reason == "JOURNAL_NOT_IMPORTED"
+    assert _evidence(directory, scopes=("run", "all")).reason == "JOURNAL_NOT_IMPORTED"

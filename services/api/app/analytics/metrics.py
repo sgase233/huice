@@ -126,6 +126,7 @@ class MetricsReader:
             now=now,
             window_start=window_start,
             window_end=window_end,
+            scopes=scopes,
         )
 
     @staticmethod
