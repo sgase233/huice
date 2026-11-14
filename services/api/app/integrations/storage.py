@@ -953,8 +953,14 @@ class PolicyRepository:
         expected_revision: UUID | None,
         trace_id: str,
         started_at: datetime | None = None,
+        actor_user_id: UUID | None = None,
     ) -> PolicyDraft:
-        """人工审核通过后发布：同一事务里校验并切换状态，失败保留草稿。"""
+        """人工审核通过后发布：同一事务里校验、切换状态并写审核事件。
+
+        审核事件与发布**同一事务**：发布成功就一定有事件，失败/回滚不会留下「已完成」。
+        事件的 ``review_revision`` 取版本的 ``review_revision``（首次发布为 1），
+        基线事件固定用 0，两者不会撞唯一键。
+        """
 
         started = started_at or datetime.now(timezone.utc)
         new_revision = uuid4()
@@ -1015,6 +1021,26 @@ class PolicyRepository:
                 conn,
                 _INSERT_POLICY_EVENTS,
                 {"policy_id": row["policy_id"], "version_id": row["id"]},
+            )
+            # 审核事件：D5 的 reviewsCompleted 只认这里写入的人工事件。
+            self._execute(
+                conn,
+                """
+                INSERT INTO policy_review_event (
+                    policy_version_id, policy_id, review_revision, actor_kind,
+                    actor_user_id, occurred_at, legacy_source
+                ) VALUES (%(version_id)s, %(policy_id)s, %(revision)s, %(kind)s,
+                          %(actor)s, now(), NULL)
+                ON CONFLICT (policy_version_id, review_revision) DO NOTHING
+                """,
+                {
+                    "version_id": row["id"],
+                    "policy_id": row["policy_id"],
+                    "revision": row.get("review_revision", 1),
+                    # 有操作者记 user；离线导入等没有账号的发布记 legacy_unknown
+                    "kind": "user" if actor_user_id is not None else "legacy_unknown",
+                    "actor": actor_user_id,
+                },
             )
             self._insert_trace(
                 conn,

@@ -1,0 +1,29 @@
+# Purpose: 写一条采集心跳（E3 / B3，覆盖证据）。
+# Install: /etc/systemd/system/huice-collection-heartbeat.service（infra/deploy/provision.sh 安装）
+# Notes: 心跳落到 /var/lib/huice/collection-lifecycle-<host>.jsonl，**不依赖数据库**——
+#        库不可用时正是最需要发现中断的时候。读侧用「两次心跳的空档超过 3 倍间隔」
+#        判定主机在没写 stop 的情况下消失（断电、被杀、实例重建）。
+
+[Unit]
+Description=Huice collection heartbeat (coverage evidence)
+Documentation=file:/opt/huice/app/infra/deploy/README.md
+
+[Service]
+Type=oneshot
+User=huice
+Group=huice
+WorkingDirectory=/opt/huice/app
+# 心跳本身不依赖数据库；导入日志需要 DATABASE_URL，库不可用时失败被忽略，
+# 心跳已经落盘，恢复后下一轮再导入。
+EnvironmentFile=/etc/huice/api.env
+ExecStart=/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/record-collection-event.py --kind beat --scope all
+ExecStart=-/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/import-collection-journal.py --apply
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# 只放开事件日志目录；不碰数据库、不碰对象存储。
+ReadWritePaths=/var/lib/huice

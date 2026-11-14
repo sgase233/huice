@@ -44,6 +44,7 @@ MIGRATIONS=(
     010_policy_discovery
     011_date_provenance
     012_e3_metrics
+    013_collection_gap
 )
 
 # 只报变量名与原因：连接串里有口令，绝不能回显。
@@ -196,3 +197,10 @@ done
 
 printf '%s\n' "$applied" >&2
 printf 'migrate.sh: 本脚本检查的 %s 个迁移 id 均已登记在 schema_migration。\n' "$rows" >&2
+
+# 采集覆盖证据：记录本次 migrate 事件（失败不影响本次结果）。脚本不在时跳过。
+EVENT_SCRIPT="${HUICE_EVENT_SCRIPT:-$HERE/record-collection-event.py}"
+if [[ -f "$EVENT_SCRIPT" ]]; then
+    PYTHON="${HUICE_VENV_PYTHON:-/opt/huice/venv/bin/python}"
+    "$PYTHON" "$EVENT_SCRIPT" --kind migrate --scope all --note "infra/deploy/migrate.sh" || true
+fi

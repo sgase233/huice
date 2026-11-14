@@ -400,3 +400,10 @@ if [ "$START_SERVICE" -eq 1 ]; then
 fi
 
 printf 'rollback.sh: 已回滚到 %s 之前的代码树；%s 保留为现场，确认无误后再删\n' "$X" "$BAD"
+
+# 采集覆盖证据：记录本次 rollback 事件（失败不影响本次结果）。脚本不在时跳过。
+EVENT_SCRIPT="${HUICE_EVENT_SCRIPT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/record-collection-event.py}"
+if [[ -f "$EVENT_SCRIPT" ]]; then
+    PYTHON="${HUICE_VENV_PYTHON:-/opt/huice/venv/bin/python}"
+    "$PYTHON" "$EVENT_SCRIPT" --kind rollback --scope all --note "infra/deploy/rollback.sh" || true
+fi

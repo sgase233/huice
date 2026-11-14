@@ -1,0 +1,16 @@
+# Purpose: 每 5 分钟写一条采集心跳（E3 / B3）。
+# Install: /etc/systemd/system/huice-collection-heartbeat.timer（provision.sh 安装并 enable）
+# Notes: 间隔与 record-collection-event.py 的 HEARTBEAT_SECONDS 一致；读侧按 3 倍判断空档。
+#        Persistent 不设 true：补跑历史心跳会把「停机」抹成「有记录」。
+
+[Unit]
+Description=Write the Huice collection heartbeat every 5 minutes
+Documentation=file:/opt/huice/app/infra/deploy/README.md
+
+[Timer]
+OnCalendar=*:0/5
+RandomizedDelaySec=10
+Unit=huice-collection-heartbeat.service
+
+[Install]
+WantedBy=timers.target

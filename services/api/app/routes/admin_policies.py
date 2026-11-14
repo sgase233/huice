@@ -381,7 +381,7 @@ def publish_policy(
     policyId: UUID,
     body: PublishPolicyInput,
 ) -> PolicyDetail:
-    require_reviewer_write(request)
+    identity = require_reviewer_write(request)
     started_at = datetime.now(timezone.utc)
     expected_revision = require_if_match(request)
     repository = request.app.state.repository
@@ -439,6 +439,7 @@ def publish_policy(
         expected_revision=expected_revision,
         trace_id=trace_id_of(request),
         started_at=started_at,
+        actor_user_id=identity.user_id,
     )
     detail = repository.get_policy_detail(policyId, draft.version)
     response.headers["ETag"] = f'"{saved.revision}"'
