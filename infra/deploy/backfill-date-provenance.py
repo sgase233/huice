@@ -59,9 +59,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -287,11 +289,13 @@ class OverwriteNotApproved(RuntimeError):
         self.reason = reason
 
 
-def load_overwrite_plan(path: Path | None) -> dict[tuple[str, str], dict]:
-    """读覆盖计划：``(sourceUrl, version) → 干跑时看到的旧 provenance``。
+def load_overwrite_plan(path: Path | None) -> tuple[str, dict[tuple[str, str], dict]]:
+    """读覆盖计划：返回 ``(数据文件摘要, {(sourceUrl, version): 条目})``。
 
-    计划由 ``--write-overwrite-plan`` 在干跑时生成。覆盖时必须逐条命中且旧值一致，
-    否则整批回滚——干跑与执行之间新增的冲突不会被顺手覆盖。
+    计划由 ``--write-overwrite-plan`` 在干跑时生成，固定三样东西：数据文件摘要、
+    每条的目标值 ``expectedNew``、以及 ``verified`` 绑定到的来源行（``sourceId`` +
+    内容哈希）。执行时三者都要与现在一致，否则整批回滚——M3 复核的是那份数据和那次
+    绑定，不是「执行时文件碰巧长成什么样」。
     """
 
     if path is None:
@@ -302,9 +306,14 @@ def load_overwrite_plan(path: Path | None) -> dict[tuple[str, str], dict]:
         raise DataError(f"覆盖计划不存在：{path}") from None
     except json.JSONDecodeError as exc:
         raise DataError(f"覆盖计划不是合法 JSON（第 {exc.lineno} 行）") from None
-    entries = raw.get("entries") if isinstance(raw, dict) else None
-    if not isinstance(entries, list):
-        raise DataError("覆盖计划缺少 entries 数组")
+    if not isinstance(raw, dict) or raw.get("version") != 2:
+        raise DataError("覆盖计划必须是 version 2（旧计划不含目标值与附件绑定，请重新生成）")
+    data_sha = raw.get("dataFileSha256")
+    if not isinstance(data_sha, str) or len(data_sha) != 64:
+        raise DataError("覆盖计划缺少 dataFileSha256")
+    entries = raw.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise DataError("覆盖计划 entries 必须是非空数组")
     plan: dict[tuple[str, str], dict] = {}
     for index, item in enumerate(entries):
         if not isinstance(item, dict):
@@ -313,14 +322,28 @@ def load_overwrite_plan(path: Path | None) -> dict[tuple[str, str], dict]:
             value = item.get(field)
             if not isinstance(value, str) or not value.strip():
                 raise DataError(f"覆盖计划 entries[{index}].{field} 必须是非空字符串")
-        old = item.get("expectedOld")
-        if not isinstance(old, dict):
-            raise DataError(f"覆盖计划 entries[{index}].expectedOld 必须是对象")
-        plan[(item["sourceUrl"], item["version"])] = old
-    if not plan:
-        raise DataError("覆盖计划是空的：没有可覆盖的条目")
-    return plan
+        for field in ("expectedOld", "expectedNew", "sources"):
+            if not isinstance(item.get(field), dict):
+                raise DataError(f"覆盖计划 entries[{index}].{field} 必须是对象")
+        plan[(item["sourceUrl"], item["version"])] = {
+            "expectedOld": item["expectedOld"],
+            "expectedNew": item["expectedNew"],
+            "sources": item["sources"],
+        }
+    return data_sha, plan
 
+
+def _check_bindings(entry: "Entry", approved: dict, current: dict) -> None:
+    """计划里固定的来源行必须还是同一行：``sourceId`` 与内容哈希都要对得上。"""
+
+    for name, pinned in approved["sources"].items():
+        now = current.get(name)
+        if now is None:
+            raise OverwriteNotApproved(entry, f"{name} 的来源绑定在本次执行里不存在")
+        if now.get("sourceId") != pinned.get("sourceId"):
+            raise OverwriteNotApproved(entry, f"{name} 绑定的来源行变了（sourceId 不一致）")
+        if now.get("contentHash") != pinned.get("contentHash"):
+            raise OverwriteNotApproved(entry, f"{name} 绑定的来源内容变了（contentHash 不一致）")
 
 def _human_size(byte_size: int) -> str:
     if byte_size >= 1048576:
@@ -400,10 +423,18 @@ def run(
     changed = 0
     skipped = 0
     conflicts: list[tuple[Entry, dict]] = []
+    data_sha = hashlib.sha256(data_path.read_bytes()).hexdigest()
     try:
-        plan = load_overwrite_plan(plan_path) if overwrite else None
+        plan_sha, plan = load_overwrite_plan(plan_path) if overwrite else (None, None)
     except DataError as exc:
         print(f"backfill-date-provenance: 覆盖计划不合法：{exc}", file=sys.stderr)
+        return 2
+    if plan is not None and plan_sha != data_sha:
+        print(
+            "backfill-date-provenance: 数据文件与覆盖计划生成时不一致（sha256 不同），"
+            "整批不写——M3 复核的是计划生成时的那份数据，请重新干跑并重新生成计划。",
+            file=sys.stderr,
+        )
         return 2
     used: set[tuple[str, str]] = set()
     try:
@@ -418,6 +449,7 @@ def run(
             # 两阶段：先把每条都对上号（政策版本、来源行），全部成立才开始写。任何一条
             # 对不上都整批停下——回填错位比回填缺失更难发现，写到一半停下更糟。
             resolved: list[tuple[Entry, Any, dict[str, Any]]] = []
+            bindings: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
             for entry in payload.entries:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -440,7 +472,8 @@ def run(
                     with conn.cursor() as cur:
                         if spec["kind"] == "body":
                             cur.execute(
-                                "SELECT id, file_name, ordinal, byte_size FROM policy_source "
+                                "SELECT id, file_name, ordinal, byte_size, content_hash "
+                                "FROM policy_source "
                                 "WHERE policy_version_id = %s AND kind = 'body'",
                                 (version_id,),
                             )
@@ -448,7 +481,8 @@ def run(
                             # 数据文件给的是「第几份附件」（1 起）；库里 ordinal 在版本内
                             # 连续编号、正文占 0，所以按 ordinal 排序后取第 n 个，不拿绝对号硬匹配。
                             cur.execute(
-                                "SELECT id, file_name, ordinal, byte_size FROM policy_source "
+                                "SELECT id, file_name, ordinal, byte_size, content_hash "
+                                "FROM policy_source "
                                 "WHERE policy_version_id = %s AND kind = 'attachment' "
                                 "ORDER BY ordinal OFFSET %s LIMIT 1",
                                 (version_id, spec["ordinal"] - 1),
@@ -464,8 +498,14 @@ def run(
                         )
                         conn.rollback()
                         return 2
-                    source_id, file_name, source_ordinal, byte_size = source_rows[0]
+                    source_id, file_name, source_ordinal, byte_size, content_hash = source_rows[0]
                     stored[name]["sourceId"] = str(source_id)
+                    bindings[entry.index][name] = {
+                        "kind": spec["kind"],
+                        "sourceId": str(source_id),
+                        "fileName": file_name,
+                        "contentHash": content_hash,
+                    }
                     # 干跑的价值就在这一行：绑到哪个文件、绝对 ordinal 是几，都看得见。
                     where = (
                         "正文"
@@ -487,6 +527,7 @@ def run(
                         )
                 resolved.append((entry, version_id, stored))
 
+            stored_by_index = {entry.index: stored for entry, _vid, stored in resolved}
             for entry, version_id, stored in resolved:
                 with conn.cursor() as cur:
                     # FOR UPDATE：行存在时锁住它，读到的值与写回时看到的是同一份——
@@ -506,13 +547,17 @@ def run(
                         conflicts.append((entry, row[0]))
                         continue
                     if row is not None and overwrite:
-                        # 覆盖必须命中「获准名单」且旧值与干跑时一致：干跑之后新增的冲突、
-                        # 或旧值被别人改过，都不覆盖，整批回滚。
+                        # 覆盖必须命中「获准名单」：旧值、新值、附件绑定三者都要与干跑时一致。
+                        # 干跑之后新增的冲突、旧值被改、数据文件被改、附件被重排，
+                        # 任何一项对不上都整批回滚。
                         approved = plan.get(_plan_key(entry)) if plan is not None else None
                         if approved is None:
                             raise OverwriteNotApproved(entry, "不在本次获准覆盖的名单里")
-                        if approved != row[0]:
+                        if approved["expectedOld"] != row[0]:
                             raise OverwriteNotApproved(entry, "旧值与干跑时不一致")
+                        if approved["expectedNew"] != stored:
+                            raise OverwriteNotApproved(entry, "目标值与复核时的数据文件不一致")
+                        _check_bindings(entry, approved, bindings[entry.index])
                         used.add(_plan_key(entry))
                     if apply:
                         # 写旁表而不是 policy_version：已发布版本不可变由触发器保证，
@@ -558,12 +603,15 @@ def run(
                 write_plan.write_text(
                     json.dumps(
                         {
-                            "version": 1,
+                            "version": 2,
+                            "dataFileSha256": data_sha,
                             "entries": [
                                 {
                                     "sourceUrl": entry.source_url,
                                     "version": entry.version,
                                     "expectedOld": old,
+                                    "expectedNew": stored_by_index[entry.index],
+                                    "sources": bindings[entry.index],
                                 }
                                 for entry, old in conflicts
                             ],
@@ -574,7 +622,7 @@ def run(
                     + "\n",
                     encoding="utf-8",
                 )
-                print(f"覆盖计划已写入 {write_plan}（{len(conflicts)} 条）。")
+                print(f"覆盖计划已写入 {write_plan}（{len(conflicts)} 条，含目标值与附件绑定）。")
 
             if conflicts:
                 conn.rollback()

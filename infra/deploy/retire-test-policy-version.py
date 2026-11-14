@@ -11,8 +11,9 @@
 2. 执行前打印快照：`id`、`version`、`review_status`、`revision`、`xmin`，以及引用计数
    （`assessment` / `policy_review_event`）——有引用时降级是对的，删除会破坏审计链，
    所以本脚本**只降级、不删除**；
-3. 写入时**只在这一条语句的范围内**禁用 `policy_version_guard_published`，
-   紧跟着恢复；不删除任何行、不动子表；
+3. 写入在**同一个事务**里 `DISABLE TRIGGER` → `UPDATE` → `ENABLE TRIGGER`：
+   `ALTER TABLE ... DISABLE TRIGGER` 会取 ACCESS EXCLUSIVE 锁，事务提交前别人进不来；
+   不删除任何行、不动子表；
 4. 提交前比对「已发布行（排除目标行）的 `xmin` 指纹」，提交后再算一次，必须一致；
 5. 提交后**验证守卫已恢复**：对一行已发布行做一次 UPDATE，必须被拒（`CheckViolation`），
    然后回滚——证明临时禁用没有遗留。
@@ -85,20 +86,29 @@ def _published_fingerprint(conn, *, exclude_ids: list[Any] | None = None) -> str
     return None if row is None else row[0]
 
 
-def _references(conn, version_id: Any) -> dict[str, int]:
-    """数一下有哪些行引用这个版本。表可能还没建（012 未执行时没有事件表），跳过即可。"""
+def _references(conn, version_id: Any, policy_id: Any) -> dict[str, int]:
+    """数一下有哪些行引用这个版本 / 它所属的政策。
 
+    表可能还没建（012 未执行时没有事件表），跳过即可；`policy_candidate` 记的是
+    政策 id（`submitted_policy_id`），不是版本 id。本脚本只降级不删除，这些计数是给
+    执行者看的证据，不改变动作。
+    """
+
+    checks = (
+        ("assessment", "policy_version_id", version_id),
+        ("policy_review_event", "policy_version_id", version_id),
+        ("policy_source", "policy_version_id", version_id),
+        ("policy_criterion", "policy_version_id", version_id),
+        ("policy_candidate", "submitted_policy_id", policy_id),
+    )
     counts: dict[str, int] = {}
-    for table, column in (
-        ("assessment", "policy_version_id"),
-        ("policy_review_event", "policy_version_id"),
-    ):
+    for table, column, value in checks:
         exists = conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]
         if not exists:
             counts[table] = 0
             continue
         row = conn.execute(
-            f"SELECT count(*) FROM {table} WHERE {column} = %s", (version_id,)
+            f"SELECT count(*) FROM {table} WHERE {column} = %s", (value,)
         ).fetchone()
         counts[table] = int(row[0])
     return counts
@@ -143,8 +153,9 @@ def run(data_path: Path, apply: bool) -> int:
             targets: list[tuple[dict[str, str], dict[str, Any]]] = []
             for entry in entries:
                 rows = conn.execute(
-                    "SELECT id, review_status, revision, xmin::text "
-                    "FROM policy_version WHERE source_url = %s AND version = %s",
+                    "SELECT id, review_status, revision, xmin::text, policy_id, reviewed_at, "
+                    "(SELECT count(*) FROM policy_source ps WHERE ps.policy_version_id = pv.id) "
+                    "FROM policy_version pv WHERE source_url = %s AND version = %s FOR UPDATE",
                     (entry["sourceUrl"], entry["version"]),
                 ).fetchall()
                 if len(rows) != 1:
@@ -159,6 +170,9 @@ def run(data_path: Path, apply: bool) -> int:
                     "status": rows[0][1],
                     "revision": rows[0][2],
                     "xmin": rows[0][3],
+                    "policy_id": rows[0][4],
+                    "reviewed_at": rows[0][5],
+                    "sources": int(rows[0][6]),
                 }
                 if row["status"] != "published":
                     print(
@@ -171,22 +185,31 @@ def run(data_path: Path, apply: bool) -> int:
                 targets.append((entry, row))
 
             for entry, row in targets:
-                refs = _references(conn, row["id"])
+                refs = _references(conn, row["id"], row["policy_id"])
                 print(
-                    f"{entry['version']}：{row['status']}，id {row['id']}，revision {row['revision']}，"
-                    f"xmin {row['xmin']}；引用 assessment={refs['assessment']}、"
-                    f"policy_review_event={refs['policy_review_event']}；理由：{entry['reason']}"
+                    f"{entry['version']}：{row['status']}，id {row['id']}，policy {row['policy_id']}，"
+                    f"revision {row['revision']}，xmin {row['xmin']}，reviewed_at {row['reviewed_at']}，"
+                    f"来源 {row['sources']} 条；引用："
+                    + "、".join(f"{name}={count}" for name, count in refs.items())
+                    + f"；理由：{entry['reason']}"
                 )
                 if not apply:
                     continue
                 conn.execute(f"ALTER TABLE policy_version DISABLE TRIGGER {TRIGGER}")
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE policy_version SET review_status = 'pending_parse', "
                     "reviewed_at = NULL, revision = gen_random_uuid(), updated_at = now() "
                     "WHERE id = %s AND review_status = 'published'",
                     (row["id"],),
                 )
                 conn.execute(f"ALTER TABLE policy_version ENABLE TRIGGER {TRIGGER}")
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    print(
+                        f"{entry['version']}：UPDATE 命中 {cursor.rowcount} 行（预期 1），已回滚。",
+                        file=sys.stderr,
+                    )
+                    return 3
                 retired += 1
 
             if apply:
@@ -210,13 +233,18 @@ def run(data_path: Path, apply: bool) -> int:
                 row = probe.execute(
                     "SELECT id FROM policy_version WHERE review_status = 'published' LIMIT 1"
                 ).fetchone()
-                if row is not None:
-                    try:
-                        _assert_guard_active(probe, row[0])
-                    except RuntimeError as exc:
-                        print(f"守卫验证失败：{exc}", file=sys.stderr)
-                        return 3
-                    print("守卫已验证恢复：对已发布行的 UPDATE 仍被拒绝。")
+                if row is None:
+                    print(
+                        "守卫无法验证：库里已没有其它已发布行可供试验。请人工确认触发器已恢复。",
+                        file=sys.stderr,
+                    )
+                    return 3
+                try:
+                    _assert_guard_active(probe, row[0])
+                except RuntimeError as exc:
+                    print(f"守卫验证失败：{exc}", file=sys.stderr)
+                    return 3
+                print("守卫已验证恢复：对已发布行的 UPDATE 仍被拒绝。")
     except Exception as exc:  # 不回显连接串与堆栈
         print(f"数据库操作失败（{type(exc).__name__}）。", file=sys.stderr)
         return 3

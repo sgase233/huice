@@ -550,3 +550,129 @@ def test_overwrite_without_a_plan_is_refused(database_url_schema, repo, tmp_path
 
     second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
     assert backfill.run(second, apply=True, overwrite=True) == 2
+
+
+def test_a_changed_data_file_invalidates_the_plan(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """计划固定数据文件摘要：复核后改了数据文件，执行必须整批回滚。"""
+
+    create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    path = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
+    assert backfill.run(path, apply=True) == 0
+
+    second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
+    plan = tmp_path / "plan.json"
+    assert backfill.run(second, apply=False, write_plan=plan) == 3
+
+    # 复核之后数据文件被改（目标值变了）
+    changed = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
+    assert backfill.run(changed, apply=True, overwrite=True, plan_path=plan) == 2
+
+    with psycopg.connect(database_url_schema) as conn:
+        stored = conn.execute("SELECT provenance FROM policy_version_date_provenance").fetchone()[0]
+    assert stored["effectiveTo"] == {"status": "unknown"}, "计划外的目标值不能写进去"
+
+
+def test_a_replaced_attachment_stops_the_overwrite(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """计划固定了绑定的来源行与内容哈希：附件被替换就整批回滚。"""
+
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["body", "attachment", "attachment"])
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    first, _second = _attachment_ids(database_url_schema, version_id)
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    def data(status: str):
+        return {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1",
+            },
+            "effectiveTo": {"status": status},
+        }
+
+    first_path = _write(tmp_path, data("unknown"))
+    assert backfill.run(first_path, apply=True) == 0
+
+    second_path = _write(tmp_path, data("unverified"))
+    plan = tmp_path / "plan.json"
+    assert backfill.run(second_path, apply=False, write_plan=plan) == 3
+
+    # 附件被替换：内容哈希变了
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "UPDATE policy_source SET content_hash = %s WHERE id = %s",
+            ("0" * 64, first),
+        )
+        conn.commit()
+
+    assert backfill.run(second_path, apply=True, overwrite=True, plan_path=plan) == 3
+
+
+def test_a_reordered_attachment_stops_the_overwrite(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """附件重排会让「第 1 份」指向另一行：与计划固定的 sourceId 对不上就回滚。"""
+
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["body", "attachment", "attachment"])
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    first, second = _attachment_ids(database_url_schema, version_id)
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    first_path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1",
+            },
+            "effectiveTo": {"status": "unknown"},
+        },
+    )
+    assert backfill.run(first_path, apply=True) == 0
+
+    second_path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1",
+            },
+            "effectiveTo": {"status": "unverified"},
+        },
+    )
+    plan = tmp_path / "plan.json"
+    assert backfill.run(second_path, apply=False, write_plan=plan) == 3
+
+    # 交换两份附件的 ordinal（先腾出临时值避免唯一约束冲突）
+    with psycopg.connect(database_url_schema) as conn:
+        ordinals = dict(
+            conn.execute(
+                "SELECT id::text, ordinal FROM policy_source WHERE policy_version_id = %s",
+                (version_id,),
+            ).fetchall()
+        )
+        conn.execute(
+            "UPDATE policy_source SET ordinal = 99 WHERE id = %s", (first,)
+        )
+        conn.execute(
+            "UPDATE policy_source SET ordinal = %s WHERE id = %s",
+            (ordinals[str(first)], second),
+        )
+        conn.execute(
+            "UPDATE policy_source SET ordinal = %s WHERE id = %s",
+            (ordinals[str(second)], first),
+        )
+        conn.commit()
+
+    assert backfill.run(second_path, apply=True, overwrite=True, plan_path=plan) == 3
