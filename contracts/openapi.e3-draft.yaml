@@ -60,7 +60,8 @@ paths:
       - name: to
         in: query
         required: true
-        description: 结束日期（含）。区间最多 31 天，超过返回 400 RANGE_TOO_LARGE。
+        description: 结束日期（含）。区间最多 31 天，超过返回 400 RANGE_TOO_LARGE；晚于今天返回
+          400 FUTURE_RANGE。
         schema:
           type: string
           format: date
@@ -240,6 +241,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: 运行未成功完成（RUN_NOT_COMPLETED）；与 API-12 同码。
+          content:
+            application/json:
+              schema:
+                $ref: ./openapi.yaml#/components/schemas/ApiError
         '422':
           $ref: '#/components/responses/Unprocessable'
 

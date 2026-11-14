@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
@@ -44,10 +45,18 @@ def _range(from_: date, to: date) -> None:
             "RANGE_TOO_LARGE",
             f"日期区间最多 {MAX_RANGE_DAYS} 天，请缩小后重试。",
         )
+    if to > datetime.now(SHANGHAI).date():
+        # 未来日期既没有数据也不该被当成「已结算的真实零」（#79 M2 P2）。
+        raise ApiProblem(400, "FUTURE_RANGE", "结束日期不能晚于今天。")
 
 
 def _generated_at() -> datetime:
     return datetime.now(SHANGHAI)
+
+
+def _journal_dir(request: Request) -> Path | None:
+    raw = (request.app.state.settings.collection_journal_dir or "").strip()
+    return Path(raw) if raw else None
 
 
 def _review_days(rows: list[dict]) -> list[dict]:
@@ -95,9 +104,9 @@ def review_workload(
     require_reviewer_or_bearer(request)
     _range(from_, to)
     generated_at = _generated_at()
-    rows = MetricsReader(request.app.state.db).review_workload(
-        start=from_, end=to, now=generated_at
-    )
+    rows = MetricsReader(
+        request.app.state.db, journal_dir=_journal_dir(request)
+    ).review_workload(start=from_, end=to, now=generated_at)
     return ReviewWorkloadResponse.model_validate(
         {
             "from": from_,
@@ -130,9 +139,9 @@ def assessment_runs(
     require_reviewer_or_bearer(request)
     _range(from_, to)
     generated_at = _generated_at()
-    rows = MetricsReader(request.app.state.db).assessment_runs(
-        start=from_, end=to, now=generated_at
-    )
+    rows = MetricsReader(
+        request.app.state.db, journal_dir=_journal_dir(request)
+    ).assessment_runs(start=from_, end=to, now=generated_at)
     return AssessmentRunsResponse.model_validate(
         {
             "from": from_,

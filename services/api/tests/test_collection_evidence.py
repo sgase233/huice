@@ -1,0 +1,142 @@
+"""采集证据核验（``app/analytics/collection_evidence.py``）。
+
+M2 在 #79 P1 点名：只看 `collection_gap` 不够——日志缺失、断链、没导入、主机换掉，
+都会让「缺口表为空」看起来像完整覆盖。这里逐种证据缺陷锁一个降级原因。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from app.analytics.collection_evidence import host_id, inspect_journal
+from app.domain.versioning import SHANGHAI
+
+NOW = datetime(2026, 11, 15, 12, 0, tzinfo=SHANGHAI)
+
+
+def _line(seq: int, prev: str | None, *, kind: str, at: datetime, event_id: str) -> str:
+    return json.dumps(
+        {
+            "seq": seq,
+            "prev": prev,
+            "host": host_id(),
+            "kind": kind,
+            "scope": "all",
+            "at": at.isoformat(),
+            "event_id": event_id,
+            "note": None,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _write(path: Path, entries: list[dict]) -> list[dict]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    prev: str | None = None
+    for index, item in enumerate(entries, start=1):
+        raw = _line(index, prev, **item)
+        lines.append(raw)
+        prev = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return entries
+
+
+def _journal(tmp_path: Path, entries: list[dict]) -> Path:
+    directory = tmp_path / "huice"
+    _write(directory / f"collection-lifecycle-{host_id()}.jsonl", entries)
+    return directory
+
+
+def _evidence(directory: Path | None, *, imported=()):
+    return inspect_journal(directory, imported_event_ids=imported, now=NOW)
+
+
+def test_not_configured_means_no_check() -> None:
+    assert _evidence(None) is None
+
+
+def test_missing_directory_or_no_file_is_no_journal(tmp_path: Path) -> None:
+    assert _evidence(tmp_path / "missing").reason == "NO_JOURNAL"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _evidence(empty).reason == "NO_JOURNAL"
+
+
+def test_a_healthy_recent_beat_passes(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [{"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"}],
+    )
+
+    assert _evidence(directory).ok
+
+
+def test_a_changed_host_is_flagged(tmp_path: Path) -> None:
+    directory = tmp_path / "huice"
+    _write(
+        directory / "collection-lifecycle-some-other-host.jsonl",
+        [{"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"}],
+    )
+
+    assert _evidence(directory).reason == "HOST_CHANGED"
+
+
+def test_a_broken_chain_is_flagged(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [{"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"}],
+    )
+    path = next(directory.glob("*.jsonl"))
+    path.write_text(path.read_text(encoding="utf-8").replace('"prev":null', '"prev":"deadbeef"'), encoding="utf-8")
+
+    assert _evidence(directory).reason == "JOURNAL_CHAIN_BROKEN"
+
+
+def test_an_unimported_opening_event_is_flagged(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {"kind": "stop", "at": NOW - timedelta(hours=2), "event_id": "stop-1"},
+            {"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"},
+        ],
+    )
+
+    assert _evidence(directory).reason == "JOURNAL_NOT_IMPORTED"
+
+
+def test_an_imported_opening_event_passes(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {"kind": "stop", "at": NOW - timedelta(hours=2), "event_id": "stop-1"},
+            {"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"},
+        ],
+    )
+
+    assert _evidence(directory, imported={"stop-1"}).ok
+
+
+def test_no_heartbeat_is_flagged(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [{"kind": "migrate", "at": NOW - timedelta(minutes=1), "event_id": "m1"}],
+    )
+
+    assert _evidence(directory).reason == "NO_HEARTBEAT"
+
+
+@pytest.mark.parametrize("age", [16, 120])
+def test_a_stale_heartbeat_is_flagged(tmp_path: Path, age: int) -> None:
+    directory = _journal(
+        tmp_path,
+        [{"kind": "beat", "at": NOW - timedelta(minutes=age), "event_id": "b1"}],
+    )
+
+    assert _evidence(directory).reason == "JOURNAL_STALE"

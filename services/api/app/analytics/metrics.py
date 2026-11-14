@@ -17,10 +17,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Iterable
 
 from ..db import Database
 from ..domain.versioning import SHANGHAI
+from .collection_evidence import JournalEvidence, inspect_journal
 
 METRIC_RUN = "run"
 METRIC_REVIEW = "review"
@@ -64,6 +66,9 @@ class Availability:
 def _from_gaps(base: Availability, day: date, gaps: Iterable[tuple[datetime, datetime | None]]) -> Availability:
     """有缺口压在当天就降级；`coverageFrom` 取最后一个闭合缺口的结束时刻。"""
 
+    if base.state == NOT_COLLECTED:
+        # 未采集就是未采集：缺口存在不能把它升级成部分覆盖（#79 M2 P1）。
+        return base
     start, end = _day_bounds(day)
     overlapping = [
         (gap_from, gap_to)
@@ -82,8 +87,40 @@ def _from_gaps(base: Availability, day: date, gaps: Iterable[tuple[datetime, dat
 class MetricsReader:
     """两个指标 + 覆盖状态。只读；鉴权由接端点的一方负责。"""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, *, journal_dir: Path | None = None) -> None:
         self._db = db
+        #: 主机事件日志目录；``None`` 表示本部署没配置采集证据，不做核验。
+        self._journal_dir = journal_dir
+
+    def _evidence(self, conn, now: datetime) -> JournalEvidence | None:
+        if self._journal_dir is None:
+            return None
+        imported = {
+            str(row[0]) for row in conn.execute("SELECT event_id FROM collection_gap").fetchall()
+        }
+        return inspect_journal(self._journal_dir, imported_event_ids=imported, now=now)
+
+    @staticmethod
+    def _apply_evidence(
+        availability: dict[str, Availability],
+        evidence: JournalEvidence | None,
+        *,
+        names: Iterable[str] | None = None,
+    ) -> None:
+        """日志证据不能证明覆盖时，只把 ``precise`` 降为 ``partial``。
+
+        ``not_collected`` 保持原状（M2 在 #79 点名：不能把未采集升级成部分覆盖）。
+        ``newDrafts`` 的来源是 ``imported_at``，与主机采集日志无关，所以审核工作量里
+        只对 ``reviewsCompleted``/``pendingAtEndOfDay`` 套用证据。
+        """
+
+        if evidence is None or evidence.ok:
+            return
+        selected = set(names) if names is not None else set(availability)
+        for name in selected:
+            item = availability[name]
+            if item.state == PRECISE:
+                availability[name] = Availability(PARTIAL, item.coverage_from, evidence.reason)
 
     # ------------------------------------------------------------------ 审核
 
@@ -98,6 +135,7 @@ class MetricsReader:
             new_drafts = self._new_drafts(conn, start, end)
             reviews = self._reviews(conn, start, end)
             pending = self._pending(conn, days)
+            evidence = self._evidence(conn, current)
 
         result = []
         for day in days:
@@ -111,6 +149,11 @@ class MetricsReader:
                     "pendingAtEndOfDay", day, baseline, gaps, day_open
                 ),
             }
+            self._apply_evidence(
+                availability,
+                evidence,
+                names=("reviewsCompleted", "pendingAtEndOfDay"),
+            )
             # 缺测不是 0：未采集的指标返回 None，不返回 0（D5 §3.5）。
             reviews_value: int | None = reviews.get(day, 0)
             if availability["reviewsCompleted"].state == NOT_COLLECTED:
@@ -173,6 +216,7 @@ class MetricsReader:
             baseline = self._baseline(conn)
             gaps = self._run_gaps(conn, start, end)
             rows = self._run_counts(conn, start, end)
+            evidence = self._evidence(conn, current)
 
         lifecycle_from = None if baseline is None else baseline.get("run_lifecycle_from")
         result = []
@@ -192,6 +236,7 @@ class MetricsReader:
                     "avgDurationMs",
                 )
             }
+            self._apply_evidence(availability, evidence)
             # 未采集的三态不给 0；采集前历史只把 total/succeeded 记为 partial。
             values: dict[str, int | None] = {}
             for name in ("total", "succeeded", "failed", "unfinished"):
@@ -309,11 +354,16 @@ class MetricsReader:
                    count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
                    count(*) FILTER (WHERE status = 'failed') AS failed,
                    count(*) FILTER (WHERE status IN ('queued', 'running', 'interrupted')) AS unfinished,
+                   -- 只有已结束的 succeeded/failed 才有可信耗时；interrupted 也带
+                   -- finished_at（扫描时刻），但它仍是「未完成」，不能既进 unfinished
+                   -- 又进耗时样本（#79 M2 P1）。
                    count(*) FILTER (
-                       WHERE finished_at IS NOT NULL AND finished_at > created_at
+                       WHERE status IN ('succeeded', 'failed')
+                         AND finished_at IS NOT NULL AND finished_at > created_at
                    ) AS duration_sample_count,
                    avg(extract(epoch FROM (finished_at - created_at)) * 1000) FILTER (
-                       WHERE finished_at IS NOT NULL AND finished_at > created_at
+                       WHERE status IN ('succeeded', 'failed')
+                         AND finished_at IS NOT NULL AND finished_at > created_at
                    ) AS avg_duration_ms
             FROM assessment_run
             WHERE created_at >= %s AND created_at < %s

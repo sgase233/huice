@@ -259,7 +259,8 @@ class CompletenessReader:
         """run 页：固定该 run 的政策版本集合；分子仍读当前事实。"""
 
         header = conn.execute(
-            "SELECT enterprise_id, period_start, period_end FROM assessment_run WHERE id = %s",
+            "SELECT enterprise_id, period_start, period_end, status "
+            "FROM assessment_run WHERE id = %s",
             (run_id,),
         ).fetchone()
         if header is None:
@@ -269,6 +270,15 @@ class CompletenessReader:
                 422,
                 "RUN_ENTERPRISE_MISMATCH",
                 "该判断运行不属于指定企业。",
+            )
+        if header[3] != "succeeded":
+            # 未成功的 run 没有完整结果，拿不到它钉住的全部版本；返回空集合会被
+            # 读成「没有可统计字段」。与 API-12 同码：409 RUN_NOT_COMPLETED。
+            raise ApiProblem(
+                409,
+                "RUN_NOT_COMPLETED",
+                "该判断运行尚未成功完成，不能按它的版本统计完整度。",
+                {"status": header[3]},
             )
         rows = conn.execute(
             """

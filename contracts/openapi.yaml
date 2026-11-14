@@ -1444,7 +1444,7 @@ paths:
       - name: to
         in: query
         required: true
-        description: 结束日期（含）。区间最多 31 天；起始晚于结束或超限返回 400。
+        description: 结束日期（含）。区间最多 31 天；起始晚于结束、超限或晚于今天返回 400（`FUTURE_RANGE`）。
         schema:
           type: string
           format: date
@@ -1514,7 +1514,7 @@ paths:
       - name: to
         in: query
         required: true
-        description: 结束日期（含）。区间最多 31 天；起始晚于结束或超限返回 400。
+        description: 结束日期（含）。区间最多 31 天；起始晚于结束、超限或晚于今天返回 400（`FUTURE_RANGE`）。
         schema:
           type: string
           format: date
@@ -1576,7 +1576,8 @@ paths:
         与分组计数。范围：不传 runId/policyIds 时用当前已发布政策的最新版本（排除 closed）；
         传 runId 固定该 run 的政策版本集合；传 policyIds 固定政策集合。二者不能同时给
         （400 INVALID_SCOPE）。分子始终读当前事实——这是「按该版本统计当前资料完整度」，
-        不是重现当时的完整度。适用性是静态引用（applicabilityMode=static，
+        不是重现当时的完整度。按 runId 统计时，运行必须是 succeeded；running/failed/
+        interrupted 返回 409 RUN_NOT_COMPLETED，与 API-12 同码。适用性是静态引用（applicabilityMode=static，
         definitionVersion=d4.static.v1）：scope 内条件直接引用的 FactKey 即适用，不做
         OR/AND 分支可达性判断；manualReview 单列，不进分母。not_due 优先于已填写：
         季度键以季度结束次日 00:00 为到期点，年度/跨年区间以 period_start 晚于 asOf
@@ -1628,6 +1629,7 @@ paths:
         '401': *id005
         '403': *id006
         '404': *id013
+        '409': *id014
         '422': *id015
         '500': *id007
         '503': *id008

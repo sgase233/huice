@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -49,13 +49,13 @@ def test_review_workload_returns_per_metric_availability(
     )
 
     response = client.get(
-        "/api/v1/admin/metrics/review-workload?from=2026-11-20&to=2026-11-20",
+        "/api/v1/admin/metrics/review-workload?from=2026-11-10&to=2026-11-10",
         headers=reviewer_headers,
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["from"] == "2026-11-20"
+    assert body["from"] == "2026-11-10"
     assert body["timeZone"] == "Asia/Shanghai"
     assert body["days"][0]["reviewsCompleted"] == 1
     assert body["days"][0]["availability"]["reviewsCompleted"]["state"] == PARTIAL
@@ -76,7 +76,7 @@ def test_not_collected_is_null_not_zero(client, reviewer_headers, monkeypatch) -
     )
 
     response = client.get(
-        "/api/v1/admin/metrics/review-workload?from=2026-11-20&to=2026-11-20",
+        "/api/v1/admin/metrics/review-workload?from=2026-11-10&to=2026-11-10",
         headers=reviewer_headers,
     )
 
@@ -117,7 +117,7 @@ def test_assessment_runs_exposes_unfinished_separately(
     )
 
     response = client.get(
-        "/api/v1/admin/metrics/assessment-runs?from=2026-11-20&to=2026-11-20",
+        "/api/v1/admin/metrics/assessment-runs?from=2026-11-10&to=2026-11-10",
         headers=reviewer_headers,
     )
 
@@ -130,7 +130,7 @@ def test_assessment_runs_exposes_unfinished_separately(
 
 @pytest.mark.parametrize(
     "query",
-    ["from=2026-11-21&to=2026-11-20", "from=2026-01-01&to=2026-03-01", "from=&to=2026-11-20"],
+    ["from=2026-11-11&to=2026-11-10", "from=2026-01-01&to=2026-03-01", "from=&to=2026-11-20"],
 )
 def test_invalid_ranges_are_rejected(client, reviewer_headers, query) -> None:
     response = client.get(f"/api/v1/admin/metrics/review-workload?{query}", headers=reviewer_headers)
@@ -140,7 +140,7 @@ def test_invalid_ranges_are_rejected(client, reviewer_headers, query) -> None:
 
 def test_enterprise_session_cannot_read_metrics(client, user_headers) -> None:
     response = client.get(
-        "/api/v1/admin/metrics/review-workload?from=2026-11-20&to=2026-11-20",
+        "/api/v1/admin/metrics/review-workload?from=2026-11-10&to=2026-11-10",
         headers=user_headers,
     )
 
@@ -154,7 +154,7 @@ def test_bearer_can_read_metrics(anon_client, bearer, monkeypatch) -> None:
     )
 
     response = anon_client.get(
-        "/api/v1/admin/metrics/review-workload?from=2026-11-20&to=2026-11-20",
+        "/api/v1/admin/metrics/review-workload?from=2026-11-10&to=2026-11-10",
         headers=bearer,
     )
 
@@ -214,3 +214,15 @@ def test_completeness_returns_units_and_null_ratio(
     assert body["definitionVersion"] == "d4.static.v1"
     assert body["applicabilityMode"] == "static"
     assert body["totals"]["ratio"] is None
+
+
+def test_future_dates_are_rejected(client, reviewer_headers) -> None:
+    tomorrow = (datetime.now(SHANGHAI).date() + timedelta(days=1)).isoformat()
+
+    response = client.get(
+        f"/api/v1/admin/metrics/review-workload?from={tomorrow}&to={tomorrow}",
+        headers=reviewer_headers,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "FUTURE_RANGE"

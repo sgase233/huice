@@ -24,6 +24,7 @@ from app.analytics.completeness import (
     NOT_DUE,
 )
 from app.db import Database
+from app.errors import ApiProblem
 from app.domain.versioning import SHANGHAI
 
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
@@ -293,3 +294,27 @@ def test_a_run_scope_pins_its_policy_versions(database_url_schema: str) -> None:
     assert v2_name == "v2"
     assert payload["definitionVersion"] == "d4.static.v1"
     assert payload["applicabilityMode"] == "static"
+
+
+@pytest.mark.parametrize("status", ["running", "failed", "interrupted"])
+def test_non_succeeded_run_cannot_be_used_for_completeness(
+    database_url_schema: str, status: str
+) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        enterprise_id = _enterprise(conn)
+        _published_version(conn, [{"op": "manual_review", "reason": "人工。"}])
+        run_id = uuid4()
+        conn.execute(
+            "INSERT INTO assessment_run (id, enterprise_id, as_of, status, fact_version, "
+            "model_or_rule_version, created_at, finished_at, period_start, period_end) "
+            "VALUES (%s, %s, %s, %s, %s, 'rule:1', now(), now(), "
+            "'2026-01-01', '2026-12-31')",
+            (run_id, enterprise_id, AS_OF, status, "f" * 64),
+        )
+        conn.commit()
+
+    with pytest.raises(ApiProblem) as raised:
+        _build(database_url_schema, enterprise_id, run_id=run_id)
+
+    assert raised.value.status_code == 409
+    assert raised.value.code == "RUN_NOT_COMPLETED"

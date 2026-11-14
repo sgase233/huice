@@ -181,7 +181,7 @@ def test_run_counts_use_start_day_and_include_interrupted(database_url_schema: s
     assert row["succeeded"] == 1
     assert row["failed"] == 1
     assert row["unfinished"] == 2  # interrupted + running
-    assert row["durationSampleCount"] == 3  # 已结束的三条
+    assert row["durationSampleCount"] == 2  # interrupted 不算耗时样本
     assert row["availability"]["failed"]["state"] == PRECISE
 
 
@@ -218,3 +218,53 @@ def test_legacy_unknown_events_do_not_count_as_completed_reviews(database_url_sc
     )
 
     assert rows[0]["reviewsCompleted"] == 0, "没有操作者的旧发布不是人工审核完成"
+
+
+def test_a_gap_does_not_upgrade_not_collected_to_partial(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=None, run_from=None)
+        _gap(conn, scope="review", start=_at(DAY, 9), end=None)
+        conn.commit()
+
+    rows = _reader(database_url_schema).review_workload(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12)
+    )
+
+    assert rows[0]["availability"]["reviewsCompleted"]["state"] == NOT_COLLECTED
+    assert rows[0]["availability"]["pendingAtEndOfDay"]["state"] == NOT_COLLECTED
+
+
+def test_interrupted_runs_do_not_enter_duration_samples(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=None, run_from=_at(DAY, 0))
+        _run(conn, created=_at(DAY, 10), status="interrupted", finished=_at(DAY, 11))
+        conn.commit()
+
+    rows = _reader(database_url_schema).assessment_runs(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12)
+    )
+
+    assert rows[0]["unfinished"] == 1
+    assert rows[0]["durationSampleCount"] == 0
+    assert rows[0]["avgDurationMs"] is None
+
+
+def test_missing_journal_evidence_downgrades_precise(
+    database_url_schema: str, tmp_path
+) -> None:
+    empty = tmp_path / "huice"
+    empty.mkdir()
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(DAY, 0), run_from=_at(DAY, 0))
+        conn.commit()
+
+    reader = MetricsReader(Database(database_url_schema), journal_dir=empty)
+    review = reader.review_workload(start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12))[0]
+    runs = reader.assessment_runs(start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12))[0]
+
+    # newDrafts 来自 imported_at，不受主机日志证据影响
+    assert review["availability"]["newDrafts"]["state"] == PRECISE
+    assert review["availability"]["reviewsCompleted"]["state"] == PARTIAL
+    assert review["availability"]["reviewsCompleted"]["reason"] == "NO_JOURNAL"
+    assert runs["availability"]["total"]["state"] == PARTIAL
+    assert runs["availability"]["total"]["reason"] == "NO_JOURNAL"
