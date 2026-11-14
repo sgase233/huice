@@ -5,6 +5,8 @@
 > **基线：** PR #69 head `29dfe233122c4e6c88a4af3d79e66b5d0591a8b8`（2026-11-14T15:36:39Z），8 个提交、20 个文件；M1 回告 2026-11-14T15:36:55Z（`issuecomment-6879866711`）与 2026-11-14T15:42:09Z（`issuecomment-6879952496`）。GitHub API 显示 PR **open、`mergeable_state=clean`**；head 三项 CI 均 `success`（CSV 15:36:55Z、Frontend 15:37:02Z、Backend and contract 15:38:44Z）。
 >
 > **边界：** 本文只核对业务语义、数据文件与回告一致性；`infra/**` 的代码、迁移与执行由 M1 负责。M3 不把云端回告写成 M3 独立执行的证据，不把 B1a 关闭写成 VIS-06 通过或三方签收。
+>
+> **后续（2026-11-15）：** PR head 已到 `cb81ee9`（M2 复审后的脚本/文档修复；`date-provenance-backfill.json` 与 `29dfe23` 逐字节一致）。SRDI 的 A/B 决定、M2 四项复审的处理与 PR 合并阻断见 [M3_DATE_SOURCE_ROUND5_1115.md](M3_DATE_SOURCE_ROUND5_1115.md)。
 
 ## 1. 结论先行
 
@@ -157,5 +159,5 @@ M1 本轮只修正了 SMART/GREEN 两行草稿。M3 核对登记表发现：
 - 更新：`docs/product/M3_DATE_SOURCE_HANDOFF_1113.md` §1.4（B1b 版本号改 `1.3.0-rc.1`）。
 - 更新：`docs/product/M3_DATE_SOURCE_DECISIONS_1114.md` §5（补版本号结论与指向本文）。
 - 更新：`docs/devlog/M3.md`（记录本次实际工作）。
-- PR #69 复核评论：待发布后回填链接。
+- PR #69 复核评论：https://github.com/sgase233/huice/pull/69#issuecomment-6880318651
 - **未修改**：`infra/**`、`contracts/**`、`apps/web/**`、`services/api/**`、`data/**`、冻结输入。
