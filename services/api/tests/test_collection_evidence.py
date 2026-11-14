@@ -194,9 +194,39 @@ def test_a_gap_outside_the_query_window_is_ignored(tmp_path: Path) -> None:
 def test_stale_heartbeat_is_ignored_for_a_historical_window(tmp_path: Path) -> None:
     directory = _journal(
         tmp_path,
-        [{"kind": "beat", "at": NOW - timedelta(days=2), "event_id": "b1"}],
+        [
+            {"kind": "beat", "at": NOW - timedelta(days=3), "event_id": "b1"},
+            {"kind": "beat", "at": NOW - timedelta(days=2), "event_id": "b2"},
+        ],
     )
 
     assert _evidence(
-        directory, window=(NOW - timedelta(days=3), NOW - timedelta(days=2))
+        directory,
+        imported={"b1:silent"},
+        window=(NOW - timedelta(days=3), NOW - timedelta(days=2)),
     ).ok
+
+
+def test_journal_starting_after_the_window_start_is_flagged(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [{"kind": "beat", "at": NOW - timedelta(hours=1), "event_id": "b1"}],
+    )
+
+    assert _evidence(
+        directory, window=(NOW - timedelta(hours=2), NOW + timedelta(hours=1))
+    ).reason == "WINDOW_START_UNCOVERED"
+
+
+def test_journal_ending_before_a_historical_window_end_is_flagged(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {"kind": "beat", "at": NOW - timedelta(hours=5), "event_id": "b0"},
+            {"kind": "beat", "at": NOW - timedelta(hours=3), "event_id": "b1"},
+        ],
+    )
+
+    assert _evidence(
+        directory, window=(NOW - timedelta(hours=4), NOW - timedelta(hours=1))
+    ).reason == "WINDOW_END_UNCOVERED"

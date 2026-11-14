@@ -52,7 +52,7 @@ DEFAULT_RUN_LIFECYCLE_START_RETRY_SECONDS = 60
 #: 成功写入后周期性重校准的间隔（秒）：后提交的更早 T1 会在下一轮把起点向前挪。
 DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS = 600
 #: 采集生命周期日志目录（#77 的主机事件日志）。指标读侧用它核验覆盖证据；
-#: 目录不存在或无文件时降级为 partial（NO_JOURNAL），而不是假装精确。
+#: 目录未配置、不存在或无文件时降级为 partial（NO_JOURNAL），而不是假装精确。
 DEFAULT_COLLECTION_JOURNAL_DIR = "/var/lib/huice"
 
 
@@ -95,7 +95,7 @@ class Settings:
     run_lifecycle_start_recalibrate_seconds: int = (
         DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS
     )
-    #: 空串表示本部署不做日志证据核验（本地开发）；默认指向 ECS 的日志目录。
+    #: 空串按「无证据」处理（NO_JOURNAL），不会直接返回 precise。
     collection_journal_dir: str = DEFAULT_COLLECTION_JOURNAL_DIR
 
     @property

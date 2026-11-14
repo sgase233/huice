@@ -22,7 +22,7 @@ from typing import Any, Iterable
 
 from ..db import Database
 from ..domain.versioning import SHANGHAI
-from .collection_evidence import JournalEvidence, inspect_journal
+from .collection_evidence import JournalEvidence, host_id, inspect_journal
 
 METRIC_RUN = "run"
 METRIC_REVIEW = "review"
@@ -87,18 +87,37 @@ def _from_gaps(base: Availability, day: date, gaps: Iterable[tuple[datetime, dat
 class MetricsReader:
     """两个指标 + 覆盖状态。只读；鉴权由接端点的一方负责。"""
 
-    def __init__(self, db: Database, *, journal_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        *,
+        journal_dir: Path | None = None,
+        check_journal_evidence: bool = True,
+    ) -> None:
         self._db = db
-        #: 主机事件日志目录；``None`` 表示本部署没配置采集证据，不做核验。
+        #: 主机事件日志目录；未配置时按「无证据」降级，而不是假装精确。
         self._journal_dir = journal_dir
+        #: 只给单测关掉证据核验；生产路由不传，始终开启。
+        self._check_journal_evidence = check_journal_evidence
 
     def _evidence(
-        self, conn, now: datetime, window_start: datetime, window_end: datetime
+        self,
+        conn,
+        now: datetime,
+        window_start: datetime,
+        window_end: datetime,
+        scopes: tuple[str, ...],
     ) -> JournalEvidence | None:
-        if self._journal_dir is None:
+        if not self._check_journal_evidence:
             return None
+        if self._journal_dir is None:
+            return JournalEvidence("NO_JOURNAL")
+        # 只有本机、host-journal 来源、且属于该指标范围的缺口才能证明心跳空档已处理；
+        # 拿 review 缺口去证明 run 的覆盖会把两类中断混为一谈（#79 M2）。
         rows = conn.execute(
-            "SELECT event_id, gap_from, gap_to FROM collection_gap"
+            "SELECT event_id, gap_from, gap_to FROM collection_gap "
+            "WHERE scope = ANY(%s) AND host = %s AND source = 'host-journal'",
+            (list(scopes), host_id()),
         ).fetchall()
         return inspect_journal(
             self._journal_dir,
@@ -146,7 +165,9 @@ class MetricsReader:
             reviews = self._reviews(conn, start, end)
             pending = self._pending(conn, days)
             unknown_publish = self._unknown_publish_times(conn)
-            evidence = self._evidence(conn, current, window_start, window_end)
+            evidence = self._evidence(
+                conn, current, window_start, window_end, ("review", "all")
+            )
 
         result = []
         for day in days:
@@ -238,7 +259,9 @@ class MetricsReader:
             baseline = self._baseline(conn)
             gaps = self._run_gaps(conn, start, end)
             rows = self._run_counts(conn, start, end)
-            evidence = self._evidence(conn, current, window_start, window_end)
+            evidence = self._evidence(
+                conn, current, window_start, window_end, ("run", "all")
+            )
 
         lifecycle_from = None if baseline is None else baseline.get("run_lifecycle_from")
         result = []

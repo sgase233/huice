@@ -149,8 +149,25 @@ def inspect_journal(
     if opening_ids - imported_bases:
         return JournalEvidence("JOURNAL_NOT_IMPORTED")
 
-    # 断电恢复：没有 stop 行，只能靠心跳空档发现；空档必须已经由导入器落成缺口。
+    if not beats:
+        return JournalEvidence("NO_HEARTBEAT")
     threshold = timedelta(seconds=HEARTBEAT_SECONDS * GAP_FACTOR)
+
+    # 日志必须覆盖查询窗口两端：只检查日志内部的空档，会把「日志从窗口中间才开始」
+    # 或「日志早于窗口结束就停了」误判为完整覆盖。
+    earliest = min(at for at, _event_id in beats)
+    latest = max(at for at, _event_id in beats)
+    if window_start is not None and earliest > window_start:
+        return JournalEvidence("WINDOW_START_UNCOVERED")
+    recent_window = window_end is None or window_end >= now - threshold
+    if (
+        not recent_window
+        and window_end is not None
+        and latest < window_end
+    ):
+        return JournalEvidence("WINDOW_END_UNCOVERED")
+
+    # 断电恢复：没有 stop 行，只能靠心跳空档发现；空档必须已经由导入器落成缺口。
     for (earlier, earlier_id), (later, _later_id) in zip(beats, beats[1:]):
         if window_start is not None and later <= window_start:
             continue
@@ -166,12 +183,8 @@ def inspect_journal(
             continue
         return JournalEvidence("HEARTBEAT_GAP_NOT_IMPORTED")
 
-    if not beats:
-        return JournalEvidence("NO_HEARTBEAT")
-    latest = max(at for at, _event_id in beats)
     # 只对「窗口延伸到当前」的查询判心跳过期；回看历史日期时日志本来就可以停在
     # 查询范围之后，不能拿今天没有心跳去否定那一天的覆盖。
-    recent_window = window_end is None or window_end >= now - threshold
     if recent_window and now - latest > threshold:
         return JournalEvidence("JOURNAL_STALE")
     return JournalEvidence(None)

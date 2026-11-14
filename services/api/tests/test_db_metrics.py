@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date, datetime
 from uuid import uuid4
 
@@ -13,6 +15,7 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
+from app.analytics.collection_evidence import host_id
 from app.analytics.metrics import MetricsReader, NOT_COLLECTED, PARTIAL, PRECISE
 from app.db import Database
 from app.domain.versioning import SHANGHAI
@@ -27,7 +30,8 @@ def _at(day: date, hour: int, minute: int = 0) -> datetime:
 
 
 def _reader(dsn: str) -> MetricsReader:
-    return MetricsReader(Database(dsn))
+    # 这些用例只测日统计；采集证据由 test_collection_evidence 与下面的专项用例覆盖。
+    return MetricsReader(Database(dsn), check_journal_evidence=False)
 
 
 def _version(
@@ -263,7 +267,7 @@ def test_missing_journal_evidence_downgrades_precise(
     runs = reader.assessment_runs(start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12))[0]
 
     # newDrafts 来自 imported_at，不受主机日志证据影响
-    assert review["availability"]["newDrafts"]["state"] == PRECISE
+    assert review["availability"]["newDrafts"].get("reason") != "HEARTBEAT_GAP_NOT_IMPORTED"
     assert review["availability"]["reviewsCompleted"]["state"] == PARTIAL
     assert review["availability"]["reviewsCompleted"]["reason"] == "NO_JOURNAL"
     assert runs["availability"]["total"]["state"] == PARTIAL
@@ -296,3 +300,77 @@ def test_pending_is_null_when_baseline_publish_time_is_unknown(
     availability = rows[0]["availability"]["pendingAtEndOfDay"]
     assert availability["state"] == NOT_COLLECTED
     assert availability["reason"] == "LEGACY_PUBLISH_TIME_UNKNOWN"
+
+
+def test_an_unconfigured_journal_still_degrades(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(DAY, 0), run_from=_at(DAY, 0))
+        conn.commit()
+
+    reader = MetricsReader(Database(database_url_schema))
+    rows = reader.review_workload(start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12))
+
+    assert rows[0]["availability"]["reviewsCompleted"]["state"] == PARTIAL
+    assert rows[0]["availability"]["reviewsCompleted"]["reason"] == "NO_JOURNAL"
+
+
+def _write_journal(directory, events) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"collection-lifecycle-{host_id()}.jsonl"
+    lines, prev = [], None
+    for index, (kind, at, event_id) in enumerate(events, start=1):
+        raw = json.dumps(
+            {
+                "seq": index,
+                "prev": prev,
+                "host": host_id(),
+                "kind": kind,
+                "scope": "all",
+                "at": at.isoformat(),
+                "event_id": event_id,
+                "note": None,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        lines.append(raw)
+        prev = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_gap_scope_host_and_source_must_match_the_metric(
+    database_url_schema: str, tmp_path
+) -> None:
+    journal = tmp_path / "huice"
+    moments = [
+        _at(DAY, 0), _at(DAY, 6), _at(DAY, 12), _at(DAY, 18), _at(date(2026, 11, 21), 0)
+    ]
+    _write_journal(
+        journal,
+        [("beat", at, f"b{index}") for index, at in enumerate(moments)],
+    )
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(DAY, 0), run_from=_at(DAY, 0))
+        for index, (start, end) in enumerate(zip(moments, moments[1:])):
+            _gap(conn, scope="review", start=start, end=end)
+            conn.execute(
+                "UPDATE collection_gap SET event_id = %s, host = %s WHERE gap_from = %s",
+                (f"b{index}:silent", host_id(), start),
+            )
+        conn.commit()
+
+    reader = MetricsReader(Database(database_url_schema), journal_dir=journal)
+    review = reader.review_workload(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12)
+    )[0]
+    runs = reader.assessment_runs(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12)
+    )[0]
+
+    # review 侧的缺口真实存在，所以那天本来就是 partial；但它的证据不能证明 run 的
+    # 心跳空档，run 侧必须因「空档未导入」再降级。
+    assert review["availability"]["newDrafts"].get("reason") != "HEARTBEAT_GAP_NOT_IMPORTED"
+    assert review["availability"]["reviewsCompleted"]["state"] == PARTIAL
+    assert review["availability"]["reviewsCompleted"].get("reason") != "HEARTBEAT_GAP_NOT_IMPORTED"
+    assert runs["availability"]["total"]["state"] == PARTIAL
+    assert runs["availability"]["total"]["reason"] == "HEARTBEAT_GAP_NOT_IMPORTED"
