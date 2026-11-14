@@ -56,6 +56,22 @@ ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 logger = logging.getLogger("huice.api")
 
 
+async def _ensure_lifecycle_start(repository, retry_seconds: int) -> None:
+    """写运行采集起点；失败就按 ``retry_seconds`` 重试，成功即结束。
+
+    启动时数据库不可用并不挡住服务：循环会在恢复后补记。起点取「最早一条新生命周期
+    运行」与 now() 的较小者，所以补记的时刻不会被当成真实采集起点。
+    """
+
+    while True:
+        try:
+            await asyncio.to_thread(repository.mark_run_lifecycle_start)
+            return
+        except Exception:  # noqa: BLE001 - 恢复后重试，不能用一次失败挡住采集
+            logger.warning("写入运行采集起点失败，%s 秒后重试", retry_seconds, exc_info=True)
+        await asyncio.sleep(retry_seconds)
+
+
 async def _run_interrupt_scan(repository, settings) -> None:
     """D5 的中断扫描：启动一次 + 每 ``RUN_INTERRUPT_SCAN_SECONDS`` 一次。
 
@@ -99,12 +115,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 只扫一次会让「重启时还没超时、之后才超时」的行永远停在 running。
         # 默认关闭：interrupted 是 RunStatus 的新取值，契约要求与前端类型同窗升级，
         # 不允许后端单边先行；与 1.3.0-rc.1 同窗发布时再打开。
-        # 运行采集的覆盖起点：只在为 NULL 时写，重启/并发启动都不会挪动它。
-        # 与 B3 的审核事件起点按列幂等，先跑哪个都成立。
-        try:
-            await asyncio.to_thread(repository.mark_run_lifecycle_start)
-        except Exception:  # noqa: BLE001 - 库未迁移到 012 时不能挡住启动
-            logger.warning("写入运行采集起点失败，下一轮重启再试", exc_info=True)
+        # 运行采集的覆盖起点：只在为 NULL 时写，重启/并发启动都不会挪动它；
+        # 失败不挡启动，但要在后台持续重试——否则数据库恢复后要等到下次重启才补记，
+        # 期间采集的运行会落在起点之前，指标说不清覆盖范围。
+        start_task = asyncio.create_task(
+            _ensure_lifecycle_start(repository, resolved.run_lifecycle_start_retry_seconds)
+        )
 
         scan_task = (
             asyncio.create_task(_run_interrupt_scan(repository, resolved))
@@ -114,10 +130,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            if scan_task is not None:
-                scan_task.cancel()
+            for task in (start_task, scan_task):
+                if task is None:
+                    continue
+                task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await scan_task
+                    await task
         database.close()
         close_store = getattr(object_store, "close", None)
         if callable(close_store):

@@ -334,3 +334,23 @@ def test_the_lifecycle_start_does_not_touch_the_review_start(database_url_schema
         ).fetchone()
     assert (row[0], row[1]) == review_before
     assert row[2] is not None
+
+
+def test_the_lifecycle_start_uses_the_earliest_lifecycle_run(database_url_schema: str, repo) -> None:
+    """补记晚于真实采集时，起点要取最早一条新生命周期运行，而不是补记时刻。"""
+
+    enterprise = _enterprise(repo)
+    run_id = _insert_running(
+        database_url_schema, enterprise.id, minutes_ago=30, pid=999_000, started=AS_OF
+    )
+
+    repo.mark_run_lifecycle_start()
+
+    started = query_one(
+        database_url_schema,
+        "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'",
+    )[0]
+    first_run = query_one(
+        database_url_schema, "SELECT created_at FROM assessment_run WHERE id = %s", (run_id,)
+    )[0]
+    assert started == first_run

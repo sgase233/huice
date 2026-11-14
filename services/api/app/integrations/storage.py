@@ -1703,9 +1703,14 @@ class PolicyRepository:
                 "INSERT INTO collection_baseline (id) VALUES ('default') "
                 "ON CONFLICT (id) DO NOTHING"
             )
+            # 起点取「最早一条由新生命周期写入的运行」与 now() 的较小者：服务启动时数据库
+            # 若暂时不可用、恢复后才补记，也不会把恢复时刻误记成真实采集起点。
+            # 锁两列只有 B2 之后的代码会写，旧运行不会被算进来。
             conn.execute(
                 "UPDATE collection_baseline SET run_lifecycle_from = COALESCE("
-                "run_lifecycle_from, now()) WHERE id = 'default'"
+                "run_lifecycle_from, LEAST(now(), COALESCE(("
+                "  SELECT MIN(created_at) FROM assessment_run WHERE lock_owner_pid IS NOT NULL"
+                "), now()))) WHERE id = 'default'"
             )
 
     def mark_interrupted_runs(self, *, max_duration_seconds: int) -> list[UUID]:
