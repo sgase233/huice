@@ -1,5 +1,24 @@
 import { expect, test } from '@playwright/test';
 
+test('画像期间固定的信息不可重复选择，季度信息仍可重复', async ({ page }) => {
+  await page.goto('/?mode=demo#enterprise');
+  const cards = page.locator('.fact-card');
+  const current = cards.nth(2).getByLabel('信息类型');
+  await expect(current.locator('option[value="region"]')).toHaveCount(0);
+  await expect(current.locator('option[value="industry"]')).toHaveCount(0);
+  await current.selectOption('establishedDate');
+  await page.getByRole('button', { name: '添加一项信息' }).click();
+  const next = cards.nth(3).getByLabel('信息类型');
+  await expect(next.locator('option[value="establishedDate"]')).toHaveCount(0);
+  await next.selectOption('specificMarketSince');
+  await expect(current.locator('option[value="specificMarketSince"]')).toHaveCount(0);
+  await next.selectOption('employeeCountStart');
+  await expect(current.locator('option[value="specificMarketSince"]')).toHaveCount(1);
+  await current.selectOption('employeeCountStart');
+  await expect(current).toHaveValue('employeeCountStart');
+  await expect(next).toHaveValue('employeeCountStart');
+});
+
 test('删除按钮展开显示中文并删除对应的信息卡片', async ({ page }) => {
   await page.goto('/?mode=demo#enterprise');
   const cards = page.locator('.fact-card');
