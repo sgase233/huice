@@ -76,6 +76,25 @@ test('保存发现设置携带会话 CSRF 和读取到的版本', async ({ page 
 const candidate = { id: 'c1', status: 'pending_review', revision: 'revision-1', bodyText: '政策正文', sourceUrl: 'https://www.gov.cn/', fetchedAt: '2026-11-14T00:00:00Z', contentHash: 'hash', metadata: { title: '候选一', version: 'v1' }, missingFields: [], criteria: [{ id: 'criterion', title: '条件一', expression: { op: 'manual_review', reason: '人工确认' }, sourceSpans: [{ sourceId: 'c1', sourceUrl: 'https://www.gov.cn/', sourceVersion: 'candidate', page: null, section: '一', quote: '政策正文', textHash: 'hash' }], reviewFinding: 'none', validationStatus: 'passed' }], validationFindings: [], attachmentUrls: [], unsupportedAttachmentUrls: [] };
 const candidateHeaders = { ETag: '"revision-1"', 'Access-Control-Expose-Headers': 'ETag' };
 
+test('键盘可打开过期候选，且不能修改或提交', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'r', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+  await page.route('**/api/v1/admin/policy-candidates**', route => {
+    if (new URL(route.request().url()).pathname.endsWith('/c1')) return route.fulfill({ headers: candidateHeaders, json: { ...candidate, status: 'expired' } });
+    return route.fulfill({ json: { items: [{ id: 'c1', title: '候选一', status: 'expired', attachmentCount: 0, unsupportedAttachmentCount: 0 }], nextCursor: null } });
+  });
+  await page.goto('/#admin');
+  await page.getByRole('button', { name: '读取候选' }).focus();
+  await page.keyboard.press('Enter');
+  const open = page.getByRole('button', { name: '候选一 · 已过期' });
+  await expect(open).toBeVisible();
+  await open.focus();
+  await page.keyboard.press('Enter');
+  const editor = page.getByRole('region', { name: '候选审核' });
+  await expect(editor.getByLabel('发布机关')).toBeDisabled();
+  await expect(editor.getByRole('button', { name: '提交为待审草稿' })).toBeDisabled();
+  await expect(editor.getByRole('button', { name: '丢弃候选' })).toBeDisabled();
+});
+
 test('候选保存冲突保留编辑并显示服务端版本对照', async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'r', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
   await page.route('**/api/v1/admin/policy-candidates**', route => {
