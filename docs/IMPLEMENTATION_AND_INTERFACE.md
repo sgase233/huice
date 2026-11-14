@@ -388,6 +388,20 @@ API-05 同一 policyId/version/Idempotency-Key 和相同 body 的已成功请求
 
 **运行生命周期（E3 B2，迁移 `012`）**：一次判断先在 T1 插入 `status='running'` 并提交，评估结束后成功走 T2（结果行与 `succeeded` 同一事务提交）、失败走 T3（只写 `failed` 与 `error_category ∈ {policy_not_published, model_unavailable, dependency_unavailable, internal}`，不写任何 `assessment` 行）。T1 在专用连接上取 `pg_advisory_lock(hashtextextended(runId,0))`，并把持有者 `(pg_backend_pid(), backend_start)` 写进 `lock_owner_pid`/`lock_owner_started_at`；这两个值写入后冻结，用于判断「原连接是否已断开」。中断扫描要求三条同时成立——超过 `RUN_MAX_DURATION_SECONDS`、锁未被持有、原连接已不在——缺一条就保持 `running`；扫描与 API-12 的 409 由同一个开关 `RUN_LIFECYCLE_CONTRACT_ENABLED`（默认关闭）控制，与契约 `1.3.0-rc.1` 同窗开启。运行采集的覆盖起点 `collection_baseline.run_lifecycle_from` 在服务启动时按列幂等写入，失败则后台每 `RUN_LIFECYCLE_START_RETRY_SECONDS` 重试，成功后每 `RUN_LIFECYCLE_START_RECALIBRATE_SECONDS` 重校准（后提交的更早运行会把起点前移）；取值是「已有值、`now()`、最早一条新生命周期运行（`lock_owner_pid` 非空）的 `created_at`」三者最小——**只向前挪、不往后推**，补记时刻不会被当成采集起点。它只证明「从这一刻起有生命周期记录」，不证明此后持续完整采集：回退、并发切换或数据库中断期间的运行由 B3 按 M3 规格标 `partial`，起点本身不能替代覆盖标注。
 
+**指标与完整度（E3，草案 `contracts/openapi.e3-draft.yaml`）**：三个只读端点，鉴权同后台读（审核员会话或只读运维 Bearer；企业会话 403）。
+
+| 方法路径 | 参数 | 成功响应 |
+| --- | --- | --- |
+| `GET /admin/metrics/review-workload` | query `from`/`to`（北京时间当地日期，首尾包含，最多 31 天） | 200 `{from,to,timeZone,generatedAt,days[]}`；每日 `newDrafts`/`reviewsCompleted`/`pendingAtEndOfDay`，每个指标各带 `availability={state,coverageFrom?,reason?}` |
+| `GET /admin/metrics/assessment-runs` | 同上 | 200 同上；每日 `total/succeeded/failed/unfinished/durationSampleCount/avgDurationMs`，每个指标各带 `availability` |
+| `GET /admin/metrics/completeness` | query `enterpriseId`（必填）、`asOf?`、`runId?`、`policyIds?`（后两者二选一） | 200 `{enterpriseId,asOf,scope,definitionVersion,applicabilityMode,units[],groups[],totals,manualReview[],generatedAt}` |
+
+D5 的硬规则（实现 `app/analytics/metrics.py`）：按北京时间按日、按开始时间归日；审核完成只算 `policy_review_event` 里 `actor_kind='user'` 的事件（带真实操作者），基线事件与没有账号的 `legacy_unknown` 旧发布都不算；`pendingAtEndOfDay` 当天未结算为 `null`；缺测是 `null` 不是 0（`not_collected`）；历史运行只有 `total`/`succeeded` 标 `partial`，`failed`/`unfinished` 与耗时标 `not_collected`；`interrupted` 只进 `unfinished`；耗时不采信 `created_at = finished_at` 的旧记录；`collection_gap` 与指标 scope 重叠时降级为 `partial` 并给 `coverageFrom` 或 `reason=OPEN_GAP`。
+
+D4 的硬规则（实现 `app/analytics/completeness.py`）：单位是 `(FactKey, period_start, period_end)`，由 `domain.rules.referenced_facts` 从 scope 内条件收集，与求值器同源；七状态 `filled/filled_unverified/answered_unknown/not_answered/not_applicable/applicability_unknown/not_due`；`answered_unknown`（行存在但值为 null，如「尚未申报」）不算已填写但仍在分母；`verified=false` 记 `filled_unverified`；`not_due` 按方案 C（季度键以「季度结束次日 00:00」为到期点，年度/跨年区间以 `period_start > asOf` 为未到期）且优先于已填写；分母为 0 时 `ratio=null`；`definitionVersion=d4.static.v1`、`applicabilityMode=static`，`manual_review` 单列不进分母；默认 scope 是当前已发布政策最新版本（排除 closed），`runId` 固定该 run 的版本集合，`policyIds` 取各政策最新已发布版本——分子始终读当前事实。
+
+**日期来源 `dateProvenance`（E3 B1b）**：`PolicySummary`/`PolicyDetail`/`PolicyDraft` 新增可选字段，形状 `{version, effectiveFrom, effectiveTo, applicationWindow, note}`，每个日期字段 `{status, source?, locator?, basis?, derivedFrom?, note?}`；`source` 只给 `body`/`attachment`，不暴露内部来源行 id；旁表无记录时整个字段省略，旧消费者不受影响；`verified` 但来源行已不存在时降级为 `unverified` 并附说明。
+
 API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络失败后不得自动创建重复运行。同步超时由 M1 记录，MVP 不引入未定义异步队列。所有 API 都须处理统一错误；报告接口失败时 Content-Type 回到 application/json。
 
 `AssessmentRun={id,enterpriseId,period,asOf,createdAt,policyVersionMap,factVersion,ruleVersion,supersedesRunId,assessments}`。`supersedesRunId` 响应始终有值或 null。
