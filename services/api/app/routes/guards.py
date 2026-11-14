@@ -15,11 +15,15 @@ from ..errors import ApiProblem
 from ..identity import require_csrf, require_reviewer
 
 
-def require_reviewer_write(request: Request) -> None:
-    """后台写操作：审核员会话 + CSRF/Origin。Bearer 在 E1 后只读，写请求一律 403。"""
+def require_reviewer_write(request: Request):
+    """后台写操作：审核员会话 + CSRF/Origin。Bearer 在 E1 后只读，写请求一律 403。
+
+    返回身份对象：调用方需要把「谁做的这次审核」写进 ``policy_review_event``。
+    """
 
     identity = require_reviewer(request)
     require_csrf(request, identity)
+    return identity
 
 
 def require_if_match(request: Request) -> UUID:

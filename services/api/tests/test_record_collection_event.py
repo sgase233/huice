@@ -111,3 +111,28 @@ def test_verify_reports_broken_chain_and_gap(tmp_path: Path) -> None:
     path.write_text(path.read_text(encoding="utf-8").replace('"seq":1', '"seq":9'), encoding="utf-8")
 
     assert recorder.main(["--verify", "--log-dir", str(tmp_path)]) == 4
+
+
+@pytest.mark.skipif(recorder.fcntl is None, reason="fcntl 只在 POSIX 上可用")
+def test_concurrent_appends_keep_the_chain_valid(tmp_path: Path) -> None:
+    """心跳、启停、人工命令同时写：加锁后不该出现重复 seq。"""
+
+    import threading
+
+    threads = [
+        threading.Thread(
+            target=recorder.append_event,
+            args=(tmp_path,),
+            kwargs={"kind": "beat", "scope": "all", "note": None},
+        )
+        for _ in range(8)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    path = recorder.log_path(tmp_path, recorder.host_id())
+    entries = recorder.read_entries(path)
+    assert len(entries) == 8
+    assert recorder.verify_chain(entries) is None

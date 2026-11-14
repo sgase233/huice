@@ -173,3 +173,19 @@ def test_an_open_gap_is_closed_when_the_host_comes_back(
     assert len(rows) == 1
     assert rows[0][0].endswith(":pair")
     assert rows[0][1] is not None
+
+
+def test_a_migrate_event_does_not_open_a_gap(tmp_path: Path) -> None:
+    """迁移不停服务：migrate 只是信息标记，不能留下「持续到当前」的假缺口。"""
+
+    path = tmp_path / "collection-lifecycle-host-a.jsonl"
+    _write_log(path, [
+        {"kind": "start", "scope": "all", "at": _at(0), "note": None},
+        {"kind": "migrate", "scope": "all", "at": _at(2), "note": None},
+        {"kind": "beat", "scope": "all", "at": _at(5), "note": None},
+    ])
+
+    gaps, broken = importer.build_gaps(path)
+
+    assert broken is None
+    assert gaps == []

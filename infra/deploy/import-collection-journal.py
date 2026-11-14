@@ -44,7 +44,10 @@ recorder = importlib.util.module_from_spec(_recorder_spec)
 sys.modules.setdefault("record_collection_event", recorder)
 _recorder_spec.loader.exec_module(recorder)
 
-OPENING_KINDS = ("stop", "migrate", "rollback", "maintenance")
+#: 只有「采集真的停了」的事件才开缺口。`migrate`/`rollback` 是信息标记：
+#: 迁移不停服务；回滚的停/起已由 unit 的 ExecStopPost/ExecStartPost 记录，
+#: 把它们当缺口起点会留下一个假的「开放缺口」。
+OPENING_KINDS = ("stop", "maintenance")
 
 
 def journal_files(log_dir: Path) -> list[Path]:

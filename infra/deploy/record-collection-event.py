@@ -34,11 +34,19 @@ import argparse
 import hashlib
 import json
 import os
+import contextlib
 import socket
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+try:  # POSIX；Windows 本地开发没有 fcntl，锁退化为无操作
+    import fcntl
+    import grp
+except ImportError:  # pragma: no cover - 只在 Windows 上走到
+    fcntl = None  # type: ignore[assignment]
+    grp = None  # type: ignore[assignment]
 
 SHANGHAI = timezone(timedelta(hours=8))
 DEFAULT_LOG_DIR = Path("/var/lib/huice")
@@ -114,38 +122,72 @@ def heartbeat_gaps(entries: list[tuple[str, dict]], *, factor: int = GAP_FACTOR)
     return gaps
 
 
+@contextlib.contextmanager
+def _exclusive_lock(path: Path):
+    """对日志的「读尾行→追加」加独占锁；没有 fcntl 的平台退化为无操作。"""
+
+    if fcntl is None:  # pragma: no cover - Windows 本地开发
+        yield
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def append_event(log_dir: Path, *, kind: str, scope: str, note: str | None) -> dict:
+    """读尾行、算 seq/prev、追加、fsync 全程持独占锁。
+
+    心跳、服务启停与人工命令会并发进来；不加锁时两个进程可能基于同一尾行各自追加，
+    写出一对同号的 seq，之后链校验和导入都会拒绝整份日志。
+    """
+
     host = host_id()
     path = log_path(log_dir, host)
-    entries = read_entries(path)
-    broken = verify_chain(entries)
-    if broken is not None:
-        # 链已经断了：继续追加只会把坏链写长。交给人工先处理。
-        raise LogError(f"{path.name} 链不完整（{broken}），拒绝追加")
-
-    seq = len(entries) + 1
-    prev = _chain_hash(entries[-1][0]) if entries else None
-    event = {
-        "seq": seq,
-        "prev": prev,
-        "host": host,
-        "kind": kind,
-        "scope": scope,
-        "at": datetime.now(SHANGHAI).isoformat(),
-        "event_id": str(uuid.uuid4()),
-        "note": note,
-    }
-    line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as handle:
-            handle.write(line + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    except OSError as exc:
-        raise LogError(f"写日志失败（{type(exc).__name__}）") from exc
-    return event
+    lock_path = log_dir / f".collection-lifecycle-{host}.lock"
+
+    with _exclusive_lock(lock_path):
+        try:
+            entries = read_entries(path)
+            broken = verify_chain(entries)
+            if broken is not None:
+                # 链已经断了：继续追加只会把坏链写长。交给人工先处理。
+                raise LogError(f"{path.name} 链不完整（{broken}），拒绝追加")
+
+            seq = len(entries) + 1
+            prev = _chain_hash(entries[-1][0]) if entries else None
+            event = {
+                "seq": seq,
+                "prev": prev,
+                "host": host,
+                "kind": kind,
+                "scope": scope,
+                "at": datetime.now(SHANGHAI).isoformat(),
+                "event_id": str(uuid.uuid4()),
+                "note": note,
+            }
+            line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+            # 0660 + 组 huice：root 先写、服务账号后写也能追加
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o660)
+            try:
+                with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as handle:
+                    handle.write(line + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if os.name == "posix" and os.geteuid() == 0:
+                    try:
+                        os.chown(path, -1, grp.getgrnam("huice").gr_gid)
+                        os.chmod(path, 0o660)
+                    except (KeyError, OSError):
+                        pass  # 本地开发没有 huice 组时保持原样
+            except OSError as exc:
+                raise LogError(f"写日志失败（{type(exc).__name__}）") from exc
+            return event
+        finally:
+            pass
 
 
 def main(argv: list[str] | None = None) -> int:

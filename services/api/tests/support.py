@@ -275,7 +275,10 @@ class FakeRepository:
             }
         )
 
-    def publish(self, *, policy_id, version, expected_revision, trace_id, started_at=None) -> PolicyDraft:
+    def publish(
+        self, *, policy_id, version, expected_revision, trace_id, started_at=None,
+        actor_user_id=None,
+    ) -> PolicyDraft:
         draft = self.get_version_for_edit(policy_id, version)
         if draft.status in ("published", "closed"):
             raise ApiProblem(
