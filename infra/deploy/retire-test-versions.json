@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "note": "M3 第三轮选的 B 方案：把早期测试版本降级为草稿。只降级、不删除；执行前需 M2 与项目负责人同意。理由与时间写进执行回告与 PR。",
+  "entries": [
+    {
+      "sourceUrl": "https://www.sz.gov.cn/zwgk/zfxxgkml/zcfg/content/post_1.html",
+      "version": "v1.0",
+      "reason": "早期测试数据（post_1.html），非登记政策；出现在政策列表里会误导演示"
+    }
+  ]
+}
