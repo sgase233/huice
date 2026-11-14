@@ -667,9 +667,15 @@ class PolicyRepository:
             has_more = len(rows) > limit
             rows = rows[:limit]
             children = self._load_children(cur, [row["id"] for row in rows])
+            provenance = self._date_provenance_map(conn, [row["id"] for row in rows])
 
         items = [
-            _draft_from_row(row, *children.get(row["id"], ([], [], []))) for row in rows
+            _draft_from_row(
+                row,
+                *children.get(row["id"], ([], [], [])),
+                date_provenance=provenance.get(row["id"]),
+            )
+            for row in rows
         ]
         next_cursor = None
         if has_more and rows:
@@ -753,6 +759,8 @@ class PolicyRepository:
 
         has_more = len(rows) > limit
         rows = rows[:limit]
+        with self._db.connection() as conn:
+            provenance = self._date_provenance_map(conn, [row["id"] for row in rows])
         items = [
             PolicySummary(
                 id=row["policy_id"],
@@ -766,6 +774,7 @@ class PolicyRepository:
                 effective_to=_as_date(row["effective_to"]),
                 application_window=_window_of(row.get("application_window")),
                 source_url=row["source_url"],
+                date_provenance=provenance.get(row["id"]),
             )
             for row in rows
         ]
@@ -789,7 +798,12 @@ class PolicyRepository:
             if row is None:
                 raise ApiProblem(404, "POLICY_NOT_FOUND", "没有找到对应的政策草稿。")
             children = self._load_children(cur, [row["id"]])
-        return _draft_from_row(row, *children.get(row["id"], ([], [], [])))
+            provenance = self._date_provenance_map(conn, [row["id"]])
+        return _draft_from_row(
+            row,
+            *children.get(row["id"], ([], [], [])),
+            date_provenance=provenance.get(row["id"]),
+        )
 
     # -------------------------------------------------------- 条款与发布
 
@@ -1938,7 +1952,7 @@ class PolicyRepository:
             )
 
     def date_provenance(self, version_id: UUID) -> dict[str, Any] | None:
-        """读取一个政策版本的日期来源（B1b 的读侧，尚未接进响应）。
+        """读取一个政策版本的日期来源（B1b）。
 
         - 旁表没有行 → ``None``（从未记录过来源，与「记录为未知」不同）；
         - 旁表里有行但某个日期字段缺失 → 该字段为 ``None``；
@@ -1951,28 +1965,49 @@ class PolicyRepository:
         note}``，``source`` 只用 ``body``/``attachment``，不暴露内部 id。
         """
 
-        with self._db.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                "SELECT provenance FROM policy_version_date_provenance "
-                "WHERE policy_version_id = %s",
-                (version_id,),
-            )
-            row = cur.fetchone()
-            if row is None:
-                return None
-            stored = row["provenance"] or {}
+        with self._db.connection() as conn:
+            return self._date_provenance_map(conn, [version_id]).get(version_id)
 
-            cur.execute(
-                "SELECT id, kind FROM policy_source WHERE policy_version_id = %s",
-                (version_id,),
-            )
-            sources = {str(item["id"]): item["kind"] for item in cur.fetchall()}
+    def _date_provenance_map(
+        self, conn: Connection, version_ids: Sequence[UUID]
+    ) -> dict[UUID, dict[str, Any] | None]:
+        """批量读日期来源；列表/详情一次查完，避免每行再开一次连接。"""
 
-        payload: dict[str, Any] = {"version": 1}
-        for name in ("effectiveFrom", "effectiveTo", "applicationWindow"):
-            payload[name] = self._project_date_field(name, stored.get(name), sources)
-        payload["note"] = stored.get("note")
-        return payload
+        if not version_ids:
+            return {}
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT policy_version_id, provenance FROM policy_version_date_provenance "
+                "WHERE policy_version_id = ANY(%s)",
+                (list(version_ids),),
+            )
+            stored = {
+                row["policy_version_id"]: row["provenance"] or {}
+                for row in cur.fetchall()
+            }
+            cur.execute(
+                "SELECT id, policy_version_id, kind FROM policy_source "
+                "WHERE policy_version_id = ANY(%s)",
+                (list(version_ids),),
+            )
+            sources: dict[UUID, dict[str, str]] = defaultdict(dict)
+            for row in cur.fetchall():
+                sources[row["policy_version_id"]][str(row["id"])] = row["kind"]
+
+        result: dict[UUID, dict[str, Any] | None] = {}
+        for version_id in version_ids:
+            if version_id not in stored:
+                result[version_id] = None
+                continue
+            content = stored[version_id]
+            payload: dict[str, Any] = {"version": 1}
+            for name in ("effectiveFrom", "effectiveTo", "applicationWindow"):
+                payload[name] = self._project_date_field(
+                    name, content.get(name), sources.get(version_id, {})
+                )
+            payload["note"] = content.get("note")
+            result[version_id] = payload
+        return result
 
     @staticmethod
     def _project_date_field(
@@ -1982,6 +2017,9 @@ class PolicyRepository:
             return None  # 该字段没有记录
 
         status = spec.get("status")
+        if status not in ("verified", "derived", "unverified", "not_applicable", "unknown"):
+            # 旁表是回填/人工写进来的；未知取值不能把读接口打成 500，降级为 unknown。
+            status = "unknown"
         source_kind = "body" if spec.get("source", {}).get("kind") == "body" else None
         locator = spec.get("locator")
         note = spec.get("note")
@@ -2278,11 +2316,14 @@ class PolicyRepository:
             if row is None:
                 raise ApiProblem(404, "POLICY_NOT_FOUND", "没有找到对应的已发布政策。")
             children = self._load_children(cur, [row["id"]])
+            provenance = self._date_provenance_map(conn, [row["id"]])
 
         sources, criteria, _ = children.get(row["id"], ([], [], []))
         if not sources or not criteria:
             raise ApiProblem(404, "POLICY_NOT_FOUND", "该政策版本的公开预览尚未就绪。")
-        draft = _draft_from_row(row, sources, criteria, [])
+        draft = _draft_from_row(
+            row, sources, criteria, [], date_provenance=provenance.get(row["id"])
+        )
         return PolicyDetail(
             id=draft.id,
             title=draft.title,
@@ -2302,6 +2343,7 @@ class PolicyRepository:
             sources=sources,
             criteria=criteria,
             preparation_template=_preparation_template(draft),
+            date_provenance=draft.date_provenance,
         )
 
     @staticmethod
@@ -2441,7 +2483,12 @@ class PolicyRepository:
             if row is None:  # pragma: no cover - would mean the insert vanished
                 raise ApiProblem(500, "INTERNAL_ERROR", "政策草稿写入后无法读回。")
             children = self._load_children(cur, [version_id])
-        return _draft_from_row(row, *children.get(version_id, ([], [], [])))
+            provenance = self._date_provenance_map(conn, [version_id])
+        return _draft_from_row(
+            row,
+            *children.get(version_id, ([], [], [])),
+            date_provenance=provenance.get(version_id),
+        )
 
     def _load_children(
         self, cur, version_ids: Sequence[UUID]
@@ -2619,6 +2666,8 @@ def _draft_from_row(
     sources: list[SourceDocument],
     criteria: list[Criterion],
     findings: list[ValidationFinding],
+    *,
+    date_provenance: dict[str, Any] | None = None,
 ) -> PolicyDraft:
     return PolicyDraft(
         id=row["policy_id"],
@@ -2640,6 +2689,7 @@ def _draft_from_row(
         sources=sources,
         criteria=criteria,
         validation_findings=findings,
+        date_provenance=date_provenance,
     )
 
 

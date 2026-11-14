@@ -240,6 +240,6 @@ def test_published_security_matches_current_classification():
                 problems.append(f"{method.upper()} {path}: {operation.get('security')} != {expected}")
     assert problems == [], "\n".join(problems)
     # 21 条是已发布契约（`contracts/openapi.yaml`）的路径数；另 6 条是 E2 的发现/候选
-    # 操作，已在跑但只写在 `contracts/openapi.e2-draft.yaml` 里。它们同样要过上面的
-    # security 分类——草案评审通过并并入契约前，这份盘点把两批一起数着。
-    assert len(schema["paths"]) == 21 + 6
+    # 路径、3 条是 E3 的统计路径，已在跑但只写在各自的草案里。它们同样要过上面的
+    # security 分类——草案评审通过并并入契约前，这份盘点把几批一起数着。
+    assert len(schema["paths"]) == 21 + 6 + 3

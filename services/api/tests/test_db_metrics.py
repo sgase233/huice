@@ -30,7 +30,14 @@ def _reader(dsn: str) -> MetricsReader:
     return MetricsReader(Database(dsn))
 
 
-def _version(conn, *, version: str, imported_at: datetime, published_event_at: datetime | None):
+def _version(
+    conn,
+    *,
+    version: str,
+    imported_at: datetime,
+    published_event_at: datetime | None,
+    actor_kind: str = "user",
+):
     policy_id, version_id = uuid4(), uuid4()
     conn.execute("INSERT INTO policy (id) VALUES (%s)", (policy_id,))
     conn.execute(
@@ -43,11 +50,20 @@ def _version(conn, *, version: str, imported_at: datetime, published_event_at: d
         (version_id, policy_id, version, Jsonb(["企业"]), imported_at, uuid4()),
     )
     if published_event_at is not None:
+        if actor_kind == "user":
+            reviewer_id = uuid4()
+            conn.execute(
+                "INSERT INTO app_user (id, username, password_hash, role) "
+                "VALUES (%s, %s, 'scrypt$test', 'reviewer')",
+                (reviewer_id, f"reviewer.{reviewer_id.hex[:8]}"),
+            )
+        else:
+            reviewer_id = None
         conn.execute(
             "INSERT INTO policy_review_event (policy_version_id, policy_id, review_revision, "
             "actor_kind, actor_user_id, occurred_at, legacy_source) "
-            "VALUES (%s, %s, 1, 'legacy_unknown', NULL, %s, NULL)",
-            (version_id, policy_id, published_event_at),
+            "VALUES (%s, %s, 1, %s, %s, %s, NULL)",
+            (version_id, policy_id, actor_kind, reviewer_id, published_event_at),
         )
     return version_id
 
@@ -93,7 +109,7 @@ def test_new_drafts_and_reviews_by_day(database_url_schema: str) -> None:
     rows = _reader(database_url_schema).review_workload(start=DAY, end=DAY, now=_at(DAY, 12))
 
     assert rows[0]["newDrafts"] == 2
-    assert rows[0]["reviewsCompleted"] == 1  # 只算 user/legacy_unknown 事件
+    assert rows[0]["reviewsCompleted"] == 1  # 只算带真实操作者的 user 事件
     assert rows[0]["pendingAtEndOfDay"] is None, "当天未结束应为 null"
     assert rows[0]["dayOpen"] is True
     assert rows[0]["availability"]["newDrafts"] == {"state": PARTIAL, "reason": "DAY_OPEN"}
@@ -180,3 +196,22 @@ def test_before_the_run_baseline_failed_is_not_collected(database_url_schema: st
     assert availability["failed"]["state"] == NOT_COLLECTED
     assert availability["total"]["state"] == PARTIAL
     assert availability["total"]["reason"] == "BEFORE_COLLECTION"
+
+
+def test_legacy_unknown_events_do_not_count_as_completed_reviews(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(DAY, 0), run_from=None)
+        _version(
+            conn,
+            version="v1",
+            imported_at=_at(DAY, 9),
+            published_event_at=_at(DAY, 11),
+            actor_kind="legacy_unknown",
+        )
+        conn.commit()
+
+    rows = _reader(database_url_schema).review_workload(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12)
+    )
+
+    assert rows[0]["reviewsCompleted"] == 0, "没有操作者的旧发布不是人工审核完成"

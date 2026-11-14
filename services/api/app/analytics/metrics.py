@@ -1,7 +1,7 @@
 """E3b / D5 的只读统计：审核工作量与运行趋势。
 
-**只算、不接路由**：端点要等 `METRICS_SPEC` 把口径正式记录后再接；这里先把「一天怎么算」
-与「覆盖状态怎么判」写成可测的函数，口径一变只改这一处。
+口径只写在这一处：两个端点（``GET /admin/metrics/review-workload`` 与
+``/admin/metrics/assessment-runs``）只做鉴权与参数边界，日统计与覆盖判定都在这里。
 
 三条与规格对齐的硬规则（M2 本轮逐条点名）：
 
@@ -29,7 +29,9 @@ PRECISE = "precise"
 PARTIAL = "partial"
 NOT_COLLECTED = "not_collected"
 
-REVIEW_ACTORS = ("user", "legacy_unknown")
+#: 只有带真实操作者的发布才算「人工审核完成」。``baseline`` 是上线基线；
+#: ``legacy_unknown`` 是没有账号的旧发布，D5 §2.2/§5 明确不计入完成数。
+REVIEW_ACTORS = ("user",)
 
 
 def _day_bounds(day: date) -> tuple[datetime, datetime]:
@@ -109,12 +111,19 @@ class MetricsReader:
                     "pendingAtEndOfDay", day, baseline, gaps, day_open
                 ),
             }
+            # 缺测不是 0：未采集的指标返回 None，不返回 0（D5 §3.5）。
+            reviews_value: int | None = reviews.get(day, 0)
+            if availability["reviewsCompleted"].state == NOT_COLLECTED:
+                reviews_value = None
+            pending_value: int | None = None if day_open else pending.get(day)
+            if availability["pendingAtEndOfDay"].state == NOT_COLLECTED:
+                pending_value = None
             result.append(
                 {
                     "date": day.isoformat(),
                     "newDrafts": new_drafts.get(day, 0),
-                    "reviewsCompleted": reviews.get(day, 0),
-                    "pendingAtEndOfDay": None if day_open else pending.get(day),
+                    "reviewsCompleted": reviews_value,
+                    "pendingAtEndOfDay": pending_value,
                     "availability": {name: item.to_dict() for name, item in availability.items()},
                     "dayOpen": day_open,
                 }
@@ -178,15 +187,23 @@ class MetricsReader:
                     "avgDurationMs",
                 )
             }
+            # 未采集的三态不给 0；采集前历史只把 total/succeeded 记为 partial。
+            values: dict[str, int | None] = {}
+            for name in ("total", "succeeded", "failed", "unfinished"):
+                values[name] = (
+                    None
+                    if availability[name].state == NOT_COLLECTED
+                    else counts.get(name, 0)
+                )
+            avg = counts.get("avgDurationMs")
+            if availability["avgDurationMs"].state == NOT_COLLECTED:
+                avg = None
             result.append(
                 {
                     "date": day.isoformat(),
-                    "total": counts.get("total", 0),
-                    "succeeded": counts.get("succeeded", 0),
-                    "failed": counts.get("failed", 0),
-                    "unfinished": counts.get("unfinished", 0),
+                    **values,
                     "durationSampleCount": counts.get("durationSampleCount", 0),
-                    "avgDurationMs": counts.get("avgDurationMs"),
+                    "avgDurationMs": avg,
                     "availability": {name: item.to_dict() for name, item in availability.items()},
                     "dayOpen": day_open,
                 }

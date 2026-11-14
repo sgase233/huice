@@ -146,6 +146,10 @@ class PolicyDraft(WireModel):
     sources: list[SourceDocument]
     criteria: list[Criterion]
     validation_findings: list[ValidationFinding]
+    #: 旁表没有记录时省略该字段；有记录才带上（见 DateProvenance）。
+    date_provenance: DateProvenance | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class PolicyDraftList(WireModel):
@@ -240,6 +244,36 @@ class PolicyDetail(WireModel):
     sources: list[SourceDocument] = Field(min_length=1)
     criteria: list[Criterion] = Field(min_length=1)
     preparation_template: PreparationTemplate
+    date_provenance: DateProvenance | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+
+# ------------------------------------------------- 日期来源（B1b，E3 草案）
+#
+# D-1 的形状：``{version, effectiveFrom, effectiveTo, applicationWindow, note}``，
+# 每个日期字段 ``{status, source, locator, note}``；``derived`` 另带 ``basis`` 与
+# ``derivedFrom``。``source`` 只给 ``body``/``attachment``，不暴露内部来源行 id。
+# 旁表没有记录时整个字段省略（旧消费者与 rc.1 响应逐字段一致）。
+
+DateProvenanceStatus = Literal["verified", "derived", "unverified", "not_applicable", "unknown"]
+
+
+class DateProvenanceField(WireModel):
+    status: DateProvenanceStatus
+    source: SourceKind | None = None
+    locator: NonEmptyStr | None = None
+    basis: NonEmptyStr | None = None
+    derived_from: NonEmptyStr | None = None
+    note: NonEmptyStr | None = None
+
+
+class DateProvenance(WireModel):
+    version: Annotated[int, Field(ge=1)]
+    effective_from: DateProvenanceField | None = None
+    effective_to: DateProvenanceField | None = None
+    application_window: DateProvenanceField | None = None
+    note: NonEmptyStr | None = None
 
 
 class HealthResponse(WireModel):
@@ -447,11 +481,129 @@ class PolicySummary(WireModel):
     effective_to: date | None
     application_window: ApplicationWindow | None
     source_url: str
+    date_provenance: DateProvenance | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class PolicyList(WireModel):
     items: list[PolicySummary]
     next_cursor: str | None
+
+
+# ------------------------------------------------------- D5 指标（E3 草案）
+
+MetricState = Literal["precise", "partial", "not_collected"]
+
+
+class MetricAvailability(WireModel):
+    """单个指标的覆盖状态；``coverageFrom`` 是覆盖起点（部分覆盖时才有）。"""
+
+    state: MetricState
+    coverage_from: AwareDatetime | None = None
+    reason: NonEmptyStr | None = None
+
+
+class ReviewWorkloadDay(WireModel):
+    date: date
+    new_drafts: Annotated[int, Field(ge=0)]
+    reviews_completed: Annotated[int, Field(ge=0)] | None
+    pending_at_end_of_day: Annotated[int, Field(ge=0)] | None
+    availability: dict[str, MetricAvailability]
+    day_open: bool
+
+
+class ReviewWorkloadResponse(WireModel):
+    range_start: date = Field(alias="from")
+    range_end: date = Field(alias="to")
+    time_zone: Literal["Asia/Shanghai"]
+    generated_at: AwareDatetime
+    days: list[ReviewWorkloadDay]
+
+
+class AssessmentRunsDay(WireModel):
+    date: date
+    total: Annotated[int, Field(ge=0)] | None
+    succeeded: Annotated[int, Field(ge=0)] | None
+    failed: Annotated[int, Field(ge=0)] | None
+    unfinished: Annotated[int, Field(ge=0)] | None
+    duration_sample_count: Annotated[int, Field(ge=0)]
+    avg_duration_ms: Annotated[int, Field(ge=0)] | None
+    availability: dict[str, MetricAvailability]
+    day_open: bool
+
+
+class AssessmentRunsResponse(WireModel):
+    range_start: date = Field(alias="from")
+    range_end: date = Field(alias="to")
+    time_zone: Literal["Asia/Shanghai"]
+    generated_at: AwareDatetime
+    days: list[AssessmentRunsDay]
+
+
+# --------------------------------------------------- D4 完整度（E3 草案）
+
+CompletenessStatus = Literal[
+    "filled",
+    "filled_unverified",
+    "answered_unknown",
+    "not_answered",
+    "not_applicable",
+    "applicability_unknown",
+    "not_due",
+]
+
+
+class CompletenessUnit(WireModel):
+    fact_key: str
+    period_start: date
+    period_end: date
+    group: Literal["basic", "operation", "rd", "credit", "other"]
+    status: CompletenessStatus
+
+
+class CompletenessGroup(WireModel):
+    key: Literal["basic", "operation", "rd", "credit", "other"]
+    label: NonEmptyStr
+    applicable_count: Annotated[int, Field(ge=0)]
+    filled_count: Annotated[int, Field(ge=0)]
+    ratio: Annotated[float, Field(ge=0, le=1)] | None
+
+
+class CompletenessManualReview(WireModel):
+    policy_id: UUID
+    policy_version: NonEmptyStr
+    criterion_id: UUID | None
+    title: NonEmptyStr
+    reason: NonEmptyStr
+
+
+class CompletenessTotals(WireModel):
+    applicable_count: Annotated[int, Field(ge=0)]
+    filled_count: Annotated[int, Field(ge=0)]
+    ratio: Annotated[float, Field(ge=0, le=1)] | None
+    answered_unknown_count: Annotated[int, Field(ge=0)]
+    not_due_count: Annotated[int, Field(ge=0)]
+    not_applicable_count: Annotated[int, Field(ge=0)]
+    applicability_unknown_count: Annotated[int, Field(ge=0)]
+
+
+class CompletenessScope(WireModel):
+    mode: Literal["profile", "run", "explicit"]
+    policy_versions: dict[str, NonEmptyStr]
+
+
+class CompletenessResponse(WireModel):
+    enterprise_id: UUID
+    as_of: AwareDatetime
+    scope: CompletenessScope
+    definition_version: Literal["d4.static.v1"]
+    applicability_mode: Literal["static"]
+    units: list[CompletenessUnit]
+    groups: list[CompletenessGroup]
+    totals: CompletenessTotals
+    manual_review: list[CompletenessManualReview]
+    generated_at: AwareDatetime
 
 
 # ------------------------------------------------------------------ API-13/14

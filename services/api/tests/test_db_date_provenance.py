@@ -13,6 +13,8 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
+from app.integrations.storage import CriterionRecord
+
 from db_support import create, query_one
 
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
@@ -115,3 +117,76 @@ def test_a_vanished_source_row_downgrades_to_unverified(database_url_schema: str
     assert field["source"] is None
     assert field["locator"] == "第十七条"
     assert "来源行已不存在" in field["note"]
+
+
+def _publish(repo, draft) -> None:
+    saved = repo.save_criteria(
+        policy_id=draft.id,
+        version=draft.version,
+        expected_revision=draft.revision,
+        criteria=[
+            CriterionRecord(
+                id=uuid4(),
+                title="条件",
+                expression={"op": "manual_review", "reason": "人工核查。"},
+                spans=[],
+                review_finding="none",
+                validation_status="passed",
+            )
+        ],
+        findings=[],
+        status="pending_review",
+        trace_id=str(uuid4()),
+    )
+    repo.publish(
+        policy_id=draft.id,
+        version=draft.version,
+        expected_revision=saved.revision,
+        trace_id=str(uuid4()),
+    )
+
+
+def test_provenance_is_wired_into_detail_summary_and_admin_draft(
+    database_url_schema: str, repo
+) -> None:
+    draft = create(repo, version="v1.0")
+    body_id = str(draft.sources[0].id)
+    _publish(repo, draft)
+    version_id = query_one(
+        database_url_schema,
+        "SELECT id FROM policy_version WHERE policy_id = %s",
+        (draft.id,),
+    )[0]
+    _store(
+        database_url_schema,
+        version_id,
+        {
+            "version": 1,
+            "effectiveFrom": {
+                "status": "verified",
+                "source": {"kind": "body"},
+                "locator": "第十七条",
+                "sourceId": body_id,
+            },
+            "note": "来源说明。",
+        },
+    )
+
+    detail = repo.get_policy_detail(draft.id)
+    summary = repo.list_public_policies(
+        status=None, policy_type=None, region=None, as_of=None, cursor=None, limit=10
+    ).items[0]
+    admin = repo.get_admin_policy(draft.id, None)
+
+    assert detail.date_provenance.effective_from.status == "verified"
+    assert detail.date_provenance.effective_from.source == "body"
+    assert summary.date_provenance.note == "来源说明。"
+    assert admin.date_provenance.effective_from.locator == "第十七条"
+
+
+def test_a_version_without_provenance_omits_the_field(database_url_schema: str, repo) -> None:
+    draft = create(repo, version="v9.9")
+
+    payload = repo.get_admin_policy(draft.id, None).model_dump(by_alias=True)
+
+    assert "dateProvenance" not in payload

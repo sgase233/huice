@@ -149,7 +149,7 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/008_material_requirements.sql
 - **本迁移不对外暴露任何字段**：字段进 `PolicySummary`/`PolicyDetail`/`PolicyDraft` 与响应属于 B1b，随契约一次升版。迁移先合不会产生半成品契约，也不会让 `generate_types --check` 多红一次。
 - **回填不在迁移里**：由 `infra/deploy/backfill-date-provenance.py` + `date-provenance-backfill.json` 执行，步骤与退出码见 `infra/deploy/README.md` §2.2。脚本默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 未获批准、或获批准却没有 `reviewEvidence`（`reviewedBy`/`reviewedAt`/`reference`）时 `--apply` 同样拒绝；`verified` 必须给出来源与定位，出处写成「正文」或**第几份附件（从 1 起，不是数据库的绝对 `ordinal`）**，由脚本按该版本的 `policy_source` 顺序解析后绑定真实 id；`derived` 必须给出推算依据。任一条对不上号就整批停下、不写任何行；库里已有不同值时默认不覆盖（返回 `3`），要改写需显式 `--overwrite`。回填数据已于 2026-11-14 由 M3 复核批准（`reviewStatus: approved-by-m3` + `reviewEvidence` 指向 PR #69 的批准评论），云端 `--apply` 只写旁表；两个新导入版本（SMART/GREEN）仍是草稿，发布前另有 M3 提的两项必修（见 §2.2）。
 
-结构校验只在 `jsonb_typeof(provenance) = 'object'` 这一层；字段级取值由写入路径与回填脚本校验，避免同一套规则在两处各写一遍。**云端 RDS 尚未执行 011**。
+结构校验只在 `jsonb_typeof(provenance) = 'object'` 这一层；字段级取值由写入路径与回填脚本校验，避免同一套规则在两处各写一遍。**云端 RDS 已执行 011**（2026-11-15 预检可见）；旁表已有 9 条回填行。SRDI 的 `effectiveFrom/To` 在 2026-11-15 数据层 B 后仍保留旧 provenance 值（`unverified`），待 M3 按 `date-provenance-backfill-srdi.json` 重新复核后更新。
 
 ## 4. 云端资源状态（截至 2026-11-06）
 

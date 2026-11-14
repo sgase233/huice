@@ -50,6 +50,14 @@ E2_OPERATIONS = {
     ("post", "/admin/policy-candidates/{candidateId}/discard"): "discardPolicyCandidate",
 }
 
+#: E3 的 3 个统计操作。同样先写在 ``contracts/openapi.e3-draft.yaml``，
+#: 并入正式契约前只在这里盘点。
+E3_OPERATIONS = {
+    ("get", "/admin/metrics/review-workload"): "getReviewWorkload",
+    ("get", "/admin/metrics/assessment-runs"): "getAssessmentRunTrends",
+    ("get", "/admin/metrics/completeness"): "getProfileCompleteness",
+}
+
 #: E1（#46）新增的 7 个操作。它们同时写在正式契约与设计记录里，两边都要对得上。
 E1_OPERATIONS = {
     ("post", "/auth/register"): "registerUser",
@@ -211,7 +219,7 @@ def test_unimplemented_endpoints_are_not_served(schema):
         for method in operations
     }
     # E2 的 8 个操作已经实现、但还没并入正式契约，属于「已实现、只在草案里」。
-    assert served == set(IMPLEMENTED) | set(E2_OPERATIONS)
+    assert served == set(IMPLEMENTED) | set(E2_OPERATIONS) | set(E3_OPERATIONS)
 
 
 def test_e2_operations_match_the_draft(schema):
