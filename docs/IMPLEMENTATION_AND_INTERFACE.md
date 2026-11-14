@@ -381,10 +381,12 @@ API-05 同一 policyId/version/Idempotency-Key 和相同 body 的已成功请求
 | ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
 | --- | --- | --- |
 | API-11 `POST /assessment-runs` | JSON `{enterpriseId,policyIds,asOf,period,supersedesRunId?,skippedFactRefs?}` | 200 `AssessmentRun`；同步完成，不返回未定义 taskId |
-| API-12 `GET /assessment-runs/{runId}` | path UUID | 200 `AssessmentRun`，读取时刷新有效性视图 |
+| API-12 `GET /assessment-runs/{runId}` | path UUID | 200 `AssessmentRun`，读取时刷新有效性视图；**运行未成功完成（`running`/`failed`/`interrupted`）→ 409 `RUN_NOT_COMPLETED`（`details.status`）**，与「不存在」的 404 从此可区分（E3 B2，随契约 `1.3.0-rc.1` 定稿） |
 | API-13 `GET /assessment-runs/{runId}/report.md` | path UUID；Accept=`text/markdown` | 200 `text/markdown; charset=utf-8`，Content-Disposition 为安全文件名的 attachment |
 | API-14 `GET /assessment-runs/{runId}/trace` | path UUID；企业会话（本人 run）/ 审核员会话 / 运维 Bearer | 200 `{steps:TraceStep[]}`，sequence 升序 |
-| AUTH-07 `GET /assessment-runs`（E1 新增） | query `enterpriseId`（可选，越出可见范围 → 404 `ENTERPRISE_NOT_FOUND`）、cursor、limit；可见范围同企业读口径 | 200 `RunSummaryList` = `{items:RunSummary[],nextCursor}`，`RunSummary={id,enterpriseId,asOf,createdAt,status,reportAvailable}`；`status` 为 `queued/running/succeeded/failed` |
+| AUTH-07 `GET /assessment-runs`（E1 新增） | query `enterpriseId`（可选，越出可见范围 → 404 `ENTERPRISE_NOT_FOUND`）、cursor、limit；可见范围同企业读口径 | 200 `RunSummaryList` = `{items:RunSummary[],nextCursor}`，`RunSummary={id,enterpriseId,asOf,createdAt,status,reportAvailable}`；`status` 为 `queued/running/succeeded/failed`，契约升到 `1.3.0-rc.1` 后增加 `interrupted` |
+
+**运行生命周期（E3 B2，迁移 `012`）**：一次判断先在 T1 插入 `status='running'` 并提交，评估结束后成功走 T2（结果行与 `succeeded` 同一事务提交）、失败走 T3（只写 `failed` 与 `error_category ∈ {policy_not_published, model_unavailable, dependency_unavailable, internal}`，不写任何 `assessment` 行）。T1 在专用连接上取 `pg_advisory_lock(hashtextextended(runId,0))`，并把持有者 `(pg_backend_pid(), backend_start)` 写进 `lock_owner_pid`/`lock_owner_started_at`；这两个值写入后冻结，用于判断「原连接是否已断开」。中断扫描要求三条同时成立——超过 `RUN_MAX_DURATION_SECONDS`、锁未被持有、原连接已不在——缺一条就保持 `running`；扫描与 API-12 的 409 由同一个开关 `RUN_LIFECYCLE_CONTRACT_ENABLED`（默认关闭）控制，与契约 `1.3.0-rc.1` 同窗开启。运行采集的覆盖起点 `collection_baseline.run_lifecycle_from` 在服务启动时按列幂等写入，失败则后台每 `RUN_LIFECYCLE_START_RETRY_SECONDS` 重试，成功后每 `RUN_LIFECYCLE_START_RECALIBRATE_SECONDS` 重校准（后提交的更早运行会把起点前移）；取值是「已有值、`now()`、最早一条新生命周期运行（`lock_owner_pid` 非空）的 `created_at`」三者最小——**只向前挪、不往后推**，补记时刻不会被当成采集起点。它只证明「从这一刻起有生命周期记录」，不证明此后持续完整采集：回退、并发切换或数据库中断期间的运行由 B3 按 M3 规格标 `partial`，起点本身不能替代覆盖标注。
 
 API-11 不复用 runId；用户重复点击由前端禁用提交按钮，网络失败后不得自动创建重复运行。同步超时由 M1 记录，MVP 不引入未定义异步队列。所有 API 都须处理统一错误；报告接口失败时 Content-Type 回到 application/json。
 

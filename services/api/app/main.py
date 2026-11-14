@@ -7,6 +7,9 @@
 from __future__ import annotations
 
 import copy
+import asyncio
+import contextlib
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -50,13 +53,68 @@ EXPOSED_RESPONSE_HEADERS = ("ETag", "X-Trace-Id", "Content-Disposition")
 ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 
 
+logger = logging.getLogger("huice.api")
+
+
+async def _ensure_lifecycle_start(
+    repository, retry_seconds: int, recalibrate_seconds: int
+) -> None:
+    """写运行采集起点，并在之后周期性重校准。
+
+    两个节奏解决两件事：
+
+    * 首次写入失败（库暂时不可用）→ 每 ``retry_seconds`` 重试，恢复后补记；
+    * 首次写入成功后**不退出**：每 ``recalibrate_seconds`` 再跑一次。首次查询时若有一个
+      ``created_at`` 更早的 T1 还没提交，它当时不可见；等它提交后，下一次校准会把起点
+      向前挪（SQL 是 ``LEAST(...)``，只前不后），因此不需要重启服务。
+
+    起点本身取「已有值、now()、最早一条新生命周期运行」三者最小，补记时刻不会被当成
+    真实采集起点；它也不证明此后持续完整采集——覆盖标注由 B3 按 M3 规格给。
+    """
+
+    written = False
+    while True:
+        try:
+            await asyncio.to_thread(repository.mark_run_lifecycle_start)
+            written = True
+        except Exception:  # noqa: BLE001 - 恢复后重试，不能用一次失败挡住采集
+            logger.warning("写入运行采集起点失败，%s 秒后重试", retry_seconds, exc_info=True)
+            await asyncio.sleep(retry_seconds)
+            continue
+        await asyncio.sleep(recalibrate_seconds if written else retry_seconds)
+
+
+async def _run_interrupt_scan(repository, settings) -> None:
+    """D5 的中断扫描：启动一次 + 每 ``RUN_INTERRUPT_SCAN_SECONDS`` 一次。
+
+    判据在仓储里（超时 + 锁未被持有 + 原连接已断开，三者缺一不可）。这里只管节奏：
+    串行、单进程、不并发，失败只记告警不退出——一次扫不动不该拖垮服务。
+    """
+
+    mark = getattr(repository, "mark_interrupted_runs", None)
+    if mark is None:  # 测试替身没有这条能力
+        return
+    while True:
+        try:
+            await asyncio.to_thread(
+                mark, max_duration_seconds=settings.run_max_duration_seconds
+            )
+        except Exception:  # noqa: BLE001 - 扫描失败不能影响请求处理
+            logger.warning("中断扫描失败，下一轮再试", exc_info=True)
+        await asyncio.sleep(settings.run_interrupt_scan_seconds)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or Settings.from_env()
     # uvicorn 默认只配置 uvicorn.* 的 logger，应用里的 logger.info 会落在 WARNING 之下
     # 而被丢弃；这里显式让 app.* / huice.* 以 INFO 输出到 stderr（systemd 转 journal）。
     configure_logging()
     database = Database(resolved.database_url)
-    repository = PolicyRepository(database, cursor_secret=_cursor_secret(resolved))
+    repository = PolicyRepository(
+        database,
+        cursor_secret=_cursor_secret(resolved),
+        require_completed_status=resolved.run_lifecycle_contract_enabled,
+    )
     discovery_repository = DiscoveryRepository(database, cursor_secret=_cursor_secret(resolved))
     accounts = AccountsRepository(database)
     object_store = build_object_store(resolved)
@@ -65,7 +123,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        yield
+        # E3 B2：启动扫一次残留的 running 行，之后按 RUN_INTERRUPT_SCAN_SECONDS 周期扫。
+        # 只扫一次会让「重启时还没超时、之后才超时」的行永远停在 running。
+        # 默认关闭：interrupted 是 RunStatus 的新取值，契约要求与前端类型同窗升级，
+        # 不允许后端单边先行；与 1.3.0-rc.1 同窗发布时再打开。
+        # 运行采集的覆盖起点：只在为 NULL 时写，重启/并发启动都不会挪动它；
+        # 失败不挡启动，但要在后台持续重试——否则数据库恢复后要等到下次重启才补记，
+        # 期间采集的运行会落在起点之前，指标说不清覆盖范围。
+        start_task = asyncio.create_task(
+            _ensure_lifecycle_start(
+                repository,
+                resolved.run_lifecycle_start_retry_seconds,
+                resolved.run_lifecycle_start_recalibrate_seconds,
+            )
+        )
+
+        scan_task = (
+            asyncio.create_task(_run_interrupt_scan(repository, resolved))
+            if resolved.run_lifecycle_contract_enabled
+            else None
+        )
+        try:
+            yield
+        finally:
+            for task in (start_task, scan_task):
+                if task is None:
+                    continue
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
         database.close()
         close_store = getattr(object_store, "close", None)
         if callable(close_store):
