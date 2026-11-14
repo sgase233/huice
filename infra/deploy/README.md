@@ -224,7 +224,8 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 - **`verified` 的出处必须属于该版本**：脚本在该 `policy_version_id` 下查 `policy_source`，把真实 id 写进 jsonb；找不到就整批停下、一行不写。年度指南若不在该版本的来源里，只能标 `unknown`（该版本没有窗口依据）或 `unverified`（有值但没核）并写 note，不能拿别处的依据充数。
 - **版本粒度口径（F4，M3 复核提出）**：`version` 记**规程/细则的文号**，`sourceUrl` 是载有窗口的**年度申报通知**页。窗口出处写通知的正文或附件，并在 note 里点明「窗口来源不是版本文号对应的规程」；把年度通知单独建 `policy_version` 会改政策版本清单与前端展示，不在回填里做。
 - **本批不承载 `published_at` 的来源（F12）**：`011` 与回填只覆盖 `effectiveFrom` / `effectiveTo` / `applicationWindow`。页面与验收不得把「发布日期来源」计入 VIS-06 覆盖，字面上写「发布日期来源未承载」。
-- **幂等但不静默覆盖**：值相同不写；库里已有**不同**的值时停下返回 `3`，确认旧值不是复核后补的再加 `--overwrite`。
+- **幂等但不静默覆盖**：值相同不写；库里已有**不同**的值时停下返回 `3`。
+- **覆盖必须有计划**：先干跑并加 `--write-overwrite-plan /path/plan.json`，它会列出本次冲突的`(sourceUrl, version)` 与当时的旧值；复核后用 `--apply --overwrite --overwrite-plan /path/plan.json` 执行。执行时逐条校验「在计划里」且「旧值与计划一致」——干跑之后新增的冲突、或旧值被别人改过，整批回滚，不会把计划外的条目一起覆盖；只给 `--overwrite` 不给计划直接拒绝（退出码 `2`）。
 - 退出码：`0` 成功（含干跑）；`1` 数据库读写失败；`2` 数据文件/环境不合法、版本或来源定位不到、数据未获批准或缺少复核证据；`3` 与库里已有值冲突且未加 `--overwrite`。报错只给字段路径与变量名，不含连接串。
 
 ## 3. 填配置

@@ -288,7 +288,10 @@ def test_backfill_conflict_needs_overwrite(database_url_schema: str, repo, tmp_p
         ).fetchone()[0]
     assert stored["effectiveTo"] == {"status": "unknown"}
 
-    assert backfill.run(second, apply=True, overwrite=True) == 0
+    # 覆盖需要显式计划：干跑先把冲突写成计划，再按计划覆盖
+    plan = tmp_path / "overwrite-plan.json"
+    assert backfill.run(second, apply=False, write_plan=plan) == 3
+    assert backfill.run(second, apply=True, overwrite=True, plan_path=plan) == 0
     with psycopg.connect(database_url_schema) as conn:
         stored = conn.execute(
             "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
@@ -497,3 +500,53 @@ def test_a_concurrent_insert_is_never_overwritten(
             (version_id,),
         ).fetchone()[0]
     assert stored == {"version": 1, "note": "另一个事务写的"}
+
+
+def test_a_new_conflict_after_the_plan_aborts_the_overwrite(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """干跑生成计划之后又冒出一条冲突：整批回滚，不顺手覆盖计划外的条目。"""
+
+    create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    first = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
+    assert backfill.run(first, apply=True) == 0
+
+    plan = tmp_path / "plan.json"
+    second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
+    assert backfill.run(second, apply=False, write_plan=plan) == 3
+
+    # 计划生成之后，库里的值又被别人改了：计划里的 expectedOld 已经过时
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "UPDATE policy_version_date_provenance SET provenance = %s WHERE policy_version_id = %s",
+            (
+                psycopg.types.json.Jsonb(
+                    {"version": 1, "effectiveTo": {"status": "unverified"}, "note": "别人补的"}
+                ),
+                version_id,
+            ),
+        )
+        conn.commit()
+
+    assert backfill.run(second, apply=True, overwrite=True, plan_path=plan) == 3
+    with psycopg.connect(database_url_schema) as conn:
+        stored = conn.execute(
+            "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        ).fetchone()[0]
+    assert stored.get("note") == "别人补的", "计划外的改法不能被覆盖"
+
+
+def test_overwrite_without_a_plan_is_refused(database_url_schema, repo, tmp_path, monkeypatch) -> None:
+    """--overwrite 必须带计划：没有计划就拒绝，不按「本次看到什么就覆盖什么」执行。"""
+
+    create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    path = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
+    assert backfill.run(path, apply=True) == 0
+
+    second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
+    assert backfill.run(second, apply=True, overwrite=True) == 2

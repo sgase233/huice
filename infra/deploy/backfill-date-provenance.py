@@ -274,6 +274,54 @@ def load_data(path: Path) -> "Payload":
     return Payload(review_status=review_status.strip(), entries=result, review_evidence=evidence)
 
 
+def _plan_key(entry: Entry) -> tuple[str, str]:
+    return (entry.source_url, entry.version)
+
+
+class OverwriteNotApproved(RuntimeError):
+    """覆盖没有命中获准名单，或旧值与干跑时不一致——整批回滚。"""
+
+    def __init__(self, entry: Entry, reason: str) -> None:
+        super().__init__(entry.version)
+        self.entry = entry
+        self.reason = reason
+
+
+def load_overwrite_plan(path: Path | None) -> dict[tuple[str, str], dict]:
+    """读覆盖计划：``(sourceUrl, version) → 干跑时看到的旧 provenance``。
+
+    计划由 ``--write-overwrite-plan`` 在干跑时生成。覆盖时必须逐条命中且旧值一致，
+    否则整批回滚——干跑与执行之间新增的冲突不会被顺手覆盖。
+    """
+
+    if path is None:
+        raise DataError("--overwrite 必须同时给 --overwrite-plan（先干跑生成覆盖计划）")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise DataError(f"覆盖计划不存在：{path}") from None
+    except json.JSONDecodeError as exc:
+        raise DataError(f"覆盖计划不是合法 JSON（第 {exc.lineno} 行）") from None
+    entries = raw.get("entries") if isinstance(raw, dict) else None
+    if not isinstance(entries, list):
+        raise DataError("覆盖计划缺少 entries 数组")
+    plan: dict[tuple[str, str], dict] = {}
+    for index, item in enumerate(entries):
+        if not isinstance(item, dict):
+            raise DataError(f"覆盖计划 entries[{index}] 必须是对象")
+        for field in ("sourceUrl", "version"):
+            value = item.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise DataError(f"覆盖计划 entries[{index}].{field} 必须是非空字符串")
+        old = item.get("expectedOld")
+        if not isinstance(old, dict):
+            raise DataError(f"覆盖计划 entries[{index}].expectedOld 必须是对象")
+        plan[(item["sourceUrl"], item["version"])] = old
+    if not plan:
+        raise DataError("覆盖计划是空的：没有可覆盖的条目")
+    return plan
+
+
 def _human_size(byte_size: int) -> str:
     if byte_size >= 1048576:
         return f"{byte_size / 1048576:.1f} MB"
@@ -312,7 +360,13 @@ def review_block(payload: Payload, apply: bool) -> str | None:
     return None
 
 
-def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
+def run(
+    data_path: Path,
+    apply: bool,
+    overwrite: bool = False,
+    plan_path: Path | None = None,
+    write_plan: Path | None = None,
+) -> int:
     payload = load_data(data_path)
 
     blocked = review_block(payload, apply)
@@ -345,7 +399,13 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
 
     changed = 0
     skipped = 0
-    conflicts: list[Entry] = []
+    conflicts: list[tuple[Entry, dict]] = []
+    try:
+        plan = load_overwrite_plan(plan_path) if overwrite else None
+    except DataError as exc:
+        print(f"backfill-date-provenance: 覆盖计划不合法：{exc}", file=sys.stderr)
+        return 2
+    used: set[tuple[str, str]] = set()
     try:
         with psycopg.connect(dsn) as conn:
             with conn.cursor() as cur:
@@ -443,8 +503,17 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
                     if row is not None and not overwrite:
                         # 库里已有不同的值：可能是 M3 复核后补过。静默整份替换会把复核
                         # 痕迹抹掉，所以停下要人显式决定。
-                        conflicts.append(entry)
+                        conflicts.append((entry, row[0]))
                         continue
+                    if row is not None and overwrite:
+                        # 覆盖必须命中「获准名单」且旧值与干跑时一致：干跑之后新增的冲突、
+                        # 或旧值被别人改过，都不覆盖，整批回滚。
+                        approved = plan.get(_plan_key(entry)) if plan is not None else None
+                        if approved is None:
+                            raise OverwriteNotApproved(entry, "不在本次获准覆盖的名单里")
+                        if approved != row[0]:
+                            raise OverwriteNotApproved(entry, "旧值与干跑时不一致")
+                        used.add(_plan_key(entry))
                     if apply:
                         # 写旁表而不是 policy_version：已发布版本不可变由触发器保证，
                         # 回填不得以任何方式改动它。
@@ -475,9 +544,41 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
                         f"{entry.version}（{entry.source_url}）"
                     )
 
+            if plan is not None and used != set(plan):
+                conn.rollback()
+                names = "、".join(f"{entry.version}" for entry in payload.entries if _plan_key(entry) in set(plan) - used)
+                print(
+                    f"backfill-date-provenance: 获准覆盖的条目没有全部出现冲突（{names}），"
+                    "覆盖计划与实际不一致，整批回滚。",
+                    file=sys.stderr,
+                )
+                return 3
+
+            if write_plan is not None:
+                write_plan.write_text(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "entries": [
+                                {
+                                    "sourceUrl": entry.source_url,
+                                    "version": entry.version,
+                                    "expectedOld": old,
+                                }
+                                for entry, old in conflicts
+                            ],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                print(f"覆盖计划已写入 {write_plan}（{len(conflicts)} 条）。")
+
             if conflicts:
                 conn.rollback()
-                names = "、".join(f"entries[{entry.index}] {entry.version}" for entry in conflicts)
+                names = "、".join(f"entries[{entry.index}] {entry.version}" for entry, _old in conflicts)
                 print(
                     f"backfill-date-provenance: {len(conflicts)} 条与库里已有值不同（{names}）。"
                     "默认不覆盖：确认要改写请加 --overwrite，且改写前先确认旧值是否已被复核补充。"
@@ -496,6 +597,13 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
                     "(SELECT count(*) FROM policy_version)"
                 )
                 after_with, after_total = cur.fetchone()
+    except OverwriteNotApproved as exc:
+        print(
+            f"backfill-date-provenance: entries[{exc.entry.index}] {exc.entry.version} "
+            f"{exc.reason}。整批回滚、未写任何行——请重新干跑并重新生成覆盖计划。",
+            file=sys.stderr,
+        )
+        return 3
     except ConcurrentConflict as exc:
         print(
             f"backfill-date-provenance: entries[{exc.entry.index}] {exc.entry.version} 在检查与写入之间"
@@ -533,11 +641,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="库里已有不同值时也改写；不加时遇冲突停止（默认不覆盖已复核的值）",
+        help="按覆盖计划改写；必须同时给 --overwrite-plan（默认不覆盖已复核的值）",
+    )
+    parser.add_argument(
+        "--overwrite-plan",
+        type=Path,
+        default=None,
+        help="干跑时用 --write-overwrite-plan 生成；只允许覆盖计划里逐条列出的条目与旧值",
+    )
+    parser.add_argument(
+        "--write-overwrite-plan",
+        type=Path,
+        default=None,
+        help="干跑时把本次发现的冲突写成覆盖计划（供复核后 --overwrite 使用）",
     )
     args = parser.parse_args(argv)
     try:
-        return run(args.data, args.apply, args.overwrite)
+        return run(
+            args.data,
+            args.apply,
+            args.overwrite,
+            plan_path=args.overwrite_plan,
+            write_plan=args.write_overwrite_plan,
+        )
     except DataError as exc:
         print(f"backfill-date-provenance: 数据不合法：{exc}", file=sys.stderr)
         return 2
