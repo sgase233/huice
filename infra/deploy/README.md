@@ -216,7 +216,7 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
   ```
 
 - **已导入的两行仍是早期形状（不改）**：云端 SMART/GREEN 的 `policy_source` 是第一次导入时写的——`file_name` 用原附件名（`.docx`/`.doc`）、`content_hash` 却是提取文本的哈希。脚本已改成如实登记（`.txt` + `text/plain` + 文本哈希 + 真实对象键），但**已入库的两行不动**：`file_name` 正是回填干跑里显示「附件1.docx」的那一列，改名会让 M3 已核对过的记录对不上。两行都还没发布，发布前再统一处理。
-- **云端那两行草稿要先修正**：第一次导入把申报窗口写进了有效期。用 `fix-draft-effective-dates.py` 改成占位值（默认干跑，`--apply` 才写）：只动未发布行，命中已发布行整批拒绝，并比对已发布行的 `xmin` 指纹。**修正前 SMART/GREEN 不得发布**。
+- **云端那两行草稿已于 2026-11-14 修正**（M3 第四轮关闭）：`effective_from` 改为 `published_at`、`effective_to` 置空、`revision` 换新；工具 `fix-draft-effective-dates.py` 保留，具备幂等（已是目标值就跳过）、按读到的 `revision` 校验并发编辑、命中已发布行整批拒绝。**SMART/GREEN 仍不得发布**，直到 VIS-06 的展示条件满足。
 - **两个导入版本的有效期是中性占位**：SMART（深工信规〔2025〕4号）与 GREEN（深工信规〔2024〕12号）由 `import-policy-sources.py` 导入，`effectiveFrom` 取 `publishedAt`、`effectiveTo` 留空——申报窗口不是政策有效期（M3 在 PR #69 复核里点名）。它们在 provenance 里仍是 `unverified`/`unknown`；页面与时间线不得把这两个版本的有效期显示为已核实，也不得用它们算 `policy_expired`。发布前若要改成真实有效期，先由 M3 给依据并复核。
 - **SMART 的 `application_window` 只是合并区间**：库里存的是 `2025-06-13 00:00`—`2025-07-07 18:00`，压平了四段窗口、也漏掉书面材料到 07-11 的部分。时间线/详情页必须读 provenance 的 `note`（四段 + 办理方式），不得把 07-07 当成全部受理截止；GREEN 只有一段，注记「来源附件，非正文」即可。
 - **干跑会打印每条日期字段绑到哪一行**：`entries[i] <文号> applicationWindow → 附件第 1 份（policy_source.ordinal=1）：<文件名>（大小）`。压缩件（`.zip`/`.rar`/`.7z`）另给一条提示——整包导入时「第 1 份」是包、逐份导入时是包内文件，两种情况的绑定不同，只能靠这一行看出来。

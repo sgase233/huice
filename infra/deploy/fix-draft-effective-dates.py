@@ -8,7 +8,13 @@
 
 - 目标行必须是 `review_status <> 'published'`——`001` 的 `guard_published_version()`
   只拦已发布行，草稿行可以更新；脚本再额外拒绝任何已发布行，不靠触发器兜底；
-- 只改 `effective_from` / `effective_to` / `updated_at`，不动身份列、来源与状态；
+- 改的是 `effective_from` / `effective_to` / `revision` / `updated_at` 四列，不动身份列、
+  来源与状态。`revision` 是 API-05 的 ETag，行内容变了不换值，后台拿旧 ETag 的
+  `If-Match` 就能把改写覆盖回去；
+- **幂等**：已经是目标值的行直接跳过（``IS DISTINCT FROM``），不重复 UPDATE、不重复
+  bump `revision`，所以「已改写 N 行」始终等于内容真的变了的那几行；
+- `published_at` 为空的行不受理：`effective_from` 是 NOT NULL，拿 NULL 去写只会报错；
+- 写入按「读到的那一版」`revision` 约束，读完之后被改过就命中 0 行、整批回滚；
 - 写前写后各取一次「已发布行 `(id, xmin)` 的 md5」，两次必须相同；
 - 默认干跑：打印每行当前值与目标值，不写库。
 
@@ -74,7 +80,9 @@ def update_row(conn, row: tuple) -> bool:
     cursor = conn.execute(
         "UPDATE policy_version SET effective_from = published_at, effective_to = NULL, "
         "revision = gen_random_uuid(), updated_at = now() "
-        "WHERE id = %s AND review_status <> 'published' AND revision = %s",
+        "WHERE id = %s AND review_status <> 'published' AND revision = %s "
+        # 幂等：已经是目标值的行不重复写，也不重复 bump revision
+        "AND (effective_from IS DISTINCT FROM published_at OR effective_to IS NOT NULL)",
         (row[0], row[5]),
     )
     return cursor.rowcount == 1
@@ -133,14 +141,23 @@ def run(data_path: Path, apply: bool) -> int:
                     )
                     conn.rollback()
                     return 4
+                if row[2] is None:
+                    print(
+                        f"{entry['version']}：该行没有 published_at，无法用占位值改写。",
+                        file=sys.stderr,
+                    )
+                    conn.rollback()
+                    return 2
                 targets.append((row, entry))
 
             for row, entry in targets:
+                at_target = row[3] == row[2] and row[4] is None
                 print(
                     f"{entry['version']}：{row[1]}，effective_from {row[3]} → {row[2]}，"
                     f"effective_to {row[4]} → NULL"
+                    + ("（已是目标值，跳过）" if at_target else "")
                 )
-                if not apply:
+                if not apply or at_target:
                     continue
                 if not update_row(conn, row):
                     conn.rollback()

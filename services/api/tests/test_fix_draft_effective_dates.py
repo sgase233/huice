@@ -207,3 +207,34 @@ def test_a_stale_revision_is_refused_by_the_update(database_url_schema: str, rep
             ("深工信规〔2025〕4号",),
         ).fetchone()[0]
     assert str(effective) == "2025-06-13"
+
+
+def test_a_second_run_is_a_no_op(database_url_schema: str, repo, tmp_path, monkeypatch, capsys) -> None:
+    """幂等：第一次改写后，第二次不重复 UPDATE、不重复 bump revision。"""
+
+    _draft(
+        repo,
+        version="深工信规〔2025〕4号",
+        source_url=SMART_URL,
+        effective_from="2025-06-13",
+        effective_to="2025-07-07",
+    )
+    path = _write(tmp_path, [{"sourceUrl": SMART_URL, "version": "深工信规〔2025〕4号"}])
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    assert fixer.run(path, apply=True) == 0
+    with psycopg.connect(database_url_schema) as conn:
+        before = conn.execute(
+            "SELECT revision FROM policy_version WHERE version = %s", ("深工信规〔2025〕4号",)
+        ).fetchone()[0]
+
+    capsys.readouterr()
+    assert fixer.run(path, apply=True) == 0
+    output = capsys.readouterr().out
+    assert "已是目标值，跳过" in output
+
+    with psycopg.connect(database_url_schema) as conn:
+        after = conn.execute(
+            "SELECT revision FROM policy_version WHERE version = %s", ("深工信规〔2025〕4号",)
+        ).fetchone()[0]
+    assert after == before
