@@ -229,6 +229,7 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 - **本批不承载 `published_at` 的来源（F12）**：`011` 与回填只覆盖 `effectiveFrom` / `effectiveTo` / `applicationWindow`。页面与验收不得把「发布日期来源」计入 VIS-06 覆盖，字面上写「发布日期来源未承载」。
 - **幂等但不静默覆盖**：值相同不写；库里已有**不同**的值时停下返回 `3`。
 - **`--apply` 必须带计划**：先干跑并加 `--write-plan /path/plan.json`。计划固定三样东西——数据文件 sha256、每条的 `expectedNew`（解析后的完整 provenance，含 `sourceId`）、每条 `verified` 绑定的来源行（`sourceId` + `contentHash`），另外标出哪些条目「已有不同值、允许覆盖」（`allowOverwrite`）。
+- **执行期间锁定来源写路径**：`--apply` 在读来源之前取 `LOCK TABLE policy_source IN SHARE ROW EXCLUSIVE MODE`，并发的新增、删除与重排（`UPDATE ordinal`）都会等这把锁释放；否则「校验过的 sourceId/contentHash」与「提交时库里的样子」之间仍有窗口。
   复核后用 `--apply --plan /path/plan.json` 执行；**首次插入也同样受计划保护**。执行时逐项校验，数据文件变了、目标值变了、附件重排或替换、旧值被改，任一不符就整批回滚（退出码 `2`/`3`）。计划里标了 `allowOverwrite` 的条目还要显式加 `--overwrite` 才会改写。
 - 退出码：`0` 成功（含干跑）；`1` 数据库读写失败；`2` 数据文件/环境不合法、版本或来源定位不到、数据未获批准或缺少复核证据；`3` 与库里已有值冲突且未加 `--overwrite`。报错只给字段路径与变量名，不含连接串。
 

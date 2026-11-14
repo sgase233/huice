@@ -832,3 +832,60 @@ def test_a_deleted_row_after_the_plan_is_not_reinserted(
     with psycopg.connect(database_url_schema) as conn:
         count = conn.execute("SELECT count(*) FROM policy_version_date_provenance").fetchone()[0]
     assert count == 0, "计划外的「重新插入」不能发生"
+
+
+def test_apply_holds_a_write_lock_on_policy_source(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """执行期间锁住 policy_source 的写路径：并发改内容或重排会被挡住。"""
+
+    import threading
+    import time
+
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["body", "attachment"])
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1",
+            },
+        },
+    )
+    plan = tmp_path / "plan.json"
+    assert backfill.run(path, apply=False, write_plan=plan) == 0
+
+    holder = psycopg.connect(database_url_schema)
+    try:
+        holder.execute("BEGIN")
+        holder.execute("LOCK TABLE policy_source IN SHARE ROW EXCLUSIVE MODE")
+
+        result: dict[str, int] = {}
+        worker = threading.Thread(
+            target=lambda: result.setdefault("code", backfill.run(path, apply=True, plan_path=plan))
+        )
+        worker.start()
+        time.sleep(0.5)
+        assert worker.is_alive(), "回填应当先等 policy_source 的写锁"
+
+        # 并发写会被挡：用短 lock_timeout 证明不是「能写进去」
+        with psycopg.connect(database_url_schema) as probe:
+            probe.execute("SET lock_timeout = '200ms'")
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                probe.execute(
+                    "UPDATE policy_source SET content_hash = %s", ("0" * 64,)
+                )
+
+        holder.commit()
+        worker.join(timeout=15)
+    finally:
+        holder.close()
+
+    assert result.get("code") == 0
+    with psycopg.connect(database_url_schema) as conn:
+        count = conn.execute("SELECT count(*) FROM policy_version_date_provenance").fetchone()[0]
+    assert count == 1

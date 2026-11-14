@@ -460,6 +460,13 @@ def run(
 
             # 两阶段：先把每条都对上号（政策版本、来源行），全部成立才开始写。任何一条
             # 对不上都整批停下——回填错位比回填缺失更难发现，写到一半停下更糟。
+            if apply:
+                # 读来源行之前先锁住 policy_source 的写路径：新增、删除、重排
+                # （UPDATE ordinal）都会与 SHARE ROW EXCLUSIVE 冲突。没有这把锁，
+                # 「读到并校验过的 sourceId/contentHash」与「提交时库里实际的样子」
+                # 之间仍有窗口，回填可能绑到已被换掉的来源。
+                conn.execute("LOCK TABLE policy_source IN SHARE ROW EXCLUSIVE MODE")
+
             resolved: list[tuple[Entry, Any, dict[str, Any]]] = []
             bindings: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
             for entry in payload.entries:
