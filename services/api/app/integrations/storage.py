@@ -1937,6 +1937,78 @@ class PolicyRepository:
                 },
             )
 
+    def date_provenance(self, version_id: UUID) -> dict[str, Any] | None:
+        """读取一个政策版本的日期来源（B1b 的读侧，尚未接进响应）。
+
+        - 旁表没有行 → ``None``（从未记录过来源，与「记录为未知」不同）；
+        - 旁表里有行但某个日期字段缺失 → 该字段为 ``None``；
+        - ``verified`` 的来源行已经不在库里（被删、或已不属于这个版本）→ 读侧降级为
+          ``unverified`` 并保留 locator，附 ``note`` 说明——不能把缺失来源显示成已核实；
+        - 顶层 ``note`` 原样返回（多批次窗口、办理方式等说明在它里面）。
+
+        形状见 ``docs/devlog/M1-11-15-E3待决事项.md`` 的 D-1：``{version, effectiveFrom,
+        effectiveTo, applicationWindow, note}``，每个日期字段 ``{status, source, locator,
+        note}``，``source`` 只用 ``body``/``attachment``，不暴露内部 id。
+        """
+
+        with self._db.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT provenance FROM policy_version_date_provenance "
+                "WHERE policy_version_id = %s",
+                (version_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            stored = row["provenance"] or {}
+
+            cur.execute(
+                "SELECT id, kind FROM policy_source WHERE policy_version_id = %s",
+                (version_id,),
+            )
+            sources = {str(item["id"]): item["kind"] for item in cur.fetchall()}
+
+        payload: dict[str, Any] = {"version": 1}
+        for name in ("effectiveFrom", "effectiveTo", "applicationWindow"):
+            payload[name] = self._project_date_field(name, stored.get(name), sources)
+        payload["note"] = stored.get("note")
+        return payload
+
+    @staticmethod
+    def _project_date_field(
+        name: str, spec: Any, sources: dict[str, str]
+    ) -> dict[str, Any] | None:
+        if not isinstance(spec, dict):
+            return None  # 该字段没有记录
+
+        status = spec.get("status")
+        source_kind = "body" if spec.get("source", {}).get("kind") == "body" else None
+        locator = spec.get("locator")
+        note = spec.get("note")
+        source_id = spec.get("sourceId")
+
+        if status == "verified":
+            kind = sources.get(str(source_id)) if source_id is not None else None
+            if kind is None:
+                # 来源行不在了（或被换到别的版本）：降级，不显示为已核实
+                status = "unverified"
+                source_kind = None
+                note = (note + " " if note else "") + "来源行已不存在"
+            else:
+                source_kind = kind
+
+        projected: dict[str, Any] = {
+            "status": status,
+            "source": source_kind,
+            "locator": locator,
+        }
+        if status == "derived":
+            projected["basis"] = spec.get("basis")
+            projected["derivedFrom"] = spec.get("derivedFrom")
+        if note:
+            projected["note"] = note
+        return projected
+
     def get_run(self, run_id: UUID) -> AssessmentRun:
         """读取 run 并**重算**有效性视图；四态与解释等快照内容原样返回。"""
 
