@@ -9,6 +9,7 @@
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
 | `issue-session.py` | 不安装，直接`/opt/huice/venv/bin/python` 跑 | 签发演示会话 cookie 并写 `demo_quota` 起始行（§3.1） |
 | `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
+| `provision-test-accounts.py` | 不安装，直接跑 | 建隔离环境的合成账号：1 审核员 + 2 企业，口令写成 0600 凭证文件（§3.6） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
 | `nginx-huice-site.conf` | 同上，`enable-tls.sh --web-root` 时改装这一份 | 443 同源站点：前端静态文件 + `/api/v1/` 反代（与上一行**互斥**，同一个文件名） |
@@ -55,7 +56,7 @@
 | 6 | 健康检查 200（§4 第 **1—4** 项）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
 | 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3）。**完成后**按 §4 的三批安排补跑第 **8—11** 项（第 5—7 项在第 6 步之后就能跑，不必等这里） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403；若先跑第 8—9 项，会因为 443 还不存在而误判成部署失败 |
 | 8 | 签发会话 cookie（§3.1） | ECS | `/admin/*` 会卡在鉴权第一关：没有 Bearer 或 Bearer 不对是 **401 `UNAUTHENTICATED`**；Bearer 正确但缺/错 cookie 才是 **403 `DEMO_SESSION_REQUIRED`**（与 §4 第 5—7 项同一口径），`/health` 仍是 200 |
-| 9 | 要登后台就再建首个审核员账号（§3.4，保底初始化） | ECS | 跳过它就没有任何 `reviewer` 账号：后台**写**接口（导入、抽取、保存条件、发布）只能用审核员会话，Bearer 在 E1 起只读，会一直 403 `ROLE_FORBIDDEN`；注册接口也建不出来，除非先配好 `REVIEWER_SIGNUP_KEY` |
+| 9 | 要登后台就再建首个审核员账号（§3.4，保底初始化）；**隔离环境另加一步**：跑 `provision-test-accounts.py` 建两个合成企业 + 一个审核员（§3.6） | ECS | 跳过它就没有任何 `reviewer` 账号：后台**写**接口（导入、抽取、保存条件、发布）只能用审核员会话，Bearer 在 E1 起只读，会一直 403 `ROLE_FORBIDDEN`；注册接口也建不出来，除非先配好 `REVIEWER_SIGNUP_KEY` |
 
 ## 1. 上传代码
 
@@ -382,6 +383,73 @@ journalctl -u huice-discovery -n 50 --no-pager     # 每轮一行结论
 - 手工跑时用 HTTPS 白名单内的来源；抓取器的单页超时 15 秒、响应上限 2 MiB、同站间隔 ≥2 秒、单轮最多 50 条新候选 / 200 篇正文，这些值在契约草案 `contracts/openapi.e2-draft.yaml` 的 `x-e2-runtime-model` 里，并由 `services/api/tests/test_e2_draft.py` 与代码常量为准互校。
 - 未做迁移 010 时，定时器能起来但每一次运行都会因 `discovery_settings` 不存在而失败——先按 §2.1 跑 `migrate.sh`。
 - **`MODEL_MODE=fixture` 下抓到的候选会全部落 `extraction_failed`**：fixture 客户端返回固定示例文本，抽不出结构化条件。这是有意的——宁可让审核员看到「这条没抽出来、请人工录入」，也不生成看起来完整的假条件。要让抽取真正工作，切到 `MODEL_MODE=deepseek` 并填好 `DEEPSEEK_*`。
+
+### 3.6 隔离环境的合成账号（两个企业 + 一个审核员）
+
+M2 的前端联调（#59 的启动条件、PR #72 的「需 M1 提供同版隔离环境及合成账号」）要两个**合成企业**账号和一个**审核员**账号。`provision-test-accounts.py` 一次建齐，走的是注册同一条仓储路径（企业归属、事实校验、用户名规则与 `POST /auth/register` 一致）。
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/provision-test-accounts.py \
+  --out /root/huice-test-accounts-$(date +%Y%m%d).txt
+```
+
+| 用户名 | 角色 | 企业 |
+| --- | --- | --- |
+| `reviewer.demo` | `reviewer` | —（不建企业，与 `create-admin.py` 同口径） |
+| `acme.alpha` | `enterprise` | 合成企业A（region `440300`、industry `F51`） |
+| `acme.beta` | `enterprise` | 合成企业B（region `440300`、industry `C39`） |
+
+- **口令只在凭证文件里出现一次**：脚本生成 24 位随机口令，写成 `0600` 的 `--out` 文件，stdout 只打印用户名与计数。交付走机密渠道（当面对传、私聊、受控网盘），**不进仓库、不进文档、不进聊天、不进 PR**；本文件本身按 §7 的口径处理，交付完 `shred -u`。
+- **同名账号先验身份**：库里已有同名账号时，脚本先核对角色、状态（必须 `active`）与企业归属（企业账号的企业名必须正好是「合成企业A/B」，审核员必须没有企业）。任何一项不符就**整批停下、退出码 `5`**，一个账号都不建、不改、不重置——`--reset-passwords` 会顺带撤销该账号的会话，误伤真实账号的代价比少建一个合成账号大得多。确认这台环境没问题后，先人工改掉同名账号再跑。
+- **先落盘、后提交（写前日志）**：每个账号先生成口令、把该行以「(待提交)」写进文件并 `fsync`，**再**调 `register()` / `update_password()`，成功后把状态改成「(新建)」或「(口令已重置)」。进程在两步之间被杀、或提交失败，口令都已经在文件里。
+- **重置时新旧口令都在文件里**：重置的行写成 `password=<旧> pending=<新> (口令重置中)`。提交没成功时旧口令仍是唯一有效的那份，绝不会因为一次失败的重置被丢掉；下次运行按库里的哈希决定——新口令生效就提成正式口令，否则丢弃 pending、保留旧口令，两份都对不上才作废该行。
+- **合并而不是覆盖**：`--force` 表示「继续写这个文件」，不是「清空重写」。文件按用户名合并——已记录的口令原样保留，只追加/更新本轮变动的账号。部分账号已存在、部分新建时，旧口令不会被一份只剩新账号的文件盖掉。
+- **显式重置优先**：只要带了 `--reset-passwords`，即使文件里已有该账号的口令也会重新生成（并撤销它的现有会话）——参数写着「重置」就必须重置。
+- **对账结果写回文件**：每次运行先按库里的口令哈希逐行核对；失效行（账号没建出来、或口令已被别人改过）从文件里删掉，匹配的行标为「(已确认)」。即使本轮没有待建账号，这些改动也会原子写回——文件不会一直留着失效口令或「待提交」。
+- **并发撞名会停下（退出码 `6`）**：另一个进程刚建了同名账号时，本进程拿不到它的口令；脚本重新核对身份后中止并提示，不会在文件里留一条看似成功的记录。并发跑两份脚本到同一个 `--out` 没有意义，请串行执行。
+- **文件按受控方式创建**：父目录不允许组/其他可写；目标不能是符号链接；新文件用 `O_EXCL` + `0600` 建；`--force` 时先写临时文件再 `os.replace`，宽权限的旧文件不会出现「写内容时还是 0644」的窗口。`--out` 已存在且没给 `--force` 时直接退出 `4`，不连库。
+- **重跑不踢人**：已存在的账号默认跳过、不改口令（M2 可能正拿着用）；要重发口令加 `--reset-passwords`（会撤销该账号的现有会话）。
+- **退出码**：`0` 成功（含「已存在跳过」「没有新口令、文件未改动」）；`2` 环境变量或参数不合法；`3` 写库失败（已生成的口令保留在文件里）；`4` 凭证文件路径不可用（已存在且没给 `--force`、父目录组/其他可写、目标是符号链接）；`5` 同名账号身份不符（角色／状态／企业归属），整批未执行；`6` 并发撞名——账号被另一个进程创建，本进程拿不到口令。
+- **验证**（在 ECS 本机；口令、cookie 与响应体都落 `0600` 文件，别让它进终端回显）：
+
+  ```bash
+  umask 077
+  # 登录请求体写进 0600 文件：不要把口令放进 -d 参数（ps 与 shell 历史都看得到）
+  printf '{"username":"acme.alpha","password":"%s"}' \
+    "$(sed -n 's/.*username=acme.alpha.*password=\([^ ]*\).*/\1/p' /root/huice-test-accounts-*.txt)" \
+    > /root/login-alpha.json
+
+  # restricted 部署：演示 cookie 要与登录一起发（§3.1 签发的值先存成 0600 的 cookie 文件），
+  # 否则请求在门禁就被挡成 403 DEMO_SESSION_REQUIRED
+  curl -sS -b /root/demo.cookie -c /root/alpha.cookies -o /root/login-alpha.out \
+    -w '%{http_code}\n' -H "Origin: https://<站点域名>" -H "Content-Type: application/json" \
+    --data @/root/login-alpha.json https://<站点域名>/api/v1/auth/login
+  curl -sS -b /root/demo.cookie -b /root/alpha.cookies -o /root/alpha-me.out \
+    -w '%{http_code}\n' https://<站点域名>/api/v1/auth/me
+
+  # 越权：响应体存文件再检查内容，不能只看状态码
+  curl -sS -b /root/demo.cookie -b /root/alpha.cookies -o /root/cross.out \
+    -w '%{http_code}\n' https://<站点域名>/api/v1/enterprises/<beta 的 enterpriseId>
+
+  chmod 600 /root/login-alpha.json /root/alpha.cookies /root/login-alpha.out \
+    /root/alpha-me.out /root/cross.out /root/demo.cookie
+  # 按 JSON 结构与允许字段断言，不靠字符串搜索（搜不到某个词不等于没有别的字段）
+  python3 - <<'EOF'
+  import json
+  body = json.load(open("/root/cross.out", encoding="utf-8"))
+  assert set(body) == {"error"}, body
+  err = body["error"]
+  assert set(err) == {"code", "message", "details", "traceId"}, err
+  assert err["code"] == "ENTERPRISE_NOT_FOUND"
+  print("ok")
+  EOF
+  ```
+
+  期望：login 200、`/auth/me` 200 且 `enterpriseId` 是 alpha 自己的；跨企业请求 **404**，响应体只有 `{error:{code:"ENTERPRISE_NOT_FOUND", message, details, traceId}}` 这一个信封——**没有任何 beta 的字段**（企业名、企业 id、事实值都不出现）。检查完把上面几个文件连 `/root/demo.cookie` 一起 `shred -u`。
+- **这些账号是联调账号，不是验收证据**：账号存在只说明环境可用，不说明越权、配额、改密、并发已经验过；E1/E2 的验收结论仍以 M2/M3 的独立复核为准。
+- **收尾**：联调结束后把凭证文件 `shred -u`；账号在隔离环境里保留（M2 可能还要复跑），确需停用就在该库执行 `UPDATE app_user SET status = 'disabled' WHERE username IN ('reviewer.demo', 'acme.alpha', 'acme.beta');`——只动隔离环境，不碰生产库。
 
 ## 4. 验证
 
