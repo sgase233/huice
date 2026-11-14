@@ -21,13 +21,15 @@ test('候选筛选切换清除旧游标并提示附件未解析', async ({ page 
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'r', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
   await page.route('**/api/v1/admin/policy-candidates**', route => {
     const url = new URL(route.request().url());
-    if (url.pathname.endsWith('/c1')) return route.fulfill({ json: { id: 'c1', status: 'pending_review', bodyText: '正文', metadata: { title: '候选一' }, missingFields: [], criteria: [], validationFindings: [], attachmentUrls: ['https://www.gov.cn/a.pdf'], unsupportedAttachmentUrls: [], sourceUrl: 'https://www.gov.cn/', fetchedAt: '2026-11-14T00:00:00Z', contentHash: 'hash' } });
+    if (url.pathname.endsWith('/c1')) return route.fulfill({ json: { id: 'c1', status: 'pending_review', bodyText: '正文', metadata: { title: '候选一' }, missingFields: [], criteria: [], validationFindings: [], attachmentUrls: ['https://www.gov.cn/a.pdf'], unsupportedAttachmentUrls: [], sourceUrl: 'https://www.gov.cn/', fetchedAt: '2026-11-14T00:00:00Z', contentHash: 'hash', suspectedDuplicateOf: 'c2', suspectedDuplicateSourceUrl: 'https://www.gov.cn/other', versionChanged: true, existingPolicyId: 'p1', existingVersion: 'v1', duplicateOf: 'c0' } });
     return route.fulfill({ json: { items: [{ id: 'c1', title: '候选一', status: 'pending_review', attachmentCount: 1, unsupportedAttachmentCount: 0 }], nextCursor: url.searchParams.has('status') ? null : 'old-cursor' } });
   });
   await page.goto('/#admin');
   await page.getByRole('button', { name: '读取候选' }).click();
   await page.getByRole('button', { name: '候选一 · 待审核' }).click();
   await expect(page.getByText('附件未自动解析', { exact: false })).toBeVisible();
+  await expect(page.getByText('疑似与候选 c2 重复', { exact: false })).toContainText('https://www.gov.cn/other');
+  await expect(page.getByText('同一来源内容有版本变化', { exact: false })).toContainText('已有版本：v1');
   await page.screenshot({ path: 'test-results/discovery-mobile.png', fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: '切换深色模式' }).click();
@@ -41,12 +43,25 @@ test('候选筛选切换清除旧游标并提示附件未解析', async ({ page 
   expect(new URL((await requested).url()).searchParams.has('cursor')).toBe(false);
 });
 
+test('未检查任何来源的运行不会显示为没有新政策', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'r', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+  await page.route('**/api/v1/admin/discovery/runs*', route => route.fulfill({ json: { items: [{ id: 'run', startedAt: '2026-11-14T00:00:00Z', status: 'succeeded', terminalReason: 'no_new_policy', sourcesChecked: 0, sourceStatus: [], newCandidates: 0, duplicates: 0, suspectedDuplicates: 0, failedSources: 0, failedArticles: 0, tokensUnknown: false, tokensUsed: 0 }], nextCursor: null } }));
+  await page.goto('/#admin');
+  await page.getByRole('button', { name: '读取运行记录' }).click();
+  await expect(page.getByText('本轮未检查来源，无法判断是否有新政策', { exact: false })).toBeVisible();
+  await expect(page.getByText('没有新政策', { exact: true })).toHaveCount(0);
+});
+
 test('保存发现设置携带会话 CSRF 和读取到的版本', async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'r', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
   const settings = { enabled: false, sourceUrls: ['https://www.gov.cn/'], intervalMinutes: 1440, timeZone: 'Asia/Shanghai', nextRunAt: null, limits: { minIntervalMinutes: 360, maxIntervalMinutes: 43200, maxSourceUrls: 20 } };
   await page.route('**/api/v1/admin/discovery/settings', route => route.fulfill({ headers: { ETag: '"rev-1"', 'Access-Control-Expose-Headers': 'ETag' }, json: settings }));
   await page.goto('/#admin');
   await page.getByRole('button', { name: '读取发现设置' }).click();
+  await expect(page.getByText('自动发现已停用', { exact: false })).toBeVisible();
+  await page.getByLabel('启用自动发现').check();
+  await expect(page.getByText('自动发现已停用', { exact: false })).toBeVisible();
+  await expect(page.getByText('自动发现已启用', { exact: false })).toHaveCount(0);
   await page.getByLabel('抓取周期（分钟）').fill('720');
   const pending = page.waitForRequest(r => r.url().endsWith('/discovery/settings') && r.method() === 'PUT');
   await page.getByRole('button', { name: '保存发现设置' }).click();
@@ -54,6 +69,7 @@ test('保存发现设置携带会话 CSRF 和读取到的版本', async ({ page 
   expect(request.headers()['if-match']).toBe('"rev-1"');
   expect(request.headers()['x-csrf-token']).toBe('0123456789abcdef');
   expect(request.postDataJSON().intervalMinutes).toBe(720);
+  expect(request.postDataJSON().enabled).toBe(true);
   await expect(page.getByRole('status')).toContainText('已保存');
 });
 
