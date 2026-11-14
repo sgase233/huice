@@ -268,3 +268,31 @@ def test_missing_journal_evidence_downgrades_precise(
     assert review["availability"]["reviewsCompleted"]["reason"] == "NO_JOURNAL"
     assert runs["availability"]["total"]["state"] == PARTIAL
     assert runs["availability"]["total"]["reason"] == "NO_JOURNAL"
+
+
+def test_pending_is_null_when_baseline_publish_time_is_unknown(
+    database_url_schema: str,
+) -> None:
+    t0 = _at(date(2026, 11, 21), 10)
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=t0, run_from=None)
+        version_id = _version(
+            conn, version="v1", imported_at=_at(DAY, 9), published_event_at=None
+        )
+        conn.execute(
+            "INSERT INTO policy_review_event (policy_version_id, policy_id, review_revision, "
+            "actor_kind, actor_user_id, occurred_at, legacy_source) "
+            "SELECT %s, policy_id, 0, 'baseline', NULL, %s, 'unknown' "
+            "FROM policy_version WHERE id = %s",
+            (version_id, t0, version_id),
+        )
+        conn.commit()
+
+    rows = _reader(database_url_schema).review_workload(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 22), 12)
+    )
+
+    assert rows[0]["pendingAtEndOfDay"] is None
+    availability = rows[0]["availability"]["pendingAtEndOfDay"]
+    assert availability["state"] == NOT_COLLECTED
+    assert availability["reason"] == "LEGACY_PUBLISH_TIME_UNKNOWN"

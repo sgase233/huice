@@ -54,8 +54,15 @@ def _journal(tmp_path: Path, entries: list[dict]) -> Path:
     return directory
 
 
-def _evidence(directory: Path | None, *, imported=()):
-    return inspect_journal(directory, imported_event_ids=imported, now=NOW)
+def _evidence(directory: Path | None, *, imported=(), times=(), window=None):
+    return inspect_journal(
+        directory,
+        imported_event_ids=imported,
+        imported_gap_times=times,
+        now=NOW,
+        window_start=window[0] if window else None,
+        window_end=window[1] if window else None,
+    )
 
 
 def test_not_configured_means_no_check() -> None:
@@ -120,7 +127,7 @@ def test_an_imported_opening_event_passes(tmp_path: Path) -> None:
         ],
     )
 
-    assert _evidence(directory, imported={"stop-1"}).ok
+    assert _evidence(directory, imported={"stop-1:pair"}).ok
 
 
 def test_no_heartbeat_is_flagged(tmp_path: Path) -> None:
@@ -140,3 +147,56 @@ def test_a_stale_heartbeat_is_flagged(tmp_path: Path, age: int) -> None:
     )
 
     assert _evidence(directory).reason == "JOURNAL_STALE"
+
+
+def test_the_importer_event_id_suffix_is_understood(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {"kind": "stop", "at": NOW - timedelta(hours=2), "event_id": "stop-1"},
+            {"kind": "start", "at": NOW - timedelta(hours=1), "event_id": "start-1"},
+            {"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b1"},
+        ],
+    )
+
+    assert _evidence(directory, imported={"stop-1:open", "stop-1:pair"}).ok
+
+
+def test_a_heartbeat_gap_must_be_imported(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {"kind": "beat", "at": NOW - timedelta(hours=2), "event_id": "b1"},
+            {"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b2"},
+        ],
+    )
+
+    assert _evidence(directory).reason == "HEARTBEAT_GAP_NOT_IMPORTED"
+    assert _evidence(directory, imported={"b1:silent"}).ok
+    assert _evidence(
+        directory,
+        times=[(NOW - timedelta(hours=2), NOW - timedelta(minutes=1))],
+    ).ok
+
+
+def test_a_gap_outside_the_query_window_is_ignored(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [
+            {"kind": "beat", "at": NOW - timedelta(hours=2), "event_id": "b1"},
+            {"kind": "beat", "at": NOW - timedelta(minutes=1), "event_id": "b2"},
+        ],
+    )
+
+    assert _evidence(directory, window=(NOW, NOW + timedelta(hours=1))).ok
+
+
+def test_stale_heartbeat_is_ignored_for_a_historical_window(tmp_path: Path) -> None:
+    directory = _journal(
+        tmp_path,
+        [{"kind": "beat", "at": NOW - timedelta(days=2), "event_id": "b1"}],
+    )
+
+    assert _evidence(
+        directory, window=(NOW - timedelta(days=3), NOW - timedelta(days=2))
+    ).ok

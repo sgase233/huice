@@ -83,13 +83,27 @@ def _chain_broken(entries: Iterable[tuple[str, dict]]) -> bool:
     return False
 
 
+def _base_event_id(value: str) -> str:
+    """导入器在原始 ``event_id`` 后加 ``:open``/``:pair``/``:silent``，比较时去掉后缀。"""
+
+    return value.split(":", 1)[0]
+
+
 def inspect_journal(
     directory: Path | None,
     *,
     imported_event_ids: Iterable[str],
+    imported_gap_times: Iterable[tuple[datetime, datetime | None]] = (),
     now: datetime,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
 ) -> JournalEvidence | None:
-    """核验日志；``None`` 表示未配置目录，不参与覆盖判定。"""
+    """核验日志；``None`` 表示未配置目录，不参与覆盖判定。
+
+    心跳空档按**查询窗口**逐对检查：相邻心跳超过阈值时，必须能在
+    ``collection_gap`` 里找到同区间的缺口（``:pair``/``:open`` 覆盖），或找到
+    该心跳事件对应的 ``:silent`` 行；否则视为「断电后恢复但缺口未导入」。
+    """
 
     if directory is None:
         return None
@@ -108,9 +122,11 @@ def inspect_journal(
     if len(hosts) > 1 or current not in hosts:
         return JournalEvidence("HOST_CHANGED")
 
-    imported = {str(item) for item in imported_event_ids}
+    raw_imported = {str(item) for item in imported_event_ids}
+    imported_bases = {_base_event_id(item) for item in raw_imported}
+    times = list(imported_gap_times)
     opening_ids: set[str] = set()
-    beats: list[datetime] = []
+    beats: list[tuple[datetime, str]] = []
     for path in files:
         entries = _read_entries(path)
         if entries is None:
@@ -118,20 +134,44 @@ def inspect_journal(
         if _chain_broken(entries):
             return JournalEvidence("JOURNAL_CHAIN_BROKEN")
         for _raw, item in entries:
-            if item.get("kind") in OPENING_KINDS and item.get("event_id"):
-                opening_ids.add(str(item["event_id"]))
-            if item.get("kind") == "beat" and item.get("at"):
+            kind = item.get("kind")
+            event_id = str(item.get("event_id") or "")
+            if kind in OPENING_KINDS and event_id:
+                opening_ids.add(event_id)
+            if kind in ("beat", "start", "stop") and item.get("at"):
                 try:
-                    beats.append(datetime.fromisoformat(str(item["at"])))
+                    at = datetime.fromisoformat(str(item["at"]))
                 except ValueError:
                     return JournalEvidence("JOURNAL_CHAIN_BROKEN")
+                if kind == "beat":
+                    beats.append((at, event_id))
 
-    if opening_ids - imported:
+    if opening_ids - imported_bases:
         return JournalEvidence("JOURNAL_NOT_IMPORTED")
+
+    # 断电恢复：没有 stop 行，只能靠心跳空档发现；空档必须已经由导入器落成缺口。
+    threshold = timedelta(seconds=HEARTBEAT_SECONDS * GAP_FACTOR)
+    for (earlier, earlier_id), (later, _later_id) in zip(beats, beats[1:]):
+        if window_start is not None and later <= window_start:
+            continue
+        if window_end is not None and earlier >= window_end:
+            continue
+        if later - earlier <= threshold:
+            continue
+        covered = any(
+            gap_from <= earlier and (gap_to is None or gap_to >= later)
+            for gap_from, gap_to in times
+        )
+        if covered or f"{earlier_id}:silent" in raw_imported:
+            continue
+        return JournalEvidence("HEARTBEAT_GAP_NOT_IMPORTED")
 
     if not beats:
         return JournalEvidence("NO_HEARTBEAT")
-    latest = max(beats)
-    if now - latest > timedelta(seconds=HEARTBEAT_SECONDS * GAP_FACTOR):
+    latest = max(at for at, _event_id in beats)
+    # 只对「窗口延伸到当前」的查询判心跳过期；回看历史日期时日志本来就可以停在
+    # 查询范围之后，不能拿今天没有心跳去否定那一天的覆盖。
+    recent_window = window_end is None or window_end >= now - threshold
+    if recent_window and now - latest > threshold:
         return JournalEvidence("JOURNAL_STALE")
     return JournalEvidence(None)

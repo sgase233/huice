@@ -92,13 +92,22 @@ class MetricsReader:
         #: 主机事件日志目录；``None`` 表示本部署没配置采集证据，不做核验。
         self._journal_dir = journal_dir
 
-    def _evidence(self, conn, now: datetime) -> JournalEvidence | None:
+    def _evidence(
+        self, conn, now: datetime, window_start: datetime, window_end: datetime
+    ) -> JournalEvidence | None:
         if self._journal_dir is None:
             return None
-        imported = {
-            str(row[0]) for row in conn.execute("SELECT event_id FROM collection_gap").fetchall()
-        }
-        return inspect_journal(self._journal_dir, imported_event_ids=imported, now=now)
+        rows = conn.execute(
+            "SELECT event_id, gap_from, gap_to FROM collection_gap"
+        ).fetchall()
+        return inspect_journal(
+            self._journal_dir,
+            imported_event_ids=[str(row[0]) for row in rows],
+            imported_gap_times=[(row[1], row[2]) for row in rows],
+            now=now,
+            window_start=window_start,
+            window_end=window_end,
+        )
 
     @staticmethod
     def _apply_evidence(
@@ -129,13 +138,15 @@ class MetricsReader:
     ) -> list[dict[str, Any]]:
         current = (now or datetime.now(SHANGHAI)).astimezone(SHANGHAI)
         days = _days(start, end)
+        window_start, window_end = _day_bounds(start)[0], _day_bounds(end)[1]
         with self._db.connection() as conn:
             baseline = self._baseline(conn)
             gaps = self._review_gaps(conn, start, end)
             new_drafts = self._new_drafts(conn, start, end)
             reviews = self._reviews(conn, start, end)
             pending = self._pending(conn, days)
-            evidence = self._evidence(conn, current)
+            unknown_publish = self._unknown_publish_times(conn)
+            evidence = self._evidence(conn, current, window_start, window_end)
 
         result = []
         for day in days:
@@ -149,6 +160,16 @@ class MetricsReader:
                     "pendingAtEndOfDay", day, baseline, gaps, day_open
                 ),
             }
+            # 基线里 legacy_source='unknown' 的版本只知道「T0 时已发布」，不知道
+            # 真实发布时间：该日待办若依赖它，返回 null + 原因，不能给一个确定数。
+            day_end = _day_bounds(day)[1]
+            if any(
+                occurred_at > day_end and imported_at < day_end
+                for occurred_at, imported_at in unknown_publish
+            ):
+                availability["pendingAtEndOfDay"] = Availability(
+                    NOT_COLLECTED, None, "LEGACY_PUBLISH_TIME_UNKNOWN"
+                )
             self._apply_evidence(
                 availability,
                 evidence,
@@ -212,11 +233,12 @@ class MetricsReader:
     ) -> list[dict[str, Any]]:
         current = (now or datetime.now(SHANGHAI)).astimezone(SHANGHAI)
         days = _days(start, end)
+        window_start, window_end = _day_bounds(start)[0], _day_bounds(end)[1]
         with self._db.connection() as conn:
             baseline = self._baseline(conn)
             gaps = self._run_gaps(conn, start, end)
             rows = self._run_counts(conn, start, end)
-            evidence = self._evidence(conn, current)
+            evidence = self._evidence(conn, current, window_start, window_end)
 
         lifecycle_from = None if baseline is None else baseline.get("run_lifecycle_from")
         result = []
@@ -290,6 +312,20 @@ class MetricsReader:
             "review_source": row[1],
             "run_lifecycle_from": row[2],
         }
+
+    def _unknown_publish_times(self, conn) -> list[tuple[datetime, datetime]]:
+        """基线里 ``legacy_source='unknown'`` 的（T0, 导入时间）。
+
+        这类事件只声明「T0 时已发布」，真实发布时间不可知；T0 之前的日终待办
+        若已包含该版本，依赖它的结果是推断而非事实。
+        """
+
+        rows = conn.execute(
+            "SELECT e.occurred_at, pv.imported_at "
+            "FROM policy_review_event e JOIN policy_version pv ON pv.id = e.policy_version_id "
+            "WHERE e.legacy_source = 'unknown'"
+        ).fetchall()
+        return [(row[0], row[1]) for row in rows]
 
     def _review_gaps(self, conn, start: date, end: date) -> list[tuple[datetime, datetime | None]]:
         lo, hi = _day_bounds(start)[0], _day_bounds(end)[1]
