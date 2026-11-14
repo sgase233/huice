@@ -104,8 +104,15 @@ def test_shipped_entries_never_treat_window_as_validity() -> None:
     smart = entries["深工信规〔2025〕4号"].provenance
     assert smart["applicationWindow"]["status"] == "verified"
     assert smart["effectiveFrom"]["status"] == "unverified"
-    assert smart["effectiveTo"]["status"] == "unverified"
+    # 版本行的 effective_to 置空后，没有值 → unknown（不是 unverified）
+    assert smart["effectiveTo"]["status"] == "unknown"
     assert "不是政策有效期" in smart["note"]
+
+    green = entries["深工信规〔2024〕12号"].provenance
+    assert green["effectiveTo"]["status"] == "unknown"
+    # note 不能再写「登记值等于申报窗口」——版本行已经是占位值
+    assert "登记值等于申报窗口" not in green["note"]
+    assert "published_at / null 占位" in green["note"]
 
 
 def test_tax_sme_locators_point_at_the_clause_that_holds_the_date() -> None:

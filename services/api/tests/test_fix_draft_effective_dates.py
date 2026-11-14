@@ -143,3 +143,31 @@ def test_a_dry_run_reports_without_writing(database_url_schema: str, repo, tmp_p
             ("深工信规〔2025〕4号",),
         ).fetchone()
     assert str(row[0]) == "2025-06-13"
+
+
+def test_it_bumps_the_revision_so_stale_etags_cannot_undo_it(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """改了行内容就要换 revision：否则后台拿着旧 ETag 的 If-Match 会把改写覆盖回去。"""
+
+    _draft(
+        repo,
+        version="深工信规〔2025〕4号",
+        source_url=SMART_URL,
+        effective_from="2025-06-13",
+        effective_to="2025-07-07",
+    )
+    with psycopg.connect(database_url_schema) as conn:
+        before = conn.execute(
+            "SELECT revision FROM policy_version WHERE version = %s", ("深工信规〔2025〕4号",)
+        ).fetchone()[0]
+
+    path = _write(tmp_path, [{"sourceUrl": SMART_URL, "version": "深工信规〔2025〕4号"}])
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    assert fixer.run(path, apply=True) == 0
+
+    with psycopg.connect(database_url_schema) as conn:
+        after = conn.execute(
+            "SELECT revision FROM policy_version WHERE version = %s", ("深工信规〔2025〕4号",)
+        ).fetchone()[0]
+    assert after != before

@@ -125,11 +125,21 @@ def run(data_path: Path, apply: bool) -> int:
                 )
                 if not apply:
                     continue
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE policy_version SET effective_from = published_at, effective_to = NULL, "
-                    "updated_at = now() WHERE id = %s AND review_status <> 'published'",
+                    # revision 是 API-05 的 ETag：改了行内容就要换值，否则后台拿着旧 ETag
+                    # 仍能通过 If-Match，把这次改写覆盖回去。
+                    "revision = gen_random_uuid(), updated_at = now() "
+                    "WHERE id = %s AND review_status <> 'published'",
                     (row[0],),
                 )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    print(
+                        f"{entry['version']}：UPDATE 命中 {cursor.rowcount} 行（预期 1），已回滚。",
+                        file=sys.stderr,
+                    )
+                    return 3
                 changed += 1
 
             if apply:
