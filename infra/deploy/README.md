@@ -214,6 +214,8 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
   }
   ```
 
+- **两个导入版本的有效期是中性占位**：SMART（深工信规〔2025〕4号）与 GREEN（深工信规〔2024〕12号）由 `import-policy-sources.py` 导入，`effectiveFrom` 取 `publishedAt`、`effectiveTo` 留空——申报窗口不是政策有效期（M3 在 PR #69 复核里点名）。它们在 provenance 里仍是 `unverified`/`unknown`；页面与时间线不得把这两个版本的有效期显示为已核实，也不得用它们算 `policy_expired`。发布前若要改成真实有效期，先由 M3 给依据并复核。
+- **SMART 的 `application_window` 只是合并区间**：库里存的是 `2025-06-13 00:00`—`2025-07-07 18:00`，压平了四段窗口、也漏掉书面材料到 07-11 的部分。时间线/详情页必须读 provenance 的 `note`（四段 + 办理方式），不得把 07-07 当成全部受理截止；GREEN 只有一段，注记「来源附件，非正文」即可。
 - **干跑会打印每条日期字段绑到哪一行**：`entries[i] <文号> applicationWindow → 附件第 1 份（policy_source.ordinal=1）：<文件名>（大小）`。压缩件（`.zip`/`.rar`/`.7z`）另给一条提示——整包导入时「第 1 份」是包、逐份导入时是包内文件，两种情况的绑定不同，只能靠这一行看出来。
 - **数据文件里的附件序号是「第几份附件」，从 1 起**，不是数据库 `policy_source.ordinal`（那里正文占 0、附件从 1 起但会随份数变化）。脚本按 `ORDER BY ordinal` 的第 n 份去查，不拿绝对号硬匹配。
 - **`verified` 的出处必须属于该版本**：脚本在该 `policy_version_id` 下查 `policy_source`，把真实 id 写进 jsonb；找不到就整批停下、一行不写。年度指南若不在该版本的来源里，只能标 `unknown`（该版本没有窗口依据）或 `unverified`（有值但没核）并写 note，不能拿别处的依据充数。

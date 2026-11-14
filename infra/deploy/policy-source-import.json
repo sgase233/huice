@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "只补两类版本：申报窗口只写在附件里、data/policies/sources 下没有正文的 SMART 与 GREEN。正文取自通知页（HTML 正文段），附件取自官方附件：SMART 的 12201125.zip（sha256 8ce9d400…）内「附件1.docx」用 pandoc 转文本，GREEN 的 11845882.doc（sha256 7d021ee0…）用 antiword 转文本。只建版本与来源，不写条款、不发布：条款待 M3 补 criteria 后走正常发布流程。",
+  "note": "只补两类版本：申报窗口只写在附件里、data/policies/sources 下没有正文的 SMART 与 GREEN。正文取自通知页（HTML 正文段），附件取自官方附件：SMART 的 12201125.zip（sha256 8ce9d400…）内「附件1.docx」用 pandoc 转文本，GREEN 的 11845882.doc（sha256 7d021ee0…）用 antiword 转文本。只建版本与来源，不写条款、不发布：条款待 M3 补 criteria 后走正常发布流程。M3 复核（PR #69）：申报窗口不得写成政策有效期——两个版本的 effectiveFrom 取 publishedAt、effectiveTo 留空，作为中性占位；provenance 里仍是 unverified/unknown。发布前若要改成真实有效期，须先由 M3 给出依据并复核。application_window 只是便于列表展示的合并区间（SMART 压平了四段），时间线/详情页必须读 provenance 的 note，不得把合并区间当受理截止。",
   "entries": [
     {
       "version": "深工信规〔2025〕4号",
@@ -9,8 +9,8 @@
       "issuer": "深圳市工业和信息化局",
       "region": "440300",
       "publishedAt": "2025-05-28",
-      "effectiveFrom": "2025-06-13",
-      "effectiveTo": "2025-07-07",
+      "effectiveFrom": "2025-05-28",
+      "effectiveTo": null,
       "applicationWindow": {
         "opensAt": "2025-06-13",
         "closesAt": "2025-07-07",
@@ -41,8 +41,8 @@
       "issuer": "深圳市工业和信息化局",
       "region": "440300",
       "publishedAt": "2024-11-30",
-      "effectiveFrom": "2024-12-21",
-      "effectiveTo": "2025-01-06",
+      "effectiveFrom": "2024-11-30",
+      "effectiveTo": null,
       "applicationWindow": {
         "opensAt": "2024-12-21",
         "closesAt": "2025-01-06",

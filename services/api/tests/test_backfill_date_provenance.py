@@ -85,12 +85,17 @@ def test_shipped_data_file_is_valid() -> None:
     }
 
 
-def test_shipped_data_is_not_approved_for_apply() -> None:
-    """仓库里那份是草案：M3 复核前连 --apply 都不该放行。"""
+def test_shipped_data_is_approved_with_evidence() -> None:
+    """M3 于 2026-11-14 批准：状态是批准值，且带着指向批准评论的复核证据。"""
+
     payload = backfill.load_data(DATA)
-    assert payload.review_status not in backfill.APPLY_REVIEW_STATUSES
-    assert backfill.review_block(payload, apply=True) is not None
-    assert backfill.review_block(payload, apply=False) is None
+    assert payload.review_status == "approved-by-m3"
+    assert payload.review_evidence is not None
+    assert payload.review_evidence["reviewedBy"] == "wlj80176-creator"
+    assert payload.review_evidence["reviewedAt"] == "2026-11-14"
+    # reference 必须是那条批准评论，不能是 PR 主页面
+    assert "/pull/69#issuecomment-" in payload.review_evidence["reference"]
+    assert backfill.review_block(payload, apply=True) is None
 
 
 def test_shipped_entries_never_treat_window_as_validity() -> None:

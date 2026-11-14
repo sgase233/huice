@@ -1,6 +1,11 @@
 {
   "version": 1,
-  "reviewStatus": "draft-pending-m3",
+  "reviewStatus": "approved-by-m3",
+  "reviewEvidence": {
+    "reviewedBy": "wlj80176-creator",
+    "reviewedAt": "2026-11-14",
+    "reference": "https://github.com/sgase233/huice/pull/69#issuecomment-6874894563"
+  },
   "sourceNote": "状态取值依据 docs/product/POLICY_SCOPE.md、POLICY_SOURCE_ATTACHMENTS_1113.md 与 data/policies/source_register.csv 的核对结论整理，逐条仍待 M3 对官方原文复核。复核通过前只允许干跑：这些不是验收证据。申报窗口一律不得当作政策有效期，登记表里与窗口同值的有效期为 unverified。条目按政策版本计：9 个版本（8 个 policy_id，GXJS 有 2008/2016 两版）。M3 复核通过后，reviewStatus 改为 approved-by-m3 的同时必须补 reviewEvidence（reviewedBy / reviewedAt / reference 三个字段）：只改状态、不给复核记录，脚本会拒绝 --apply。干跑会把每条日期字段绑定到的 policy_source 行（文件名与绝对 ordinal）打印出来，压缩件另有提示——SMART 的附件包是不是整包导入，就看这一步。F12：本批不承载 published_at 的来源——页面与验收不得把发布日期计入 VIS-06 覆盖，字面写「发布日期来源未承载」。",
   "entries": [
     {
