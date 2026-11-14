@@ -184,6 +184,12 @@ def run(data_path: Path, apply: bool) -> int:
                     return 4
                 targets.append((entry, row))
 
+            target_ids = [row["id"] for _entry, row in targets]
+            # 操作前基线：排除全部目标行的已发布行指纹。操作后用同一范围再算一次，
+            # 才能证明「除目标以外」没有变化——降级后目标已不在 published 集合里，
+            # 事后两次查询会是同一集合，比不出前后差异。
+            before = _published_fingerprint(conn, exclude_ids=target_ids)
+
             for entry, row in targets:
                 refs = _references(conn, row["id"], row["policy_id"])
                 print(
@@ -213,10 +219,8 @@ def run(data_path: Path, apply: bool) -> int:
                 retired += 1
 
             if apply:
-                target_ids = [row["id"] for _entry, row in targets]
-                after = _published_fingerprint(conn)
-                expected = _published_fingerprint(conn, exclude_ids=target_ids)
-                if after != expected:
+                after = _published_fingerprint(conn, exclude_ids=target_ids)
+                if after != before:
                     conn.rollback()
                     print(
                         "除目标行之外的已发布行指纹发生了变化，回滚（这不应当发生）。",

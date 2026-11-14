@@ -26,6 +26,16 @@ pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
 SOURCE_URL = "https://example.gov.cn/notice/backfill.html"
 
 
+def _apply(path, *, overwrite: bool = False, tmp_path=None, **kwargs) -> int:
+    """先干跑生成计划，再按计划执行（--apply 现在必须带计划）。"""
+
+    plan = path.with_suffix(".plan.json")
+    dry = backfill.run(path, apply=False, write_plan=plan)
+    if dry not in (0, 3):
+        return dry
+    return backfill.run(path, apply=True, plan_path=plan, overwrite=overwrite, **kwargs)
+
+
 def _version_id(dsn: str, version: str):
     """``db_support.create()`` 返回的 ``PolicyDraft.id`` 是**政策** id，不是版本 id。"""
     with psycopg.connect(dsn) as conn:
@@ -169,7 +179,7 @@ def test_backfill_binds_source_to_its_own_version(database_url_schema: str, repo
     )
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
-    assert backfill.run(path, apply=True) == 0
+    assert _apply(path, tmp_path=tmp_path) == 0
 
     with psycopg.connect(database_url_schema) as conn:
         stored = conn.execute(
@@ -181,7 +191,7 @@ def test_backfill_binds_source_to_its_own_version(database_url_schema: str, repo
     assert stored["effectiveTo"] == {"status": "unverified"}
 
     # 幂等：第二次运行不再改动任何行
-    assert backfill.run(path, apply=True) == 0
+    assert _apply(path, tmp_path=tmp_path) == 0
     with psycopg.connect(database_url_schema) as conn:
         again = conn.execute(
             "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
@@ -209,7 +219,7 @@ def test_attachment_ordinal_is_rank_not_absolute(database_url_schema: str, repo,
     )
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
-    assert backfill.run(path, apply=True) == 0
+    assert _apply(path, tmp_path=tmp_path) == 0
     with psycopg.connect(database_url_schema) as conn:
         stored = conn.execute(
             "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
@@ -238,7 +248,7 @@ def test_second_attachment_of_two_is_picked_by_rank(database_url_schema: str, re
     )
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
-    assert backfill.run(path, apply=True) == 0
+    assert _apply(path, tmp_path=tmp_path) == 0
     with psycopg.connect(database_url_schema) as conn:
         stored = conn.execute(
             "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
@@ -259,7 +269,7 @@ def test_backfill_apply_refused_until_data_is_approved(database_url_schema: str,
     )
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
-    assert backfill.run(path, apply=True) == 2
+    assert _apply(path, tmp_path=tmp_path) == 2
     assert backfill.run(path, apply=False) == 0
 
     with psycopg.connect(database_url_schema) as conn:
@@ -277,10 +287,10 @@ def test_backfill_conflict_needs_overwrite(database_url_schema: str, repo, tmp_p
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
     first = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
-    assert backfill.run(first, apply=True) == 0
+    assert _apply(first, tmp_path=tmp_path) == 0
 
     second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
-    assert backfill.run(second, apply=True) == 3
+    assert _apply(second, tmp_path=tmp_path) == 3
     with psycopg.connect(database_url_schema) as conn:
         stored = conn.execute(
             "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
@@ -325,7 +335,7 @@ def test_backfill_never_touches_published_version(database_url_schema: str, repo
         ).fetchone()
     assert before[1] == "published"
 
-    assert backfill.run(path, apply=True) == 0
+    assert _apply(path, tmp_path=tmp_path) == 0
 
     with psycopg.connect(database_url_schema) as conn:
         after = conn.execute(
@@ -354,7 +364,7 @@ def test_apply_requires_review_evidence_not_just_the_status(
     )
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
-    assert backfill.run(path, apply=True) == 2
+    assert _apply(path, tmp_path=tmp_path) == 2
     with psycopg.connect(database_url_schema) as conn:
         count = conn.execute(
             "SELECT count(*) FROM policy_version_date_provenance WHERE policy_version_id = %s",
@@ -441,7 +451,7 @@ def test_backfill_refuses_unknown_version_and_writes_nothing(database_url_schema
     )
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
-    assert backfill.run(path, apply=True) == 2
+    assert _apply(path, tmp_path=tmp_path) == 2
     with psycopg.connect(database_url_schema) as conn:
         count = conn.execute(
             "SELECT count(*) FROM policy_version_date_provenance"
@@ -483,7 +493,7 @@ def test_a_concurrent_insert_is_never_overwritten(
 
         result: dict[str, int] = {}
         worker = threading.Thread(
-            target=lambda: result.setdefault("code", backfill.run(path, apply=True))
+            target=lambda: result.setdefault("code", _apply(path, tmp_path=tmp_path))
         )
         worker.start()
         time.sleep(0.5)  # 让 worker 走到 INSERT 并阻塞
@@ -512,7 +522,7 @@ def test_a_new_conflict_after_the_plan_aborts_the_overwrite(
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
     first = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
-    assert backfill.run(first, apply=True) == 0
+    assert _apply(first, tmp_path=tmp_path) == 0
 
     plan = tmp_path / "plan.json"
     second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
@@ -540,16 +550,18 @@ def test_a_new_conflict_after_the_plan_aborts_the_overwrite(
     assert stored.get("note") == "别人补的", "计划外的改法不能被覆盖"
 
 
-def test_overwrite_without_a_plan_is_refused(database_url_schema, repo, tmp_path, monkeypatch) -> None:
-    """--overwrite 必须带计划：没有计划就拒绝，不按「本次看到什么就覆盖什么」执行。"""
+def test_apply_without_a_plan_is_refused(database_url_schema, repo, tmp_path, monkeypatch) -> None:
+    """--apply 必须带计划：首次插入也一样，否则干跑与执行之间附件重排会写错绑定。"""
 
     create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
     path = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
-    assert backfill.run(path, apply=True) == 0
 
-    second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
-    assert backfill.run(second, apply=True, overwrite=True) == 2
+    assert backfill.run(path, apply=True) == 2
+
+    with psycopg.connect(database_url_schema) as conn:
+        count = conn.execute("SELECT count(*) FROM policy_version_date_provenance").fetchone()[0]
+    assert count == 0
 
 
 def test_a_changed_data_file_invalidates_the_plan(
@@ -561,7 +573,7 @@ def test_a_changed_data_file_invalidates_the_plan(
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
     path = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
-    assert backfill.run(path, apply=True) == 0
+    assert _apply(path, tmp_path=tmp_path) == 0
 
     second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
     plan = tmp_path / "plan.json"
@@ -598,7 +610,7 @@ def test_a_replaced_attachment_stops_the_overwrite(
         }
 
     first_path = _write(tmp_path, data("unknown"))
-    assert backfill.run(first_path, apply=True) == 0
+    assert _apply(first_path, tmp_path=tmp_path) == 0
 
     second_path = _write(tmp_path, data("unverified"))
     plan = tmp_path / "plan.json"
@@ -637,7 +649,7 @@ def test_a_reordered_attachment_stops_the_overwrite(
             "effectiveTo": {"status": "unknown"},
         },
     )
-    assert backfill.run(first_path, apply=True) == 0
+    assert _apply(first_path, tmp_path=tmp_path) == 0
 
     second_path = _write(
         tmp_path,
@@ -676,3 +688,83 @@ def test_a_reordered_attachment_stops_the_overwrite(
         conn.commit()
 
     assert backfill.run(second_path, apply=True, overwrite=True, plan_path=plan) == 3
+
+
+def test_a_reordered_attachment_blocks_a_first_insert(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """首次插入也要受计划保护：干跑之后附件重排，插入必须停下。"""
+
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["body", "attachment", "attachment"])
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    first, second = _attachment_ids(database_url_schema, version_id)
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1",
+            },
+        },
+    )
+    plan = tmp_path / "plan.json"
+    assert backfill.run(path, apply=False, write_plan=plan) == 0
+
+    with psycopg.connect(database_url_schema) as conn:
+        ordinals = dict(
+            conn.execute(
+                "SELECT id::text, ordinal FROM policy_source WHERE policy_version_id = %s",
+                (version_id,),
+            ).fetchall()
+        )
+        conn.execute("UPDATE policy_source SET ordinal = 99 WHERE id = %s", (first,))
+        conn.execute(
+            "UPDATE policy_source SET ordinal = %s WHERE id = %s",
+            (ordinals[str(first)], second),
+        )
+        conn.execute(
+            "UPDATE policy_source SET ordinal = %s WHERE id = %s",
+            (ordinals[str(second)], first),
+        )
+        conn.commit()
+
+    assert backfill.run(path, apply=True, plan_path=plan) == 3
+    with psycopg.connect(database_url_schema) as conn:
+        count = conn.execute("SELECT count(*) FROM policy_version_date_provenance").fetchone()[0]
+    assert count == 0
+
+
+def test_a_replaced_attachment_blocks_a_first_insert(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["body", "attachment"])
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    (attachment,) = _attachment_ids(database_url_schema, version_id)
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1",
+            },
+        },
+    )
+    plan = tmp_path / "plan.json"
+    assert backfill.run(path, apply=False, write_plan=plan) == 0
+
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "UPDATE policy_source SET content_hash = %s WHERE id = %s",
+            ("0" * 64, attachment),
+        )
+        conn.commit()
+
+    assert backfill.run(path, apply=True, plan_path=plan) == 3

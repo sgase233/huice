@@ -117,3 +117,39 @@ def test_a_draft_target_is_refused(database_url_schema, repo, tmp_path, monkeypa
         database_url_schema, "SELECT review_status FROM policy_version WHERE version = 'v1.0'"
     )[0]
     assert status != "published"
+
+
+def test_a_changed_published_fingerprint_rolls_back(
+    database_url_schema, repo, tmp_path, monkeypatch
+) -> None:
+    """操作前后「除目标外」的已发布行指纹不一致：整批回滚。
+
+    指纹取的是同一范围（排除目标行）的前后两次；这里把函数桩成两次数值不同，
+    模拟「别的已发布行在操作期间被动过」。
+    """
+
+    _version(repo)
+    _publish(database_url_schema, "v1.0")
+    _version(repo, version="v2.0", source_url="https://example.gov.cn/other.html")
+    _publish(database_url_schema, "v2.0")
+
+    path = _data(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    calls = {"n": 0}
+    original = retire._published_fingerprint
+
+    def flaky(conn, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return "changed"
+        return original(conn, **kwargs)
+
+    monkeypatch.setattr(retire, "_published_fingerprint", flaky)
+
+    assert retire.run(path, apply=True) == 3
+    with psycopg.connect(database_url_schema) as conn:
+        status = conn.execute(
+            "SELECT review_status FROM policy_version WHERE version = 'v1.0'"
+        ).fetchone()[0]
+    assert status == "published", "指纹不一致时不能留下降级结果"
