@@ -4,28 +4,25 @@
 M2 的前端联调要「同版隔离环境 + 两个合成企业账号 + 一个审核员账号」。审核员可以用
 ``create-admin.py`` 建，但那个脚本只建审核员、不建企业，也不生成可交付的口令——两个
 企业账号还是得有人手工注册，注册出来的口令只有注册人知道。这个脚本把那一步固化成
-一次可复跑的动作：
+一次可复跑的动作。
 
-- 账号是**合成**的：用户名固定（``reviewer.demo`` / ``acme.alpha`` / ``acme.beta``），
-  企业名写明「合成企业」；
-- 口令由脚本生成（24 位随机），**只写进 0600 的凭证文件**，不进 stdout、不进命令行；
-- 已有账号默认**跳过**（不改口令，避免把 M2 正在用的账号踢掉），``--reset-passwords``
-  才重新生成；
-- 走的是注册同一条仓储路径（``AccountsRepository.register`` + ``normalize_profile``），
-  企业归属、事实校验、用户名规则与 ``POST /auth/register`` 一致，不另写一套 SQL。
+四条护栏（M2 在 PR #74 两轮复审里点名）：
 
-四条护栏（M2 在 PR #74 复审里点名）：
+1. **先验身份再动手**：同名账号先核对角色、状态与企业归属；任何一项不符就整批停下
+   （退出码 5），不建、不改、不重置——``--reset-passwords`` 会顺带撤销会话。
+2. **先落盘、后提交**（写前日志）：先把新口令写进凭证文件并 fsync，再调
+   ``register()`` / ``update_password()``，成功后把该行的状态从「待提交」改成
+   「新建」/「口令已重置」。进程在两步之间被杀、或提交失败，口令都已经在文件里；
+   下次运行先按库里的口令哈希核对每一行，对不上的行（账号没建出来、或口令已被别人
+   改过）直接清掉，不会把作废口令当成交付物。
+3. **合并而不是覆盖**：凭证文件按用户名合并——已记录的口令原样保留，只追加/更新本轮
+   变动的账号。部分账号已存在、部分新建时，旧口令不会被一份只剩新建账号的文件盖掉。
+4. **文件按受控方式创建**：父目录不允许组/其他可写；目标不能是符号链接；新文件
+   ``O_EXCL`` + ``0600``；更新时写同目录临时文件再 ``os.replace``，不留宽权限窗口。
 
-1. **先验身份再动手**：同名账号必须先核对角色、状态与企业归属；任何一项不符就整批停下
-   （退出码 5），不建、不改、不重置——``--reset-passwords`` 会顺带撤销该账号的会话，
-   误伤真实账号的代价比少建一个合成账号大得多。
-2. **口令边建边落盘**：每建好（或重置）一个账号就写一行并 fsync，中途任何一步失败，
-   已经产生的口令都在文件里，不会出现「账号建了、口令没了」。
-3. **文件按受控方式创建**：父目录不允许组/其他可写；目标不能是符号链接；新文件用
-   ``O_EXCL`` + ``0600`` 创建；覆盖时先写同目录临时文件再 ``os.replace`` 原子替换，
-   宽权限的旧文件不会出现「写内容时还是 0644」的窗口。
-4. **没有新口令就不动文件**：三个账号都已存在且没给 ``--reset-passwords`` 时，不重写
-   凭证文件——否则唯一一份还在用的口令会被一个只剩标题的文件覆盖掉。
+并发：``--out`` 指向同一个文件跑两份脚本没有意义；两个进程同时建同名账号时，后到的
+会在 ``register()`` 上撞 ``USERNAME_TAKEN``——脚本会重新核对身份，确认是合成账号后
+**中止并退出 6**（它的口令在另一个进程手里，本文件拿不到），而不是装作成功。
 
 用法（ECS，root；``DATABASE_URL`` 从 ``api.env`` 读，不上命令行）::
 
@@ -34,17 +31,12 @@ M2 的前端联调要「同版隔离环境 + 两个合成企业账号 + 一个�
         /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/provision-test-accounts.py \\
         --out /root/huice-test-accounts-$(date +%Y%m%d).txt
 
-本地（仓库根目录）::
-
-    DATABASE_URL=... services/api/.venv/Scripts/python.exe \\
-        infra/deploy/provision-test-accounts.py --out ./.local-test-accounts.txt
-
 凭证文件只走机密渠道交付（当面对传、私聊、受控网盘），**不进仓库、不进文档、不进聊天、
-不进 PR**；交付后按 §3.6 的做法登录验证，用完即删。这些账号是联调账号，不是验收证据。
+不进 PR**。这些账号是联调账号，不是验收证据。
 
-退出码：0 成功（含「账号已存在、本次跳过」「没有新口令、文件未改动」）；2 环境变量或参数
-不合法（只报变量名）；3 写库失败；4 凭证文件路径不可用（已存在且没给 ``--force``、父目录
-不可写、目标是符号链接）；5 同名账号身份不符（角色／状态／企业归属），整批未执行。
+退出码：0 成功（含「账号已存在、本轮无改动」）；2 环境变量或参数不合法（只报变量名）；
+3 写库失败；4 凭证文件路径不可用；5 同名账号身份不符（整批未执行）；6 并发冲突
+（账号被另一个进程创建，本进程拿不到口令）。
 """
 
 from __future__ import annotations
@@ -52,11 +44,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import secrets
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
@@ -85,6 +77,18 @@ HEADER = (
     "# 交付走机密渠道；不要入库、不要贴进 PR/文档/聊天。用完按 infra/deploy/README.md §3.6 清理。",
 )
 
+#: 一行一条凭证。状态放在末尾括号里，便于「先落盘、后提交」时区分待提交与已完成。
+LINE_PATTERN = re.compile(
+    r"^role=(?P<role>\S+) username=(?P<username>\S+) password=(?P<password>\S+)"
+    r"(?: enterprise=(?P<enterprise>.+?))? \((?P<status>[^()]+)\)$"
+)
+
+STATUS_PENDING = "待提交"
+
+
+class ConcurrentConflict(RuntimeError):
+    """另一个进程刚建了同名账号：本进程拿不到它的口令，只能停下。"""
+
 
 @dataclass(frozen=True)
 class AccountSpec:
@@ -107,6 +111,15 @@ SPECS = (
     AccountSpec("acme.alpha", "enterprise", "合成企业A", "440300", "F51"),
     AccountSpec("acme.beta", "enterprise", "合成企业B", "440300", "C39"),
 )
+
+
+@dataclass
+class CredentialEntry:
+    username: str
+    role: str
+    password: str
+    enterprise: str | None
+    status: str
 
 
 def _enterprise_input(spec: AccountSpec) -> EnterpriseInput:
@@ -156,18 +169,15 @@ def _read_dsn() -> str | None:
 
 
 def _check_out_path(path: Path, *, force: bool) -> bool:
-    """动手前先确认凭证文件写得下去、且不会被别人读到。
-
-    反过来做会留下「账号建好了、口令没落盘」的账号——口令只在这里出现一次。
-    """
+    """动手前先确认凭证文件写得下去、且不会被别人读到。"""
 
     if path.is_symlink():
         print(f"凭证文件 {path} 是符号链接：不接受，请换成普通文件路径。", file=sys.stderr)
         return False
     if path.exists() and not force:
         print(
-            f"凭证文件 {path} 已存在：加 --force 覆盖，或换一个 --out 路径。"
-            "覆盖会重写本次生成的口令，请确认旧文件没有被谁拿着用。",
+            f"凭证文件 {path} 已存在：加 --force 继续（已有的口令会保留，只追加/更新本轮变动的账号），"
+            "或换一个 --out 路径。",
             file=sys.stderr,
         )
         return False
@@ -176,8 +186,7 @@ def _check_out_path(path: Path, *, force: bool) -> bool:
         print(f"凭证文件所在目录不存在：{parent}", file=sys.stderr)
         return False
     if os.name == "posix":
-        mode = parent.stat().st_mode
-        if mode & 0o022:
+        if parent.stat().st_mode & 0o022:
             print(
                 f"凭证文件所在目录 {parent} 允许组或其他用户写入：换到只有你能写的目录"
                 "（如 /root），否则别人可以在里面放符号链接或替换文件。",
@@ -187,47 +196,105 @@ def _check_out_path(path: Path, *, force: bool) -> bool:
     return True
 
 
-class CredentialFile:
-    """边建边写：每产生一条口令就落盘并 fsync。
+def _credential_line(entry: CredentialEntry) -> str:
+    parts = [f"role={entry.role}", f"username={entry.username}", f"password={entry.password}"]
+    if entry.enterprise:
+        parts.append(f"enterprise={entry.enterprise}")
+    parts.append(f"({entry.status})")
+    return " ".join(parts)
 
-    ``force`` 时先写同目录临时文件（``0600``、``O_EXCL``），收尾再 ``os.replace`` 原子
-    替换；中途失败时临时文件保留，已生成的口令不会丢。非 ``force`` 时直接用 ``O_EXCL``
-    建目标文件——「不覆盖」由内核保证，不靠先检查后打开。
-    """
 
-    def __init__(self, path: Path, *, force: bool) -> None:
-        self.path = path
-        self.tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        self._force = force
-        self._handle: TextIO | None = None
-        self.lines_written = 0
+def load_credentials(path: Path) -> tuple[dict[str, CredentialEntry], list[str]]:
+    """读回已有凭证：``username → 条目``，无法识别的行原样保留。"""
 
-    def __enter__(self) -> "CredentialFile":
-        target = self.tmp_path if self._force else self.path
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        fd = os.open(target, flags, 0o600)
-        self._handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
-        self._handle.write("\n".join(HEADER) + "\n")
-        self._handle.flush()
-        return self
+    entries: dict[str, CredentialEntry] = {}
+    extras: list[str] = []
+    if not path.exists():
+        return entries, extras
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip() or raw.startswith("#"):
+            continue
+        match = LINE_PATTERN.match(raw.strip())
+        if match is None:
+            extras.append(raw)
+            continue
+        entries[match["username"]] = CredentialEntry(
+            username=match["username"],
+            role=match["role"],
+            password=match["password"],
+            enterprise=match["enterprise"],
+            status=match["status"],
+        )
+    return entries, extras
 
-    def write(self, line: str) -> None:
-        assert self._handle is not None
-        self._handle.write(line + "\n")
-        self._handle.flush()
-        os.fsync(self._handle.fileno())
-        self.lines_written += 1
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        assert self._handle is not None
-        self._handle.close()
-        if exc_type is not None:
-            # 失败路径：临时文件原样保留，调用方会把路径告诉人
-            return False
-        if self._force:
-            os.replace(self.tmp_path, self.path)
-        os.chmod(self.path, 0o600)
-        return False
+def render_credentials(entries: dict[str, CredentialEntry], extras: list[str]) -> str:
+    """按固定顺序渲染：先本轮三个账号，再其它已记录的账号，最后是无法识别的行。"""
+
+    lines = list(HEADER)
+    known = {spec.username for spec in SPECS}
+    for spec in SPECS:
+        entry = entries.get(spec.username)
+        if entry is not None:
+            lines.append(_credential_line(entry))
+    for username, entry in entries.items():
+        if username not in known:
+            lines.append(_credential_line(entry))
+    lines.extend(extras)
+    return "\n".join(lines) + "\n"
+
+
+def persist_credentials(
+    path: Path,
+    entries: dict[str, CredentialEntry],
+    extras: list[str],
+    *,
+    create_only: bool,
+) -> None:
+    """原子写入：新文件 ``O_EXCL`` + ``0600``，更新写临时文件再 ``os.replace``。"""
+
+    data = render_credentials(entries, extras).encode("utf-8")
+    if create_only:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return
+
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:  # pragma: no cover - 清理失败不掩盖原始异常
+            pass
+        raise
+
+
+def _reconcile(accounts: AccountsRepository, entries: dict[str, CredentialEntry]) -> list[str]:
+    """按库里的口令哈希核对每一行：账号不在、或口令已不是当前口令的行作废。"""
+
+    dropped: list[str] = []
+    for username in list(entries):
+        row = accounts.find_user_by_username(username)
+        if row is None:
+            del entries[username]
+            dropped.append(username)
+            continue
+        if not auth_tools.verify_password(entries[username].password, row["password_hash"]):
+            del entries[username]
+            dropped.append(username)
+            continue
+        entries[username].status = "已确认"
+    return dropped
 
 
 # --------------------------------------------------------------- 身份核对
@@ -261,9 +328,20 @@ def _identity_problem(accounts: AccountsRepository, spec: AccountSpec) -> str | 
     return None
 
 
-def _plan(accounts: AccountsRepository, *, reset_passwords: bool) -> tuple[list[PlanItem], list[str]]:
+def build_plan(
+    accounts: AccountsRepository,
+    entries: dict[str, CredentialEntry],
+    *,
+    reset_passwords: bool,
+) -> tuple[list[PlanItem], list[str], list[str]]:
+    """返回 (计划, 身份问题, 提示)。
+
+    已存在且本文件有有效口令的账号算 ``skip``；文件里没有它的口令才需要 ``--reset-passwords``。
+    """
+
     items: list[PlanItem] = []
     problems: list[str] = []
+    warnings: list[str] = []
     for spec in SPECS:
         row = accounts.find_user_by_username(spec.username)
         if row is None:
@@ -273,57 +351,87 @@ def _plan(accounts: AccountsRepository, *, reset_passwords: bool) -> tuple[list[
         if problem is not None:
             problems.append(f"{spec.username}：{problem}")
             continue
-        items.append(PlanItem(spec, "reset" if reset_passwords else "skip", row["id"]))
-    return items, problems
-
-
-def _credential_line(spec: AccountSpec, password: str, *, note: str) -> str:
-    parts = [f"role={spec.role}", f"username={spec.username}", f"password={password}"]
-    if spec.is_enterprise:
-        parts.append(f"enterprise={spec.name_synthetic}")
-    parts.append(f"({note})")
-    return " ".join(parts)
+        if spec.username in entries:
+            items.append(PlanItem(spec, "skip", row["id"]))
+            continue
+        if reset_passwords:
+            items.append(PlanItem(spec, "reset", row["id"]))
+            continue
+        warnings.append(f"{spec.username}：账号已存在，但本文件没有它的口令")
+        items.append(PlanItem(spec, "skip", row["id"]))
+    return items, problems, warnings
 
 
 def _provision(
-    accounts: AccountsRepository, items: list[PlanItem], out: CredentialFile | None
+    accounts: AccountsRepository,
+    items: list[PlanItem],
+    entries: dict[str, CredentialEntry],
+    extras: list[str],
+    path: Path,
+    *,
+    create_only: bool,
 ) -> tuple[int, int]:
-    """按计划建号；返回 (新产生口令的账号数, 跳过数)。口令边生成边交给 out。"""
+    """按计划建号：**先落盘、后提交**，成功后把状态从「待提交」改成最终状态。"""
 
     created = 0
     skipped = 0
+    # 只有第一次写入走 O_EXCL（「不覆盖别人刚建的文件」），之后都是更新
+    first_write = create_only
     for item in items:
         spec = item.spec
         if item.action == "skip":
             skipped += 1
             continue
 
-        password = _generate_password()
-        if item.action == "reset":
-            accounts.update_password(
-                user_id=item.user_id, password_hash=auth_tools.hash_password(password)
-            )
-            if out is not None:
-                out.write(_credential_line(spec, password, note="口令已重置"))
-            created += 1
-            continue
+        entry = CredentialEntry(
+            username=spec.username,
+            role=spec.role,
+            password=_generate_password(),
+            enterprise=spec.name_synthetic,
+            status=STATUS_PENDING,
+        )
+        entries[spec.username] = entry
+        # 写前日志：口令先落地，提交失败或进程被杀时它还在文件里
+        persist_credentials(path, entries, extras, create_only=first_write)
+        first_write = False
 
-        profile = normalize_profile(_enterprise_input(spec)) if spec.is_enterprise else None
         try:
-            accounts.register(
-                username=spec.username,
-                password_hash=auth_tools.hash_password(password),
-                role=spec.role,
-                profile=profile,
-            )
+            if item.action == "reset":
+                accounts.update_password(
+                    user_id=item.user_id, password_hash=auth_tools.hash_password(entry.password)
+                )
+                entry.status = "口令已重置"
+            else:
+                profile = (
+                    normalize_profile(_enterprise_input(spec)) if spec.is_enterprise else None
+                )
+                accounts.register(
+                    username=spec.username,
+                    password_hash=auth_tools.hash_password(entry.password),
+                    role=spec.role,
+                    profile=profile,
+                )
+                entry.status = "新建"
         except ApiProblem as exc:
-            # 并发跑两份脚本时后到的会撞用户名：当成「已存在」处理，不覆盖口令。
-            if exc.code != "USERNAME_TAKEN":
-                raise
-            skipped += 1
-            continue
-        if out is not None:
-            out.write(_credential_line(spec, password, note="新建"))
+            if exc.code == "USERNAME_TAKEN":
+                # 另一个进程刚刚建了同名账号：重新核对身份，然后中止——
+                # 它的口令在对方手里，本进程装作成功只会让人拿着一份作废口令。
+                entries.pop(spec.username, None)
+                persist_credentials(path, entries, extras, create_only=False)
+                problem = _identity_problem(accounts, spec)
+                raise ConcurrentConflict(
+                    f"{spec.username} 被另一个进程创建"
+                    + (f"（{problem}）" if problem else "")
+                ) from exc
+            entries.pop(spec.username, None)
+            persist_credentials(path, entries, extras, create_only=False)
+            raise
+        except BaseException:
+            # 提交结果未知（连接断了、进程被杀）：保留「待提交」行，下次运行按口令哈希核对
+            persist_credentials(path, entries, extras, create_only=False)
+            raise
+
+        persist_credentials(path, entries, extras, create_only=False)
         created += 1
     return created, skipped
 
@@ -331,7 +439,9 @@ def _provision(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="建隔离环境的合成账号（1 审核员 + 2 企业）")
     parser.add_argument("--out", type=Path, required=True, help="凭证文件路径（写成 0600）")
-    parser.add_argument("--force", action="store_true", help="凭证文件已存在时覆盖")
+    parser.add_argument(
+        "--force", action="store_true", help="凭证文件已存在时继续（已有口令保留并合并）"
+    )
     parser.add_argument(
         "--reset-passwords",
         action="store_true",
@@ -345,13 +455,22 @@ def main(argv: list[str] | None = None) -> int:
     if not _check_out_path(args.out, force=args.force):
         return 4
 
+    entries, extras = load_credentials(args.out)
+    existed = args.out.exists()
+
     # 连不上库时连接池会在 close() 时再喊一句「couldn't stop thread」——那句话不说原因。
     logging.getLogger("psycopg.pool").setLevel(logging.CRITICAL)
 
     database = Database(dsn, max_size=1)
     try:
         accounts = AccountsRepository(database)
-        items, problems = _plan(accounts, reset_passwords=args.reset_passwords)
+        dropped = _reconcile(accounts, entries)
+        for username in dropped:
+            print(f"{username}：凭证文件里的口令与库里对不上（账号没建出来或已被改过），该行已作废。")
+
+        items, problems, warnings = build_plan(
+            accounts, entries, reset_passwords=args.reset_passwords
+        )
         if problems:
             print(
                 "同名账号与合成账号不符，整批未执行（没建、没改、没重置）：\n  "
@@ -363,36 +482,38 @@ def main(argv: list[str] | None = None) -> int:
 
         pending = [item for item in items if item.action != "skip"]
         if not pending:
+            for warning in warnings:
+                print(f"注意：{warning}，本轮拿不到它的口令。要重发加 --reset-passwords。")
             print(
-                f"{len(items)} 个合成账号都已存在且身份相符，本轮没有新口令："
-                f"{args.out} 未改动。要重发口令加 --reset-passwords。"
+                f"{len(items)} 个合成账号都已存在，本轮没有新口令：{args.out} 未改动。"
+                if existed
+                else f"{len(items)} 个合成账号都已存在，本轮没有新口令，未生成凭证文件。"
             )
             return 0
 
-        out_path = args.out
         try:
-            with CredentialFile(out_path, force=args.force) as out:
-                try:
-                    created, skipped = _provision(accounts, items, out)
-                except Exception:
-                    where = out.tmp_path if args.force else out_path
-                    print(
-                        f"建号中途失败：已生成 {out.lines_written} 条口令，写在 {where}（0600）。"
-                        "把它收好再用 --force 重跑，或换一个 --out 路径——已存在的账号会跳过，"
-                        "不会重复建；缺的那几个会补上。",
-                        file=sys.stderr,
-                    )
-                    raise
+            created, skipped = _provision(
+                accounts, items, entries, extras, args.out, create_only=not existed
+            )
+        except ConcurrentConflict as exc:
+            print(
+                f"并发冲突：{exc}。本次未把它写进凭证文件——请确认另一个进程，"
+                "或加 --reset-passwords 重发口令。",
+                file=sys.stderr,
+            )
+            return 6
         except Exception as exc:  # 不打印异常详情：psycopg 的报错里带主机与库名
             print(
-                f"建账号失败（{type(exc).__name__}）：请确认迁移 009 已执行、"
-                "DATABASE_URL 指向本环境的库、账号有写权限。",
+                f"建账号失败（{type(exc).__name__}）：已生成的口令保留在 {args.out}；"
+                "请确认迁移 009 已执行、DATABASE_URL 指向本环境的库、账号有写权限。",
                 file=sys.stderr,
             )
             return 3
     finally:
         database.close()
 
+    for warning in warnings:
+        print(f"注意：{warning}，本轮拿不到它的口令。要重发加 --reset-passwords。")
     print(
         f"已在 {len(SPECS)} 个合成账号上处理完成：新建/重置 {created} 个，"
         f"已存在跳过 {skipped} 个。口令只写进 {args.out}（0600），未回显。"

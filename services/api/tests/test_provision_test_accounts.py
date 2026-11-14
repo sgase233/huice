@@ -324,3 +324,141 @@ def test_a_symlinked_out_path_is_refused(tmp_path: Path) -> None:
     assert result.returncode == 4
     assert "符号链接" in result.stderr
     assert real.read_text(encoding="utf-8") == "keep"
+
+
+def _load_script():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("provision_test_accounts", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("provision_test_accounts", module)
+    spec.loader.exec_module(module)
+    return module
+
+
+provision = _load_script()
+
+
+class FakeAccounts:
+    """只够跑 ``_provision`` 的替身：能模拟提交失败与并发撞名。"""
+
+    def __init__(self, *, failure=None, taken=False) -> None:
+        self.failure = failure
+        self.taken = taken
+        self.created: list[str] = []
+
+    def find_user_by_username(self, username):
+        return {"id": "00000000-0000-0000-0000-000000000000", "username": username,
+                "role": "enterprise", "status": "active", "password_hash": "x"}
+
+    def enterprise_name_for_user(self, user_id):
+        return "合成企业A"
+
+    def register(self, *, username, password_hash, role, profile):
+        if self.taken:
+            from app.errors import ApiProblem
+
+            raise ApiProblem(409, "USERNAME_TAKEN", "该用户名已被占用")
+        if self.failure is not None:
+            raise self.failure
+        self.created.append(username)
+
+    def update_password(self, *, user_id, password_hash):
+        if self.failure is not None:
+            raise self.failure
+
+
+def test_the_password_is_on_disk_before_the_database_commit(tmp_path: Path) -> None:
+    """写前日志：提交失败时，生成了但没提交的口令仍在文件里（标「待提交」）。"""
+
+    path = tmp_path / "creds.txt"
+    entries: dict = {}
+    items = [provision.PlanItem(provision.SPECS[1], "create")]
+
+    with pytest.raises(RuntimeError):
+        provision._provision(
+            FakeAccounts(failure=RuntimeError("db down")), items, entries, [], path, create_only=True
+        )
+
+    text = path.read_text(encoding="utf-8")
+    assert "username=acme.alpha" in text
+    assert provision.STATUS_PENDING in text
+
+
+def test_a_concurrent_username_take_stops_instead_of_reporting_success(tmp_path: Path) -> None:
+    """并发撞名：拿不到对方的口令，就不能在文件里留下一条「成功」记录。"""
+
+    path = tmp_path / "creds.txt"
+    entries: dict = {}
+    items = [provision.PlanItem(provision.SPECS[1], "create")]
+
+    with pytest.raises(provision.ConcurrentConflict):
+        provision._provision(
+            FakeAccounts(taken=True), items, entries, [], path, create_only=True
+        )
+
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    assert "username=acme.alpha" not in text
+
+
+def test_reconcile_drops_rows_whose_password_no_longer_matches(tmp_path: Path) -> None:
+    """账号没建出来、或口令已被改过：那一行作废，不能当交付物。"""
+
+    from app import auth as auth_tools
+
+    good = auth_tools.hash_password("good-password-123")
+    other = auth_tools.hash_password("other-password-123")
+
+    class ReconcileFake(FakeAccounts):
+        def find_user_by_username(self, username):
+            if username == "reviewer.demo":
+                return {"id": "1", "username": username, "role": "reviewer",
+                        "status": "active", "password_hash": good}
+            if username == "acme.alpha":
+                return {"id": "2", "username": username, "role": "enterprise",
+                        "status": "active", "password_hash": other}
+            return None
+
+    entries = {
+        "reviewer.demo": provision.CredentialEntry("reviewer.demo", "reviewer", "good-password-123", None, "待提交"),
+        "acme.alpha": provision.CredentialEntry("acme.alpha", "enterprise", "stale-password-123", "合成企业A", "待提交"),
+        "acme.beta": provision.CredentialEntry("acme.beta", "enterprise", "never-created-123", "合成企业B", "待提交"),
+    }
+
+    dropped = provision._reconcile(ReconcileFake(), entries)
+
+    assert set(dropped) == {"acme.alpha", "acme.beta"}
+    assert list(entries) == ["reviewer.demo"]
+    assert entries["reviewer.demo"].status == "已确认"
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_partial_existing_file_keeps_earlier_passwords(
+    database_url_schema, tmp_path: Path
+) -> None:
+    """文件里已有两个账号、第三个还没建：重跑只补第三个，前两个口令原样保留。"""
+
+    out = tmp_path / "creds.txt"
+    assert run_script("--out", str(out), DATABASE_URL=database_url_schema).returncode == 0
+    before = {entry["username"]: entry["password"] for entry in credential_lines(out)}
+    assert len(before) == 3
+
+    with psycopg.connect(database_url_schema) as conn:
+        beta_id = conn.execute(
+            "SELECT id FROM app_user WHERE username = 'acme.beta'"
+        ).fetchone()[0]
+        # FK 是 ON DELETE RESTRICT：先删企业再删账号
+        conn.execute("DELETE FROM enterprise WHERE owner_user_id = %s", (beta_id,))
+        conn.execute("DELETE FROM app_user WHERE id = %s", (beta_id,))
+        conn.commit()
+
+    result = run_script("--out", str(out), "--force", DATABASE_URL=database_url_schema)
+
+    assert result.returncode == 0, result.stderr
+    after = {entry["username"]: entry["password"] for entry in credential_lines(out)}
+    assert set(after) == {"reviewer.demo", "acme.alpha", "acme.beta"}
+    assert after["reviewer.demo"] == before["reviewer.demo"]
+    assert after["acme.alpha"] == before["acme.alpha"]
+    assert after["acme.beta"] != before["acme.beta"]

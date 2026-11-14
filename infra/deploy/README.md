@@ -403,10 +403,12 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 
 - **口令只在凭证文件里出现一次**：脚本生成 24 位随机口令，写成 `0600` 的 `--out` 文件，stdout 只打印用户名与计数。交付走机密渠道（当面对传、私聊、受控网盘），**不进仓库、不进文档、不进聊天、不进 PR**；本文件本身按 §7 的口径处理，交付完 `shred -u`。
 - **同名账号先验身份**：库里已有同名账号时，脚本先核对角色、状态（必须 `active`）与企业归属（企业账号的企业名必须正好是「合成企业A/B」，审核员必须没有企业）。任何一项不符就**整批停下、退出码 `5`**，一个账号都不建、不改、不重置——`--reset-passwords` 会顺带撤销该账号的会话，误伤真实账号的代价比少建一个合成账号大得多。确认这台环境没问题后，先人工改掉同名账号再跑。
-- **口令边建边落盘**：每建好（或重置）一个账号就写一行并 `fsync`；中途失败时已经产生的口令就在文件里（覆盖模式写在同目录临时文件、收尾原子替换），不会出现「账号建了、口令没了」。失败会打印「已生成 N 条口令，写在哪个文件」。
+- **先落盘、后提交（写前日志）**：每个账号先生成口令、把该行以「(待提交)」写进文件并 `fsync`，**再**调 `register()` / `update_password()`，成功后把状态改成「(新建)」或「(口令已重置)」。进程在两步之间被杀、或提交失败，口令都已经在文件里；下次运行先按库里的口令哈希逐行核对，账号没建出来或口令已被改过的行会作废（打印作废的用户名），不会把作废口令当交付物。
+- **合并而不是覆盖**：`--force` 表示「继续写这个文件」，不是「清空重写」。文件按用户名合并——已记录的口令原样保留，只追加/更新本轮变动的账号。部分账号已存在、部分新建时，旧口令不会被一份只剩新账号的文件盖掉。全部账号都已存在且本轮没有新口令时，**文件一个字节都不动**。
+- **并发撞名会停下（退出码 `6`）**：另一个进程刚建了同名账号时，本进程拿不到它的口令；脚本重新核对身份后中止并提示，不会在文件里留一条看似成功的记录。并发跑两份脚本到同一个 `--out` 没有意义，请串行执行。
 - **文件按受控方式创建**：父目录不允许组/其他可写；目标不能是符号链接；新文件用 `O_EXCL` + `0600` 建；`--force` 时先写临时文件再 `os.replace`，宽权限的旧文件不会出现「写内容时还是 0644」的窗口。`--out` 已存在且没给 `--force` 时直接退出 `4`，不连库。
-- **重跑不踢人、也不动文件**：已存在的账号默认跳过、不改口令（M2 可能正拿着用）；**三个账号都已存在时本轮不写凭证文件**，`--force` 也一样——唯一一份还在用的口令不会被一个只剩标题的文件覆盖。要重发口令加 `--reset-passwords`。
-- **退出码**：`0` 成功（含「已存在跳过」「没有新口令、文件未改动」）；`2` 环境变量或参数不合法；`3` 写库失败；`4` 凭证文件路径不可用（已存在且没给 `--force`、父目录组/其他可写、目标是符号链接）；`5` 同名账号身份不符（角色／状态／企业归属），整批未执行。
+- **重跑不踢人**：已存在的账号默认跳过、不改口令（M2 可能正拿着用）；要重发口令加 `--reset-passwords`（会撤销该账号的现有会话）。
+- **退出码**：`0` 成功（含「已存在跳过」「没有新口令、文件未改动」）；`2` 环境变量或参数不合法；`3` 写库失败（已生成的口令保留在文件里）；`4` 凭证文件路径不可用（已存在且没给 `--force`、父目录组/其他可写、目标是符号链接）；`5` 同名账号身份不符（角色／状态／企业归属），整批未执行；`6` 并发撞名——账号被另一个进程创建，本进程拿不到口令。
 - **验证**（在 ECS 本机；口令、cookie 与响应体都落 `0600` 文件，别让它进终端回显）：
 
   ```bash
@@ -415,20 +417,27 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
   printf '{"username":"acme.alpha","password":"%s"}' \
     "$(sed -n 's/.*username=acme.alpha.*password=\([^ ]*\).*/\1/p' /root/huice-test-accounts-*.txt)" \
     > /root/login-alpha.json
-  curl -sS -c /root/alpha.cookies -o /root/login-alpha.out -w '%{http_code}\n' \
-    -H "Origin: https://<站点域名>" -H "Content-Type: application/json" \
+
+  # restricted 部署：演示 cookie 要与登录一起发（§3.1 签发的值先存成 0600 的 cookie 文件），
+  # 否则请求在门禁就被挡成 403 DEMO_SESSION_REQUIRED
+  curl -sS -b /root/demo.cookie -c /root/alpha.cookies -o /root/login-alpha.out \
+    -w '%{http_code}\n' -H "Origin: https://<站点域名>" -H "Content-Type: application/json" \
     --data @/root/login-alpha.json https://<站点域名>/api/v1/auth/login
-  curl -sS -b /root/alpha.cookies -o /root/alpha-me.out -w '%{http_code}\n' \
-    https://<站点域名>/api/v1/auth/me
-  # 越权：响应体存文件再检查，不能只看状态码
-  curl -sS -b /root/alpha.cookies -o /root/cross.out -w '%{http_code}\n' \
-    https://<站点域名>/api/v1/enterprises/<beta 的 enterpriseId>
+  curl -sS -b /root/demo.cookie -b /root/alpha.cookies -o /root/alpha-me.out \
+    -w '%{http_code}\n' https://<站点域名>/api/v1/auth/me
+
+  # 越权：响应体存文件再检查内容，不能只看状态码
+  curl -sS -b /root/demo.cookie -b /root/alpha.cookies -o /root/cross.out \
+    -w '%{http_code}\n' https://<站点域名>/api/v1/enterprises/<beta 的 enterpriseId>
+
   chmod 600 /root/login-alpha.json /root/alpha.cookies /root/login-alpha.out \
-    /root/alpha-me.out /root/cross.out
-  grep -c '合成企业B' /root/cross.out    # 期望 0：响应体里不应出现 beta 的企业名
+    /root/alpha-me.out /root/cross.out /root/demo.cookie
+  grep -c 'ENTERPRISE_NOT_FOUND' /root/cross.out      # 期望 1：只有错误信封，code 是它
+  grep -c '合成企业B' /root/cross.out                  # 期望 0：不含 beta 的企业名
+  grep -c '<beta 的 enterpriseId>' /root/cross.out     # 期望 0：也不含 beta 的 id
   ```
 
-  期望：login 200、`/auth/me` 200 且 `enterpriseId` 是 alpha 自己的、跨企业请求 404 且响应体不含 beta 的任何字段。检查完把上面几个文件一起 `shred -u`。restricted 部署先过演示门禁（§3.1），没有有效演示 cookie 时这些请求一律 403 `DEMO_SESSION_REQUIRED`——那不是账号有问题。
+  期望：login 200、`/auth/me` 200 且 `enterpriseId` 是 alpha 自己的；跨企业请求 **404**，响应体只有 `{error:{code:"ENTERPRISE_NOT_FOUND", message, details, traceId}}` 这一个信封——**没有任何 beta 的字段**（企业名、企业 id、事实值都不出现）。检查完把上面几个文件连 `/root/demo.cookie` 一起 `shred -u`。
 - **这些账号是联调账号，不是验收证据**：账号存在只说明环境可用，不说明越权、配额、改密、并发已经验过；E1/E2 的验收结论仍以 M2/M3 的独立复核为准。
 - **收尾**：联调结束后把凭证文件 `shred -u`；账号在隔离环境里保留（M2 可能还要复跑），确需停用就在该库执行 `UPDATE app_user SET status = 'disabled' WHERE username IN ('reviewer.demo', 'acme.alpha', 'acme.beta');`——只动隔离环境，不碰生产库。
 
