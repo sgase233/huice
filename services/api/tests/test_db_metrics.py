@@ -1,0 +1,182 @@
+"""E3b 指标查询层（``app/analytics/metrics.py``）的真实数据库用例。
+
+只测「一天怎么算」与「覆盖怎么判」，不涉及路由/契约——端点等 `METRICS_SPEC` 记录口径
+后再接。覆盖的关键几条：按指标给状态、按开始时间归日、起点前后与缺口、当天未结算。
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from uuid import uuid4
+
+import psycopg
+import pytest
+from psycopg.types.json import Jsonb
+
+from app.analytics.metrics import MetricsReader, NOT_COLLECTED, PARTIAL, PRECISE
+from app.db import Database
+from app.domain.versioning import SHANGHAI
+
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
+
+DAY = date(2026, 11, 20)
+
+
+def _at(day: date, hour: int, minute: int = 0) -> datetime:
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=SHANGHAI)
+
+
+def _reader(dsn: str) -> MetricsReader:
+    return MetricsReader(Database(dsn))
+
+
+def _version(conn, *, version: str, imported_at: datetime, published_event_at: datetime | None):
+    policy_id, version_id = uuid4(), uuid4()
+    conn.execute("INSERT INTO policy (id) VALUES (%s)", (policy_id,))
+    conn.execute(
+        "INSERT INTO policy_version (id, policy_id, version, title, policy_type, issuer, region, "
+        "applicable_entities, published_at, effective_from, source_url, official_entry_url, "
+        "imported_at, review_status, revision) VALUES (%s, %s, %s, '合成政策', 'grant', "
+        "'深圳市工信局', '440300', %s, '2026-01-01', '2026-01-01', "
+        "'https://example.gov.cn/a.html', 'https://example.gov.cn/a.html', %s, "
+        "'pending_parse', %s)",
+        (version_id, policy_id, version, Jsonb(["企业"]), imported_at, uuid4()),
+    )
+    if published_event_at is not None:
+        conn.execute(
+            "INSERT INTO policy_review_event (policy_version_id, policy_id, review_revision, "
+            "actor_kind, actor_user_id, occurred_at, legacy_source) "
+            "VALUES (%s, %s, 1, 'legacy_unknown', NULL, %s, NULL)",
+            (version_id, policy_id, published_event_at),
+        )
+    return version_id
+
+
+def _baseline(conn, *, review_from: datetime | None, run_from: datetime | None):
+    conn.execute(
+        "INSERT INTO collection_baseline (id, review_events_from, review_source, "
+        "run_lifecycle_from) VALUES ('default', %s, %s, %s)",
+        (review_from, "reviewed_at" if review_from else None, run_from),
+    )
+
+
+def _gap(conn, *, scope: str, start: datetime, end: datetime | None):
+    conn.execute(
+        "INSERT INTO collection_gap (source, event_id, host, kind, scope, gap_from, gap_to) "
+        "VALUES ('host-journal', %s, 'host-a', 'stop', %s, %s, %s)",
+        (str(uuid4()), scope, start, end),
+    )
+
+
+def _run(conn, *, created: datetime, status: str, finished: datetime | None):
+    enterprise_id, run_id = uuid4(), uuid4()
+    conn.execute(
+        "INSERT INTO enterprise (id, name_synthetic, period_start, period_end) "
+        "VALUES (%s, '合成企业', '2026-01-01', '2026-12-31')",
+        (enterprise_id,),
+    )
+    conn.execute(
+        "INSERT INTO assessment_run (id, enterprise_id, as_of, status, fact_version, "
+        "model_or_rule_version, created_at, finished_at, period_start, period_end) "
+        "VALUES (%s, %s, now(), %s, %s, 'rule:1', %s, %s, '2026-01-01', '2026-12-31')",
+        (run_id, enterprise_id, status, "f" * 64, created, finished),
+    )
+
+
+def test_new_drafts_and_reviews_by_day(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(DAY, 10), run_from=None)
+        _version(conn, version="v1", imported_at=_at(DAY, 9), published_event_at=_at(DAY, 11))
+        _version(conn, version="v2", imported_at=_at(DAY, 23, 59), published_event_at=None)
+        conn.commit()
+
+    rows = _reader(database_url_schema).review_workload(start=DAY, end=DAY, now=_at(DAY, 12))
+
+    assert rows[0]["newDrafts"] == 2
+    assert rows[0]["reviewsCompleted"] == 1  # 只算 user/legacy_unknown 事件
+    assert rows[0]["pendingAtEndOfDay"] is None, "当天未结束应为 null"
+    assert rows[0]["dayOpen"] is True
+    assert rows[0]["availability"]["newDrafts"] == {"state": PARTIAL, "reason": "DAY_OPEN"}
+    assert rows[0]["availability"]["reviewsCompleted"]["state"] == PARTIAL
+
+
+def test_before_the_review_baseline_is_not_collected(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(date(2026, 11, 21), 10), run_from=None)
+        _version(conn, version="v1", imported_at=_at(DAY, 9), published_event_at=None)
+        conn.commit()
+
+    rows = _reader(database_url_schema).review_workload(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 22), 12)
+    )
+
+    assert rows[0]["availability"]["reviewsCompleted"]["state"] == NOT_COLLECTED
+    assert rows[0]["availability"]["pendingAtEndOfDay"]["state"] == NOT_COLLECTED
+
+
+def test_a_gap_downgrades_the_day_and_gives_coverage_from(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(DAY, 0), run_from=None)
+        _gap(conn, scope="review", start=_at(DAY, 9), end=_at(DAY, 11))
+        conn.commit()
+
+    rows = _reader(database_url_schema).review_workload(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12)
+    )
+
+    assert rows[0]["availability"]["reviewsCompleted"]["state"] == PARTIAL
+    assert rows[0]["availability"]["reviewsCompleted"]["coverageFrom"] == _at(DAY, 11).isoformat()
+
+
+def test_an_open_gap_has_no_coverage_from(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(DAY, 0), run_from=None)
+        _gap(conn, scope="all", start=_at(DAY, 9), end=None)
+        conn.commit()
+
+    rows = _reader(database_url_schema).review_workload(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12)
+    )
+    availability = rows[0]["availability"]["reviewsCompleted"]
+    assert availability["state"] == PARTIAL
+    assert availability["reason"] == "OPEN_GAP"
+    assert "coverageFrom" not in availability
+
+
+def test_run_counts_use_start_day_and_include_interrupted(database_url_schema: str) -> None:
+    night = date(2026, 11, 21)
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=None, run_from=_at(DAY, 0))
+        _run(conn, created=_at(DAY, 23, 55), status="succeeded", finished=_at(night, 0, 5))
+        _run(conn, created=_at(DAY, 10), status="failed", finished=_at(DAY, 10, 1))
+        _run(conn, created=_at(DAY, 11), status="interrupted", finished=_at(DAY, 12))
+        _run(conn, created=_at(DAY, 12), status="running", finished=None)
+        conn.commit()
+
+    rows = _reader(database_url_schema).assessment_runs(
+        start=DAY, end=DAY, now=_at(night, 12)
+    )
+    row = rows[0]
+
+    assert row["total"] == 4  # 跨午夜的运行仍归 11-20
+    assert row["succeeded"] == 1
+    assert row["failed"] == 1
+    assert row["unfinished"] == 2  # interrupted + running
+    assert row["durationSampleCount"] == 3  # 已结束的三条
+    assert row["availability"]["failed"]["state"] == PRECISE
+
+
+def test_before_the_run_baseline_failed_is_not_collected(database_url_schema: str) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=None, run_from=_at(date(2026, 11, 21), 10))
+        _run(conn, created=_at(DAY, 9), status="succeeded", finished=_at(DAY, 9, 1))
+        conn.commit()
+
+    rows = _reader(database_url_schema).assessment_runs(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 22), 12)
+    )
+    availability = rows[0]["availability"]
+
+    assert availability["failed"]["state"] == NOT_COLLECTED
+    assert availability["total"]["state"] == PARTIAL
+    assert availability["total"]["reason"] == "BEFORE_COLLECTION"
