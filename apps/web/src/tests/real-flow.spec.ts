@@ -512,15 +512,16 @@ test('历史切换保留各运行跳过记录，报告加载失败提示不可�
 });
 
 test('结果分布按完整 run 四态计数，筛选不改变范围且刷新失败不显示旧分布', async ({ page }) => {
-  const states = ['satisfied', 'not_satisfied', 'insufficient_evidence', 'conflict'];
-  const policyIds = ['22222222-2222-4222-8222-222222222221', '22222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222223', '22222222-2222-4222-8222-222222222224'];
-  const snapshot = { ...run, policyVersionMap: Object.fromEntries(policyIds.map(policyId => [policyId, 'v1'])), assessments: states.map((result, index) => ({ ...assessment, policyId: policyIds[index], result, validity: index < 2 ? 'stale' : 'current' })) };
+  // M3 合成对账样例：四态 2/2/1/1，失效与四态重叠，非真实政策结果。
+  const states = ['satisfied', 'satisfied', 'not_satisfied', 'insufficient_evidence', 'conflict', 'not_satisfied'];
+  const policyIds = states.map((_, index) => `22222222-2222-4222-8222-22222222222${index + 1}`);
+  const snapshot = { ...run, policyVersionMap: Object.fromEntries(policyIds.map(policyId => [policyId, 'v1'])), assessments: states.map((result, index) => ({ ...assessment, policyId: policyIds[index], result, validity: index === 1 ? 'stale' : 'current' })) };
   let refreshMode: 'ok' | 'wrong-id' | 'error' = 'ok';
   await page.route('**/api/v1/**', async route => {
     if (new URL(route.request().url()).pathname.endsWith('/auth/me')) return route.fallback();
     const request = route.request(); const path = new URL(request.url()).pathname;
     if (path.endsWith('/enterprises')) { const body = request.postDataJSON(); return route.fulfill({ json: { ...body, id, factVersion: 'abc', facts: body.facts.map((fact: object) => ({ ...fact, verified: false })) } }); }
-    if (path.endsWith('/policies')) return route.fulfill({ json: { items: [...policyIds.map((policyId, index) => ({ ...policy, id: policyId, title: `分析政策 ${index + 1}` })), { ...policy, id: '22222222-2222-4222-8222-222222222225', title: '未分析候选' }], nextCursor: null } });
+    if (path.endsWith('/policies')) return route.fulfill({ json: { items: [...policyIds.map((policyId, index) => ({ ...policy, id: policyId, title: `分析政策 ${index + 1}` })), { ...policy, id: '22222222-2222-4222-8222-222222222227', title: '未分析候选' }], nextCursor: null } });
     if (path.endsWith('/assessment-runs')) { expect(request.postDataJSON().policyIds).toEqual(policyIds); return route.fulfill({ json: snapshot }); }
     if (path.endsWith(`/assessment-runs/${rid}`)) return refreshMode === 'error' ? route.fulfill({ status: 503, json: { error: { message: '刷新失败' } } }) : route.fulfill({ json: refreshMode === 'wrong-id' ? { ...snapshot, id: '99999999-9999-4999-8999-999999999999' } : snapshot });
     return route.abort();
@@ -529,12 +530,12 @@ test('结果分布按完整 run 四态计数，筛选不改变范围且刷新失
   await page.getByRole('button', { name: '保存当前样本' }).click();
   await page.getByRole('button', { name: '机会列表' }).click();
   await expect(page.getByText('未分析候选')).toBeVisible();
-  for (const checkbox of (await page.getByRole('checkbox', { name: '选择分析' }).all()).slice(0, 4)) await checkbox.check();
+  for (const checkbox of (await page.getByRole('checkbox', { name: '选择分析' }).all()).slice(0, 6)) await checkbox.check();
   await page.getByRole('button', { name: '分析所选政策' }).click();
   const chart = page.getByRole('region', { name: '本次分析结果分布' });
-  await expect(chart).toContainText('本次分析的 4 项政策');
-  for (const label of ['条件初步满足', '不满足条件', '还缺资料', '条款待人工核对']) await expect(chart).toContainText(`${label}：1 项`);
-  await expect(chart).toContainText('其中 2 项依据已失效');
+  await expect(chart).toContainText('本次分析的 6 项政策');
+  for (const [label, count] of [['条件初步满足', 2], ['不满足条件', 2], ['还缺资料', 1], ['条款待人工核对', 1]] as const) await expect(chart).toContainText(`${label}：${count} 项`);
+  await expect(chart).toContainText('其中 1 项依据已失效');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.getByRole('button', { name: '切换深色模式' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -542,7 +543,7 @@ test('结果分布按完整 run 四态计数，筛选不改变范围且刷新失
   await chart.screenshot({ path: 'test-results/result-distribution-dark.png' });
   await page.getByLabel('政策类型').selectOption('grant');
   await page.getByRole('button', { name: '应用筛选' }).click();
-  await expect(chart).toContainText('本次分析的 4 项政策');
+  await expect(chart).toContainText('本次分析的 6 项政策');
   refreshMode = 'wrong-id';
   await page.getByRole('button', { name: '刷新列表' }).click();
   await expect(page.getByRole('alert')).toContainText('返回的分析记录与请求不一致');

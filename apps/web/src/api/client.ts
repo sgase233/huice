@@ -6,6 +6,7 @@ import type {
   LoginRequest, PasswordChangeRequest, SessionResponse, EnterpriseSummaryList, RunSummaryList,
 } from './types';
 import { factUnits } from '../demo';
+import type { DiscoverySettings, DiscoveryRunList, CandidateList, CandidateDetail, CandidateUpdate } from './discoveryTypes';
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1').replace(/\/$/, '');
 let csrfToken: string | null = null;
@@ -66,6 +67,11 @@ const safeCriterion = (criterion: unknown) => isObject(criterion) && typeof crit
 const safeFinding = (finding: unknown) => isObject(finding) && typeof finding.code === 'string' && typeof finding.message === 'string' && (finding.criterionId === null || typeof finding.criterionId === 'string') && Array.isArray(finding.sourceSpans) && finding.sourceSpans.every(safeDraftSpan);
 
 function assertShape(value: unknown, kind: string): void {
+  if (kind === 'DiscoverySettings' && (!isObject(value) || typeof value.enabled !== 'boolean' || !Array.isArray(value.sourceUrls) || !value.sourceUrls.every(item => typeof item === 'string') || typeof value.intervalMinutes !== 'number' || typeof value.timeZone !== 'string' || !isObject(value.limits) || typeof value.limits.minIntervalMinutes !== 'number' || typeof value.limits.maxIntervalMinutes !== 'number' || typeof value.limits.maxSourceUrls !== 'number')) throw new Error('接口契约错误：发现设置无效');
+  if ((kind === 'DiscoveryRunList' || kind === 'CandidateList') && (!isObject(value) || !Array.isArray(value.items) || !(value.nextCursor === null || typeof value.nextCursor === 'string') || !value.items.every(item => isObject(item) && typeof item.id === 'string' && typeof item.status === 'string'))) throw new Error('接口契约错误：发现列表无效');
+  if (kind === 'DiscoveryRunList' && isObject(value) && Array.isArray(value.items) && !value.items.every(item => isObject(item) && Number.isInteger(item.sourcesChecked) && (item.sourcesChecked as number) >= 0 && Array.isArray(item.sourceStatus) && item.sourceStatus.every(isObject))) throw new Error('接口契约错误：运行来源状态无效');
+  if (kind === 'CandidateList' && isObject(value) && Array.isArray(value.items) && !value.items.every(item => isObject(item) && typeof item.attachmentCount === 'number' && typeof item.unsupportedAttachmentCount === 'number')) throw new Error('接口契约错误：候选附件信息无效');
+  if (kind === 'CandidateDetail' && (!isObject(value) || typeof value.id !== 'string' || typeof value.status !== 'string' || typeof value.bodyText !== 'string' || typeof value.sourceUrl !== 'string' || typeof value.fetchedAt !== 'string' || typeof value.contentHash !== 'string' || !isObject(value.metadata) || !Array.isArray(value.criteria) || !value.criteria.every(safeCriterion) || !Array.isArray(value.validationFindings) || !value.validationFindings.every(safeFinding) || !Array.isArray(value.attachmentUrls) || !value.attachmentUrls.every(item => typeof item === 'string') || !Array.isArray(value.unsupportedAttachmentUrls) || !value.unsupportedAttachmentUrls.every(item => typeof item === 'string') || !Array.isArray(value.missingFields) || !value.missingFields.every(item => typeof item === 'string'))) throw new Error('接口契约错误：候选详情无效');
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`接口契约错误：${kind} 不是对象`);
   const record = value as Record<string, unknown>;
   if (kind === 'SessionResponse' || kind === 'RegisterResponse') {
@@ -184,6 +190,14 @@ const json = (value: unknown) => JSON.stringify(value);
 const match = (etag: string) => ({ 'If-Match': etag });
 
 export const api = {
+  discoverySettings: () => request<DiscoverySettings>('/admin/discovery/settings', 'DiscoverySettings'),
+  updateDiscoverySettings: (input: Pick<DiscoverySettings, 'enabled' | 'sourceUrls' | 'intervalMinutes' | 'timeZone'>, etag: string) => request<DiscoverySettings>('/admin/discovery/settings', 'DiscoverySettings', { method: 'PUT', headers: match(etag), body: json(input) }),
+  discoveryRuns: (cursor?: string) => request<DiscoveryRunList>(`/admin/discovery/runs${query({ cursor })}`, 'DiscoveryRunList'),
+  discoveryCandidates: (status?: string, cursor?: string) => request<CandidateList>(`/admin/policy-candidates${query({ status, cursor })}`, 'CandidateList'),
+  discoveryCandidate: (id: string) => request<CandidateDetail>(`/admin/policy-candidates/${segment(id)}`, 'CandidateDetail'),
+  updateDiscoveryCandidate: (id: string, input: CandidateUpdate, etag: string) => request<CandidateDetail>(`/admin/policy-candidates/${segment(id)}`, 'CandidateDetail', { method: 'PATCH', headers: match(etag), body: json(input) }),
+  submitDiscoveryCandidate: (id: string, etag: string, key: string) => request<PolicyDraft>(`/admin/policy-candidates/${segment(id)}/submit`, 'PolicyDraft', { method: 'POST', headers: { ...match(etag), 'Idempotency-Key': key } }),
+  discardDiscoveryCandidate: (id: string, etag: string, reason: string) => request<CandidateDetail>(`/admin/policy-candidates/${segment(id)}/discard`, 'CandidateDetail', { method: 'POST', headers: match(etag), body: json({ reason: reason || null }) }),
   register: (input: RegisterRequest) => request<RegisterResponse>('/auth/register', 'RegisterResponse', { method: 'POST', body: json(input) }),
   login: (input: LoginRequest) => request<SessionResponse>('/auth/login', 'SessionResponse', { method: 'POST', body: json(input) }),
   logout: () => request<void>('/auth/logout', 'empty', { method: 'POST' }),
