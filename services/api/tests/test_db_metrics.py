@@ -127,7 +127,10 @@ def test_before_the_review_baseline_is_not_collected(database_url_schema: str) -
     )
 
     assert rows[0]["availability"]["reviewsCompleted"]["state"] == NOT_COLLECTED
-    assert rows[0]["availability"]["pendingAtEndOfDay"]["state"] == NOT_COLLECTED
+    # 待办可以用基线与 imported_at 回放，T_review 之前是 partial，不是未采集。
+    assert rows[0]["availability"]["pendingAtEndOfDay"]["state"] == PARTIAL
+    assert rows[0]["availability"]["pendingAtEndOfDay"]["reason"] == "BEFORE_COLLECTION"
+    assert rows[0]["pendingAtEndOfDay"] == 1
 
 
 def test_a_gap_downgrades_the_day_and_gives_coverage_from(database_url_schema: str) -> None:

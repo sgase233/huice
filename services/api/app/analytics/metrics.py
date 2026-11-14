@@ -145,7 +145,12 @@ class MetricsReader:
         elif start_from is None:
             base = Availability(NOT_COLLECTED, None, "NO_REVIEW_BASELINE")
         elif _day_bounds(day)[1] <= start_from:
-            base = Availability(NOT_COLLECTED, None, None)
+            # 审核完成在 T_review 之前没有可追溯事件（not_collected）；但日终待办
+            # 可以用基线与 imported_at 回放，按 D5 §3.4 标 partial，不能标未采集。
+            if metric == "pendingAtEndOfDay":
+                base = Availability(PARTIAL, None, "BEFORE_COLLECTION")
+            else:
+                base = Availability(NOT_COLLECTED, None, None)
         elif _day_bounds(day)[0] < start_from:
             base = Availability(PARTIAL, start_from, None)
         elif metric == "pendingAtEndOfDay":
