@@ -47,6 +47,10 @@ DEFAULT_RUN_INTERRUPT_SCAN_SECONDS = 3600
 #: 409 ``RUN_NOT_COMPLETED``。两者都是新契约行为，必须与契约 ``1.3.0-rc.1`` 和前端
 #: 类型同窗发布，不允许后端单边先行；关闭时保持既有行为。
 DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED = False
+#: 采集起点补记的重试间隔（秒）。启动时库不可用不挡服务，恢复后自动补记。
+DEFAULT_RUN_LIFECYCLE_START_RETRY_SECONDS = 60
+#: 成功写入后周期性重校准的间隔（秒）：后提交的更早 T1 会在下一轮把起点向前挪。
+DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS = 600
 
 
 class ConfigError(RuntimeError):
@@ -84,6 +88,10 @@ class Settings:
     run_max_duration_seconds: int = DEFAULT_RUN_MAX_DURATION_SECONDS
     run_interrupt_scan_seconds: int = DEFAULT_RUN_INTERRUPT_SCAN_SECONDS
     run_lifecycle_contract_enabled: bool = DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED
+    run_lifecycle_start_retry_seconds: int = DEFAULT_RUN_LIFECYCLE_START_RETRY_SECONDS
+    run_lifecycle_start_recalibrate_seconds: int = (
+        DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS
+    )
 
     @property
     def effective_public_origin(self) -> str:
@@ -204,6 +212,15 @@ class Settings:
         run_lifecycle_contract_enabled = _flag(
             env, "RUN_LIFECYCLE_CONTRACT_ENABLED", DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED, problems
         )
+        run_lifecycle_start_retry_seconds = _positive_int(
+            env, "RUN_LIFECYCLE_START_RETRY_SECONDS", DEFAULT_RUN_LIFECYCLE_START_RETRY_SECONDS, problems
+        )
+        run_lifecycle_start_recalibrate_seconds = _positive_int(
+            env,
+            "RUN_LIFECYCLE_START_RECALIBRATE_SECONDS",
+            DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS,
+            problems,
+        )
 
         deepseek_base_url = _text(env, "DEEPSEEK_BASE_URL", "")
         deepseek_model = _text(env, "DEEPSEEK_MODEL", "")
@@ -267,6 +284,8 @@ class Settings:
             run_max_duration_seconds=run_max_duration_seconds,
             run_interrupt_scan_seconds=run_interrupt_scan_seconds,
             run_lifecycle_contract_enabled=run_lifecycle_contract_enabled,
+            run_lifecycle_start_retry_seconds=run_lifecycle_start_retry_seconds,
+            run_lifecycle_start_recalibrate_seconds=run_lifecycle_start_recalibrate_seconds,
         )
 
 

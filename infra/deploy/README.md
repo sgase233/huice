@@ -210,6 +210,7 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `RUN_INTERRUPT_SCAN_SECONDS` | 可选，默认 `3600`。中断扫描间隔；启动时另扫一次，所以「重启时还没超时、之后才超时」的行不会一直停在 `running` |
 | `RUN_LIFECYCLE_CONTRACT_ENABLED` | 可选，默认 `0`（关闭）。打开后同时启用两项**新契约行为**：中断扫描会写 `interrupted`，API-12 对未成功的运行返回 `409 RUN_NOT_COMPLETED`。两项都必须与契约 `1.3.0-rc.1`、前端类型同窗发布，**不允许后端单边先行**；关闭时保持既有行为（未成功的运行按「没有结果」404，残留的 `running` 行原样保留） |
 | `RUN_LIFECYCLE_START_RETRY_SECONDS` | 可选，默认 `60`。运行采集起点在启动时写入；库暂时不可用不挡服务，后台按这个间隔重试到成功。起点取「已有值、当前时刻、最早一条新生命周期运行」三者最小，只向前校准、不往后推；补记不会把恢复时刻当成真实采集起点，也不证明此后持续完整采集（中断/回退期间由 B3 标 `partial`） |
+| `RUN_LIFECYCLE_START_RECALIBRATE_SECONDS` | 可选，默认 `600`。首次写入成功后每这个间隔**重校准**一次：首次查询时还没提交的 T1，提交后会在下一轮把起点向前挪（只前不后），不需要重启服务 |
 
 ```bash
 systemctl restart huice-api

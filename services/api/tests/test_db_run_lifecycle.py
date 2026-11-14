@@ -409,3 +409,52 @@ def test_the_start_never_moves_later(database_url_schema: str, repo) -> None:
         "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'",
     )[0]
     assert after == before
+
+
+def test_the_start_is_recalibrated_after_a_later_t1_commits(
+    database_url_schema: str, repo
+) -> None:
+    """首次校准成功时更早的 T1 还没提交：它提交后，后台在下一轮自动把起点前移。"""
+
+    import asyncio
+    import contextlib
+
+    from app import main as app_main
+
+    enterprise = _enterprise(repo)
+    state: dict[str, object] = {"calls": 0}
+
+    class Delayed:
+        """第一次校准之后才插入一条更早的运行——模拟 T1 晚于起点查询提交。"""
+
+        def mark_run_lifecycle_start(self) -> None:
+            repo.mark_run_lifecycle_start()
+            state["calls"] = int(state["calls"]) + 1
+            if state["calls"] == 1:
+                run_id = _insert_running(
+                    database_url_schema, enterprise.id, minutes_ago=120, pid=996_000, started=AS_OF
+                )
+                state["created"] = query_one(
+                    database_url_schema,
+                    "SELECT created_at FROM assessment_run WHERE id = %s",
+                    (run_id,),
+                )[0]
+
+    async def scenario() -> bool:
+        task = asyncio.create_task(app_main._ensure_lifecycle_start(Delayed(), 0, 0))
+        try:
+            for _ in range(300):
+                await asyncio.sleep(0.01)
+                started = query_one(
+                    database_url_schema,
+                    "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'",
+                )[0]
+                if started == state.get("created"):
+                    return True
+            return False
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert asyncio.run(scenario()) is True

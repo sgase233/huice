@@ -56,20 +56,32 @@ ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 logger = logging.getLogger("huice.api")
 
 
-async def _ensure_lifecycle_start(repository, retry_seconds: int) -> None:
-    """写运行采集起点；失败就按 ``retry_seconds`` 重试，成功即结束。
+async def _ensure_lifecycle_start(
+    repository, retry_seconds: int, recalibrate_seconds: int
+) -> None:
+    """写运行采集起点，并在之后周期性重校准。
 
-    启动时数据库不可用并不挡住服务：循环会在恢复后补记。起点取「最早一条新生命周期
-    运行」与 now() 的较小者，所以补记的时刻不会被当成真实采集起点。
+    两个节奏解决两件事：
+
+    * 首次写入失败（库暂时不可用）→ 每 ``retry_seconds`` 重试，恢复后补记；
+    * 首次写入成功后**不退出**：每 ``recalibrate_seconds`` 再跑一次。首次查询时若有一个
+      ``created_at`` 更早的 T1 还没提交，它当时不可见；等它提交后，下一次校准会把起点
+      向前挪（SQL 是 ``LEAST(...)``，只前不后），因此不需要重启服务。
+
+    起点本身取「已有值、now()、最早一条新生命周期运行」三者最小，补记时刻不会被当成
+    真实采集起点；它也不证明此后持续完整采集——覆盖标注由 B3 按 M3 规格给。
     """
 
+    written = False
     while True:
         try:
             await asyncio.to_thread(repository.mark_run_lifecycle_start)
-            return
+            written = True
         except Exception:  # noqa: BLE001 - 恢复后重试，不能用一次失败挡住采集
             logger.warning("写入运行采集起点失败，%s 秒后重试", retry_seconds, exc_info=True)
-        await asyncio.sleep(retry_seconds)
+            await asyncio.sleep(retry_seconds)
+            continue
+        await asyncio.sleep(recalibrate_seconds if written else retry_seconds)
 
 
 async def _run_interrupt_scan(repository, settings) -> None:
@@ -119,7 +131,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 失败不挡启动，但要在后台持续重试——否则数据库恢复后要等到下次重启才补记，
         # 期间采集的运行会落在起点之前，指标说不清覆盖范围。
         start_task = asyncio.create_task(
-            _ensure_lifecycle_start(repository, resolved.run_lifecycle_start_retry_seconds)
+            _ensure_lifecycle_start(
+                repository,
+                resolved.run_lifecycle_start_retry_seconds,
+                resolved.run_lifecycle_start_recalibrate_seconds,
+            )
         )
 
         scan_task = (

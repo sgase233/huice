@@ -241,6 +241,8 @@ def test_run_lifecycle_defaults_are_deploy_parameters():
 
     settings = Settings.from_env(env())
     assert settings.run_max_duration_seconds == 7200
+    assert settings.run_lifecycle_start_retry_seconds == 60
+    assert settings.run_lifecycle_start_recalibrate_seconds == 600
     assert settings.run_interrupt_scan_seconds == 3600
 
     overridden = Settings.from_env(
