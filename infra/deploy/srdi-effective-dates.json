@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "note": "SRDI（深工信规〔2025〕8号）B：把已发布版本的有效期从「申报窗口 2025-10-15—11-10」改为细则第二十四条口径。官方依据：深圳市工信局政府信息公开页《深圳市工业和信息化局优质中小企业梯度培育管理实施细则》（2025年修订版）第二十四条「自印发之日起施行，有效期5年」；该页「成文日期」2025-10-14、「失效日期」2030-10-14（https://gxj.sz.gov.cn/gkmlpt/content/12/12433/mpost_12433291.html，2026-11-15 读取）。按 M3 第七轮口径，effective_from 取 2025-10-14，effective_to 按「5 年减 1 日」推算为 2030-10-13；页面失效日期 2030-10-14 的一日差异写进 provenance note，不写成已核实。执行前需 M2 与项目负责人同意；本文件与脚本不代替授权。",
+  "entries": [
+    {
+      "sourceUrl": "https://www.sz.gov.cn/cn/xxgk/zfxxgj/tzgg/content/post_12433720.html",
+      "version": "深工信规〔2025〕8号",
+      "expectedOld": {
+        "reviewStatus": "published",
+        "effectiveFrom": "2025-10-15",
+        "effectiveTo": "2025-11-10"
+      },
+      "new": {
+        "effectiveFrom": "2025-10-14",
+        "effectiveTo": "2030-10-13"
+      },
+      "reason": "已发布行例外（M2 + 项目负责人同意）：窗口不能当有效期；细则第二十四条有效期 5 年，按成文日期 2025-10-14 起算。"
+    }
+  ]
+}

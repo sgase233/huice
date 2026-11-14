@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "note": "SRDI（深工信规〔2025〕8号）B 的配套来源行：把实施细则正文补成该版本的第二份来源。只新增 policy_source 行，不改已发布 version 行；kind=attachment 是存储层语义（每个版本只能有一份 body，正文已被 2025 年度申报通知占用），不代表细则不是政策本体。入库的是官方页面提取文本（.txt / text/plain），content_hash/byte_size 按文本字节算；官方页面原件 post_12435148.html 49,372 B、SHA-256 047835c1… 另记在 originalSha256，不冒充成文本哈希。执行前需 M2 与项目负责人同意；本文件与脚本不代替授权。",
+  "entries": [
+    {
+      "targetSourceUrl": "https://www.sz.gov.cn/cn/xxgk/zfxxgj/tzgg/content/post_12433720.html",
+      "targetVersion": "深工信规〔2025〕8号",
+      "reason": "补细则正文作为有效期依据（第二十四条「自印发之日起施行，有效期5年」）；窗口仍绑年度申报通知正文。",
+      "source": {
+        "kind": "attachment",
+        "url": "https://www.sz.gov.cn/szzt2010/zdlyzl/jjshzc/content/post_12435148.html",
+        "title": "《深圳市工业和信息化局优质中小企业梯度培育管理实施细则》（2025年修订版）",
+        "file": "policy-sources/SRDI-attachment-detail.txt",
+        "originalName": "post_12435148.html",
+        "originalSha256": "047835c14bc377021da92948d61aa85892e20fd2fb4458998121cff72f825b53",
+        "originalByteSize": 49372,
+        "fetchedAt": "2026-11-15T00:00:00+08:00"
+      }
+    }
+  ]
+}
