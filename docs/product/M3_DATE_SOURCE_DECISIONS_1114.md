@@ -108,6 +108,7 @@ B1a 已完成；本轮三项决定不改变 VIS-06 的验收状态：
 ## 8. 本次修改文件
 
 - 新建：`docs/product/M3_DATE_SOURCE_DECISIONS_1114.md`（本文件）。
+- PR #69 决定评论：https://github.com/sgase233/huice/pull/69#issuecomment-6879655509
 - 更新：`docs/product/POLICY_SCOPE.md` VIS-06 节（加第三轮决定）。
 - 更新：`docs/devlog/M3.md`（记录本次实际工作）。
 - **未修改**：`infra/**`、`contracts/**`、`apps/web/**`、`services/api/**`、`data/**`、冻结输入。
