@@ -37,6 +37,21 @@ DEFAULT_SESSION_TTL_HOURS = 12
 DEFAULT_SESSION_IDLE_MINUTES = 30
 DEFAULT_DEMO_SESSION_QUOTA = 20
 
+#: E3 B2 运行生命周期（D5）。上限是**部署参数**，不是业务口径：2 小时覆盖 deepseek
+#: 抽取加规则评估的长尾，实际取值按部署调整。中断扫描每小时一次——只在启动时扫一次，
+#: 「重启时还没超时、之后才超时」的行会一直停在 running。
+DEFAULT_RUN_MAX_DURATION_SECONDS = 7200
+DEFAULT_RUN_INTERRUPT_SCAN_SECONDS = 3600
+#: 运行生命周期的**契约可见行为**默认关闭（M2 在 PR #75 复审里点名）：
+#: 打开后 (a) 中断扫描才会产生 ``interrupted``，(b) API-12 才会对未成功的 run 返回
+#: 409 ``RUN_NOT_COMPLETED``。两者都是新契约行为，必须与契约 ``1.3.0-rc.1`` 和前端
+#: 类型同窗发布，不允许后端单边先行；关闭时保持既有行为。
+DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED = False
+#: 采集起点补记的重试间隔（秒）。启动时库不可用不挡服务，恢复后自动补记。
+DEFAULT_RUN_LIFECYCLE_START_RETRY_SECONDS = 60
+#: 成功写入后周期性重校准的间隔（秒）：后提交的更早 T1 会在下一轮把起点向前挪。
+DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS = 600
+
 
 class ConfigError(RuntimeError):
     """Raised when the process cannot start because configuration is invalid."""
@@ -70,6 +85,13 @@ class Settings:
     session_ttl_hours: int = DEFAULT_SESSION_TTL_HOURS
     session_idle_minutes: int = DEFAULT_SESSION_IDLE_MINUTES
     demo_session_quota: int = DEFAULT_DEMO_SESSION_QUOTA
+    run_max_duration_seconds: int = DEFAULT_RUN_MAX_DURATION_SECONDS
+    run_interrupt_scan_seconds: int = DEFAULT_RUN_INTERRUPT_SCAN_SECONDS
+    run_lifecycle_contract_enabled: bool = DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED
+    run_lifecycle_start_retry_seconds: int = DEFAULT_RUN_LIFECYCLE_START_RETRY_SECONDS
+    run_lifecycle_start_recalibrate_seconds: int = (
+        DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS
+    )
 
     @property
     def effective_public_origin(self) -> str:
@@ -181,6 +203,24 @@ class Settings:
         demo_session_quota = _positive_int(
             env, "DEMO_SESSION_QUOTA", DEFAULT_DEMO_SESSION_QUOTA, problems
         )
+        run_max_duration_seconds = _positive_int(
+            env, "RUN_MAX_DURATION_SECONDS", DEFAULT_RUN_MAX_DURATION_SECONDS, problems
+        )
+        run_interrupt_scan_seconds = _positive_int(
+            env, "RUN_INTERRUPT_SCAN_SECONDS", DEFAULT_RUN_INTERRUPT_SCAN_SECONDS, problems
+        )
+        run_lifecycle_contract_enabled = _flag(
+            env, "RUN_LIFECYCLE_CONTRACT_ENABLED", DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED, problems
+        )
+        run_lifecycle_start_retry_seconds = _positive_int(
+            env, "RUN_LIFECYCLE_START_RETRY_SECONDS", DEFAULT_RUN_LIFECYCLE_START_RETRY_SECONDS, problems
+        )
+        run_lifecycle_start_recalibrate_seconds = _positive_int(
+            env,
+            "RUN_LIFECYCLE_START_RECALIBRATE_SECONDS",
+            DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS,
+            problems,
+        )
 
         deepseek_base_url = _text(env, "DEEPSEEK_BASE_URL", "")
         deepseek_model = _text(env, "DEEPSEEK_MODEL", "")
@@ -241,6 +281,11 @@ class Settings:
             session_ttl_hours=session_ttl_hours,
             session_idle_minutes=session_idle_minutes,
             demo_session_quota=demo_session_quota,
+            run_max_duration_seconds=run_max_duration_seconds,
+            run_interrupt_scan_seconds=run_interrupt_scan_seconds,
+            run_lifecycle_contract_enabled=run_lifecycle_contract_enabled,
+            run_lifecycle_start_retry_seconds=run_lifecycle_start_retry_seconds,
+            run_lifecycle_start_recalibrate_seconds=run_lifecycle_start_recalibrate_seconds,
         )
 
 
@@ -281,6 +326,18 @@ def _positive_int(
         problems.append(name)
         return default
     return value
+
+
+def _flag(env: dict[str, str], name: str, default: bool, problems: list[str]) -> bool:
+    """读一个布尔开关：只认 1/0/true/false，其余记为「变量不合法」，只报变量名。"""
+
+    raw = _text(env, name, "1" if default else "0").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    problems.append(name)
+    return default
 
 
 def _is_origin(value: str) -> bool:

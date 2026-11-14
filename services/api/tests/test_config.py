@@ -234,3 +234,42 @@ def test_database_url_must_be_postgres():
 def test_local_object_path_is_absolute():
     settings = Settings.from_env(env())
     assert settings.local_object_path.is_absolute()
+
+
+def test_run_lifecycle_defaults_are_deploy_parameters():
+    """E3 B2：上限与扫描间隔有默认值，但不写进业务口径——部署可覆盖。"""
+
+    settings = Settings.from_env(env())
+    assert settings.run_max_duration_seconds == 7200
+    assert settings.run_lifecycle_start_retry_seconds == 60
+    assert settings.run_lifecycle_start_recalibrate_seconds == 600
+    assert settings.run_interrupt_scan_seconds == 3600
+
+    overridden = Settings.from_env(
+        env(RUN_MAX_DURATION_SECONDS="5400", RUN_INTERRUPT_SCAN_SECONDS="900")
+    )
+    assert overridden.run_max_duration_seconds == 5400
+    assert overridden.run_interrupt_scan_seconds == 900
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_run_lifecycle_values_must_be_positive_integers(value):
+    with pytest.raises(ConfigError) as info:
+        Settings.from_env(env(RUN_MAX_DURATION_SECONDS=value))
+    assert "RUN_MAX_DURATION_SECONDS" in error_names(info.value)
+
+
+def test_lifecycle_contract_behaviour_is_off_by_default():
+    """扫描与 API-12 409 是新契约行为：默认关闭，等与契约/前端类型同窗再打开。"""
+
+    assert Settings.from_env(env()).run_lifecycle_contract_enabled is False
+    assert (
+        Settings.from_env(env(RUN_LIFECYCLE_CONTRACT_ENABLED="1")).run_lifecycle_contract_enabled
+        is True
+    )
+
+
+def test_lifecycle_flag_only_accepts_true_or_false():
+    with pytest.raises(ConfigError) as info:
+        Settings.from_env(env(RUN_LIFECYCLE_CONTRACT_ENABLED="maybe"))
+    assert "RUN_LIFECYCLE_CONTRACT_ENABLED" in error_names(info.value)

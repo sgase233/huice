@@ -593,7 +593,10 @@ class EnterpriseSummaryList(WireModel):
     next_cursor: str | None
 
 
-RunStatus = Literal["queued", "running", "succeeded", "failed"]
+#: ``interrupted`` 由 D5 的中断扫描标记（E3 B2）。它只能在与契约 ``1.3.0-rc.1``
+#: 同窗发布后才会真正出现——契约明确「不允许后端单边先行」，所以扫描默认关闭，
+#: 见 ``RUN_LIFECYCLE_CONTRACT_ENABLED``。
+RunStatus = Literal["queued", "running", "succeeded", "failed", "interrupted"]
 
 
 class RunSummary(WireModel):

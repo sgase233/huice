@@ -103,6 +103,20 @@ class AccountsRepository:
             row = cur.fetchone()
         return None if row is None else row[0]
 
+    def enterprise_name_for_user(self, user_id: UUID) -> str | None:
+        """账号绑定的企业名；没有企业时 None。
+
+        只用于核对「这个账号是不是那只合成账号」，不用于对外展示（展示走企业接口）。
+        """
+
+        with self._db.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT e.name_synthetic FROM enterprise e WHERE e.owner_user_id = %s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+        return None if row is None else row[0]
+
     def update_password(self, *, user_id: UUID, password_hash: str) -> None:
         with self._db.connection() as conn, conn.transaction():
             conn.execute(

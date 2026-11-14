@@ -393,3 +393,56 @@ def test_read_run_errors(client, run_id, status):
     response = client.get(f"/api/v1/assessment-runs/{run_id}")
 
     assert response.status_code == status
+
+
+def test_a_failed_status_write_does_not_mask_the_original_error():
+    """连接在评估期间断了：fail() 落不进库，客户端仍要看到原始错误，不是新抛的 500。"""
+
+    from datetime import date
+    from uuid import uuid4
+
+    from app.agents.contracts import AgentContext
+    from app.agents.orchestrator import assess
+    from app.errors import ApiProblem
+    from app.schemas import AssessmentInput
+
+    class BrokenSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def fail(self, error_category):
+            raise RuntimeError("connection lost")
+
+    class Enterprise:
+        id = uuid4()
+        facts = []
+        fact_version = "f" * 64
+
+    class Repository:
+        def get_enterprise(self, enterprise_id):
+            return Enterprise()
+
+        def begin_run(self, header):
+            return BrokenSession()
+
+        def published_policy_snapshots(self, policy_ids):
+            raise ApiProblem(422, "POLICY_NOT_PUBLISHED", "存在尚未审核发布的政策。")
+
+    request = AssessmentInput.model_validate(
+        {
+            "enterpriseId": str(uuid4()),
+            "policyIds": [str(uuid4())],
+            "asOf": "2026-10-23T10:00:00+08:00",
+            "period": {"startDate": "2026-01-01", "endDate": "2026-12-31"},
+        }
+    )
+    context = AgentContext(
+        trace_id="t", as_of=request.as_of, period=(date(2026, 1, 1), date(2026, 12, 31))
+    )
+
+    with pytest.raises(ApiProblem) as caught:
+        assess(request=request, context=context, repository=Repository(), llm=None)
+    assert caught.value.code == "POLICY_NOT_PUBLISHED"

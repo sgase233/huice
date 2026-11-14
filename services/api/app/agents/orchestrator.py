@@ -20,8 +20,9 @@ from typing import Sequence
 from uuid import UUID, uuid4
 
 from ..domain import preparation, questioning, rules, versioning
-from ..errors import ApiProblem
+from ..errors import ApiProblem, StorageUnavailable
 from ..integrations.cache import EvaluationCache, NullCache, evaluation_key
+from ..integrations.storage import RunHeader
 from ..integrations.llm import LlmClient, LlmResult
 from ..schemas import (
     AssessmentInput,
@@ -62,139 +63,189 @@ def assess(
 ) -> AssessmentRun:
     trace = TraceRecorder(trace_id=context.trace_id, model_or_rule_version=rules.RULE_VERSION)
     created_at = datetime.now(timezone.utc)
+    # run id 在 T1 之前就定下：失败时留在库里的那一行与成功时返回的是同一个 id。
+    run_id = uuid4()
 
     if request.supersedes_run_id is not None:
         _check_supersedes(repository, request)
 
     enterprise = repository.get_enterprise(request.enterprise_id)
-    trace.add(
-        "profile",
-        input_summary=f"读取企业画像 {request.enterprise_id}",
-        output_summary=f"画像含 {len(enterprise.facts)} 条事实，版本 {enterprise.fact_version[:12]}",
-        object_refs=[{"type": "enterprise", "id": str(enterprise.id)}],
-    )
-
-    snapshots = repository.published_policy_snapshots(list(request.policy_ids))
-    trace.add(
-        "retrieval",
-        input_summary=f"检索 {len(request.policy_ids)} 项政策的已发布版本",
-        output_summary="、".join(f"{item.id}@{item.version}" for item in snapshots),
-        object_refs=[{"type": "policy", "id": str(item.id)} for item in snapshots],
-    )
-
-    facts = rules.FactTable(fact_snapshots(_enterprise_facts(enterprise)))
-    period = (request.period.start_date, request.period.end_date)
-    as_of_date = versioning.shanghai_date(request.as_of)
-
-    evaluations, cache_hits = _evaluate_all(
-        snapshots=snapshots,
-        facts=facts,
-        period=period,
-        as_of_date=as_of_date,
-        as_of=request.as_of,
+    header = RunHeader(
+        id=run_id,
         enterprise_id=enterprise.id,
-        fact_version=enterprise.fact_version,
-        cache=cache or DISABLED_CACHE,
-    )
-    evaluation_summary = "；".join(f"{item.policy_id}={item.result}" for item in evaluations)
-    if cache_hits:
-        evaluation_summary += f"（其中 {cache_hits}/{len(evaluations)} 项复用缓存求值）"
-    trace.add(
-        "evaluation",
-        input_summary=f"按 {len(snapshots)} 项政策、{len(enterprise.facts)} 条事实求值",
-        output_summary=evaluation_summary,
-    )
-
-    missing_by_policy = {item.policy_id: _missing_refs(item) for item in evaluations}
-    pending = [
-        questioning.PendingAssessment(
-            policy_id=item.policy_id, result=item.result, missing=missing_by_policy[item.policy_id]
-        )
-        for item in evaluations
-    ]
-    skipped = [
-        (ref.key, ref.period.start_date, ref.period.end_date)
-        for ref in (request.skipped_fact_refs or [])
-    ]
-    question = questioning.choose_next_question(pending, skipped)
-    trace.add(
-        "questioning",
-        input_summary=f"待定政策 {sum(1 for item in pending if item.result == rules.INSUFFICIENT)} 项",
-        output_summary=(
-            f"下一个问题：{question.fact_ref[0]}，影响 {sum(1 for item in pending if question.fact_ref in item.missing)} 项政策"
-            if question
-            else "没有需要补充的事实"
-        ),
-    )
-
-    assessments: list[PolicyAssessment] = []
-    model_usages: list[LlmResult] = []
-    unknown_usages = 0
-    known_refs = {fact.ref for fact in facts.values() if fact.known}
-    for snapshot, evaluation in zip(snapshots, evaluations):
-        assessment, usage, failure = _policy_assessment(
-            snapshot=snapshot,
-            evaluation=evaluation,
-            missing=missing_by_policy[snapshot.id],
-            question=question,
-            llm=llm,
-            boundary=versioning.PolicyBoundary(
-                effective_to=snapshot.effective_to,
-                window_closes_at=snapshot.window_closes_at,
-            ),
-            period=period,
-            known_refs=known_refs,
-            now=created_at,
-        )
-        assessments.append(assessment)
-        if usage is not None and usage.usage_known:
-            model_usages.append(usage)
-        elif usage is not None:
-            # 回答拿到了但上游没给用量：不计入合计，按未知单列。
-            unknown_usages += 1
-        if failure is not None and failure.usage_unknown:
-            unknown_usages += 1
-        if usage is not None or failure is not None:
-            # 失败也记一行：模型可能已被调用并计费，不能因为解析失败就从账上消失。
-            _log_model_call(
-                purpose="explanation",
-                usage=usage,
-                usage_unknown=failure.usage_unknown if failure is not None else False,
-                policy_id=snapshot.id,
-                version=snapshot.version,
-            )
-
-    trace.add(
-        "explanation",
-        input_summary="按四态生成解释",
-        output_summary=_explanation_summary(assessments, model_usages, unknown_usages),
-    )
-
-    run = AssessmentRun(
-        id=uuid4(),
-        enterprise_id=enterprise.id,
-        period=Period(start_date=period[0], end_date=period[1]),
         as_of=request.as_of,
         created_at=created_at,
-        policy_version_map={str(item.id): item.version for item in snapshots},
+        period_start=request.period.start_date,
+        period_end=request.period.end_date,
         fact_version=enterprise.fact_version,
-        rule_version=rules.RULE_VERSION,
+        model_or_rule_version=rules.RULE_VERSION,
         supersedes_run_id=request.supersedes_run_id,
-        assessments=assessments,
-    )
-
-    repository.save_run(
-        run=run,
-        dependencies={item.policy_id: item.dependencies for item in evaluations},
-        trace_steps=trace.steps,
-        trace_id=context.trace_id,
-        policy_version_ids={item.id: item.version_id for item in snapshots},
         user_id=user_id,
     )
+    # T1：先落 running 行再评估。评估失败不影响这一行——它正是「有人发起了这次判断」
+    # 的记录，失败分类写在 error_category 里，不写堆栈。
+    with repository.begin_run(header) as session:
+        try:
+            trace.add(
+                "profile",
+                input_summary=f"读取企业画像 {request.enterprise_id}",
+                output_summary=f"画像含 {len(enterprise.facts)} 条事实，版本 {enterprise.fact_version[:12]}",
+                object_refs=[{"type": "enterprise", "id": str(enterprise.id)}],
+            )
+
+            snapshots = repository.published_policy_snapshots(list(request.policy_ids))
+            trace.add(
+                "retrieval",
+                input_summary=f"检索 {len(request.policy_ids)} 项政策的已发布版本",
+                output_summary="、".join(f"{item.id}@{item.version}" for item in snapshots),
+                object_refs=[{"type": "policy", "id": str(item.id)} for item in snapshots],
+            )
+
+            facts = rules.FactTable(fact_snapshots(_enterprise_facts(enterprise)))
+            period = (request.period.start_date, request.period.end_date)
+            as_of_date = versioning.shanghai_date(request.as_of)
+
+            evaluations, cache_hits = _evaluate_all(
+                snapshots=snapshots,
+                facts=facts,
+                period=period,
+                as_of_date=as_of_date,
+                as_of=request.as_of,
+                enterprise_id=enterprise.id,
+                fact_version=enterprise.fact_version,
+                cache=cache or DISABLED_CACHE,
+            )
+            evaluation_summary = "；".join(f"{item.policy_id}={item.result}" for item in evaluations)
+            if cache_hits:
+                evaluation_summary += f"（其中 {cache_hits}/{len(evaluations)} 项复用缓存求值）"
+            trace.add(
+                "evaluation",
+                input_summary=f"按 {len(snapshots)} 项政策、{len(enterprise.facts)} 条事实求值",
+                output_summary=evaluation_summary,
+            )
+
+            missing_by_policy = {item.policy_id: _missing_refs(item) for item in evaluations}
+            pending = [
+                questioning.PendingAssessment(
+                    policy_id=item.policy_id, result=item.result, missing=missing_by_policy[item.policy_id]
+                )
+                for item in evaluations
+            ]
+            skipped = [
+                (ref.key, ref.period.start_date, ref.period.end_date)
+                for ref in (request.skipped_fact_refs or [])
+            ]
+            question = questioning.choose_next_question(pending, skipped)
+            trace.add(
+                "questioning",
+                input_summary=f"待定政策 {sum(1 for item in pending if item.result == rules.INSUFFICIENT)} 项",
+                output_summary=(
+                    f"下一个问题：{question.fact_ref[0]}，影响 {sum(1 for item in pending if question.fact_ref in item.missing)} 项政策"
+                    if question
+                    else "没有需要补充的事实"
+                ),
+            )
+
+            assessments: list[PolicyAssessment] = []
+            model_usages: list[LlmResult] = []
+            unknown_usages = 0
+            known_refs = {fact.ref for fact in facts.values() if fact.known}
+            for snapshot, evaluation in zip(snapshots, evaluations):
+                assessment, usage, failure = _policy_assessment(
+                    snapshot=snapshot,
+                    evaluation=evaluation,
+                    missing=missing_by_policy[snapshot.id],
+                    question=question,
+                    llm=llm,
+                    boundary=versioning.PolicyBoundary(
+                        effective_to=snapshot.effective_to,
+                        window_closes_at=snapshot.window_closes_at,
+                    ),
+                    period=period,
+                    known_refs=known_refs,
+                    now=created_at,
+                )
+                assessments.append(assessment)
+                if usage is not None and usage.usage_known:
+                    model_usages.append(usage)
+                elif usage is not None:
+                    # 回答拿到了但上游没给用量：不计入合计，按未知单列。
+                    unknown_usages += 1
+                if failure is not None and failure.usage_unknown:
+                    unknown_usages += 1
+                if usage is not None or failure is not None:
+                    # 失败也记一行：模型可能已被调用并计费，不能因为解析失败就从账上消失。
+                    _log_model_call(
+                        purpose="explanation",
+                        usage=usage,
+                        usage_unknown=failure.usage_unknown if failure is not None else False,
+                        policy_id=snapshot.id,
+                        version=snapshot.version,
+                    )
+
+            trace.add(
+                "explanation",
+                input_summary="按四态生成解释",
+                output_summary=_explanation_summary(assessments, model_usages, unknown_usages),
+            )
+
+            run = AssessmentRun(
+                id=run_id,
+                enterprise_id=enterprise.id,
+                period=Period(start_date=period[0], end_date=period[1]),
+                as_of=request.as_of,
+                created_at=created_at,
+                policy_version_map={str(item.id): item.version for item in snapshots},
+                fact_version=enterprise.fact_version,
+                rule_version=rules.RULE_VERSION,
+                supersedes_run_id=request.supersedes_run_id,
+                assessments=assessments,
+            )
+
+            session.succeed(
+                run=run,
+                dependencies={item.policy_id: item.dependencies for item in evaluations},
+                trace_steps=trace.steps,
+                trace_id=context.trace_id,
+                policy_version_ids={item.id: item.version_id for item in snapshots},
+            )
+        except Exception as exc:
+            # 失败落库不能掩盖原始异常：连接在评估期间断了时，这里再抛一次会让客户端
+            # 看到 500 而不是真正的失败原因。落不进去就保持 running，交给中断扫描。
+            try:
+                session.fail(_error_category(exc))
+            except Exception:  # noqa: BLE001 - 原始异常优先
+                logger.warning("失败状态没有落库，运行行会保持 running，等中断扫描处理", exc_info=True)
+            raise
+
     return run
 
 
 # ------------------------------------------------------------------ 组装件
+
+
+def _error_category(exc: BaseException) -> str:
+    """把异常归到四类失败之一（E3 B2）。
+
+    分类只进 ``assessment_run.error_category``，用于指标统计；响应体与日志口径不变，
+    库里绝不出现消息、堆栈或连接串。模型降级走的是解释层的 ``saved`` 路径，不会走到
+    这里——``model_unavailable`` 留给「整轮都调不通上游」的情形。
+    """
+
+    if isinstance(exc, StorageUnavailable):
+        return "dependency_unavailable"
+    if isinstance(exc, ApiProblem):
+        return "policy_not_published" if exc.code == "POLICY_NOT_PUBLISHED" else "internal"
+    if type(exc).__name__ in {
+        "LlmError",
+        "ModelUnavailable",
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectError",
+        "ReadTimeout",
+    }:
+        return "model_unavailable"
+    return "internal"
 
 
 def _check_supersedes(repository, request: AssessmentInput) -> None:

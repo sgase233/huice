@@ -73,6 +73,38 @@ class FakeObjectStore:
         self.deleted.append(key)
 
 
+class FakeRunSession:
+    """``PolicyRepository.begin_run`` 的替身：只区分成功与失败两条路径。"""
+
+    def __init__(self, repository, header) -> None:
+        self._repository = repository
+        self._header = header
+        self.status = "running"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+    def succeed(
+        self, *, run, dependencies, trace_steps, trace_id, policy_version_ids
+    ) -> None:
+        self._repository.save_run(
+            run=run,
+            dependencies=dependencies,
+            trace_steps=trace_steps,
+            trace_id=trace_id,
+            policy_version_ids=policy_version_ids,
+            user_id=self._header.user_id,
+        )
+        self.status = "succeeded"
+
+    def fail(self, error_category: str) -> None:
+        self.status = "failed"
+        self._repository.run_failures[self._header.id] = error_category
+
+
 class FakeRepository:
     """内存版仓储，只复述入参，不模拟 SQL 行为。
 
@@ -102,6 +134,9 @@ class FakeRepository:
         # E1 归属：企业 → owner_user_id（None 表示无主），run → 发起账号。
         self.enterprise_owners: dict[object, object] = {}
         self.run_users: dict[object, object] = {}
+        # E3 B2 生命周期：失败分类与 T1 落下的身份信息（真库是 assessment_run 的列）。
+        self.run_headers: dict[object, object] = {}
+        self.run_failures: dict[object, str] = {}
         # 演示配额：sid_hash → 已占名额（真库是 ``demo_quota.created``）。
         self.demo_quota_claimed: dict[str, int] = {}
         self.demo_quota_expires: dict[str, datetime] = {}
@@ -535,6 +570,12 @@ class FakeRepository:
             "period_end": run.period.end_date,
             "policy_ids": [item.policy_id for item in run.assessments],
         }
+
+    def begin_run(self, header):
+        """T1 替身：只记下身份信息，不模拟锁与事务。"""
+
+        self.run_headers[header.id] = header
+        return FakeRunSession(self, header)
 
     def save_run(
         self, *, run, dependencies, trace_steps, trace_id, policy_version_ids, user_id=None
