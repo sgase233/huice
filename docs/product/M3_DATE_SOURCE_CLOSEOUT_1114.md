@@ -141,6 +141,7 @@ M1 的 `--apply` 回告里有两个数：
 ## 7. 本次修改文件
 
 - 新建：`docs/product/M3_DATE_SOURCE_CLOSEOUT_1114.md`（本文件）。
+- PR #69 收口评论：https://github.com/sgase233/huice/pull/69#issuecomment-6878871933
 - 更新：`docs/product/POLICY_SCOPE.md` VIS-06 节（加 B1a 执行收口与剩余发布条件）。
 - 更新：`docs/devlog/M3.md`（记录本次实际工作）。
 - **未修改**：`infra/**`、`contracts/**`、`apps/web/**`、`services/api/**`、`data/**`、冻结输入。
