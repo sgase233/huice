@@ -9,6 +9,7 @@
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
 | `issue-session.py` | 不安装，直接`/opt/huice/venv/bin/python` 跑 | 签发演示会话 cookie 并写 `demo_quota` 起始行（§3.1） |
 | `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
+| `import-policy-sources.py` + `policy-source-import.json` + `policy-sources/` | 不安装，直接跑 | 补 SMART／GREEN 两个只有版本与来源的政策（它们的窗口只在附件里，之前没导入）——`011` 回填干跑的前置（§2.2） |
 | `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version_date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 不是批准值时 `--apply` 照样拒绝；数据复核前只干跑（§2.1 迁移段） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
@@ -187,6 +188,7 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 `011_date_provenance.sql` 只建旁表；日期来源的取值由 `backfill-date-provenance.py` + `date-provenance-backfill.json` 回填。**顺序固定**：
 
+0. **先确认 9 个版本都在库里**：`policy_version` 缺 SMART／GREEN 时回填会整批停下（那两条的窗口只在附件里，`data/policies/sources/` 没有可导入正文）。缺就先用 `import-policy-sources.py` 补——只建版本与来源，不写条款、不发布；
 1. `bash /opt/huice/app/infra/deploy/migrate.sh`——建表；
 2. 不加 `--apply` 干跑一次，核对匹配到的版本数与被改动条目，**并逐行看脚本打印的「绑到哪个文件」**（干跑不写库）；
 3. M3 逐条对官方原文复核，把数据文件 `reviewStatus` 从 `draft-pending-m3` 改成批准值（`APPLY_REVIEW_STATUSES`，当前是 `approved-by-m3`），**同时补 `reviewEvidence`**；
@@ -216,6 +218,7 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 - **数据文件里的附件序号是「第几份附件」，从 1 起**，不是数据库 `policy_source.ordinal`（那里正文占 0、附件从 1 起但会随份数变化）。脚本按 `ORDER BY ordinal` 的第 n 份去查，不拿绝对号硬匹配。
 - **`verified` 的出处必须属于该版本**：脚本在该 `policy_version_id` 下查 `policy_source`，把真实 id 写进 jsonb；找不到就整批停下、一行不写。年度指南若不在该版本的来源里，只能标 `unknown`（该版本没有窗口依据）或 `unverified`（有值但没核）并写 note，不能拿别处的依据充数。
 - **版本粒度口径（F4，M3 复核提出）**：`version` 记**规程/细则的文号**，`sourceUrl` 是载有窗口的**年度申报通知**页。窗口出处写通知的正文或附件，并在 note 里点明「窗口来源不是版本文号对应的规程」；把年度通知单独建 `policy_version` 会改政策版本清单与前端展示，不在回填里做。
+- **本批不承载 `published_at` 的来源（F12）**：`011` 与回填只覆盖 `effectiveFrom` / `effectiveTo` / `applicationWindow`。页面与验收不得把「发布日期来源」计入 VIS-06 覆盖，字面上写「发布日期来源未承载」。
 - **幂等但不静默覆盖**：值相同不写；库里已有**不同**的值时停下返回 `3`，确认旧值不是复核后补的再加 `--overwrite`。
 - 退出码：`0` 成功（含干跑）；`1` 数据库读写失败；`2` 数据文件/环境不合法、版本或来源定位不到、数据未获批准或缺少复核证据；`3` 与库里已有值冲突且未加 `--overwrite`。报错只给字段路径与变量名，不含连接串。
 

@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "note": "只补两类版本：申报窗口只写在附件里、data/policies/sources 下没有正文的 SMART 与 GREEN。正文取自通知页（HTML 正文段），附件取自官方附件：SMART 的 12201125.zip（sha256 8ce9d400…）内「附件1.docx」用 pandoc 转文本，GREEN 的 11845882.doc（sha256 7d021ee0…）用 antiword 转文本。只建版本与来源，不写条款、不发布：条款待 M3 补 criteria 后走正常发布流程。",
+  "entries": [
+    {
+      "version": "深工信规〔2025〕4号",
+      "title": "市工业和信息化局关于发布2025年智能终端产业发展扶持计划项目申报指南的通知",
+      "type": "grant",
+      "issuer": "深圳市工业和信息化局",
+      "region": "440300",
+      "publishedAt": "2025-05-28",
+      "effectiveFrom": "2025-06-13",
+      "effectiveTo": "2025-07-07",
+      "applicationWindow": {
+        "opensAt": "2025-06-13",
+        "closesAt": "2025-07-07",
+        "opensTime": "00:00",
+        "closesTime": "18:00"
+      },
+      "sourceUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_12201125.html",
+      "officialEntryUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_12201125.html",
+      "sources": [
+        {
+          "kind": "body",
+          "file": "policy-sources/SMART-body.txt",
+          "fileName": "post_12201125.html.txt",
+          "mimeType": "text/plain"
+        },
+        {
+          "kind": "attachment",
+          "file": "policy-sources/SMART-attachment-1.txt",
+          "fileName": "市工业和信息化局关于发布2025年智能终端产业发展扶持计划项目申报指南的通知附件1.docx",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+      ]
+    },
+    {
+      "version": "深工信规〔2024〕12号",
+      "title": "市工业和信息化局关于发布2025年深圳市工业和信息化局企业技术改造绿色制造试点示范奖励项目申报指南的通知",
+      "type": "grant",
+      "issuer": "深圳市工业和信息化局",
+      "region": "440300",
+      "publishedAt": "2024-11-30",
+      "effectiveFrom": "2024-12-21",
+      "effectiveTo": "2025-01-06",
+      "applicationWindow": {
+        "opensAt": "2024-12-21",
+        "closesAt": "2025-01-06",
+        "opensTime": "00:00",
+        "closesTime": "18:00"
+      },
+      "sourceUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_11845882.html",
+      "officialEntryUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_11845882.html",
+      "sources": [
+        {
+          "kind": "body",
+          "file": "policy-sources/GREEN-body.txt",
+          "fileName": "post_11845882.html.txt",
+          "mimeType": "text/plain"
+        },
+        {
+          "kind": "attachment",
+          "file": "policy-sources/GREEN-attachment-1.txt",
+          "fileName": "11845882.doc",
+          "mimeType": "application/msword"
+        }
+      ]
+    }
+  ]
+}

@@ -103,6 +103,15 @@ def test_shipped_entries_never_treat_window_as_validity() -> None:
     assert "不是政策有效期" in smart["note"]
 
 
+def test_tax_sme_locators_point_at_the_clause_that_holds_the_date() -> None:
+    """M3 复核 P3：日期在公告第一、二条，截止日还要看第三条（2027-12-31）。"""
+
+    entries = {entry.version: entry for entry in backfill.load_data(DATA).entries}
+    tax = entries["财政部 税务总局公告2023年第12号"].provenance
+    assert tax["effectiveFrom"]["locator"] == "公告第一、二条"
+    assert tax["effectiveTo"]["locator"] == "公告第一、二、三条"
+
+
 def test_shipped_attachment_ordinals_are_one_based() -> None:
     """数据里写的是「第几份附件」：从 1 起。写 0 会被当成正文那行，整批回填失败。"""
     for entry in backfill.load_data(DATA).entries:
