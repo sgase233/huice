@@ -221,6 +221,24 @@ def test_answered_unknown_and_unverified_are_distinct(database_url_schema: str) 
     assert payload["totals"]["answeredUnknownCount"] == 1
 
 
+def test_repeated_manual_review_reason_is_listed_once(database_url_schema: str) -> None:
+    expression = {
+        "op": "or",
+        "children": [
+            {"op": "manual_review", "reason": "同一句人工核查说明。"},
+            {"op": "manual_review", "reason": "同一句人工核查说明。"},
+        ],
+    }
+    with psycopg.connect(database_url_schema) as conn:
+        enterprise_id = _enterprise(conn)
+        _published_version(conn, [expression])
+        conn.commit()
+
+    payload = _build(database_url_schema, enterprise_id)
+
+    assert [item["reason"] for item in payload["manualReview"]] == ["同一句人工核查说明。"]
+
+
 def test_an_empty_scope_has_ratio_null(database_url_schema: str) -> None:
     with psycopg.connect(database_url_schema) as conn:
         enterprise_id = _enterprise(conn)

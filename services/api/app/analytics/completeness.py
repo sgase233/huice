@@ -348,8 +348,15 @@ class CompletenessReader:
         self, scope: Sequence[_ScopeVersion], criteria: Sequence[Any]
     ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
+        seen: set[tuple[UUID, UUID | None, str]] = set()
         for policy_id, version, criterion_id, title, expression in criteria:
             for reason in _manual_review_reasons(expression):
+                # 同一条件在多个 OR 分支里重复写了同一条人工核查说明时，只列一次：
+                # 页面要的是「这条条件需要人工看什么」，不是表达式里的节点数。
+                key = (policy_id, criterion_id, reason)
+                if key in seen:
+                    continue
+                seen.add(key)
                 items.append(
                     {
                         "policyId": policy_id,
