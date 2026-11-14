@@ -206,10 +206,15 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `MODEL_MODE` | `fixture`（首轮部署；联调通过后改 `deepseek`，此时还需 `DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL`/`DEEPSEEK_API_KEY`） |
 | `OBJECT_STORE_MODE` | `local` 或 `obs`（`obs` 还需 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK`） |
 | `LOCAL_OBJECT_DIR` | `.local-objects`（`obs` 模式下不生效） |
+| `RUN_MAX_DURATION_SECONDS` | 可选，默认 `7200`。运行超过它仍满足另两条判据时，启动/定时扫描才把 `running` 标成 `interrupted`。这是**部署参数**，不是业务口径；按实际模型与部署条件调，不要写进验收文档当阈值 |
+| `RUN_INTERRUPT_SCAN_SECONDS` | 可选，默认 `3600`。中断扫描间隔；启动时另扫一次，所以「重启时还没超时、之后才超时」的行不会一直停在 `running` |
+| `RUN_INTERRUPT_SCAN_ENABLED` | 可选，默认 `0`（关闭）。`interrupted` 是 `RunStatus` 的新取值，契约要求与前端类型同窗升级、**不允许后端单边先行**；扫描只在与契约 `1.3.0-rc.1` 同时发布时才置 `1`。关闭时残留的 `running` 行保持原样（与 E1 的口径一致） |
 
 ```bash
 systemctl restart huice-api
 ```
+
+**中断扫描的前提（运维）**：判定「原连接已断开」用的是 `pg_stat_activity` 里的 `(pid, backend_start)` 成对比较，**PostgreSQL 大版本升级后 `backend_start` 的语义与取值格式以新版本为准**；升级前先把库里残留的 `running` 行清空（`SELECT count(*) FROM assessment_run WHERE status = 'running';`，确认没有在跑的任务后按运维流程处理），否则升级那一刻的判据会失真。advisory lock 的键用 `hashtextextended(text, 0)`，同样不保证跨大版本稳定。
 
 ### 3.1 演示会话 cookie（`restricted` 模式）
 

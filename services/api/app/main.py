@@ -93,13 +93,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         # E3 B2：启动扫一次残留的 running 行，之后按 RUN_INTERRUPT_SCAN_SECONDS 周期扫。
         # 只扫一次会让「重启时还没超时、之后才超时」的行永远停在 running。
-        scan_task = asyncio.create_task(_run_interrupt_scan(repository, resolved))
+        # 默认关闭：interrupted 是 RunStatus 的新取值，契约要求与前端类型同窗升级，
+        # 不允许后端单边先行；与 1.3.0-rc.1 同窗发布时再打开。
+        scan_task = (
+            asyncio.create_task(_run_interrupt_scan(repository, resolved))
+            if resolved.run_interrupt_scan_enabled
+            else None
+        )
         try:
             yield
         finally:
-            scan_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await scan_task
+            if scan_task is not None:
+                scan_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await scan_task
         database.close()
         close_store = getattr(object_store, "close", None)
         if callable(close_store):

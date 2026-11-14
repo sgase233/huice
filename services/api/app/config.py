@@ -42,6 +42,9 @@ DEFAULT_DEMO_SESSION_QUOTA = 20
 #: 「重启时还没超时、之后才超时」的行会一直停在 running。
 DEFAULT_RUN_MAX_DURATION_SECONDS = 7200
 DEFAULT_RUN_INTERRUPT_SCAN_SECONDS = 3600
+#: 扫描默认**关闭**：``interrupted`` 是 RunStatus 的新取值，契约要求与前端类型同窗升级，
+#: 不允许后端单边先行。与 ``1.3.0-rc.1`` 同窗发布时再置 1。
+DEFAULT_RUN_INTERRUPT_SCAN_ENABLED = False
 
 
 class ConfigError(RuntimeError):
@@ -78,6 +81,7 @@ class Settings:
     demo_session_quota: int = DEFAULT_DEMO_SESSION_QUOTA
     run_max_duration_seconds: int = DEFAULT_RUN_MAX_DURATION_SECONDS
     run_interrupt_scan_seconds: int = DEFAULT_RUN_INTERRUPT_SCAN_SECONDS
+    run_interrupt_scan_enabled: bool = DEFAULT_RUN_INTERRUPT_SCAN_ENABLED
 
     @property
     def effective_public_origin(self) -> str:
@@ -195,6 +199,9 @@ class Settings:
         run_interrupt_scan_seconds = _positive_int(
             env, "RUN_INTERRUPT_SCAN_SECONDS", DEFAULT_RUN_INTERRUPT_SCAN_SECONDS, problems
         )
+        run_interrupt_scan_enabled = _flag(
+            env, "RUN_INTERRUPT_SCAN_ENABLED", DEFAULT_RUN_INTERRUPT_SCAN_ENABLED, problems
+        )
 
         deepseek_base_url = _text(env, "DEEPSEEK_BASE_URL", "")
         deepseek_model = _text(env, "DEEPSEEK_MODEL", "")
@@ -257,6 +264,7 @@ class Settings:
             demo_session_quota=demo_session_quota,
             run_max_duration_seconds=run_max_duration_seconds,
             run_interrupt_scan_seconds=run_interrupt_scan_seconds,
+            run_interrupt_scan_enabled=run_interrupt_scan_enabled,
         )
 
 
@@ -297,6 +305,18 @@ def _positive_int(
         problems.append(name)
         return default
     return value
+
+
+def _flag(env: dict[str, str], name: str, default: bool, problems: list[str]) -> bool:
+    """读一个布尔开关：只认 1/0/true/false，其余记为「变量不合法」，只报变量名。"""
+
+    raw = _text(env, name, "1" if default else "0").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    problems.append(name)
+    return default
 
 
 def _is_origin(value: str) -> bool:
