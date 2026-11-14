@@ -188,8 +188,8 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 `011_date_provenance.sql` 只建旁表；日期来源的取值由 `backfill-date-provenance.py` + `date-provenance-backfill.json` 回填。**顺序固定**：
 
 1. `bash /opt/huice/app/infra/deploy/migrate.sh`——建表；
-2. 不加 `--apply` 干跑一次，核对匹配到的版本数与被改动条目（干跑不写库）；
-3. M3 逐条对官方原文复核，把数据文件 `reviewStatus` 从 `draft-pending-m3` 改成批准值（`APPLY_REVIEW_STATUSES`，当前是 `approved-by-m3`）；
+2. 不加 `--apply` 干跑一次，核对匹配到的版本数与被改动条目，**并逐行看脚本打印的「绑到哪个文件」**（干跑不写库）；
+3. M3 逐条对官方原文复核，把数据文件 `reviewStatus` 从 `draft-pending-m3` 改成批准值（`APPLY_REVIEW_STATUSES`，当前是 `approved-by-m3`），**同时补 `reviewEvidence`**；
 4. 再 `--apply` 写库。
 
 ```bash
@@ -201,10 +201,23 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
   /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/backfill-date-provenance.py --apply   # 第 3 步之后
 ```
 
+- **批准 = 状态 + 证据**：`reviewStatus` 取批准值时，数据文件还必须给 `reviewEvidence`——`reviewedBy`（谁复核）、`reviewedAt`（`YYYY-MM-DD`）、`reference`（复核记录在哪：PR 评论链接、仓库文件或提交）。只把状态改成 `approved-by-m3` 而不给证据，`--apply` 照样返回 `2`。理由很直接：审计表里那句「approved-by-m3」得能追到人和记录。
+
+  ```json
+  "reviewStatus": "approved-by-m3",
+  "reviewEvidence": {
+    "reviewedBy": "wlj80176-creator",
+    "reviewedAt": "2026-11-14",
+    "reference": "https://github.com/sgase233/huice/pull/69#issuecomment-…"
+  }
+  ```
+
+- **干跑会打印每条日期字段绑到哪一行**：`entries[i] <文号> applicationWindow → 附件第 1 份（policy_source.ordinal=1）：<文件名>（大小）`。压缩件（`.zip`/`.rar`/`.7z`）另给一条提示——整包导入时「第 1 份」是包、逐份导入时是包内文件，两种情况的绑定不同，只能靠这一行看出来。
 - **数据文件里的附件序号是「第几份附件」，从 1 起**，不是数据库 `policy_source.ordinal`（那里正文占 0、附件从 1 起但会随份数变化）。脚本按 `ORDER BY ordinal` 的第 n 份去查，不拿绝对号硬匹配。
-- **`verified` 的出处必须属于该版本**：脚本在该 `policy_version_id` 下查 `policy_source`，把真实 id 写进 jsonb；找不到就整批停下、一行不写。年度指南若不在该版本的来源里，只能标 `unverified` 并写 note，不能拿别处的依据充数。
+- **`verified` 的出处必须属于该版本**：脚本在该 `policy_version_id` 下查 `policy_source`，把真实 id 写进 jsonb；找不到就整批停下、一行不写。年度指南若不在该版本的来源里，只能标 `unknown`（该版本没有窗口依据）或 `unverified`（有值但没核）并写 note，不能拿别处的依据充数。
+- **版本粒度口径（F4，M3 复核提出）**：`version` 记**规程/细则的文号**，`sourceUrl` 是载有窗口的**年度申报通知**页。窗口出处写通知的正文或附件，并在 note 里点明「窗口来源不是版本文号对应的规程」；把年度通知单独建 `policy_version` 会改政策版本清单与前端展示，不在回填里做。
 - **幂等但不静默覆盖**：值相同不写；库里已有**不同**的值时停下返回 `3`，确认旧值不是复核后补的再加 `--overwrite`。
-- 退出码：`0` 成功（含干跑）；`1` 数据库读写失败；`2` 数据文件/环境不合法、版本或来源定位不到、或数据未获批准；`3` 与库里已有值冲突且未加 `--overwrite`。报错只给字段路径与变量名，不含连接串。
+- 退出码：`0` 成功（含干跑）；`1` 数据库读写失败；`2` 数据文件/环境不合法、版本或来源定位不到、数据未获批准或缺少复核证据；`3` 与库里已有值冲突且未加 `--overwrite`。报错只给字段路径与变量名，不含连接串。
 
 ## 3. 填配置
 

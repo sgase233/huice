@@ -8,12 +8,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from uuid import uuid4
 
 import pytest
 import psycopg
 
+from app.agents.ingestion import PreparedSource
 from app.schemas import PolicyImportMetadata
 from db_support import create, source
 from support import metadata_payload
@@ -67,6 +69,14 @@ def _attachment_ids(dsn: str, version_id) -> list[str]:
     return [row[0] for row in rows]
 
 
+#: 批准状态要配复核证据，否则 ``--apply`` 被拒绝——回填的每个写入都要能追到复核记录。
+EVIDENCE = {
+    "reviewedBy": "wlj80176-creator",
+    "reviewedAt": "2026-11-14",
+    "reference": "https://github.com/sgase233/huice/pull/69#issuecomment-1",
+}
+
+
 def _write(
     tmp_path,
     provenance: dict,
@@ -74,6 +84,7 @@ def _write(
     source_url: str = SOURCE_URL,
     version: str = "深工信规〔2025〕4号",
     review_status: str = "approved-by-m3",
+    review_evidence: dict | None = EVIDENCE,
 ):
     data = {
         "version": 1,
@@ -86,6 +97,8 @@ def _write(
             }
         ],
     }
+    if review_evidence is not None:
+        data["reviewEvidence"] = review_evidence
     path = tmp_path / "data.json"
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     return path
@@ -323,6 +336,94 @@ def test_backfill_never_touches_published_version(database_url_schema: str, repo
     assert after[0] == before[0]
     assert after[1] == "published"
     assert stored["effectiveFrom"]["status"] == "verified"
+
+
+def test_apply_requires_review_evidence_not_just_the_status(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """状态写了批准值但没给复核记录：``--apply`` 返回 2 且一行不写。"""
+    create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    path = _write(
+        tmp_path,
+        {"version": 1, "effectiveTo": {"status": "unknown"}},
+        review_evidence=None,
+    )
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    assert backfill.run(path, apply=True) == 2
+    with psycopg.connect(database_url_schema) as conn:
+        count = conn.execute(
+            "SELECT count(*) FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        ).fetchone()[0]
+    assert count == 0
+
+
+def test_dry_run_prints_the_resolved_source_row(
+    database_url_schema: str, repo, tmp_path, monkeypatch, capsys
+) -> None:
+    """干跑要看得见绑到哪个文件：这是「第几份附件」唯一能被人工核对的入口（F13）。"""
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["body", "attachment", "attachment"])
+    path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1 七、受理时间",
+            },
+        },
+    )
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    assert backfill.run(path, apply=False) == 0
+    out = capsys.readouterr().out
+    assert "applicationWindow → 附件第 1 份（policy_source.ordinal=1）：attachment.txt" in out
+
+
+def test_dry_run_warns_when_the_attachment_is_an_archive(
+    database_url_schema: str, repo, tmp_path, monkeypatch, capsys
+) -> None:
+    """整包导入的压缩件：绑到的是包而不是包内文件，干跑必须提示。"""
+    metadata = PolicyImportMetadata.model_validate(
+        metadata_payload(version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    )
+    repo.create_policy_version(
+        metadata=metadata,
+        sources=[
+            PreparedSource(
+                kind="attachment",
+                file_name="附件包.zip",
+                mime_type="application/zip",
+                text="zip",
+                content_hash=hashlib.sha256(b"zip").hexdigest(),
+                byte_size=3,
+            )
+        ],
+        storage_keys=["local/0.zip"],
+        trace_id=str(uuid4()),
+    )
+    path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1 七、受理时间",
+            },
+        },
+    )
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    assert backfill.run(path, apply=False) == 0
+    err = capsys.readouterr().err
+    assert "压缩件" in err
+    assert "附件包.zip" in err
+    # 提示不等于失败：干跑本身仍然成功，改不改成 verified 由人看过输出再定
+    assert backfill.run(path, apply=False) == 0
 
 
 def test_backfill_refuses_unknown_version_and_writes_nothing(database_url_schema: str, repo, tmp_path, monkeypatch) -> None:

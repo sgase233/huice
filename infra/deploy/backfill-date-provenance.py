@@ -32,7 +32,16 @@
    数据文件的 ``reviewStatus`` 不是批准值（``APPLY_REVIEW_STATUSES``）时，``--apply``
    同样拒绝执行。防误写不能只靠「记得别加参数」。
 
-5. **不回显敏感信息**：``DATABASE_URL`` 只从环境读（不上命令行，避免进 ``ps`` 与
+   批准不是一个字符串：``reviewStatus`` 取批准值时必须同时给 ``reviewEvidence``
+   （``reviewedBy`` / ``reviewedAt`` / ``reference``——谁在什么时候、依据哪份记录复核的）。
+   只写 ``approved-by-m3`` 而不给出处，等于在审计表里放一句没人签过字的话。
+
+5. **干跑要说清楚绑到了哪一行**：每条日期字段解析出的 ``policy_source`` 行都会打印
+   文件名、绝对 ``ordinal`` 与字节数，撞到压缩包（``.zip``/``.rar``/``.7z``）另外提示。
+   数据文件写的是「第几份附件」，整包导入与逐份导入得到的「第 1 份」不是同一个东西——
+   这个风险靠干跑的输出发现，不靠脚本事后猜。
+
+6. **不回显敏感信息**：``DATABASE_URL`` 只从环境读（不上命令行，避免进 ``ps`` 与
    shell 历史）；数据库异常只打印异常类名，不打印连接串、堆栈或 SQL 参数。
 
 用法（仓库根目录，用装了本项目依赖的解释器）::
@@ -67,9 +76,15 @@ DATE_FIELDS = ("effectiveFrom", "effectiveTo", "applicationWindow")
 SOURCE_KINDS = ("body", "attachment")
 PROVENANCE_VERSION = 1
 
-#: ``--apply`` 只在这些 ``reviewStatus`` 下执行。具体取值由 M3 与项目组确认复核证据的
-#: 形式后填进来；在此之前，仓库里那份 ``draft-pending-m3`` 永远只能干跑。
+#: ``--apply`` 只在这些 ``reviewStatus`` 下执行，且必须同时给 ``reviewEvidence``。
+#: 在此之前，仓库里那份 ``draft-pending-m3`` 永远只能干跑。
 APPLY_REVIEW_STATUSES = ("approved-by-m3",)
+
+#: 复核证据的三个字段：谁、什么时候、依据哪份记录（PR 评论链接 / 仓库文件 / 提交）。
+REVIEW_EVIDENCE_FIELDS = ("reviewedBy", "reviewedAt", "reference")
+
+#: 整包导入的压缩件：绑定到它时，「第几份附件」与包内文件的语义不同，干跑要提示。
+ARCHIVE_SUFFIXES = (".zip", ".rar", ".7z")
 
 
 class DataError(ValueError):
@@ -90,10 +105,12 @@ class Entry:
 
 @dataclass
 class Payload:
-    """整份数据文件：批准状态 + 逐条回填。"""
+    """整份数据文件：批准状态 + 复核证据 + 逐条回填。"""
 
     review_status: str
     entries: list[Entry]
+    #: ``reviewedBy`` / ``reviewedAt`` / ``reference``；草案阶段为 None。
+    review_evidence: dict[str, str] | None = None
 
 
 def _fail(index: int, path: str, reason: str) -> DataError:
@@ -113,6 +130,27 @@ def _parse_iso_date(index: int, path: str, value: Any) -> None:
         date.fromisoformat(value)
     except ValueError:
         raise _fail(index, path, "必须是合法的 YYYY-MM-DD 日期") from None
+
+
+def _validate_review_evidence(raw: Any) -> dict[str, str]:
+    """复核证据：谁在什么时候、依据哪份记录签的。缺字段就没法追溯，直接拒绝。"""
+
+    if not isinstance(raw, dict):
+        raise DataError("reviewEvidence 必须是对象，含 reviewedBy / reviewedAt / reference")
+    extra = set(raw) - set(REVIEW_EVIDENCE_FIELDS)
+    if extra:
+        raise DataError(f"reviewEvidence 不允许字段 {sorted(extra)}")
+    evidence: dict[str, str] = {}
+    for name in REVIEW_EVIDENCE_FIELDS:
+        value = raw.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise DataError(f"reviewEvidence.{name} 必须是非空字符串")
+        evidence[name] = value.strip()
+    try:
+        date.fromisoformat(evidence["reviewedAt"])
+    except ValueError:
+        raise DataError("reviewEvidence.reviewedAt 必须是合法的 YYYY-MM-DD 日期") from None
+    return evidence
 
 
 def _validate_source_spec(index: int, path: str, spec: Any) -> dict[str, Any]:
@@ -220,6 +258,9 @@ def load_data(path: Path) -> "Payload":
     review_status = raw.get("reviewStatus")
     if not isinstance(review_status, str) or not review_status.strip():
         raise DataError("reviewStatus 必须是非空字符串（如 draft-pending-m3）")
+    evidence = raw.get("reviewEvidence")
+    if evidence is not None:
+        evidence = _validate_review_evidence(evidence)
 
     seen: set[tuple[str, str]] = set()
     result: list[Entry] = []
@@ -230,7 +271,13 @@ def load_data(path: Path) -> "Payload":
             raise _fail(index, "sourceUrl+version", "与其他条目重复")
         seen.add(key)
         result.append(entry)
-    return Payload(review_status=review_status.strip(), entries=result)
+    return Payload(review_status=review_status.strip(), entries=result, review_evidence=evidence)
+
+
+def _human_size(byte_size: int) -> str:
+    if byte_size >= 1048576:
+        return f"{byte_size / 1048576:.1f} MB"
+    return f"{max(byte_size, 1) / 1024:.0f} KB"
 
 
 def _redact(message: str) -> str:
@@ -240,13 +287,21 @@ def _redact(message: str) -> str:
 
 def review_block(payload: Payload, apply: bool) -> str | None:
     """``--apply`` 前的批准门禁：返回拒绝理由，None 表示允许。干跑一律放行。"""
-    if not apply or payload.review_status in APPLY_REVIEW_STATUSES:
+    if not apply:
         return None
-    return (
-        f"数据文件的 reviewStatus 是 {payload.review_status!r}，不是批准值"
-        f"（{', '.join(APPLY_REVIEW_STATUSES)}）。M3 复核通过并改掉这个字段之前只允许干跑："
-        "未复核的取值写进审计表，事后分不清哪条是人认过的。"
-    )
+    if payload.review_status not in APPLY_REVIEW_STATUSES:
+        return (
+            f"数据文件的 reviewStatus 是 {payload.review_status!r}，不是批准值"
+            f"（{', '.join(APPLY_REVIEW_STATUSES)}）。M3 复核通过并改掉这个字段之前只允许干跑："
+            "未复核的取值写进审计表，事后分不清哪条是人认过的。"
+        )
+    if payload.review_evidence is None:
+        return (
+            f"数据文件标了批准值 {payload.review_status!r}，但没有 reviewEvidence。"
+            "批准要能追溯：补上 reviewedBy（谁）、reviewedAt（YYYY-MM-DD）、"
+            "reference（复核记录位置，如 PR 评论链接或仓库文件），否则审计表里这句话没人签过字。"
+        )
+    return None
 
 
 def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
@@ -256,6 +311,13 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
     if blocked is not None:
         print(f"backfill-date-provenance: {blocked}", file=sys.stderr)
         return 2
+
+    if apply and payload.review_evidence is not None:
+        evidence = payload.review_evidence
+        print(
+            f"backfill-date-provenance: 复核证据 {evidence['reviewedBy']} @ "
+            f"{evidence['reviewedAt']} — {evidence['reference']}"
+        )
 
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
@@ -310,7 +372,7 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
                     with conn.cursor() as cur:
                         if spec["kind"] == "body":
                             cur.execute(
-                                "SELECT id FROM policy_source "
+                                "SELECT id, file_name, ordinal, byte_size FROM policy_source "
                                 "WHERE policy_version_id = %s AND kind = 'body'",
                                 (version_id,),
                             )
@@ -318,7 +380,7 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
                             # 数据文件给的是「第几份附件」（1 起）；库里 ordinal 在版本内
                             # 连续编号、正文占 0，所以按 ordinal 排序后取第 n 个，不拿绝对号硬匹配。
                             cur.execute(
-                                "SELECT id FROM policy_source "
+                                "SELECT id, file_name, ordinal, byte_size FROM policy_source "
                                 "WHERE policy_version_id = %s AND kind = 'attachment' "
                                 "ORDER BY ordinal OFFSET %s LIMIT 1",
                                 (version_id, spec["ordinal"] - 1),
@@ -334,7 +396,27 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
                         )
                         conn.rollback()
                         return 2
-                    stored[name]["sourceId"] = str(source_rows[0][0])
+                    source_id, file_name, source_ordinal, byte_size = source_rows[0]
+                    stored[name]["sourceId"] = str(source_id)
+                    # 干跑的价值就在这一行：绑到哪个文件、绝对 ordinal 是几，都看得见。
+                    where = (
+                        "正文"
+                        if spec["kind"] == "body"
+                        else f"附件第 {spec['ordinal']} 份（policy_source.ordinal={source_ordinal}）"
+                    )
+                    print(
+                        f"entries[{entry.index}] {entry.version} {name} → {where}："
+                        f"{file_name}（{_human_size(byte_size)}）"
+                    )
+                    if spec["kind"] == "attachment" and file_name.lower().endswith(
+                        ARCHIVE_SUFFIXES
+                    ):
+                        print(
+                            f"backfill-date-provenance: 注意：entries[{entry.index}] 的 {name} 绑到"
+                            f"压缩件 {file_name}。若导入时整包算一份附件，这里绑到的是包而不是包内"
+                            "文件——先确认该版本附件是怎么导入的，再决定「第几份」写几。",
+                            file=sys.stderr,
+                        )
                 resolved.append((entry, version_id, stored))
 
             for entry, version_id, stored in resolved:

@@ -41,14 +41,25 @@ def entry(**provenance) -> dict:
     }
 
 
-def write(tmp_path: Path, entries: list[dict], review_status: str = "approved-by-m3") -> Path:
+#: 批准时随状态一起交的复核记录：谁、什么时候、依据哪份记录。
+EVIDENCE = {
+    "reviewedBy": "wlj80176-creator",
+    "reviewedAt": "2026-11-14",
+    "reference": "https://github.com/sgase233/huice/pull/69#issuecomment-1",
+}
+
+
+def write(
+    tmp_path: Path,
+    entries: list[dict],
+    review_status: str = "approved-by-m3",
+    review_evidence: dict | None = EVIDENCE,
+) -> Path:
+    payload: dict = {"version": 1, "reviewStatus": review_status, "entries": entries}
+    if review_evidence is not None:
+        payload["reviewEvidence"] = review_evidence
     path = tmp_path / "data.json"
-    path.write_text(
-        json.dumps(
-            {"version": 1, "reviewStatus": review_status, "entries": entries}, ensure_ascii=False
-        ),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return path
 
 
@@ -205,10 +216,54 @@ def test_missing_review_status_rejected(tmp_path: Path) -> None:
         backfill.load_data(path)
 
 
-def test_approved_status_unblocks_apply() -> None:
+def test_approved_status_with_evidence_unblocks_apply() -> None:
+    payload = backfill.load_data(DATA)
+    approved = backfill.Payload(
+        review_status="approved-by-m3", entries=payload.entries, review_evidence=dict(EVIDENCE)
+    )
+    assert backfill.review_block(approved, apply=True) is None
+
+
+def test_approved_status_alone_does_not_unblock_apply() -> None:
+    """只把状态改成批准值、不给复核记录：--apply 照样拒绝。
+
+    审计表里「approved-by-m3」这句得能追到人和记录，否则和没复核过一样。
+    """
     payload = backfill.load_data(DATA)
     approved = backfill.Payload(review_status="approved-by-m3", entries=payload.entries)
-    assert backfill.review_block(approved, apply=True) is None
+    blocked = backfill.review_block(approved, apply=True)
+    assert blocked is not None
+    assert "reviewEvidence" in blocked
+    # 干跑不受影响：拿不到批准证据时仍要能看匹配结果
+    assert backfill.review_block(approved, apply=False) is None
+
+
+@pytest.mark.parametrize(
+    "evidence, message",
+    [
+        ({"reviewedBy": "m3", "reviewedAt": "2026-11-14"}, r"reviewEvidence\.reference"),
+        ({"reviewedAt": "2026-11-14", "reference": "PR #69"}, r"reviewEvidence\.reviewedBy"),
+        ({"reviewedBy": "m3", "reference": "PR #69"}, r"reviewEvidence\.reviewedAt"),
+        ({"reviewedBy": " ", "reviewedAt": "2026-11-14", "reference": "PR #69"}, r"reviewedBy"),
+        ({"reviewedBy": "m3", "reviewedAt": "2026/11/14", "reference": "PR #69"}, "YYYY-MM-DD"),
+        (
+            {"reviewedBy": "m3", "reviewedAt": "2026-11-14", "reference": "PR #69", "note": "x"},
+            "不允许字段",
+        ),
+    ],
+)
+def test_review_evidence_must_be_complete(tmp_path: Path, evidence: dict, message: str) -> None:
+    path = write(tmp_path, [entry(note="a")], review_evidence=evidence)
+    with pytest.raises(backfill.DataError, match=message):
+        backfill.load_data(path)
+
+
+def test_review_evidence_does_not_make_a_draft_approved(tmp_path: Path) -> None:
+    """证据是批准的必要条件，不是充分条件：reviewStatus 仍是草案就只许干跑。"""
+    path = write(tmp_path, [entry(note="a")], review_status="draft-pending-m3")
+    payload = backfill.load_data(path)
+    assert payload.review_evidence == EVIDENCE
+    assert backfill.review_block(payload, apply=True) is not None
 
 
 def test_missing_database_url_reports_variable_only(monkeypatch, capsys) -> None:
