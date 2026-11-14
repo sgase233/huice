@@ -593,22 +593,26 @@ def run(
             for entry, version_id, stored in resolved:
                 existing = existing_by_index[entry.index]
                 with conn.cursor() as cur:
-                    if existing == stored:
-                        skipped += 1
-                        continue
                     approved = plan.get(_plan_key(entry)) if plan is not None else None
                     if apply:
+                        # 先校验、再决定跳过还是写入：跳过路径同样要证明「绑定的
+                        # 还是复核过的那一行、库里的值与计划生成时一致」。
                         if approved is None:
                             raise OverwriteNotApproved(entry, "不在本次复核过的计划里")
                         if approved["expectedNew"] != stored:
                             raise OverwriteNotApproved(entry, "目标值与复核时的数据文件不一致")
                         _check_bindings(entry, approved, bindings[entry.index])
+                        if approved["expectedOld"] != existing:
+                            raise OverwriteNotApproved(
+                                entry, "库中现值与计划生成时不一致（可能被删除或改写）"
+                            )
+                    if existing == stored:
+                        skipped += 1
+                        continue
                     if existing is not None:
                         if not overwrite or not (approved and approved["allowOverwrite"]):
                             conflicts.append((entry, existing))
                             continue
-                        if approved["expectedOld"] != existing:
-                            raise OverwriteNotApproved(entry, "旧值与干跑时不一致")
                     if apply:
                         if existing is None:
                             # 没有行：只用「不覆盖」的插入。并发事务若抢先插入，

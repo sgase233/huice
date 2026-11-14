@@ -768,3 +768,67 @@ def test_a_replaced_attachment_blocks_a_first_insert(
         conn.commit()
 
     assert backfill.run(path, apply=True, plan_path=plan) == 3
+
+
+def test_a_changed_source_hash_is_caught_even_when_the_value_is_unchanged(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """已填好的条目也不能绕过绑定校验：语义未变但来源内容变了，整批回滚。"""
+
+    _create_with_sources(repo, "深工信规〔2025〕4号", ["body", "attachment"])
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    (attachment,) = _attachment_ids(database_url_schema, version_id)
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    path = _write(
+        tmp_path,
+        {
+            "version": 1,
+            "applicationWindow": {
+                "status": "verified",
+                "source": {"kind": "attachment", "ordinal": 1},
+                "locator": "附件1",
+            },
+        },
+    )
+    assert _apply(path, tmp_path=tmp_path) == 0
+
+    # 干跑出计划（此时语义相同、应跳过），随后把附件内容换掉
+    plan = tmp_path / "plan.json"
+    assert backfill.run(path, apply=False, write_plan=plan) == 0
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "UPDATE policy_source SET content_hash = %s WHERE id = %s", ("0" * 64, attachment)
+        )
+        conn.commit()
+
+    assert backfill.run(path, apply=True, plan_path=plan) == 3
+
+
+def test_a_deleted_row_after_the_plan_is_not_reinserted(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """计划里的旧值是有行，执行前被删掉：不能当成首次插入悄悄补回去。"""
+
+    create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+    first = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
+    assert _apply(first, tmp_path=tmp_path) == 0
+
+    second = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unverified"}})
+    plan = tmp_path / "plan.json"
+    assert backfill.run(second, apply=False, write_plan=plan) == 3
+
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "DELETE FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        )
+        conn.commit()
+
+    assert backfill.run(second, apply=True, overwrite=True, plan_path=plan) == 3
+    with psycopg.connect(database_url_schema) as conn:
+        count = conn.execute("SELECT count(*) FROM policy_version_date_provenance").fetchone()[0]
+    assert count == 0, "计划外的「重新插入」不能发生"
