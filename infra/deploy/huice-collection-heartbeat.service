@@ -13,7 +13,11 @@ Type=oneshot
 User=huice
 Group=huice
 WorkingDirectory=/opt/huice/app
+# 心跳本身不依赖数据库；导入日志需要 DATABASE_URL，库不可用时失败被忽略，
+# 心跳已经落盘，恢复后下一轮再导入。
+EnvironmentFile=/etc/huice/api.env
 ExecStart=/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/record-collection-event.py --kind beat --scope all
+ExecStart=-/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/import-collection-journal.py --apply
 StandardOutput=journal
 StandardError=journal
 

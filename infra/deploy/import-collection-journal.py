@@ -54,6 +54,12 @@ def journal_files(log_dir: Path) -> list[Path]:
 def build_gaps(path: Path) -> tuple[list[dict[str, Any]], str | None]:
     """从一台主机的日志推出缺口；返回 ``(缺口列表, 链错误)``。"""
 
+    # 尾部截断（写到一半被打断）在链上看不出来：最后一行可能还是合法 JSON。
+    # 用「文件必须以换行结尾」兜住这种情况，宁可降级也不把半行当完整。
+    raw = path.read_bytes()
+    if raw and not raw.endswith(b"\n"):
+        return [], "文件未以换行结尾（疑似尾部截断）"
+
     entries = recorder.read_entries(path)
     broken = recorder.verify_chain(entries)
     if broken is not None:
@@ -103,26 +109,37 @@ def build_gaps(path: Path) -> tuple[list[dict[str, Any]], str | None]:
         )
         del last
 
-    # 心跳空档：没有 stop 行也能发现主机消失
+    # 心跳空档：没有 stop 行也能发现主机消失。
+    # 已经被配对缺口覆盖的区间不再重复记一条 silent（同一次中断只留一条证据）。
+    closed = [
+        (datetime.fromisoformat(gap["gap_from"]), datetime.fromisoformat(gap["gap_to"]))
+        for gap in gaps
+        if gap["gap_to"] is not None
+    ]
+
+    def _covered(start: datetime, end: datetime) -> bool:
+        return any(start >= left and end <= right for left, right in closed)
+
     threshold = timedelta(seconds=recorder.HEARTBEAT_SECONDS * recorder.GAP_FACTOR)
     beats = [item for _raw, item in entries if item.get("kind") in ("beat", "start", "stop")]
     for earlier, later in zip(beats, beats[1:]):
         start = datetime.fromisoformat(earlier["at"])
         end = datetime.fromisoformat(later["at"])
-        if end - start > threshold:
-            gaps.append(
-                {
-                    "source": "host-journal",
-                    "event_id": f"{earlier['event_id']}:silent",
-                    "host": earlier["host"],
-                    "kind": "stop",
-                    "scope": "all",
-                    "gap_from": earlier["at"],
-                    "gap_to": later["at"],
-                    "reason": "HOST_SILENT",
-                    "recorded_by": "import-collection-journal.py",
-                }
-            )
+        if end - start <= threshold or _covered(start, end):
+            continue
+        gaps.append(
+            {
+                "source": "host-journal",
+                "event_id": f"{earlier['event_id']}:silent",
+                "host": earlier["host"],
+                "kind": "stop",
+                "scope": "all",
+                "gap_from": earlier["at"],
+                "gap_to": later["at"],
+                "reason": "HOST_SILENT",
+                "recorded_by": "import-collection-journal.py",
+            }
+        )
     return gaps, None
 
 
@@ -148,6 +165,12 @@ def run(log_dir: Path, apply: bool) -> int:
         print("没有新的缺口事件。")
         return 0
 
+    # 未闭合缺口在恢复后要闭合：同一 opening event 的 :open 行被 :pair 行取代。
+    openings = {
+        gap["event_id"].rsplit(":", 1)[0]
+        for gap in gaps
+        if gap["event_id"].endswith(":pair")
+    }
     changed = 0
     if not apply:
         print(f"干跑：将导入 {len(gaps)} 条缺口（未闭合 "
@@ -170,6 +193,11 @@ def run(log_dir: Path, apply: bool) -> int:
     logging.getLogger("psycopg.pool").setLevel(logging.CRITICAL)
     try:
         with psycopg.connect(dsn, autocommit=False) as conn:
+            # 先删掉「曾经未闭合、现在已配对」的行，避免库里同时留 :open 与 :pair
+            for opening in openings:
+                conn.execute(
+                    "DELETE FROM collection_gap WHERE event_id = %s", (f"{opening}:open",)
+                )
             for gap in gaps:
                 cursor = conn.execute(
                     "INSERT INTO collection_gap (source, event_id, host, kind, scope, "

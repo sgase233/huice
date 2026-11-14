@@ -129,3 +129,47 @@ def test_import_is_idempotent(database_url_schema, tmp_path, monkeypatch, capsys
     with psycopg.connect(database_url_schema) as conn:
         count = conn.execute("SELECT count(*) FROM collection_gap").fetchone()[0]
     assert count == 1
+
+
+def test_a_trailing_truncation_is_refused(tmp_path: Path) -> None:
+    """写到一半被打断：最后一行没有换行，链上看不出来，单独判截断。"""
+
+    path = tmp_path / "collection-lifecycle-host-a.jsonl"
+    _write_log(path, [
+        {"kind": "start", "scope": "all", "at": _at(0), "note": None},
+    ])
+    path.write_text(path.read_text(encoding="utf-8").rstrip("\n"), encoding="utf-8")
+
+    gaps, broken = importer.build_gaps(path)
+    assert gaps == []
+    assert "尾部截断" in broken
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_an_open_gap_is_closed_when_the_host_comes_back(
+    database_url_schema, tmp_path, monkeypatch
+) -> None:
+    """先只有 stop（未闭合），后来出现 start：:open 行被 :pair 行取代，不留两份。"""
+
+    path = tmp_path / "collection-lifecycle-host-a.jsonl"
+    _write_log(path, [
+        {"kind": "start", "scope": "all", "at": _at(0), "note": None},
+        {"kind": "stop", "scope": "all", "at": _at(10), "note": "断电"},
+    ])
+    monkeypatch.setenv("DATABASE_URL", database_url_schema)
+    assert importer.run(tmp_path, apply=True) == 0
+
+    # 主机恢复：整份日志重写成「start / stop / start」（保持 host-a 与链一致）
+    _write_log(path, [
+        {"kind": "start", "scope": "all", "at": _at(0), "note": None},
+        {"kind": "stop", "scope": "all", "at": _at(10), "note": "断电"},
+        {"kind": "start", "scope": "all", "at": _at(30), "note": None},
+    ])
+    assert importer.run(tmp_path, apply=True) == 0
+
+    with psycopg.connect(database_url_schema) as conn:
+        rows = conn.execute("SELECT event_id, gap_to FROM collection_gap ORDER BY event_id").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0].endswith(":pair")
+    assert rows[0][1] is not None
