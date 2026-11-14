@@ -588,3 +588,92 @@ def test_reconcile_without_pending_accounts_still_writes_back(
 
     assert result.returncode == 0, result.stderr
     assert "(已确认)" in out.read_text(encoding="utf-8")
+
+
+def test_a_failed_reset_keeps_both_the_old_and_the_pending_password(tmp_path: Path) -> None:
+    """重置提交失败：旧口令必须还在文件里，不能只剩一份没生效的新口令。"""
+
+    from app.errors import ApiProblem
+
+    class ResetFails(FakeAccounts):
+        def update_password(self, *, user_id, password_hash):
+            raise ApiProblem(503, "DEPENDENCY_UNAVAILABLE", "数据库不可用")
+
+    path = tmp_path / "creds.txt"
+    entries = {
+        "acme.alpha": provision.CredentialEntry(
+            "acme.alpha", "enterprise", "old-password-123", "合成企业A", "已确认"
+        )
+    }
+    items = [provision.PlanItem(provision.SPECS[1], "reset", "id-1")]
+
+    with pytest.raises(ApiProblem):
+        provision._provision(
+            ResetFails(), items, entries, [], path, create_only=False
+        )
+
+    text = path.read_text(encoding="utf-8")
+    assert "password=old-password-123" in text
+    assert "pending=" in text
+    assert "(口令重置中)" in text
+
+
+def test_reconcile_promotes_the_pending_password_when_the_commit_landed() -> None:
+    """提交成功但进程死在写回之前：下次运行按库里哈希把 pending 提成正式口令。"""
+
+    from app import auth as auth_tools
+
+    class Repo(FakeAccounts):
+        def find_user_by_username(self, username):
+            return {
+                "id": "1",
+                "username": username,
+                "role": "enterprise",
+                "status": "active",
+                "password_hash": auth_tools.hash_password("new-password-123"),
+            }
+
+    entries = {
+        "acme.alpha": provision.CredentialEntry(
+            "acme.alpha", "enterprise", "old-password-123", "合成企业A", "口令重置中",
+            pending="new-password-123",
+        )
+    }
+
+    dropped, changed = provision._reconcile(Repo(), entries)
+
+    assert dropped == []
+    assert changed is True
+    assert entries["acme.alpha"].password == "new-password-123"
+    assert entries["acme.alpha"].pending is None
+    assert entries["acme.alpha"].status == "口令已重置"
+
+
+def test_reconcile_keeps_the_old_password_when_the_commit_never_landed() -> None:
+    """重置没提交成功：库里的还是旧口令，pending 作废、旧口令保留。"""
+
+    from app import auth as auth_tools
+
+    class Repo(FakeAccounts):
+        def find_user_by_username(self, username):
+            return {
+                "id": "1",
+                "username": username,
+                "role": "enterprise",
+                "status": "active",
+                "password_hash": auth_tools.hash_password("old-password-123"),
+            }
+
+    entries = {
+        "acme.alpha": provision.CredentialEntry(
+            "acme.alpha", "enterprise", "old-password-123", "合成企业A", "口令重置中",
+            pending="new-password-123",
+        )
+    }
+
+    dropped, changed = provision._reconcile(Repo(), entries)
+
+    assert dropped == []
+    assert changed is True
+    assert entries["acme.alpha"].password == "old-password-123"
+    assert entries["acme.alpha"].pending is None

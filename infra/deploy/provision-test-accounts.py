@@ -12,9 +12,11 @@ M2 的前端联调要「同版隔离环境 + 两个合成企业账号 + 一个�
    （退出码 5），不建、不改、不重置——``--reset-passwords`` 会顺带撤销会话。
 2. **先落盘、后提交**（写前日志）：先把新口令写进凭证文件并 fsync，再调
    ``register()`` / ``update_password()``，成功后把该行的状态从「待提交」改成
-   「新建」/「口令已重置」。进程在两步之间被杀、或提交失败，口令都已经在文件里；
-   下次运行先按库里的口令哈希核对每一行，对不上的行（账号没建出来、或口令已被别人
-   改过）直接清掉，不会把作废口令当成交付物。
+   「新建」/「口令已重置」。进程在两步之间被杀、或提交失败，口令都已经在文件里。
+   重置时**旧口令与新口令同时保留**（旧的在 ``password=``、新的在 ``pending=``）：
+   提交没成功时旧口令仍是唯一有效的，不能因为一次失败的重置把它丢掉。下次运行
+   按库里的哈希决定哪一份有效——新口令生效就提成正式口令，否则丢弃 pending、
+   保留旧口令；两份都对不上才把该行作废。
 3. **合并而不是覆盖**：凭证文件按用户名合并——已记录的口令原样保留，只追加/更新本轮
    变动的账号。部分账号已存在、部分新建时，旧口令不会被一份只剩新建账号的文件盖掉。
 4. **文件按受控方式创建**：父目录不允许组/其他可写；目标不能是符号链接；新文件
@@ -80,6 +82,7 @@ HEADER = (
 #: 一行一条凭证。状态放在末尾括号里，便于「先落盘、后提交」时区分待提交与已完成。
 LINE_PATTERN = re.compile(
     r"^role=(?P<role>\S+) username=(?P<username>\S+) password=(?P<password>\S+)"
+    r"(?: pending=(?P<pending>\S+))?"
     r"(?: enterprise=(?P<enterprise>.+?))? \((?P<status>[^()]+)\)$"
 )
 
@@ -120,6 +123,9 @@ class CredentialEntry:
     password: str
     enterprise: str | None
     status: str
+    #: 重置进行中的新口令。重置提交结果未知时，旧口令与它同时留在文件里，
+    #: 下次运行按库里的哈希决定哪一份有效——不能因为重置失败丢掉唯一有效的旧口令。
+    pending: str | None = None
 
 
 def _enterprise_input(spec: AccountSpec) -> EnterpriseInput:
@@ -198,6 +204,8 @@ def _check_out_path(path: Path, *, force: bool) -> bool:
 
 def _credential_line(entry: CredentialEntry) -> str:
     parts = [f"role={entry.role}", f"username={entry.username}", f"password={entry.password}"]
+    if entry.pending:
+        parts.append(f"pending={entry.pending}")
     if entry.enterprise:
         parts.append(f"enterprise={entry.enterprise}")
     parts.append(f"({entry.status})")
@@ -224,6 +232,7 @@ def load_credentials(path: Path) -> tuple[dict[str, CredentialEntry], list[str]]
             password=match["password"],
             enterprise=match["enterprise"],
             status=match["status"],
+            pending=match["pending"],
         )
     return entries, extras
 
@@ -291,19 +300,37 @@ def _reconcile(
     dropped: list[str] = []
     changed = False
     for username in list(entries):
+        entry = entries[username]
         row = accounts.find_user_by_username(username)
         if row is None:
             del entries[username]
             dropped.append(username)
             changed = True
             continue
-        if not auth_tools.verify_password(entries[username].password, row["password_hash"]):
+        stored = row["password_hash"]
+        if entry.pending is not None:
+            # 重置进行中：库里是新的就是提交成功了，是旧的就是没提交，两份都留着
+            if auth_tools.verify_password(entry.pending, stored):
+                entry.password = entry.pending
+                entry.pending = None
+                entry.status = "口令已重置"
+                changed = True
+            elif auth_tools.verify_password(entry.password, stored):
+                entry.pending = None
+                entry.status = "已确认"
+                changed = True
+            else:
+                del entries[username]
+                dropped.append(username)
+                changed = True
+            continue
+        if not auth_tools.verify_password(entry.password, stored):
             del entries[username]
             dropped.append(username)
             changed = True
             continue
-        if entries[username].status != "已确认":
-            entries[username].status = "已确认"
+        if entry.status != "已确认":
+            entry.status = "已确认"
             changed = True
     return dropped, changed
 
@@ -395,23 +422,33 @@ def _provision(
             skipped += 1
             continue
 
-        entry = CredentialEntry(
-            username=spec.username,
-            role=spec.role,
-            password=_generate_password(),
-            enterprise=spec.name_synthetic,
-            status=STATUS_PENDING,
-        )
-        entries[spec.username] = entry
+        existing = entries.get(spec.username)
+        if item.action == "reset" and existing is not None:
+            # 重置：旧口令留着，新口令放 pending——提交没成功时旧口令仍是唯一有效的
+            existing.pending = _generate_password()
+            existing.status = "口令重置中"
+            entry = existing
+        else:
+            entry = CredentialEntry(
+                username=spec.username,
+                role=spec.role,
+                password=_generate_password(),
+                enterprise=spec.name_synthetic,
+                status=STATUS_PENDING,
+            )
+            entries[spec.username] = entry
         # 写前日志：口令先落地，提交失败或进程被杀时它还在文件里
         persist_credentials(path, entries, extras, create_only=first_write)
         first_write = False
 
         try:
             if item.action == "reset":
+                new_password = entry.pending or entry.password
                 accounts.update_password(
-                    user_id=item.user_id, password_hash=auth_tools.hash_password(entry.password)
+                    user_id=item.user_id, password_hash=auth_tools.hash_password(new_password)
                 )
+                entry.password = new_password
+                entry.pending = None
                 entry.status = "口令已重置"
             else:
                 profile = (
@@ -435,11 +472,14 @@ def _provision(
                     f"{spec.username} 被另一个进程创建"
                     + (f"（{problem}）" if problem else "")
                 ) from exc
-            entries.pop(spec.username, None)
+            if item.action == "create":
+                entries.pop(spec.username, None)
+            # 重置失败时保留旧口令（可能还有 pending），不能连旧口令一起删掉
             persist_credentials(path, entries, extras, create_only=False)
             raise
         except BaseException:
-            # 提交结果未知（连接断了、进程被杀）：保留「待提交」行，下次运行按口令哈希核对
+            # 提交结果未知（连接断了、进程被杀）：旧口令与 pending 都留在文件里，
+            # 下次运行按库里的哈希决定哪一份有效——绝不丢掉唯一有效的旧口令
             persist_credentials(path, entries, extras, create_only=False)
             raise
 
