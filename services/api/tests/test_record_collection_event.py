@@ -136,3 +136,23 @@ def test_concurrent_appends_keep_the_chain_valid(tmp_path: Path) -> None:
     entries = recorder.read_entries(path)
     assert len(entries) == 8
     assert recorder.verify_chain(entries) is None
+
+
+@pytest.mark.skipif(recorder.os.name != "posix", reason="权限位只在 POSIX 上有意义")
+def test_the_lock_and_log_files_are_group_writable(tmp_path: Path) -> None:
+    """root 先用默认 umask 建了锁文件：服务账号也要能打开并追加。
+
+    这里先造一个 0644 的锁文件（模拟 root 首次执行），再追加一次，断言锁与日志都被
+    正回 0660。
+    """
+
+    host = recorder.host_id()
+    lock_path = tmp_path / f".collection-lifecycle-{host}.lock"
+    lock_path.write_text("", encoding="utf-8")
+    lock_path.chmod(0o644)
+
+    recorder.append_event(tmp_path, kind="beat", scope="all", note=None)
+
+    log_path = recorder.log_path(tmp_path, host)
+    assert (lock_path.stat().st_mode & 0o777) == 0o660
+    assert (log_path.stat().st_mode & 0o777) == 0o660

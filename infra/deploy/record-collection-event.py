@@ -122,19 +122,38 @@ def heartbeat_gaps(entries: list[tuple[str, dict]], *, factor: int = GAP_FACTOR)
     return gaps
 
 
+def _open_shared(path: Path):
+    """以 0660 打开（必要时创建）并统一属组。
+
+    日志与锁文件都要能被 root 和 ``huice`` 两个身份追加：root 首次创建时 umask 可能
+    留下 0644、属组 root，随后服务账号连锁文件都打不开，更谈不上写日志。
+    """
+
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o660)
+    try:
+        os.chmod(path, 0o660)
+        if os.name == "posix" and os.geteuid() == 0 and grp is not None:
+            os.chown(path, -1, grp.getgrnam("huice").gr_gid)
+    except (KeyError, OSError):
+        pass  # 本地开发没有 huice 组时保持原样
+    return os.fdopen(fd, "a", encoding="utf-8", newline="\n")
+
+
 @contextlib.contextmanager
 def _exclusive_lock(path: Path):
     """对日志的「读尾行→追加」加独占锁；没有 fcntl 的平台退化为无操作。"""
 
-    if fcntl is None:  # pragma: no cover - Windows 本地开发
-        yield
-        return
-    with open(path, "a", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    handle = _open_shared(path)
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def append_event(log_dir: Path, *, kind: str, scope: str, note: str | None) -> dict:
@@ -170,19 +189,14 @@ def append_event(log_dir: Path, *, kind: str, scope: str, note: str | None) -> d
                 "note": note,
             }
             line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-            # 0660 + 组 huice：root 先写、服务账号后写也能追加
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o660)
             try:
-                with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as handle:
+                handle = _open_shared(path)
+                try:
                     handle.write(line + "\n")
                     handle.flush()
                     os.fsync(handle.fileno())
-                if os.name == "posix" and os.geteuid() == 0:
-                    try:
-                        os.chown(path, -1, grp.getgrnam("huice").gr_gid)
-                        os.chmod(path, 0o660)
-                    except (KeyError, OSError):
-                        pass  # 本地开发没有 huice 组时保持原样
+                finally:
+                    handle.close()
             except OSError as exc:
                 raise LogError(f"写日志失败（{type(exc).__name__}）") from exc
             return event
