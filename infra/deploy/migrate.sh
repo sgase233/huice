@@ -42,6 +42,7 @@ MIGRATIONS=(
     008_material_requirements
     009_users_sessions
     010_policy_discovery
+    011_date_provenance
     012_e3_metrics
 )
 

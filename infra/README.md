@@ -7,7 +7,7 @@
 - 账号：旧门禁/运维脚本兼容、可撤销会话、保底审核员初始化与密钥轮换；新账号数据不得经旧匿名入口暴露。环境样例仅列占位值。
 - 推荐：固定检查的 systemd timer 与 CLI、运行锁/恢复、审核员配置读取、来源与模型预算、候选过期清理和审计留存；不额外引入队列。**代码已实现（E2，`python -m app.discovery` + `huice-discovery.timer`，见 `deploy/README.md` §3.5），尚未在云端部署。**
 - 统计：人工审核事件、日终快照、运行生命周期采集起点及失败告警；未采集的历史日期不得补成 0。
-- 迁移/恢复：核查最新编号后追加（当前最高 `010_policy_discovery`），保留历史政策/报告；空库与旧库隔离验证；回滚时关闭新增入口/timer并保护账号数据，不直接开放旧鉴权路径。
+- 迁移/恢复：核查最新编号后追加（当前最高 `011_date_provenance`），保留历史政策/报告；空库与旧库隔离验证；回滚时关闭新增入口/timer并保护账号数据，不直接开放旧鉴权路径。
 - 交接：记录实际代码/契约/迁移版本、执行命令和脱敏结果，M2/M3 按[验收清单](../docs/product/ACCEPTANCE.md)复核。具体方案定案回填计划的 D 表，不能用本清单代替运行证据。
 
 本文件记录 M1 阶段真实使用或计划使用的版本、本地数据服务、云资源阻碍与回退步骤。**未执行的检查一律标注“未执行”，不写推测的通过结论。**
@@ -136,11 +136,20 @@ psql "<连接串>" -v ON_ERROR_STOP=1 -f infra/sql/008_material_requirements.sql
 
 > **2026-10-26 修正**：002 早期版本第 4 节用 `ALTER TABLE trace_step DROP TRIGGER IF EXISTS ...` 删触发器，这不是合法语法（`DROP TRIGGER` 是独立语句；`ALTER TABLE` 下也没有 `DROP TRIGGER IF EXISTS` 形式），执行会在该行报 `syntax error at or near "IF"`。已改为独立语句 `DROP TRIGGER IF EXISTS trace_step_no_update_delete ON trace_step;`，并在修正后连续执行两遍验证（退出码 0，`trace_step_status_check` 为 `ok/needs_review/retryable_error/fatal_error`）。由于脚本整体在一个事务里，旧的报错不会留下半成品结构；若 `schema_migration` 里已有 002 行但结构未变，先按 [local/README.md](local/README.md) 的「002 迁移」一节核对触发器与约束，再重跑 002。
 
-迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `012_e3_metrics.sql`，下一份是 `013_*.sql`；`011_date_provenance.sql` 随 PR #69 合入，两者互不依赖，清单里按号排序），不改历史脚本；每条迁移同样登记 `schema_migration`。
+迁移约定：新变更写现有最大序号之后的下一个（当前最大为 `012_e3_metrics.sql`，下一份是 `013_*.sql`；`011_date_provenance` 与 `012_e3_metrics` 均已按号合入），不改历史脚本；每条迁移同样登记 `schema_migration`。
 
 `009_users_sessions.sql`（E1，2026-11-11）在本地 PostgreSQL 16 上验过三种起跑线：空库连跑两遍（第二遍只有 `NOTICE ... already exists`）、「已到 008」的库升一次再连跑一遍、以及库里先有一行历史合成企业再升级——升级后该企业 `owner_user_id` 仍为 `NULL`（历史数据不会被首个注册账号认领），`schema_migration` 九行，`demo_quota` / `user_session` 列类型与非空约束、`enterprise_owner_user_uidx`（部分唯一索引）与两个外键均与脚本一致；`pytest -m db` 91 项、全量 1144 项通过（2026-11-11 应答 PR #61 的五条复审后又跑了一遍；新增 db 用例覆盖并发绑定企业的唯一索引）。**云端 RDS 已于 2026-11-11 随 E1 部署执行 009**：按 `infra/deploy/migrate.sh` 只应用 009（001—008 已登记被跳过），输出 `BEGIN`→三张 `CREATE TABLE`→四个 `CREATE INDEX`→两个 `ALTER TABLE`/`DO`→`INSERT 0 1`→`COMMIT`，验收查询 `schema_migration` **九行**。
 
-`010_policy_discovery.sql`（E2，2026-11-12）建政策发现的暂存区：`discovery_settings`（单行配置，`id` 固定为 1，`revision` 是 PUT 的 ETag，周期 CHECK 360—43200 分钟）、`discovery_run`（一轮一行，`status` 与 `terminal_reason` 分开记「成功/部分失败/失败」与「为什么结束」）、`policy_candidate`（候选与 `policy` 不共表：未审核候选在结构上进不了政策库）、`policy_candidate_fingerprint`（去重指纹，`outcome` 记 `duplicate` / `submitted` / `discarded`）、`discovery_page`（栏目页快照，抓取器判「页面是否有变化」用）。种子行 `discovery_settings(1, enabled=false, interval_minutes=1440)` 由迁移写入，`ON CONFLICT DO NOTHING` 保证重跑不覆盖已改过的配置。本地 PostgreSQL 16 上验过：空库连跑两遍（第二遍只有 `NOTICE ... already exists` 与种子的 `INSERT 0 0`），以及「已到 009」的库升一次；`pytest -m db` 与全量用例的结果记在 `docs/devlog/M1.md`（等 E1—E3 收口时一并补）。**云端 RDS 尚未执行 010**：随 E2 部署时按 `infra/deploy/migrate.sh` 只应用这一份，`schema_migration` 应增至十行。
+`010_policy_discovery.sql`（E2，2026-11-12）建政策发现的暂存区：`discovery_settings`（单行配置，`id` 固定为 1，`revision` 是 PUT 的 ETag，周期 CHECK 360—43200 分钟）、`discovery_run`（一轮一行，`status` 与 `terminal_reason` 分开记「成功/部分失败/失败」与「为什么结束」）、`policy_candidate`（候选与 `policy` 不共表：未审核候选在结构上进不了政策库）、`policy_candidate_fingerprint`（去重指纹，`outcome` 记 `duplicate` / `submitted` / `discarded`）、`discovery_page`（栏目页快照，抓取器判「页面是否有变化」用）。种子行 `discovery_settings(1, enabled=false, interval_minutes=1440)` 由迁移写入，`ON CONFLICT DO NOTHING` 保证重跑不覆盖已改过的配置。本地 PostgreSQL 16 上验过：空库连跑两遍（第二遍只有 `NOTICE ... already exists` 与种子的 `INSERT 0 0`），以及「已到 009」的库升一次；`pytest -m db` 与全量用例的结果记在 `docs/devlog/M1.md`（等 E1—E3 收口时一并补）。**云端 RDS 已于 2026-11-13 随 E2 同版部署执行 010**：按 `infra/deploy/migrate.sh` 只应用这一份（001—009 已登记被跳过），输出 `BEGIN`→五张 `CREATE TABLE`→索引/触发器→`ALTER TABLE ... ADD COLUMN IF NOT EXISTS failed_articles`→`INSERT 0 1`→`COMMIT`，`schema_migration` **十行**；同日 fixture 冒烟跑通一轮发现，候选 10 条无一进政策库。
+
+`011_date_provenance.sql`（VIS-06 的 B1a，2026-11-13）建 `policy_version_date_provenance`：一条政策版本一行（`policy_version_id` 主键、外键级联删除），`provenance` 一个 jsonb 对象，记录生效起止与申报窗口各自的来源状态（`verified` / `derived` / `unverified` / `unknown` / `not_applicable`）。四处要说清：
+
+- **为什么不加到 `policy_version` 上**：001 的 `policy_version_guard_published` 禁止更新已发布行，而回填目标恰好全是已发布版本——加列再回填会在触发器上直接报 `check_violation`，只能靠临时禁用触发器绕过，那正是守卫要防的事。旁表方案下已发布行一个字节都不动（用例 `test_backfill_never_touches_published_version` 用 `xmin` 断言这一点，防止日后有人把列加回去）。
+- **没有行 = 没有记录过来源**，不等于「来源未知」。缺省状态由读取层按「有值 → `unverified`、无值 → `unknown`」派生，不落库——把派生值写进库会让「从未标注」和「审核员明确标了未核实」变成一回事。
+- **本迁移不对外暴露任何字段**：字段进 `PolicySummary`/`PolicyDetail`/`PolicyDraft` 与响应属于 B1b，随契约一次升版。迁移先合不会产生半成品契约，也不会让 `generate_types --check` 多红一次。
+- **回填不在迁移里**：由 `infra/deploy/backfill-date-provenance.py` + `date-provenance-backfill.json` 执行，步骤与退出码见 `infra/deploy/README.md` §2.2。脚本默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 未获批准、或获批准却没有 `reviewEvidence`（`reviewedBy`/`reviewedAt`/`reference`）时 `--apply` 同样拒绝；`verified` 必须给出来源与定位，出处写成「正文」或**第几份附件（从 1 起，不是数据库的绝对 `ordinal`）**，由脚本按该版本的 `policy_source` 顺序解析后绑定真实 id；`derived` 必须给出推算依据。任一条对不上号就整批停下、不写任何行；库里已有不同值时默认不覆盖（返回 `3`），要改写需显式 `--overwrite`。回填数据已于 2026-11-14 由 M3 复核批准（`reviewStatus: approved-by-m3` + `reviewEvidence` 指向 PR #69 的批准评论），云端 `--apply` 只写旁表；两个新导入版本（SMART/GREEN）仍是草稿，发布前另有 M3 提的两项必修（见 §2.2）。
+
+结构校验只在 `jsonb_typeof(provenance) = 'object'` 这一层；字段级取值由写入路径与回填脚本校验，避免同一套规则在两处各写一遍。**云端 RDS 尚未执行 011**。
 
 ## 4. 云端资源状态（截至 2026-11-06）
 

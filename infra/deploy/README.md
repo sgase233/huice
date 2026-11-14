@@ -9,6 +9,10 @@
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
 | `issue-session.py` | 不安装，直接`/opt/huice/venv/bin/python` 跑 | 签发演示会话 cookie 并写 `demo_quota` 起始行（§3.1） |
 | `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
+| `import-policy-sources.py` + `policy-source-import.json` + `policy-sources/` | 不安装，直接跑 | 补 SMART／GREEN 两个只有版本与来源的政策（它们的窗口只在附件里，之前没导入）——`011` 回填干跑的前置（§2.2） |
+| `fix-draft-effective-dates.py` + `draft-effective-dates.json` | 不安装，直接跑 | 把 SMART／GREEN 两行**草稿**的有效期改成中性占位（`effective_from = published_at`、`effective_to = NULL`）。只动未发布行，命中已发布行整批拒绝；写前写后比对已发布行 `xmin` 指纹。M3 在 PR #69 收口里要求发布前完成（§2.2） |
+| `retire-test-policy-version.py` + `retire-test-versions.json` | 不安装，直接跑 | 把已发布的**测试**版本降级为 `pending_parse`（M3 第三轮 B 方案）：只降级、不删除；只在该语句范围内临时禁用 `policy_version_guard_published` 并立即恢复，提交前后比对其它已发布行的 `xmin` 指纹，提交后验证守卫仍拒绝已发布行的 UPDATE。**执行前需 M2 与项目负责人同意** |
+| `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version_date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 不是批准值时 `--apply` 照样拒绝；数据复核前只干跑（§2.1 迁移段） |
 | `provision-test-accounts.py` | 不安装，直接跑 | 建隔离环境的合成账号：1 审核员 + 2 企业，口令写成 0600 凭证文件（§3.6） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
@@ -51,7 +55,7 @@
 | 1 | 传代码到 `/opt/huice/app`（§1） | Windows 侧 + ECS | 后面所有脚本都找不到 |
 | 2 | `provision.sh`（§2）：装包、建 `huice` 用户与 venv、装依赖、装 unit 与 80 配置 | ECS | — |
 | 3 | 填 `/etc/huice/api.env`（§3） | ECS | 第 2 步结束时模板里的必填项还是空值，服务会以「缺少变量名」启动失败，属预期（脚本那一步就算失败也继续执行下一步） |
-| 4 | 执行迁移 001—009（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 九行 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500、判断运行因 `material_requirement` 不存在 500；E1 起缺 009 则注册/登录 500（`app_user` / `user_session` / `demo_quota` 都不存在），发送演示会话也会因写不了配额行退出码 3（§2.1 末段） |
+| 4 | 执行迁移 001—011（§2.1：`bash infra/deploy/migrate.sh`），确认 `schema_migration` 十一行；再按 §2.2 干跑一次日期来源回填 | ECS | 先对外服务再迁移：写事实 500、抽取写幂等记录因缺列 500、判断运行因 `material_requirement` 不存在 500；E1 起缺 009 则注册/登录 500（`app_user` / `user_session` / `demo_quota` 都不存在），发送演示会话也会因写不了配额行退出码 3（§2.1 末段） |
 | 5 | `systemctl restart huice-api`，再 `nginx -t && systemctl reload nginx` | ECS | 只 `enable` 不 `reload`：外网 404 且 `Server` 头暴露 nginx 版本（见 §8「外网 404」一行） |
 | 6 | 健康检查 200（§4 第 **1—4** 项）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
 | 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3）。**完成后**按 §4 的三批安排补跑第 **8—11** 项（第 5—7 项在第 6 步之后就能跑，不必等这里） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403；若先跑第 8—9 项，会因为 443 还不存在而误判成部署失败 |
@@ -112,7 +116,7 @@ PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash /opt/huice/app/infra
 
 ### 2.1 数据库结构必须先于服务启动（硬前提）
 
-代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），`1.0.0-rc.8` 起判断运行会读材料要求（`008_material_requirements.sql` 建 `material_requirement` / `material_requirement_policy`），E1 的账号与会话见 `009_users_sessions.sql`（`app_user` / `user_session` / `demo_quota`），E2 的政策发现见 `010_policy_discovery.sql`（`discovery_settings` / `discovery_run` / `policy_candidate` / `policy_candidate_fingerprint` / `discovery_page`），**服务启动前云 RDS 必须已执行 001—010 全部迁移**。
+代码直接读写 `invalidation_event.fact_period_start/fact_period_end`（`004_invalidation_event_period.sql` 引入），企业事实的键/单位要与契约 `1.0.0-rc.4` 起的 **18 键**字典对齐（`005` 由 10 键扩到 16 键并引入 `ratio`，`006` 再由 16 键扩到 18 键、新增 `specificMarketSince`/`independentLegalEntity`），`1.0.0-rc.7` 起幂等记录的读写又多了一列 `idempotency_record.usage_semantics`（`007_idempotency_usage_semantics.sql` 引入），`1.0.0-rc.8` 起判断运行会读材料要求（`008_material_requirements.sql` 建 `material_requirement` / `material_requirement_policy`），E1 的账号与会话见 `009_users_sessions.sql`（`app_user` / `user_session` / `demo_quota`），E2 的政策发现见 `010_policy_discovery.sql`（`discovery_settings` / `discovery_run` / `policy_candidate` / `policy_candidate_fingerprint` / `discovery_page`），VIS-06 的日期来源见 `011_date_provenance.sql`（旁表 `policy_version_date_provenance`：一条版本一行，`provenance` jsonb；没有行表示「没有记录过来源」，不表示「来源未知」；已发布版本保持不可变，来源不回写 `policy_version`），**服务启动前云 RDS 必须已执行 001—011 全部迁移**。
 
 **取值交给 `migrate.sh`，不要 `source` 整个文件，也不要自己解析。** `systemd` 的 `EnvironmentFile` 不是 shell——不做变量展开、不执行命令，只处理引号、转义与续行。`set -a; . /etc/huice/api.env; set +a` 会让 shell 按 shell 规则解析**整个文件**：口令或密钥里出现 `$`、反引号、`!`、未配对引号时，读到的值可能和 systemd 实际传给服务进程的不一样（迁移就打到错的库），甚至把文件内容当命令执行。
 
@@ -157,7 +161,7 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 
 要 **root** 执行：读 `/proc/<PID>/environ` 与调用 `systemd-run` 都需要（`huice` 用户读不到别人的进程环境）。
 
-脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—010 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对十个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
+脚本先读一次 `schema_migration`（表不存在就按空库处理），再按 001—011 的顺序**只执行还没登记的那些**（每步 `-v ON_ERROR_STOP=1`）；已登记的打一行「已登记，跳过」不动它，库里若有清单之外的 id（代码比库旧）只点名、不影响本次执行。**任一环节失败立即停下**：读不到 `DATABASE_URL`、读到空值、某一步迁移报错时，后面的迁移与验收查询**一次都不会执行**——没迁移完的库上跑验收查询只会给出误判。全部成功后才做验收查询，逐个核对十一个 id 都在 `schema_migration` 里，缺哪个报哪个并以非零退出。
 
 **为什么不是「从 001 全量重放」**：迁移文件各自幂等，但**幂等不等于能跳过中间状态**。库已到 `008` 时重放 `005`，事实字典约束会被收回到 16 键，撞上库里已有的 `specificMarketSince` 行而报错（2026-11-06 云端实测）。所以「有新序号就重跑脚本」在旧版里根本推不动，新版按登记表判断。
 
@@ -182,6 +186,51 @@ bash /opt/huice/app/infra/deploy/migrate.sh
 > **用 bundle 更新代码前，先删掉手工放进去的迁移文件。** 008 是 scp 进 `/opt/huice/app/infra/sql/` 的未跟踪文件，而分支合并后那个路径是**受版本控制**的：`git fetch` + 检出新提交时会报 `error: Untracked working tree files would be overwritten by checkout` 并停下（同一份内容也一样，git 不比内容）。先 `rm /opt/huice/app/infra/sql/008_material_requirements.sql` 再更新，随后它会随分支一起回来；迁移已入库，重跑任何迁移都是 no-op。
 
 顺序反了不会「降级运行」，而是直接报错：`PATCH /enterprises/{id}/facts/{key}` 的失效事件写入与 `GET /assessment-runs/{runId}` 的事件读取都会因缺列抛 `UndefinedColumn`，分别表现为 500 与历史判断读不出来。反向顺序（先迁移后升级代码）安全，脚本本身可重复执行。
+
+### 2.2 日期来源回填（VIS-06 B1a，迁移 `011` 之后、服务放行之前）
+
+`011_date_provenance.sql` 只建旁表；日期来源的取值由 `backfill-date-provenance.py` + `date-provenance-backfill.json` 回填。**顺序固定**：
+
+0. **先确认 9 个版本都在库里**：`policy_version` 缺 SMART／GREEN 时回填会整批停下（那两条的窗口只在附件里，`data/policies/sources/` 没有可导入正文）。缺就先用 `import-policy-sources.py` 补——只建版本与来源，不写条款、不发布；
+1. `bash /opt/huice/app/infra/deploy/migrate.sh`——建表；
+2. 不加 `--apply` 干跑一次，核对匹配到的版本数与被改动条目，**并逐行看脚本打印的「绑到哪个文件」**（干跑不写库）；
+3. M3 逐条对官方原文复核，把数据文件 `reviewStatus` 从 `draft-pending-m3` 改成批准值（`APPLY_REVIEW_STATUSES`，当前是 `approved-by-m3`），**同时补 `reviewEvidence`**；
+4. 再 `--apply` 写库。
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/backfill-date-provenance.py           # 干跑
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/backfill-date-provenance.py --apply   # 第 3 步之后
+```
+
+- **批准 = 状态 + 证据**：`reviewStatus` 取批准值时，数据文件还必须给 `reviewEvidence`——`reviewedBy`（谁复核）、`reviewedAt`（`YYYY-MM-DD`）、`reference`（复核记录在哪：PR 评论链接、仓库文件或提交）。只把状态改成 `approved-by-m3` 而不给证据，`--apply` 照样返回 `2`。理由很直接：审计表里那句「approved-by-m3」得能追到人和记录。
+
+  ```json
+  "reviewStatus": "approved-by-m3",
+  "reviewEvidence": {
+    "reviewedBy": "wlj80176-creator",
+    "reviewedAt": "2026-11-14",
+    "reference": "https://github.com/sgase233/huice/pull/69#issuecomment-…"
+  }
+  ```
+
+- **已导入的两行仍是早期形状（不改）**：云端 SMART/GREEN 的 `policy_source` 是第一次导入时写的——`file_name` 用原附件名（`.docx`/`.doc`）、`content_hash` 却是提取文本的哈希。脚本已改成如实登记（`.txt` + `text/plain` + 文本哈希 + 真实对象键），但**已入库的两行不动**：`file_name` 正是回填干跑里显示「附件1.docx」的那一列，改名会让 M3 已核对过的记录对不上。两行都还没发布，发布前再统一处理。
+- **云端那两行草稿已于 2026-11-14 修正**（M3 第四轮关闭）：`effective_from` 改为 `published_at`、`effective_to` 置空、`revision` 换新；工具 `fix-draft-effective-dates.py` 保留，具备幂等（已是目标值就跳过）、按读到的 `revision` 校验并发编辑、命中已发布行整批拒绝。**SMART/GREEN 仍不得发布**，直到 VIS-06 的展示条件满足。
+- **两个导入版本的有效期是中性占位**：SMART（深工信规〔2025〕4号）与 GREEN（深工信规〔2024〕12号）由 `import-policy-sources.py` 导入，`effectiveFrom` 取 `publishedAt`、`effectiveTo` 留空——申报窗口不是政策有效期（M3 在 PR #69 复核里点名）。它们在 provenance 里仍是 `unverified`/`unknown`；页面与时间线不得把这两个版本的有效期显示为已核实，也不得用它们算 `policy_expired`。发布前若要改成真实有效期，先由 M3 给依据并复核。
+- **申报窗口关闭 ≠ 政策过期（临时口径）**：SRDI（深工信规〔2025〕8号）的 `effective_from/to` 与申报窗口同值（2025-10-15—11-10）。**B 是目标处置**（受控把有效期改成细则第二十四条的「自印发之日起 5 年」，需 M2 与项目负责人同意，尚未执行）；**A 只是 B 未执行前的展示口径**：页面写「申报窗口已关闭」（详情注明本年度受理已于 2025-11-10 截止），不出现「政策已过期/政策失效」。注意 API 层的 `validity` 仍是 `closed`、`staleReasons` 仍可能含 `policy_expired`——只有展示层映射时，验收记录必须写「API 层仍可能含，待 B 修复」，不能写成引擎已不再产生。
+- **SMART 的 `application_window` 只是合并区间**：库里存的是 `2025-06-13 00:00`—`2025-07-07 18:00`，压平了四段窗口、也漏掉书面材料到 07-11 的部分。时间线/详情页必须读 provenance 的 `note`（四段 + 办理方式），不得把 07-07 当成全部受理截止；GREEN 只有一段，注记「来源附件，非正文」即可。
+- **干跑会打印每条日期字段绑到哪一行**：`entries[i] <文号> applicationWindow → 附件第 1 份（policy_source.ordinal=1）：<文件名>（大小）`。压缩件（`.zip`/`.rar`/`.7z`）另给一条提示——整包导入时「第 1 份」是包、逐份导入时是包内文件，两种情况的绑定不同，只能靠这一行看出来。
+- **数据文件里的附件序号是「第几份附件」，从 1 起**，不是数据库 `policy_source.ordinal`（那里正文占 0、附件从 1 起但会随份数变化）。脚本按 `ORDER BY ordinal` 的第 n 份去查，不拿绝对号硬匹配。
+- **`verified` 的出处必须属于该版本**：脚本在该 `policy_version_id` 下查 `policy_source`，把真实 id 写进 jsonb；找不到就整批停下、一行不写。年度指南若不在该版本的来源里，只能标 `unknown`（该版本没有窗口依据）或 `unverified`（有值但没核）并写 note，不能拿别处的依据充数。
+- **版本粒度口径（F4，M3 复核提出）**：`version` 记**规程/细则的文号**，`sourceUrl` 是载有窗口的**年度申报通知**页。窗口出处写通知的正文或附件，并在 note 里点明「窗口来源不是版本文号对应的规程」；把年度通知单独建 `policy_version` 会改政策版本清单与前端展示，不在回填里做。
+- **本批不承载 `published_at` 的来源（F12）**：`011` 与回填只覆盖 `effectiveFrom` / `effectiveTo` / `applicationWindow`。页面与验收不得把「发布日期来源」计入 VIS-06 覆盖，字面上写「发布日期来源未承载」。
+- **幂等但不静默覆盖**：值相同不写；库里已有**不同**的值时停下返回 `3`。
+- **`--apply` 必须带计划**：先干跑并加 `--write-plan /path/plan.json`。计划固定三样东西——数据文件 sha256、每条的 `expectedNew`（解析后的完整 provenance，含 `sourceId`）、每条 `verified` 绑定的来源行（`sourceId` + `contentHash`），另外标出哪些条目「已有不同值、允许覆盖」（`allowOverwrite`）。
+  复核后用 `--apply --plan /path/plan.json` 执行；**首次插入也同样受计划保护**。执行时逐项校验，数据文件变了、目标值变了、附件重排或替换、旧值被改，任一不符就整批回滚（退出码 `2`/`3`）。计划里标了 `allowOverwrite` 的条目还要显式加 `--overwrite` 才会改写。
+- 退出码：`0` 成功（含干跑）；`1` 数据库读写失败；`2` 数据文件/环境不合法、版本或来源定位不到、数据未获批准或缺少复核证据；`3` 与库里已有值冲突且未加 `--overwrite`。报错只给字段路径与变量名，不含连接串。
 
 ## 3. 填配置
 
