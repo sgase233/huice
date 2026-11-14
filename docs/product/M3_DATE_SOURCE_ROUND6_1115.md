@@ -5,6 +5,8 @@
 > **基线：** PR #69 head `2a26e53f6b579744274be852104c36d67a8a4aa9`（2026-11-14T16:49:42Z），13 个提交。M2 复审 `issuecomment-6880892267`（16:44:14Z，暂不建议合并）；M1 回告 `issuecomment-6880960415`（16:49:42Z）。PR 仍 `mergeable=false / dirty`；`cb81ee9` 之后 `2a26e53` 的 check-runs 仍为 0。
 >
 > **边界：** M3 未连库、未执行 `v1.0` 降级或 SRDI 修正；未独立复核 M1 的测试与云端结果。SRDI 的 B 仍需 M2 与项目负责人同意。
+>
+> **后续（2026-11-15）：** M1 已在 `3b1d198` 把 A/B 口径改回「B 目标、A 临时」，并解决与 `main` 的冲突、CI 转绿；M2 又提出首次插入绑定与降级脚本指纹两条 P1。M3 的处理与 SRDI 补细则来源条件见 [M3_DATE_SOURCE_ROUND7_1115.md](M3_DATE_SOURCE_ROUND7_1115.md)。
 
 ## 1. 结论先行
 
