@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "note": "M3 在 PR #69 收口意见里要求：SMART（深工信规〔2025〕4号）与 GREEN（深工信规〔2024〕12号）的申报窗口不是政策有效期。两行草稿的 effective_from 改为 published_at、effective_to 置空；provenance 仍是 unverified/unknown。只动未发布行，已发布行的 xmin 指纹前后必须一致。",
+  "entries": [
+    {
+      "sourceUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_12201125.html",
+      "version": "深工信规〔2025〕4号"
+    },
+    {
+      "sourceUrl": "https://www.sz.gov.cn/szzt2010/wgkzl/jcgk/jcygk/zdzcjc/content/post_11845882.html",
+      "version": "深工信规〔2024〕12号"
+    }
+  ]
+}
