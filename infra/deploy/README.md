@@ -9,6 +9,7 @@
 | `provision.sh` | 在 ECS 上执行 | 装包、建用户、建 venv、装依赖、装配置并启动 |
 | `issue-session.py` | 不安装，直接`/opt/huice/venv/bin/python` 跑 | 签发演示会话 cookie 并写 `demo_quota` 起始行（§3.1） |
 | `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
+| `provision-test-accounts.py` | 不安装，直接跑 | 建隔离环境的合成账号：1 审核员 + 2 企业，口令写成 0600 凭证文件（§3.6） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
 | `nginx-huice-site.conf` | 同上，`enable-tls.sh --web-root` 时改装这一份 | 443 同源站点：前端静态文件 + `/api/v1/` 反代（与上一行**互斥**，同一个文件名） |
@@ -55,7 +56,7 @@
 | 6 | 健康检查 200（§4 第 **1—4** 项）：本机、经 nginx、公网三层 | ECS + 自己电脑 | 200 只证明应用→RDS 通，不证明 443 与前端可用 |
 | 7 | 自签 HTTPS（§3.2）；要前端页面同源就加 `--web-root`（§3.3）。**完成后**按 §4 的三批安排补跑第 **8—11** 项（第 5—7 项在第 6 步之后就能跑，不必等这里） | ECS | 不做：`restricted` 下带 `Secure` 的 cookie 在 `http://` 下存不住，页面一直 403；若先跑第 8—9 项，会因为 443 还不存在而误判成部署失败 |
 | 8 | 签发会话 cookie（§3.1） | ECS | `/admin/*` 会卡在鉴权第一关：没有 Bearer 或 Bearer 不对是 **401 `UNAUTHENTICATED`**；Bearer 正确但缺/错 cookie 才是 **403 `DEMO_SESSION_REQUIRED`**（与 §4 第 5—7 项同一口径），`/health` 仍是 200 |
-| 9 | 要登后台就再建首个审核员账号（§3.4，保底初始化） | ECS | 跳过它就没有任何 `reviewer` 账号：后台**写**接口（导入、抽取、保存条件、发布）只能用审核员会话，Bearer 在 E1 起只读，会一直 403 `ROLE_FORBIDDEN`；注册接口也建不出来，除非先配好 `REVIEWER_SIGNUP_KEY` |
+| 9 | 要登后台就再建首个审核员账号（§3.4，保底初始化）；**隔离环境另加一步**：跑 `provision-test-accounts.py` 建两个合成企业 + 一个审核员（§3.6） | ECS | 跳过它就没有任何 `reviewer` 账号：后台**写**接口（导入、抽取、保存条件、发布）只能用审核员会话，Bearer 在 E1 起只读，会一直 403 `ROLE_FORBIDDEN`；注册接口也建不出来，除非先配好 `REVIEWER_SIGNUP_KEY` |
 
 ## 1. 上传代码
 
@@ -382,6 +383,44 @@ journalctl -u huice-discovery -n 50 --no-pager     # 每轮一行结论
 - 手工跑时用 HTTPS 白名单内的来源；抓取器的单页超时 15 秒、响应上限 2 MiB、同站间隔 ≥2 秒、单轮最多 50 条新候选 / 200 篇正文，这些值在契约草案 `contracts/openapi.e2-draft.yaml` 的 `x-e2-runtime-model` 里，并由 `services/api/tests/test_e2_draft.py` 与代码常量为准互校。
 - 未做迁移 010 时，定时器能起来但每一次运行都会因 `discovery_settings` 不存在而失败——先按 §2.1 跑 `migrate.sh`。
 - **`MODEL_MODE=fixture` 下抓到的候选会全部落 `extraction_failed`**：fixture 客户端返回固定示例文本，抽不出结构化条件。这是有意的——宁可让审核员看到「这条没抽出来、请人工录入」，也不生成看起来完整的假条件。要让抽取真正工作，切到 `MODEL_MODE=deepseek` 并填好 `DEEPSEEK_*`。
+
+### 3.6 隔离环境的合成账号（两个企业 + 一个审核员）
+
+M2 的前端联调（#59 的启动条件、PR #72 的「需 M1 提供同版隔离环境及合成账号」）要两个**合成企业**账号和一个**审核员**账号。`provision-test-accounts.py` 一次建齐，走的是注册同一条仓储路径（企业归属、事实校验、用户名规则与 `POST /auth/register` 一致）。
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/provision-test-accounts.py \
+  --out /root/huice-test-accounts-$(date +%Y%m%d).txt
+```
+
+| 用户名 | 角色 | 企业 |
+| --- | --- | --- |
+| `reviewer.demo` | `reviewer` | —（不建企业，与 `create-admin.py` 同口径） |
+| `acme.alpha` | `enterprise` | 合成企业A（region `440300`、industry `F51`） |
+| `acme.beta` | `enterprise` | 合成企业B（region `440300`、industry `C39`） |
+
+- **口令只在凭证文件里出现一次**：脚本生成 24 位随机口令，写成 `0600` 的 `--out` 文件，stdout 只打印用户名与计数。交付走机密渠道（当面对传、私聊、受控网盘），**不进仓库、不进文档、不进聊天、不进 PR**；本文件本身按 §7 的口径处理，交付完 `shred -u`。
+- **先查文件再建账号**：`--out` 已存在且没给 `--force` 时直接退出 `4`，不连库——反过来做会留下「账号建好了、口令没落盘」的账号，只能靠 `--reset-passwords` 重发。
+- **重跑不踢人**：已存在的账号默认跳过、不改口令（M2 可能正拿着用）；要重发口令加 `--reset-passwords --force`，凭证文件会整份重写。
+- **验证**（在 ECS 本机，`curl` 的 cookie 落 0600 文件，别回显）：
+
+  ```bash
+  # 登录（口令从凭证文件读，不进 shell 历史）
+  curl -sS -c /root/alpha.cookies -H "Origin: https://<站点域名>" \
+    -H "Content-Type: application/json" \
+    --data @/root/login-alpha.json https://<站点域名>/api/v1/auth/login
+  # 看自己绑定的企业
+  curl -sS -b /root/alpha.cookies https://<站点域名>/api/v1/auth/me
+  # 越权：用 alpha 的会话请求 beta 的企业，应 404 且响应体不含 beta 的任何字段
+  curl -sS -b /root/alpha.cookies -o /dev/null -w '%{http_code}\n' \
+    https://<站点域名>/api/v1/enterprises/<beta 的 enterpriseId>
+  ```
+
+  restricted 部署先过演示门禁（§3.1），没有有效演示 cookie 时这些请求一律 403 `DEMO_SESSION_REQUIRED`——那不是账号有问题。
+- **这些账号是联调账号，不是验收证据**：账号存在只说明环境可用，不说明越权、配额、改密、并发已经验过；E1/E2 的验收结论仍以 M2/M3 的独立复核为准。
+- **收尾**：联调结束后把凭证文件 `shred -u`；账号在隔离环境里保留（M2 可能还要复跑），确需停用就在该库执行 `UPDATE app_user SET status = 'disabled' WHERE username IN ('reviewer.demo', 'acme.alpha', 'acme.beta');`——只动隔离环境，不碰生产库。
 
 ## 4. 验证
 
