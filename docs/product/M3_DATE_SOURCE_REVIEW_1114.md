@@ -7,6 +7,8 @@
 > **依据：** 本文件引用的原文均来自 `data/policies/sources/` 已归档正文与 [POLICY_SCOPE.md](POLICY_SCOPE.md) 2026-11-10/11-12/11-13 核查、[POLICY_SOURCE_ATTACHMENTS_1113.md](POLICY_SOURCE_ATTACHMENTS_1113.md) 附件读取记录、`data/policies/source_register.csv` 的 9 个版本行。**本轮没有重新下载全部官方原文，也没有做浏览器核验、双人复核或数据库实测。**
 >
 > **边界：** 只复核业务语义、原文定位、状态口径与数据文件一致性；不改 `infra/**`（M1 范围），不改 `reviewStatus`，不写 `reviewEvidence`。批准动作由 M3 本人确认后，交 M1 在其分支填写。
+>
+> **后续（2026-11-14）：** 本文 §6.1 的云端干跑已完成（head `9d23483`，10 行绑定与数据逐条一致）；M3 已批准 9 个条目的旁表写入，批准记录、`reviewEvidence` 与发布前条件见 [M3_DATE_SOURCE_APPROVAL_1114.md](M3_DATE_SOURCE_APPROVAL_1114.md)。本文保留为干跑前的复核记录。
 
 ## 1. 本轮结论摘要
 

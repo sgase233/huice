@@ -150,6 +150,7 @@ M3 负责业务定义与复核；M1 负责 API/采集/迁移实现，M2 负责�
 - `011` 回填后的旁表 provenance 只是时间线的技术前置；VIS-06/VIS-AT-04 的验收仍需 M3 逐项复核原文定位、M2 页面展示、M1 同版环境证据。**当前不产生“通过”项。**
 - HIGHTECH 年度指南、RD-SUBSIDY 后续年度指南、7 号公告“长期实施”外部依据仍未取得；不得用推算值补齐。
 - **2026-11-14 复审（PR #69 head `82090a8`）**：9 个版本条目齐备，F1—F11 已修，F13/F14 结构已改；M3 接受 README §2.2 的版本粒度口径（`version`=规程/细则文号、`sourceUrl`=年度通知、note 点明窗口来源）。数据仍为 `draft-pending-m3`：按执行顺序，M3 批准须在云端干跑核对 9 条绑定行之后，尤其 SMART 的 ZIP 附件。详见 [M3_DATE_SOURCE_REVIEW_1114.md](M3_DATE_SOURCE_REVIEW_1114.md)。仍不得写成 VIS-06 验收通过或三方签收。
+- **2026-11-14 云端干跑后批准（PR #69 head `9d23483`）**：M1 干跑 10 行绑定与数据文件逐条一致（SMART 绑到包内附件1.docx，不是 ZIP；GREEN 绑 `.doc`；SRDI 绑通知正文；其余绑各自正文）。M3 **批准 9 个条目的旁表 provenance 写入**，`reviewEvidence` 见 [M3_DATE_SOURCE_APPROVAL_1114.md](M3_DATE_SOURCE_APPROVAL_1114.md) §4.1。**不批准** SMART/GREEN 两个新版本发布：导入把申报窗口写成 `effective_from/effective_to`，发布前必须处理有效期语义与合并窗口；云端 3 个测试版本不得计入 VIS-06 覆盖分母。VIS-06 仍不产生「通过」项。
 
 ## 待核实项
 
