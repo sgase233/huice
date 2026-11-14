@@ -11,6 +11,7 @@
 | `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
 | `import-policy-sources.py` + `policy-source-import.json` + `policy-sources/` | 不安装，直接跑 | 补 SMART／GREEN 两个只有版本与来源的政策（它们的窗口只在附件里，之前没导入）——`011` 回填干跑的前置（§2.2） |
 | `fix-draft-effective-dates.py` + `draft-effective-dates.json` | 不安装，直接跑 | 把 SMART／GREEN 两行**草稿**的有效期改成中性占位（`effective_from = published_at`、`effective_to = NULL`）。只动未发布行，命中已发布行整批拒绝；写前写后比对已发布行 `xmin` 指纹。M3 在 PR #69 收口里要求发布前完成（§2.2） |
+| `retire-test-policy-version.py` + `retire-test-versions.json` | 不安装，直接跑 | 把已发布的**测试**版本降级为 `pending_parse`（M3 第三轮 B 方案）：只降级、不删除；只在该语句范围内临时禁用 `policy_version_guard_published` 并立即恢复，提交前后比对其它已发布行的 `xmin` 指纹，提交后验证守卫仍拒绝已发布行的 UPDATE。**执行前需 M2 与项目负责人同意** |
 | `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version_date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 不是批准值时 `--apply` 照样拒绝；数据复核前只干跑（§2.1 迁移段） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
@@ -218,6 +219,7 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 - **已导入的两行仍是早期形状（不改）**：云端 SMART/GREEN 的 `policy_source` 是第一次导入时写的——`file_name` 用原附件名（`.docx`/`.doc`）、`content_hash` 却是提取文本的哈希。脚本已改成如实登记（`.txt` + `text/plain` + 文本哈希 + 真实对象键），但**已入库的两行不动**：`file_name` 正是回填干跑里显示「附件1.docx」的那一列，改名会让 M3 已核对过的记录对不上。两行都还没发布，发布前再统一处理。
 - **云端那两行草稿已于 2026-11-14 修正**（M3 第四轮关闭）：`effective_from` 改为 `published_at`、`effective_to` 置空、`revision` 换新；工具 `fix-draft-effective-dates.py` 保留，具备幂等（已是目标值就跳过）、按读到的 `revision` 校验并发编辑、命中已发布行整批拒绝。**SMART/GREEN 仍不得发布**，直到 VIS-06 的展示条件满足。
 - **两个导入版本的有效期是中性占位**：SMART（深工信规〔2025〕4号）与 GREEN（深工信规〔2024〕12号）由 `import-policy-sources.py` 导入，`effectiveFrom` 取 `publishedAt`、`effectiveTo` 留空——申报窗口不是政策有效期（M3 在 PR #69 复核里点名）。它们在 provenance 里仍是 `unverified`/`unknown`；页面与时间线不得把这两个版本的有效期显示为已核实，也不得用它们算 `policy_expired`。发布前若要改成真实有效期，先由 M3 给依据并复核。
+- **申报窗口关闭 ≠ 政策过期**：SRDI（深工信规〔2025〕8号）的 `effective_from/to` 与申报窗口同值（2025-10-15—11-10），窗口关闭后 `validity` 会按有效期判 `closed`。页面与报告必须写「申报窗口已关闭」，**不得显示「政策已过期」**，也不能用窗口关闭推导 `policy_expired`；它的 provenance 里 `effectiveFrom/To` 是 `unverified`，本来就不该按已核实展示。
 - **SMART 的 `application_window` 只是合并区间**：库里存的是 `2025-06-13 00:00`—`2025-07-07 18:00`，压平了四段窗口、也漏掉书面材料到 07-11 的部分。时间线/详情页必须读 provenance 的 `note`（四段 + 办理方式），不得把 07-07 当成全部受理截止；GREEN 只有一段，注记「来源附件，非正文」即可。
 - **干跑会打印每条日期字段绑到哪一行**：`entries[i] <文号> applicationWindow → 附件第 1 份（policy_source.ordinal=1）：<文件名>（大小）`。压缩件（`.zip`/`.rar`/`.7z`）另给一条提示——整包导入时「第 1 份」是包、逐份导入时是包内文件，两种情况的绑定不同，只能靠这一行看出来。
 - **数据文件里的附件序号是「第几份附件」，从 1 起**，不是数据库 `policy_source.ordinal`（那里正文占 0、附件从 1 起但会随份数变化）。脚本按 `ORDER BY ordinal` 的第 n 份去查，不拿绝对号硬匹配。

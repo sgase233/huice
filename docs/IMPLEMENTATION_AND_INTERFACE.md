@@ -169,7 +169,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 2. API-11 校验企业、1—7 个不重复政策 ID、`asOf` 和 `period`；固定企业快照及每项政策的最新已发布版本。`asOf` 是带时区时间，判断政策日期时换算为北京时间；不凭 asOf 自动选任意历史版本。本版重放依据通过旧 run 读取，重新计算使用当前已发布规则。
 3. `orchestrator → rules.evaluate_policy(policySnapshot, enterpriseSnapshot, period, asOf)`。只读取引用校验通过且已人工审核的数据。未审政策整体返回 422，不在一次运行内悄悄跳过。
 4. 条件级先检测已审核的冲突，再执行硬门槛和 AST。政策级默认 AND：存在冲突为 conflict；否则任一条件不满足为 not_satisfied；否则存在必要事实未知为 insufficient_evidence；全部满足才 satisfied。OR 分支中无关的缺失事实不应阻止已经成立的有效分支。缺失事实只报「仍挡住结论」的那些：条件级与政策级一样，结论一旦定下（satisfied / not_satisfied / conflict）就不再带缺失事实，只有 insufficient_evidence 才给出，且只来自尚未定性的子条件——`or` 里已成立那一支之外的、`and` 里已判不成立那一支之外的缺失都不计入。
-5. 关闭政策可用于历史演示，不得伪装成开放机会：以 asOf 求四态结果，同时以读取时刻判断 `validity`；已关闭/已过期明确标 stale，显示原因并隐藏申报动作。晚于有效期的当期评估还应有时间门槛不满足。
+5. 关闭政策可用于历史演示，不得伪装成开放机会；**申报窗口关闭 ≠ 政策过期**（2026-11-15，M3 决定 A）：当版本行的 `effective_from/to` 与申报窗口同值（目前只有 SRDI 深工信规〔2025〕8号，`2025-10-15—11-10`），窗口关闭后 `validity` 仍会按有效期判 `closed`，但页面与报告只能写「申报窗口已关闭」，不得显示「政策已过期」、也不得据此产出 `policy_expired`；该版本的 `effectiveFrom/To` 在旁表里是 `unverified`，不按已核实展示。以 asOf 求四态结果，同时以读取时刻判断 `validity`；已关闭/已过期明确标 stale，显示原因并隐藏申报动作。晚于有效期的当期评估还应有时间门槛不满足。
 6. 创建不可变 run，保存规则版本、政策快照、事实快照、依赖、确定性解释与来源，再允许模型润色。缓存命中也分配新 runId，并注明复用来源；不覆盖旧 run。
 
 ### 2.5 FR-05：补问与局部重算
