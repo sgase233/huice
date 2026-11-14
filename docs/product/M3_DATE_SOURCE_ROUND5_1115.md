@@ -7,6 +7,8 @@
 > **合并状态（复核时）：** GitHub 报 `mergeable=false`、`mergeable_state=dirty`。`origin/main` 已到 `a1ec7e1`（合并 PR #74/#75），PR 基线仍是 `c84b4b7`；本地 `git merge-tree` 显示 `infra/README.md`、`infra/deploy/README.md`、`infra/deploy/migrate.sh`、`services/api/tests/test_migrate_script.py` 四处冲突。head `cb81ee9` 在复核时**没有 check-runs 结果**（total 0），不能记为 CI 通过。
 >
 > **边界：** M3 未连库、未执行迁移/回填/修正脚本，未独立运行后端测试或访问云端。SRDI 的云端值来自 M1 的回告；细则原文由 M3 于 2026-11-15 重新访问官方页面核对。
+>
+> **后续（2026-11-15）：** M1 在 `2a26e53` 把 SRDI 的 A 展示口径写入 README/实现文档，但把 commit message 写成「M3 决定 A」。M3 在 [M3_DATE_SOURCE_ROUND6_1115.md](M3_DATE_SOURCE_ROUND6_1115.md) 更正：B 是目标，A 是临时口径；另记录 M2 两条 P1 与 `v1.0` 降级脚本的补充要求。
 
 ## 1. 结论先行
 
