@@ -42,9 +42,11 @@ DEFAULT_DEMO_SESSION_QUOTA = 20
 #: 「重启时还没超时、之后才超时」的行会一直停在 running。
 DEFAULT_RUN_MAX_DURATION_SECONDS = 7200
 DEFAULT_RUN_INTERRUPT_SCAN_SECONDS = 3600
-#: 扫描默认**关闭**：``interrupted`` 是 RunStatus 的新取值，契约要求与前端类型同窗升级，
-#: 不允许后端单边先行。与 ``1.3.0-rc.1`` 同窗发布时再置 1。
-DEFAULT_RUN_INTERRUPT_SCAN_ENABLED = False
+#: 运行生命周期的**契约可见行为**默认关闭（M2 在 PR #75 复审里点名）：
+#: 打开后 (a) 中断扫描才会产生 ``interrupted``，(b) API-12 才会对未成功的 run 返回
+#: 409 ``RUN_NOT_COMPLETED``。两者都是新契约行为，必须与契约 ``1.3.0-rc.1`` 和前端
+#: 类型同窗发布，不允许后端单边先行；关闭时保持既有行为。
+DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED = False
 
 
 class ConfigError(RuntimeError):
@@ -81,7 +83,7 @@ class Settings:
     demo_session_quota: int = DEFAULT_DEMO_SESSION_QUOTA
     run_max_duration_seconds: int = DEFAULT_RUN_MAX_DURATION_SECONDS
     run_interrupt_scan_seconds: int = DEFAULT_RUN_INTERRUPT_SCAN_SECONDS
-    run_interrupt_scan_enabled: bool = DEFAULT_RUN_INTERRUPT_SCAN_ENABLED
+    run_lifecycle_contract_enabled: bool = DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED
 
     @property
     def effective_public_origin(self) -> str:
@@ -199,8 +201,8 @@ class Settings:
         run_interrupt_scan_seconds = _positive_int(
             env, "RUN_INTERRUPT_SCAN_SECONDS", DEFAULT_RUN_INTERRUPT_SCAN_SECONDS, problems
         )
-        run_interrupt_scan_enabled = _flag(
-            env, "RUN_INTERRUPT_SCAN_ENABLED", DEFAULT_RUN_INTERRUPT_SCAN_ENABLED, problems
+        run_lifecycle_contract_enabled = _flag(
+            env, "RUN_LIFECYCLE_CONTRACT_ENABLED", DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED, problems
         )
 
         deepseek_base_url = _text(env, "DEEPSEEK_BASE_URL", "")
@@ -264,7 +266,7 @@ class Settings:
             demo_session_quota=demo_session_quota,
             run_max_duration_seconds=run_max_duration_seconds,
             run_interrupt_scan_seconds=run_interrupt_scan_seconds,
-            run_interrupt_scan_enabled=run_interrupt_scan_enabled,
+            run_lifecycle_contract_enabled=run_lifecycle_contract_enabled,
         )
 
 

@@ -458,9 +458,19 @@ class RunSession:
 
 
 class PolicyRepository:
-    def __init__(self, db: Database, cursor_secret: str) -> None:
+    def __init__(
+        self,
+        db: Database,
+        cursor_secret: str,
+        *,
+        require_completed_status: bool = False,
+    ) -> None:
         self._db = db
         self._secret = cursor_secret.encode("utf-8")
+        #: API-12 对未成功的 run 是否返回 409 ``RUN_NOT_COMPLETED``。这是新契约行为
+        #: （M2 在 PR #75 复审里点名「不能后端单边先行」），默认关闭以保持既有行为；
+        #: 与中断扫描由同一个开关 ``RUN_LIFECYCLE_CONTRACT_ENABLED`` 控制。
+        self._require_completed_status = require_completed_status
 
     # ------------------------------------------------------------------ write
 
@@ -1681,6 +1691,23 @@ class PolicyRepository:
                 except Exception:  # noqa: BLE001 - 连接已断时锁随连接消失，不能掩盖真实异常
                     logger.debug("释放 run 锁失败，已忽略", exc_info=True)
 
+    def mark_run_lifecycle_start(self) -> None:
+        """写运行采集的覆盖起点（``collection_baseline.run_lifecycle_from``，B2 上线时）。
+
+        只在为 NULL 时写：重跑、重启、并发启动都不会挪动起点。**按列幂等**——与 B3 的
+        审核事件起点各写各的列，先跑哪个都成立。
+        """
+
+        with self._db.connection() as conn:
+            conn.execute(
+                "INSERT INTO collection_baseline (id) VALUES ('default') "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+            conn.execute(
+                "UPDATE collection_baseline SET run_lifecycle_from = COALESCE("
+                "run_lifecycle_from, now()) WHERE id = 'default'"
+            )
+
     def mark_interrupted_runs(self, *, max_duration_seconds: int) -> list[UUID]:
         """把「超时 + 锁未被持有 + 原连接已断开」三者同时成立的 running 行标为中断。
 
@@ -1886,7 +1913,8 @@ class PolicyRepository:
                 raise ApiProblem(404, "RUN_NOT_FOUND", "没有找到对应的判断运行。")
             # E3 B2：运行有生命周期了，未成功的 run 能列、能查状态，但拿不到结果。
             # 409 而不是 404——「还没完成」与「不存在」从此可区分，也与 API-13 同码。
-            if header["status"] != "succeeded":
+            # 只有契约窗口打开时才生效：关闭时保持既有行为（照常返回，由消费者自行判断）。
+            if self._require_completed_status and header["status"] != "succeeded":
                 raise ApiProblem(
                     409,
                     "RUN_NOT_COMPLETED",

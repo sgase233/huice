@@ -82,7 +82,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 而被丢弃；这里显式让 app.* / huice.* 以 INFO 输出到 stderr（systemd 转 journal）。
     configure_logging()
     database = Database(resolved.database_url)
-    repository = PolicyRepository(database, cursor_secret=_cursor_secret(resolved))
+    repository = PolicyRepository(
+        database,
+        cursor_secret=_cursor_secret(resolved),
+        require_completed_status=resolved.run_lifecycle_contract_enabled,
+    )
     discovery_repository = DiscoveryRepository(database, cursor_secret=_cursor_secret(resolved))
     accounts = AccountsRepository(database)
     object_store = build_object_store(resolved)
@@ -95,9 +99,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 只扫一次会让「重启时还没超时、之后才超时」的行永远停在 running。
         # 默认关闭：interrupted 是 RunStatus 的新取值，契约要求与前端类型同窗升级，
         # 不允许后端单边先行；与 1.3.0-rc.1 同窗发布时再打开。
+        # 运行采集的覆盖起点：只在为 NULL 时写，重启/并发启动都不会挪动它。
+        # 与 B3 的审核事件起点按列幂等，先跑哪个都成立。
+        try:
+            await asyncio.to_thread(repository.mark_run_lifecycle_start)
+        except Exception:  # noqa: BLE001 - 库未迁移到 012 时不能挡住启动
+            logger.warning("写入运行采集起点失败，下一轮重启再试", exc_info=True)
+
         scan_task = (
             asyncio.create_task(_run_interrupt_scan(repository, resolved))
-            if resolved.run_interrupt_scan_enabled
+            if resolved.run_lifecycle_contract_enabled
             else None
         )
         try:

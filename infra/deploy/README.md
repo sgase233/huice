@@ -208,7 +208,7 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `LOCAL_OBJECT_DIR` | `.local-objects`（`obs` 模式下不生效） |
 | `RUN_MAX_DURATION_SECONDS` | 可选，默认 `7200`。运行超过它仍满足另两条判据时，启动/定时扫描才把 `running` 标成 `interrupted`。这是**部署参数**，不是业务口径；按实际模型与部署条件调，不要写进验收文档当阈值 |
 | `RUN_INTERRUPT_SCAN_SECONDS` | 可选，默认 `3600`。中断扫描间隔；启动时另扫一次，所以「重启时还没超时、之后才超时」的行不会一直停在 `running` |
-| `RUN_INTERRUPT_SCAN_ENABLED` | 可选，默认 `0`（关闭）。`interrupted` 是 `RunStatus` 的新取值，契约要求与前端类型同窗升级、**不允许后端单边先行**；扫描只在与契约 `1.3.0-rc.1` 同时发布时才置 `1`。关闭时残留的 `running` 行保持原样（与 E1 的口径一致） |
+| `RUN_LIFECYCLE_CONTRACT_ENABLED` | 可选，默认 `0`（关闭）。打开后同时启用两项**新契约行为**：中断扫描会写 `interrupted`，API-12 对未成功的运行返回 `409 RUN_NOT_COMPLETED`。两项都必须与契约 `1.3.0-rc.1`、前端类型同窗发布，**不允许后端单边先行**；关闭时保持既有行为（未成功的运行按「没有结果」404，残留的 `running` 行原样保留） |
 
 ```bash
 systemctl restart huice-api

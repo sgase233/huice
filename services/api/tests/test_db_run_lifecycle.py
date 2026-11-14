@@ -24,7 +24,7 @@ from app.agents.orchestrator import assess
 from app.agents.profile import normalize_profile
 from app.domain.versioning import SHANGHAI
 from app.errors import ApiProblem
-from app.integrations.storage import CriterionRecord
+from app.integrations.storage import CriterionRecord, PolicyRepository
 from app.schemas import AssessmentInput, EnterpriseInput
 from db_support import create, query_all, query_one
 
@@ -193,7 +193,7 @@ def test_a_failed_run_keeps_its_row_and_writes_no_results(
 # ------------------------------------------------------------------ API-12
 
 
-def test_get_run_distinguishes_unfinished_from_missing(database_url_schema: str, repo) -> None:
+def test_get_run_distinguishes_unfinished_from_missing(database_url_schema: str, repo, db) -> None:
     enterprise = _enterprise(repo)
     run_id = uuid4()
     with psycopg.connect(database_url_schema) as conn:
@@ -206,14 +206,22 @@ def test_get_run_distinguishes_unfinished_from_missing(database_url_schema: str,
         )
         conn.commit()
 
-    with pytest.raises(ApiProblem) as caught:
+    # 默认（契约窗口未打开）保持既有行为：没有结果快照就按「没有结果」报 404，
+    # 不新造 409——新语义只随契约窗口一起开。
+    with pytest.raises(ApiProblem) as legacy:
         repo.get_run(run_id)
+    assert legacy.value.status_code == 404
+    assert legacy.value.code == "RUN_NOT_FOUND"
+
+    strict = PolicyRepository(db, cursor_secret="test", require_completed_status=True)
+    with pytest.raises(ApiProblem) as caught:
+        strict.get_run(run_id)
     assert caught.value.status_code == 409
     assert caught.value.code == "RUN_NOT_COMPLETED"
     assert caught.value.details["status"] == "running"
 
     with pytest.raises(ApiProblem) as missing:
-        repo.get_run(uuid4())
+        strict.get_run(uuid4())
     assert missing.value.status_code == 404
 
 
@@ -283,3 +291,46 @@ def test_interrupt_scan_needs_all_three_conditions(database_url_schema: str, rep
     assert statuses[locked] == "running"
     assert statuses[dead] == "interrupted"
     assert statuses[fresh] == "running"
+
+
+def test_the_lifecycle_start_is_written_once(database_url_schema: str, repo) -> None:
+    """覆盖起点按列幂等：第一次写、之后不挪动；B3 先建行也照样补得上。"""
+
+    repo.mark_run_lifecycle_start()
+    first = query_one(
+        database_url_schema,
+        "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'",
+    )[0]
+    assert first is not None
+
+    repo.mark_run_lifecycle_start()
+    second = query_one(
+        database_url_schema,
+        "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'",
+    )[0]
+    assert second == first
+
+
+def test_the_lifecycle_start_does_not_touch_the_review_start(database_url_schema: str, repo) -> None:
+    """B3 先写了审核起点、B2 后到：只补自己那一列，不覆盖别人的。"""
+
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "INSERT INTO collection_baseline (id, review_events_from, review_source) "
+            "VALUES ('default', now(), 'reviewed_at')"
+        )
+        conn.commit()
+        review_before = conn.execute(
+            "SELECT review_events_from, review_source FROM collection_baseline "
+            "WHERE id = 'default'"
+        ).fetchone()
+
+    repo.mark_run_lifecycle_start()
+
+    with psycopg.connect(database_url_schema) as conn:
+        row = conn.execute(
+            "SELECT review_events_from, review_source, run_lifecycle_from "
+            "FROM collection_baseline WHERE id = 'default'"
+        ).fetchone()
+    assert (row[0], row[1]) == review_before
+    assert row[2] is not None

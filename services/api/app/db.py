@@ -99,7 +99,11 @@ class Database:
             raise StorageUnavailable("数据库连接不可用") from exc
         try:
             _configure(conn)
-            yield conn
+            try:
+                yield conn
+            except OperationalError as exc:
+                # 与池连接路径同一口径：运行期间连接断开是依赖不可用，不是内部错误。
+                raise StorageUnavailable("数据库连接不可用") from exc
         finally:
             try:
                 conn.close()

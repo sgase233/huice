@@ -257,14 +257,17 @@ def test_run_lifecycle_values_must_be_positive_integers(value):
     assert "RUN_MAX_DURATION_SECONDS" in error_names(info.value)
 
 
-def test_interrupt_scan_is_off_by_default():
-    """扫描默认关闭：``interrupted`` 要等契约与前端类型同窗升级后才能对外出现。"""
+def test_lifecycle_contract_behaviour_is_off_by_default():
+    """扫描与 API-12 409 是新契约行为：默认关闭，等与契约/前端类型同窗再打开。"""
 
-    assert Settings.from_env(env()).run_interrupt_scan_enabled is False
-    assert Settings.from_env(env(RUN_INTERRUPT_SCAN_ENABLED="1")).run_interrupt_scan_enabled is True
+    assert Settings.from_env(env()).run_lifecycle_contract_enabled is False
+    assert (
+        Settings.from_env(env(RUN_LIFECYCLE_CONTRACT_ENABLED="1")).run_lifecycle_contract_enabled
+        is True
+    )
 
 
-def test_interrupt_scan_flag_only_accepts_true_or_false():
+def test_lifecycle_flag_only_accepts_true_or_false():
     with pytest.raises(ConfigError) as info:
-        Settings.from_env(env(RUN_INTERRUPT_SCAN_ENABLED="maybe"))
-    assert "RUN_INTERRUPT_SCAN_ENABLED" in error_names(info.value)
+        Settings.from_env(env(RUN_LIFECYCLE_CONTRACT_ENABLED="maybe"))
+    assert "RUN_LIFECYCLE_CONTRACT_ENABLED" in error_names(info.value)

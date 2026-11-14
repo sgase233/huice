@@ -210,7 +210,12 @@ def assess(
                 policy_version_ids={item.id: item.version_id for item in snapshots},
             )
         except Exception as exc:
-            session.fail(_error_category(exc))
+            # 失败落库不能掩盖原始异常：连接在评估期间断了时，这里再抛一次会让客户端
+            # 看到 500 而不是真正的失败原因。落不进去就保持 running，交给中断扫描。
+            try:
+                session.fail(_error_category(exc))
+            except Exception:  # noqa: BLE001 - 原始异常优先
+                logger.warning("失败状态没有落库，运行行会保持 running，等中断扫描处理", exc_info=True)
             raise
 
     return run
