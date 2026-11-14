@@ -61,6 +61,22 @@ def credential_lines(path: Path) -> list[dict[str, str]]:
     return parsed
 
 
+def credential_lines_from(text: str) -> list[dict[str, str]]:
+    """从文本解析凭证行（``credential_lines`` 读文件，这里读已经读出来的内容）。"""
+
+    parsed = []
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields: dict[str, str] = {}
+        for token in line.split():
+            if "=" in token:
+                key, _, value = token.partition("=")
+                fields[key] = value
+        parsed.append(fields)
+    return parsed
+
+
 def test_missing_database_url_names_the_variable_only(tmp_path: Path) -> None:
     result = run_script("--out", str(tmp_path / "creds.txt"), DATABASE_URL=None)
 
@@ -241,7 +257,10 @@ def test_force_without_new_credentials_leaves_the_only_file_untouched(
     result = run_script("--out", str(out), "--force", DATABASE_URL=database_url_schema)
 
     assert result.returncode == 0, result.stderr
-    assert out.read_text(encoding="utf-8") == original
+    # 口令一个都不能变；文件可以因为「对账标为已确认」而重写
+    after = {entry["username"]: entry["password"] for entry in credential_lines(out)}
+    assert after == {entry["username"]: entry["password"] for entry in credential_lines_from(original)}
+    assert len(after) == 3
 
 
 @pytest.mark.db
@@ -426,9 +445,10 @@ def test_reconcile_drops_rows_whose_password_no_longer_matches(tmp_path: Path) -
         "acme.beta": provision.CredentialEntry("acme.beta", "enterprise", "never-created-123", "合成企业B", "待提交"),
     }
 
-    dropped = provision._reconcile(ReconcileFake(), entries)
+    dropped, changed = provision._reconcile(ReconcileFake(), entries)
 
     assert set(dropped) == {"acme.alpha", "acme.beta"}
+    assert changed is True
     assert list(entries) == ["reviewer.demo"]
     assert entries["reviewer.demo"].status == "已确认"
 
@@ -462,3 +482,109 @@ def test_a_partial_existing_file_keeps_earlier_passwords(
     assert after["reviewer.demo"] == before["reviewer.demo"]
     assert after["acme.alpha"] == before["acme.alpha"]
     assert after["acme.beta"] != before["acme.beta"]
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_reset_passwords_works_on_the_same_file_and_revokes_sessions(
+    database_url_schema, tmp_path: Path
+) -> None:
+    """显式重置优先于「文件里已有口令」：同一份文件加 --reset-passwords 也要生效。"""
+
+    out = tmp_path / "creds.txt"
+    assert run_script("--out", str(out), DATABASE_URL=database_url_schema).returncode == 0
+    before = {entry["username"]: entry["password"] for entry in credential_lines(out)}
+
+    with psycopg.connect(database_url_schema) as conn:
+        alpha_id = conn.execute(
+            "SELECT id FROM app_user WHERE username = 'acme.alpha'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO user_session (id, user_id, token_hash, csrf_hash, expires_at) "
+            "VALUES (gen_random_uuid(), %s, %s, %s, now() + interval '1 hour')",
+            (alpha_id, "a" * 64, "b" * 64),
+        )
+        conn.commit()
+
+    result = run_script(
+        "--out", str(out), "--force", "--reset-passwords", DATABASE_URL=database_url_schema
+    )
+
+    assert result.returncode == 0, result.stderr
+    after = {entry["username"]: entry["password"] for entry in credential_lines(out)}
+    assert set(after) == {"reviewer.demo", "acme.alpha", "acme.beta"}
+    for username in after:
+        assert after[username] != before[username], f"{username} 的口令没有重置"
+
+    with psycopg.connect(database_url_schema) as conn:
+        revoked = conn.execute(
+            "SELECT revoked_at IS NOT NULL FROM user_session WHERE user_id = %s", (alpha_id,)
+        ).fetchone()[0]
+        stored = conn.execute(
+            "SELECT password_hash FROM app_user WHERE username = 'acme.alpha'"
+        ).fetchone()[0]
+    assert revoked is True, "重置口令要撤销该账号的现有会话"
+    assert auth_tools.verify_password(after["acme.alpha"], stored)
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_stale_credential_is_removed_from_the_file(database_url_schema, tmp_path: Path) -> None:
+    """外部改过口令后重跑：失效行从文件里删掉，而不是只在输出里说一句。"""
+
+    out = tmp_path / "creds.txt"
+    assert run_script("--out", str(out), DATABASE_URL=database_url_schema).returncode == 0
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "UPDATE app_user SET password_hash = %s WHERE username = 'acme.alpha'",
+            (auth_tools.hash_password("changed-by-someone-123"),),
+        )
+        conn.commit()
+
+    result = run_script("--out", str(out), "--force", DATABASE_URL=database_url_schema)
+
+    assert result.returncode == 0, result.stderr
+    assert "对账结果已写回" in result.stdout
+    text = out.read_text(encoding="utf-8")
+    assert "username=acme.alpha" not in text
+    assert "username=reviewer.demo" in text
+    assert "已确认" in text
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_pending_row_is_marked_confirmed_on_the_next_run(
+    database_url_schema, tmp_path: Path
+) -> None:
+    """提交成功后被打断：下次运行按哈希确认，并把「待提交」写回成「已确认」。"""
+
+    out = tmp_path / "creds.txt"
+    assert run_script("--out", str(out), DATABASE_URL=database_url_schema).returncode == 0
+    pending = out.read_text(encoding="utf-8").replace("(新建)", "(待提交)")
+    out.write_text(pending, encoding="utf-8")
+
+    result = run_script("--out", str(out), "--force", DATABASE_URL=database_url_schema)
+
+    assert result.returncode == 0, result.stderr
+    text = out.read_text(encoding="utf-8")
+    assert "(待提交)" not in text
+    assert text.count("(已确认)") == 3
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_reconcile_without_pending_accounts_still_writes_back(
+    database_url_schema, tmp_path: Path
+) -> None:
+    """三个账号都已存在、没有待建账号时，对账结果也要落盘。"""
+
+    out = tmp_path / "creds.txt"
+    assert run_script("--out", str(out), DATABASE_URL=database_url_schema).returncode == 0
+    out.write_text(
+        out.read_text(encoding="utf-8").replace("(新建)", "(待提交)"), encoding="utf-8"
+    )
+
+    result = run_script("--out", str(out), "--force", DATABASE_URL=database_url_schema)
+
+    assert result.returncode == 0, result.stderr
+    assert "(已确认)" in out.read_text(encoding="utf-8")

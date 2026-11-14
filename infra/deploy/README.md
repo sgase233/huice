@@ -404,7 +404,9 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 - **口令只在凭证文件里出现一次**：脚本生成 24 位随机口令，写成 `0600` 的 `--out` 文件，stdout 只打印用户名与计数。交付走机密渠道（当面对传、私聊、受控网盘），**不进仓库、不进文档、不进聊天、不进 PR**；本文件本身按 §7 的口径处理，交付完 `shred -u`。
 - **同名账号先验身份**：库里已有同名账号时，脚本先核对角色、状态（必须 `active`）与企业归属（企业账号的企业名必须正好是「合成企业A/B」，审核员必须没有企业）。任何一项不符就**整批停下、退出码 `5`**，一个账号都不建、不改、不重置——`--reset-passwords` 会顺带撤销该账号的会话，误伤真实账号的代价比少建一个合成账号大得多。确认这台环境没问题后，先人工改掉同名账号再跑。
 - **先落盘、后提交（写前日志）**：每个账号先生成口令、把该行以「(待提交)」写进文件并 `fsync`，**再**调 `register()` / `update_password()`，成功后把状态改成「(新建)」或「(口令已重置)」。进程在两步之间被杀、或提交失败，口令都已经在文件里；下次运行先按库里的口令哈希逐行核对，账号没建出来或口令已被改过的行会作废（打印作废的用户名），不会把作废口令当交付物。
-- **合并而不是覆盖**：`--force` 表示「继续写这个文件」，不是「清空重写」。文件按用户名合并——已记录的口令原样保留，只追加/更新本轮变动的账号。部分账号已存在、部分新建时，旧口令不会被一份只剩新账号的文件盖掉。全部账号都已存在且本轮没有新口令时，**文件一个字节都不动**。
+- **合并而不是覆盖**：`--force` 表示「继续写这个文件」，不是「清空重写」。文件按用户名合并——已记录的口令原样保留，只追加/更新本轮变动的账号。部分账号已存在、部分新建时，旧口令不会被一份只剩新账号的文件盖掉。
+- **显式重置优先**：只要带了 `--reset-passwords`，即使文件里已有该账号的口令也会重新生成（并撤销它的现有会话）——参数写着「重置」就必须重置。
+- **对账结果写回文件**：每次运行先按库里的口令哈希逐行核对；失效行（账号没建出来、或口令已被别人改过）从文件里删掉，匹配的行标为「(已确认)」。即使本轮没有待建账号，这些改动也会原子写回——文件不会一直留着失效口令或「待提交」。
 - **并发撞名会停下（退出码 `6`）**：另一个进程刚建了同名账号时，本进程拿不到它的口令；脚本重新核对身份后中止并提示，不会在文件里留一条看似成功的记录。并发跑两份脚本到同一个 `--out` 没有意义，请串行执行。
 - **文件按受控方式创建**：父目录不允许组/其他可写；目标不能是符号链接；新文件用 `O_EXCL` + `0600` 建；`--force` 时先写临时文件再 `os.replace`，宽权限的旧文件不会出现「写内容时还是 0644」的窗口。`--out` 已存在且没给 `--force` 时直接退出 `4`，不连库。
 - **重跑不踢人**：已存在的账号默认跳过、不改口令（M2 可能正拿着用）；要重发口令加 `--reset-passwords`（会撤销该账号的现有会话）。
@@ -432,9 +434,16 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 
   chmod 600 /root/login-alpha.json /root/alpha.cookies /root/login-alpha.out \
     /root/alpha-me.out /root/cross.out /root/demo.cookie
-  grep -c 'ENTERPRISE_NOT_FOUND' /root/cross.out      # 期望 1：只有错误信封，code 是它
-  grep -c '合成企业B' /root/cross.out                  # 期望 0：不含 beta 的企业名
-  grep -c '<beta 的 enterpriseId>' /root/cross.out     # 期望 0：也不含 beta 的 id
+  # 按 JSON 结构与允许字段断言，不靠字符串搜索（搜不到某个词不等于没有别的字段）
+  python3 - <<'EOF'
+  import json
+  body = json.load(open("/root/cross.out", encoding="utf-8"))
+  assert set(body) == {"error"}, body
+  err = body["error"]
+  assert set(err) == {"code", "message", "details", "traceId"}, err
+  assert err["code"] == "ENTERPRISE_NOT_FOUND"
+  print("ok")
+  EOF
   ```
 
   期望：login 200、`/auth/me` 200 且 `enterpriseId` 是 alpha 自己的；跨企业请求 **404**，响应体只有 `{error:{code:"ENTERPRISE_NOT_FOUND", message, details, traceId}}` 这一个信封——**没有任何 beta 的字段**（企业名、企业 id、事实值都不出现）。检查完把上面几个文件连 `/root/demo.cookie` 一起 `shred -u`。

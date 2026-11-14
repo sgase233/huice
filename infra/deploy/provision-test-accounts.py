@@ -279,22 +279,33 @@ def persist_credentials(
         raise
 
 
-def _reconcile(accounts: AccountsRepository, entries: dict[str, CredentialEntry]) -> list[str]:
-    """按库里的口令哈希核对每一行：账号不在、或口令已不是当前口令的行作废。"""
+def _reconcile(
+    accounts: AccountsRepository, entries: dict[str, CredentialEntry]
+) -> tuple[list[str], bool]:
+    """按库里的口令哈希核对每一行：账号不在、或口令已不是当前口令的行作废。
+
+    返回 ``(作废的用户名, 是否有改动)``——有改动时调用方要把结果写回文件，否则文件里
+    会一直留着失效口令或「待提交」状态。
+    """
 
     dropped: list[str] = []
+    changed = False
     for username in list(entries):
         row = accounts.find_user_by_username(username)
         if row is None:
             del entries[username]
             dropped.append(username)
+            changed = True
             continue
         if not auth_tools.verify_password(entries[username].password, row["password_hash"]):
             del entries[username]
             dropped.append(username)
+            changed = True
             continue
-        entries[username].status = "已确认"
-    return dropped
+        if entries[username].status != "已确认":
+            entries[username].status = "已确认"
+            changed = True
+    return dropped, changed
 
 
 # --------------------------------------------------------------- 身份核对
@@ -351,11 +362,12 @@ def build_plan(
         if problem is not None:
             problems.append(f"{spec.username}：{problem}")
             continue
-        if spec.username in entries:
-            items.append(PlanItem(spec, "skip", row["id"]))
-            continue
+        # 显式重置优先：文件里有旧口令也一样重置（会撤销该账号的现有会话）
         if reset_passwords:
             items.append(PlanItem(spec, "reset", row["id"]))
+            continue
+        if spec.username in entries:
+            items.append(PlanItem(spec, "skip", row["id"]))
             continue
         warnings.append(f"{spec.username}：账号已存在，但本文件没有它的口令")
         items.append(PlanItem(spec, "skip", row["id"]))
@@ -464,9 +476,12 @@ def main(argv: list[str] | None = None) -> int:
     database = Database(dsn, max_size=1)
     try:
         accounts = AccountsRepository(database)
-        dropped = _reconcile(accounts, entries)
+        dropped, reconciled = _reconcile(accounts, entries)
         for username in dropped:
             print(f"{username}：凭证文件里的口令与库里对不上（账号没建出来或已被改过），该行已作废。")
+        if reconciled and existed and not args.reset_passwords:
+            persist_credentials(args.out, entries, extras, create_only=False)
+            print(f"对账结果已写回 {args.out}（作废行删除、匹配行标为已确认）。")
 
         items, problems, warnings = build_plan(
             accounts, entries, reset_passwords=args.reset_passwords
