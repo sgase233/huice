@@ -31,6 +31,7 @@ MIGRATION_IDS = (
     "010_policy_discovery",
     "011_date_provenance",
     "012_e3_metrics",
+    "013_collection_gap",
 )
 
 #: 含空格与 ``$``：若脚本用 ``$(...)`` 直接拼命令行，这个值会被拆成多个参数或被展开。

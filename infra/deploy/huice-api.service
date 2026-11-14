@@ -37,6 +37,10 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=-/opt/huice/app/.local-objects
+# 采集生命周期事件：启动/停止各写一行（失败不挡服务，用 ``-`` 前缀）
+ReadWritePaths=-/var/lib/huice
+ExecStartPost=-/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/record-collection-event.py --kind start --scope all
+ExecStopPost=-/opt/huice/venv/bin/python /opt/huice/app/infra/deploy/record-collection-event.py --kind stop --scope all
 
 [Install]
 WantedBy=multi-user.target

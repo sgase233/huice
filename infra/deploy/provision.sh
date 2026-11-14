@@ -55,6 +55,9 @@ log "4/6 安装 systemd unit 与 nginx 配置"
 install -m 0644 "${SCRIPT_DIR}/huice-api.service" /etc/systemd/system/huice-api.service
 install -m 0644 "${SCRIPT_DIR}/huice-discovery.service" /etc/systemd/system/huice-discovery.service
 install -m 0644 "${SCRIPT_DIR}/huice-discovery.timer" /etc/systemd/system/huice-discovery.timer
+install -m 0644 "${SCRIPT_DIR}/huice-collection-heartbeat.service" /etc/systemd/system/huice-collection-heartbeat.service
+install -m 0644 "${SCRIPT_DIR}/huice-collection-heartbeat.timer" /etc/systemd/system/huice-collection-heartbeat.timer
+install -d -o "${APP_USER}" -g "${APP_USER}" -m 0750 /var/lib/huice
 install -m 0644 "${SCRIPT_DIR}/nginx-huice.conf" /etc/nginx/conf.d/huice-api.conf
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 chown -R "${APP_USER}:${APP_USER}" /opt/huice
@@ -109,6 +112,9 @@ systemctl restart huice-api || true
 # 后台「启用自动发现」仍是关闭状态，定时器跑起来也只会「未到点/未启用」立即返回。
 systemctl enable huice-discovery.timer >/dev/null
 systemctl restart huice-discovery.timer || true
+# 采集心跳只 enable timer：service 由 timer 每 5 分钟拉起。
+systemctl enable huice-collection-heartbeat.timer >/dev/null
+systemctl restart huice-collection-heartbeat.timer || true
 
 cat <<EOF
 

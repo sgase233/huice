@@ -12,6 +12,8 @@
 | `import-policy-sources.py` + `policy-source-import.json` + `policy-sources/` | 不安装，直接跑 | 补 SMART／GREEN 两个只有版本与来源的政策（它们的窗口只在附件里，之前没导入）——`011` 回填干跑的前置（§2.2） |
 | `fix-draft-effective-dates.py` + `draft-effective-dates.json` | 不安装，直接跑 | 把 SMART／GREEN 两行**草稿**的有效期改成中性占位（`effective_from = published_at`、`effective_to = NULL`）。只动未发布行，命中已发布行整批拒绝；写前写后比对已发布行 `xmin` 指纹。M3 在 PR #69 收口里要求发布前完成（§2.2） |
 | `retire-test-policy-version.py` + `retire-test-versions.json` | 不安装，直接跑 | 把已发布的**测试**版本降级为 `pending_parse`（M3 第三轮 B 方案）：只降级、不删除；只在该语句范围内临时禁用 `policy_version_guard_published` 并立即恢复，提交前后比对其它已发布行的 `xmin` 指纹，提交后验证守卫仍拒绝已发布行的 UPDATE。**执行前需 M2 与项目负责人同意** |
+| `record-collection-event.py` | 不安装，直接跑（unit 钩子调用） | 把采集生命周期事件（start/stop/beat/migrate/rollback/maintenance）写进 `/var/lib/huice/collection-lifecycle-<host>.jsonl`：哈希链 + 心跳，库不可用时也能记（013，§3.5.1） |
+| `import-collection-journal.py` | 不安装，直接跑 | 读主机事件日志、推出中断区间（配对缺口 + 心跳缺口）并按 `event_id` 幂等导入 `collection_gap`；链不完整时拒绝导入（013，§3.5.1） |
 | `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version_date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 不是批准值时 `--apply` 照样拒绝；数据复核前只干跑（§2.1 迁移段） |
 | `provision-test-accounts.py` | 不安装，直接跑 | 建隔离环境的合成账号：1 审核员 + 2 企业，口令写成 0600 凭证文件（§3.6） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
@@ -440,6 +442,19 @@ journalctl -u huice-discovery -n 50 --no-pager     # 每轮一行结论
 - 手工跑时用 HTTPS 白名单内的来源；抓取器的单页超时 15 秒、响应上限 2 MiB、同站间隔 ≥2 秒、单轮最多 50 条新候选 / 200 篇正文，这些值在契约草案 `contracts/openapi.e2-draft.yaml` 的 `x-e2-runtime-model` 里，并由 `services/api/tests/test_e2_draft.py` 与代码常量为准互校。
 - 未做迁移 010 时，定时器能起来但每一次运行都会因 `discovery_settings` 不存在而失败——先按 §2.1 跑 `migrate.sh`。
 - **`MODEL_MODE=fixture` 下抓到的候选会全部落 `extraction_failed`**：fixture 客户端返回固定示例文本，抽不出结构化条件。这是有意的——宁可让审核员看到「这条没抽出来、请人工录入」，也不生成看起来完整的假条件。要让抽取真正工作，切到 `MODEL_MODE=deepseek` 并填好 `DEEPSEEK_*`。
+
+### 3.5.1 采集覆盖证据（E3 / B3，迁移 `013`）
+
+指标端点要回答「这段时间采集中断过吗」。起点只证明「从这一刻起有记录」，证明不了之后没断过，所以另记证据：
+
+- **主机事件日志** `/var/lib/huice/collection-lifecycle-<host>.jsonl`：`start`/`stop` 由 `huice-api.service` 的 `ExecStartPost`/`ExecStopPost` 写，
+  `beat` 由 `huice-collection-heartbeat.timer` 每 5 分钟写，`migrate`/`rollback` 由部署脚本写；每行带 `seq`/`prev` 哈希链与 `host`（`/etc/machine-id`）。
+- **导入**：`import-collection-journal.py` 把日志推成 `collection_gap` 行（`source='host-journal'`）：`stop → start` 为闭合缺口，
+  只有 `stop` 没有 `start` 时 `gap_to` 留空（未闭合，持续到当前）；相邻心跳空档超过 3 倍间隔记 `reason='HOST_SILENT'`。
+  重复导入按 `event_id` 跳过。
+- **读侧规则**：日志链不完整、旧主机日志缺失、日志不可读时，相关指标一律降级为 `partial`（`LOG_CHAIN_BROKEN` / `HOST_EVIDENCE_MISSING` /
+  `GAP_EVIDENCE_MISSING`），**不用起点假装完整**；没有缺口记录也不等于没有缺口。
+- 事件日志目录由 `provision.sh` 创建（`/var/lib/huice`，`huice:huice` 0750）；服务只放开这一个可写路径。
 
 ### 3.6 隔离环境的合成账号（两个企业 + 一个审核员）
 
