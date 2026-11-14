@@ -13,6 +13,7 @@
 | `fix-draft-effective-dates.py` + `draft-effective-dates.json` | 不安装，直接跑 | 把 SMART／GREEN 两行**草稿**的有效期改成中性占位（`effective_from = published_at`、`effective_to = NULL`）。只动未发布行，命中已发布行整批拒绝；写前写后比对已发布行 `xmin` 指纹。M3 在 PR #69 收口里要求发布前完成（§2.2） |
 | `retire-test-policy-version.py` + `retire-test-versions.json` | 不安装，直接跑 | 把已发布的**测试**版本降级为 `pending_parse`（M3 第三轮 B 方案）：只降级、不删除；只在该语句范围内临时禁用 `policy_version_guard_published` 并立即恢复，提交前后比对其它已发布行的 `xmin` 指纹，提交后验证守卫仍拒绝已发布行的 UPDATE。**执行前需 M2 与项目负责人同意** |
 | `record-collection-event.py` | 不安装，直接跑（unit 钩子调用） | 把采集生命周期事件（start/stop/beat/migrate/rollback/maintenance）写进 `/var/lib/huice/collection-lifecycle-<host>.jsonl`：哈希链 + 心跳，库不可用时也能记（013，§3.5.1） |
+| `backfill-review-baseline.py` | 不安装，直接跑 | 把已发布版本补成 `actor_kind='baseline'`、`review_revision=0` 的审核事件，并写 `collection_baseline.review_events_from` / `review_source`（只写自己那两列，与 B2 的运行起点按列幂等；已有基线时退出 0）。基线事件只用于日终待办回放，不计 `reviewsCompleted`（§3.5.1） |
 | `import-collection-journal.py` | 不安装，直接跑 | 读主机事件日志、推出中断区间（配对缺口 + 心跳缺口）并按 `event_id` 幂等导入 `collection_gap`；链不完整时拒绝导入（013，§3.5.1） |
 | `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version_date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 不是批准值时 `--apply` 照样拒绝；数据复核前只干跑（§2.1 迁移段） |
 | `provision-test-accounts.py` | 不安装，直接跑 | 建隔离环境的合成账号：1 审核员 + 2 企业，口令写成 0600 凭证文件（§3.6） |
