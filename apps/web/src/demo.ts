@@ -69,7 +69,7 @@ export const demoPolicies: DemoPolicy[] = [
     issuer: '演示发布者', region: '440300', version: 'demo-v1', status: 'published',
     effectiveFrom: '2026-01-01', effectiveTo: null, applicationWindow: null,
     sourceUrl: 'https://www.gov.cn/', result: 'not_satisfied', validity: 'current',
-    reason: '固定样例场景展示行业排除；不代表对当前企业作出结论。',
+    reason: '固定样例展示行业排除情形。',
     evidence: ['合成条款示例：部分行业不适用。'],
     checklist: ['行业分类证明', '经办人复核记录'],
   },
@@ -86,4 +86,4 @@ export const demoPolicies: DemoPolicy[] = [
 ];
 
 export const demoNotice = '静态合成演示 · 未进行真实资格判断';
-export const taxNotice = '政策信息辅助整理；非税务专业意见；申报前请企业财税人员核对。';
+export const taxNotice = '政策信息用于辅助整理，不构成税务专业意见；申报前请财税人员核对。';

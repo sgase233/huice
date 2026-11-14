@@ -22,7 +22,7 @@ export default function RealReportPage({ run, policies, onDownload, busy }: Prop
       {run.assessments.filter(item => item.preparation.type === type).map(item => {
         const policy = policies.find(p => p.id === item.policyId);
         return <article key={item.policyId}><h3>{policy?.title ?? item.policyId}</h3><p>政策版本：{run.policyVersionMap[item.policyId]}</p><StatusBadge result={item.result} validity={item.validity} policyStatus={policy?.status} />
-          {policy?.status === 'closed' && <p>申报窗口已关闭，仅供查看历史信息。</p>}
+          {policy?.status === 'closed' && <p>申报窗口已关闭，当前展示历史信息。</p>}
           <p>{item.explanation}</p><p>说明来源：{explanationLabels[item.explanationMode]}</p>{item.warnings.map((warning, i) => <p key={i}>{warning}</p>)}{item.staleReasons.map((reason, i) => <p key={i}>{reason.message}</p>)}
           <p>办理方式：{item.preparation.handlingMode === 'tax_self_assessment' ? '自行判断' : '项目申请'}；截止时间：{item.preparation.deadline ?? '未提供'}</p>
           <ul>{item.preparation.items.map((entry, i) => <li key={i}><strong>{entry.title}</strong>：{entry.description}（{materialStatus[entry.status] ?? '材料状态未确认，请人工核对'}）{entry.requiredFactRefs.map(ref => <span key={`${ref.key}-${ref.period.startDate}-${ref.period.endDate}`}> {factLabels[ref.key]}：{ref.period.startDate} 至 {ref.period.endDate}</span>)}</li>)}</ul>

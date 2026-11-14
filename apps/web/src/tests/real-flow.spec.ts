@@ -66,7 +66,7 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
   await expect(page.getByText('或（任一条件）')).toBeVisible();
   await expect(page.getByText('评估期间：排除行业代码 A')).toBeVisible();
   await expect(page.getByText('行业排除', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('以下为该条款的规则结构；服务未提供各节点的独立判断结果。')).toBeVisible();
+  await expect(page.getByText('以下为该条款的规则结构；节点判断结果暂未提供。')).toBeVisible();
   await page.setViewportSize({ width: 375, height: 850 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: 'test-results/expression-tree-mobile.png', fullPage: true });

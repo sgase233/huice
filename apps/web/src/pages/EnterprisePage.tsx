@@ -124,7 +124,7 @@ export default function EnterprisePage({ value, onSave, real = false }: Props) {
         <label>画像结束日期<input type="date" value={draft.period.endDate} onChange={event => { setSaved(false); setDraft({ ...draft, period: { ...draft.period, endDate: event.target.value } }); }} /></label>
       </div>
       <h2>企业信息与来源</h2>
-      <p className="muted">不清楚时请选择“未知”；未知不等于 0。每项信息可单独填写所属期间，填写来源不代表内容已核实。</p>
+      <p className="muted">不清楚时请选择“未知”（区别于 0）。每项信息可填写所属期间；来源填写后仍需核实。</p>
       <div className="facts-list" ref={factsList}>
         {draft.facts.map((fact, index) => <div className={`fact-slot${enteringFact === index ? ' is-entering' : ''}${removingFact === index ? ' is-removing' : ''}`} key={index} onAnimationEnd={event => { if (event.target === event.currentTarget && enteringFact === index) { followNewFact(); setEnteringFact(null); } }}><div><fieldset className="fact-card" inert={removingFact === index} aria-describedby={factErrors(fact).length ? `fact-error-${index}` : undefined}>
           <legend>信息 {index + 1}</legend>
