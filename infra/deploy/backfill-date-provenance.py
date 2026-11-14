@@ -280,6 +280,14 @@ def _human_size(byte_size: int) -> str:
     return f"{max(byte_size, 1) / 1024:.0f} KB"
 
 
+class ConcurrentConflict(RuntimeError):
+    """检查与写入之间，另一事务改了这一行——停下，不覆盖。"""
+
+    def __init__(self, entry: "Entry") -> None:
+        super().__init__(entry.version)
+        self.entry = entry
+
+
 def _redact(message: str) -> str:
     """数据库异常的文案偶尔会带地址；这里只保留类名，绝不回显连接串。"""
     return message.split("://")[0] if "://" in message else message
@@ -421,9 +429,11 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
 
             for entry, version_id, stored in resolved:
                 with conn.cursor() as cur:
+                    # FOR UPDATE：行存在时锁住它，读到的值与写回时看到的是同一份——
+                    # 否则「检查没有冲突」与「写入」之间别人写进来的值会被静默覆盖。
                     cur.execute(
                         "SELECT provenance FROM policy_version_date_provenance "
-                        "WHERE policy_version_id = %s",
+                        "WHERE policy_version_id = %s FOR UPDATE",
                         (version_id,),
                     )
                     row = cur.fetchone()
@@ -438,13 +448,27 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
                     if apply:
                         # 写旁表而不是 policy_version：已发布版本不可变由触发器保证，
                         # 回填不得以任何方式改动它。
-                        cur.execute(
-                            "INSERT INTO policy_version_date_provenance "
-                            "(policy_version_id, provenance, updated_at) VALUES (%s, %s, now()) "
-                            "ON CONFLICT (policy_version_id) DO UPDATE "
-                            "SET provenance = EXCLUDED.provenance, updated_at = now()",
-                            (version_id, Jsonb(stored)),
-                        )
+                        if row is None:
+                            # 没有行：只用「不覆盖」的插入。并发事务若抢先插入，
+                            # DO NOTHING 会让本次 rowcount = 0 —— 停下而不是覆盖。
+                            cur.execute(
+                                "INSERT INTO policy_version_date_provenance "
+                                "(policy_version_id, provenance, updated_at) "
+                                "VALUES (%s, %s, now()) "
+                                "ON CONFLICT (policy_version_id) DO NOTHING",
+                                (version_id, Jsonb(stored)),
+                            )
+                        else:
+                            # 覆盖只针对检查时看到的那份值：期间被改过就回滚整批，
+                            # 不把「授权的两条」扩大成「所有冲突条目」。
+                            cur.execute(
+                                "UPDATE policy_version_date_provenance "
+                                "SET provenance = %s, updated_at = now() "
+                                "WHERE policy_version_id = %s AND provenance = %s",
+                                (Jsonb(stored), version_id, Jsonb(row[0])),
+                            )
+                        if cur.rowcount != 1:
+                            raise ConcurrentConflict(entry)
                     changed += 1
                     print(
                         f"entries[{entry.index}] {'写入' if apply else '将写入'} "
@@ -472,6 +496,13 @@ def run(data_path: Path, apply: bool, overwrite: bool = False) -> int:
                     "(SELECT count(*) FROM policy_version)"
                 )
                 after_with, after_total = cur.fetchone()
+    except ConcurrentConflict as exc:
+        print(
+            f"backfill-date-provenance: entries[{exc.entry.index}] {exc.entry.version} 在检查与写入之间"
+            "被另一事务改过。整批回滚、未写任何行——请重新干跑，看清当前值再决定是否 --overwrite。",
+            file=sys.stderr,
+        )
+        return 3
     except DataError:
         raise
     except Exception as exc:  # 不回显连接串与堆栈

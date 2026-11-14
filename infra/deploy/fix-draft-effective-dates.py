@@ -63,6 +63,23 @@ def load_entries(path: Path) -> list[dict[str, str]]:
     return result
 
 
+def update_row(conn, row: tuple) -> bool:
+    """按「读到的那一版」改一行：revision 变了就命中 0 行，返回 False。
+
+    ``row`` 是 ``(id, review_status, published_at, effective_from, effective_to, revision)``。
+    revision 是 API-05 的 ETag：改了行内容就要换值，否则后台拿着旧 ETag 的 If-Match
+    仍能通过、把这次改写覆盖回去。
+    """
+
+    cursor = conn.execute(
+        "UPDATE policy_version SET effective_from = published_at, effective_to = NULL, "
+        "revision = gen_random_uuid(), updated_at = now() "
+        "WHERE id = %s AND review_status <> 'published' AND revision = %s",
+        (row[0], row[5]),
+    )
+    return cursor.rowcount == 1
+
+
 def _published_fingerprint(conn) -> str | None:
     row = conn.execute(
         "SELECT md5(string_agg(id::text || ':' || xmin::text, ',' ORDER BY id)) "
@@ -97,8 +114,8 @@ def run(data_path: Path, apply: bool) -> int:
             targets: list[tuple[Any, dict[str, Any]]] = []
             for entry in entries:
                 rows = conn.execute(
-                    "SELECT id, review_status, published_at, effective_from, effective_to "
-                    "FROM policy_version WHERE source_url = %s AND version = %s",
+                    "SELECT id, review_status, published_at, effective_from, effective_to, revision "
+                    "FROM policy_version WHERE source_url = %s AND version = %s FOR UPDATE",
                     (entry["sourceUrl"], entry["version"]),
                 ).fetchall()
                 if len(rows) != 1:
@@ -125,18 +142,11 @@ def run(data_path: Path, apply: bool) -> int:
                 )
                 if not apply:
                     continue
-                cursor = conn.execute(
-                    "UPDATE policy_version SET effective_from = published_at, effective_to = NULL, "
-                    # revision 是 API-05 的 ETag：改了行内容就要换值，否则后台拿着旧 ETag
-                    # 仍能通过 If-Match，把这次改写覆盖回去。
-                    "revision = gen_random_uuid(), updated_at = now() "
-                    "WHERE id = %s AND review_status <> 'published'",
-                    (row[0],),
-                )
-                if cursor.rowcount != 1:
+                if not update_row(conn, row):
                     conn.rollback()
                     print(
-                        f"{entry['version']}：UPDATE 命中 {cursor.rowcount} 行（预期 1），已回滚。",
+                        f"{entry['version']}：该行在读取之后被改过（revision 已变）或已发布，"
+                        "整批回滚、未写任何行。",
                         file=sys.stderr,
                     )
                     return 3

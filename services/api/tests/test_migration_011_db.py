@@ -448,3 +448,52 @@ def test_backfill_refuses_unknown_version_and_writes_nothing(database_url_schema
         ).fetchone()[0]
     assert count == 0
     assert still_there == 1
+
+
+def test_a_concurrent_insert_is_never_overwritten(
+    database_url_schema: str, repo, tmp_path, monkeypatch
+) -> None:
+    """检查时看不到、并发事务抢先插入的行：不加 --overwrite 也绝不能覆盖它。
+
+    M2 在 #69 复审里点名的窗口：旧的 ``INSERT ... ON CONFLICT DO UPDATE`` 会在检查与
+    写入之间把对方刚插入的内容覆盖掉。现在没有行时只用 ``DO NOTHING``，命中冲突就整批
+    回滚。
+    """
+
+    import threading
+    import time
+
+    create(repo, version="深工信规〔2025〕4号", sourceUrl=SOURCE_URL)
+    version_id = _version_id(database_url_schema, "深工信规〔2025〕4号")
+
+    holder = psycopg.connect(database_url_schema)
+    try:
+        holder.execute(
+            "INSERT INTO policy_version_date_provenance (policy_version_id, provenance) "
+            "VALUES (%s, %s)",
+            (version_id, psycopg.types.json.Jsonb({"version": 1, "note": "另一个事务写的"})),
+        )
+        # 不提交：让回填脚本的 INSERT 卡在唯一键上
+
+        path = _write(tmp_path, {"version": 1, "effectiveTo": {"status": "unknown"}})
+        monkeypatch.setenv("DATABASE_URL", database_url_schema)
+
+        result: dict[str, int] = {}
+        worker = threading.Thread(
+            target=lambda: result.setdefault("code", backfill.run(path, apply=True))
+        )
+        worker.start()
+        time.sleep(0.5)  # 让 worker 走到 INSERT 并阻塞
+        holder.commit()
+        worker.join(timeout=15)
+
+        assert result.get("code") == 3, result
+    finally:
+        holder.close()
+
+    with psycopg.connect(database_url_schema) as conn:
+        stored = conn.execute(
+            "SELECT provenance FROM policy_version_date_provenance WHERE policy_version_id = %s",
+            (version_id,),
+        ).fetchone()[0]
+    assert stored == {"version": 1, "note": "另一个事务写的"}

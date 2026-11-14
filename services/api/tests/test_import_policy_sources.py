@@ -34,6 +34,18 @@ def _load():
 importer = _load()
 
 
+class FakeStore:
+    """对象存储替身：记下写入的字节与返回的键。"""
+
+    def __init__(self) -> None:
+        self.puts: list[tuple[bytes, str]] = []
+
+    def put(self, data: bytes, *, suffix: str = "") -> str:
+        key = f"fake/{len(self.puts)}{suffix}"
+        self.puts.append((data, key))
+        return key
+
+
 def _payload_with_absolute_files() -> dict:
     """把清单里的相对路径换成绝对路径：负向用例把它写到 tmp_path 下，正文仍在仓库里。"""
 
@@ -78,7 +90,7 @@ def test_a_missing_file_names_only_the_field(tmp_path: Path) -> None:
 def test_dry_run_writes_nothing(database_url_schema: str, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
-    assert importer.run(DATA, apply=False) == 0
+    assert importer.run(DATA, apply=False, store=FakeStore()) == 0
 
     with psycopg.connect(database_url_schema) as conn:
         count = conn.execute("SELECT count(*) FROM policy_version").fetchone()[0]
@@ -88,7 +100,8 @@ def test_dry_run_writes_nothing(database_url_schema: str, monkeypatch) -> None:
 def test_apply_creates_versions_with_attachment_ordinals(database_url_schema: str, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
 
-    assert importer.run(DATA, apply=True) == 0
+    store = FakeStore()
+    assert importer.run(DATA, apply=True, store=store) == 0
 
     with psycopg.connect(database_url_schema) as conn:
         rows = conn.execute(
@@ -105,20 +118,23 @@ def test_apply_creates_versions_with_attachment_ordinals(database_url_schema: st
     assert {row[1] for row in rows} != {"published"}
     smart = [row for row in sources if row[0] == "深工信规〔2025〕4号"]
     assert [(row[1], row[2]) for row in smart] == [("body", 0), ("attachment", 1)]
-    assert smart[1][3].endswith("附件1.docx")
+    assert smart[1][3].endswith("附件1.docx.txt"), "存的是提取文本，扩展名不能冒充原附件"
     green = [row for row in sources if row[0] == "深工信规〔2024〕12号"]
-    assert green[1][3] == "11845882.doc"
+    assert green[1][3] == "11845882.doc.txt"
+    # 文本真的写进了对象存储：storage_key 指向 FakeStore 返回的键
+    keys = {key for _data, key in store.puts}
+    assert len(keys) == 4
 
 
 def test_a_second_run_skips(database_url_schema: str, monkeypatch, capsys) -> None:
     monkeypatch.setenv("DATABASE_URL", database_url_schema)
-    assert importer.run(DATA, apply=True) == 0
+    assert importer.run(DATA, apply=True, store=FakeStore()) == 0
 
     with psycopg.connect(database_url_schema) as conn:
         before = conn.execute("SELECT count(*) FROM policy_source").fetchone()[0]
 
     capsys.readouterr()
-    assert importer.run(DATA, apply=True) == 0
+    assert importer.run(DATA, apply=True, store=FakeStore()) == 0
     assert "跳过" in capsys.readouterr().out
 
     with psycopg.connect(database_url_schema) as conn:

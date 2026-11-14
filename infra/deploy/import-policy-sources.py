@@ -61,10 +61,19 @@ class DataError(ValueError):
 
 @dataclass
 class SourceSpec:
+    """一份要入库的来源。
+
+    存进去的是**这里读到的文本**，不是原始附件：``content_hash``/``byte_size`` 都按
+    文本字节算，``file_name`` 也以 ``.txt`` 结尾。原始附件的文件名与 SHA-256 只留在
+    清单里（``originalName`` / ``originalSha256``），不冒充成这份文本的哈希。
+    """
+
     kind: str
     path: Path
     file_name: str
-    mime_type: str
+    source_url: str | None = None
+    original_name: str | None = None
+    original_sha256: str | None = None
 
     def read(self) -> PreparedSource:
         raw = self.path.read_bytes()
@@ -73,11 +82,13 @@ class SourceSpec:
             raise DataError(f"{self.path.name} 是空文件")
         return PreparedSource(
             kind=self.kind,
+            # 明确是「提取文本」：扩展名 .txt、MIME text/plain
             file_name=self.file_name,
-            mime_type=self.mime_type,
+            mime_type="text/plain",
             text=text,
             content_hash=hashlib.sha256(raw).hexdigest(),
             byte_size=len(raw) or 1,
+            source_url=self.source_url,
         )
 
 
@@ -161,11 +172,15 @@ def _source(raw: object, base: Path) -> SourceSpec:
     path = (base / file_name).resolve()
     if not path.is_file():
         raise DataError(f"sources[].file 指向的文件不存在：{path}")
+    original_name = raw.get("originalName")
+    stored_name = f"{original_name}.txt" if original_name else path.name
     return SourceSpec(
         kind=kind,
         path=path,
-        file_name=str(raw.get("fileName") or path.name),
-        mime_type=str(raw.get("mimeType") or "text/plain"),
+        file_name=stored_name,
+        source_url=raw.get("sourceUrl"),
+        original_name=str(original_name) if original_name else None,
+        original_sha256=raw.get("originalSha256"),
     )
 
 
@@ -222,13 +237,22 @@ def load_entries(path: Path) -> list[EntrySpec]:
     return result
 
 
-def run(data_path: Path, apply: bool) -> int:
+def run(data_path: Path, apply: bool, store=None) -> int:
     entries = load_entries(data_path)
 
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         print("缺少环境变量 DATABASE_URL（不打印任何取值）。", file=sys.stderr)
         return 2
+    if apply and store is None:
+        try:
+            from app.config import Settings
+            from app.integrations.obs import build_object_store
+
+            store = build_object_store(Settings.from_env())
+        except Exception as exc:  # 只报类名：配置错误或存储不可用都不该回显细节
+            print(f"初始化对象存储失败（{type(exc).__name__}）。", file=sys.stderr)
+            return 2
 
     logging.getLogger("psycopg.pool").setLevel(logging.CRITICAL)
     database = Database(dsn, max_size=1)
@@ -253,10 +277,15 @@ def run(data_path: Path, apply: bool) -> int:
                 )
                 continue
 
+            # 文本真的写进对象存储，storage_key 才指向可取回的对象；
+            # 干跑不调用，避免留下没人引用的对象。
+            storage_keys = [
+                store.put(source.text.encode("utf-8"), suffix=".txt") for source in prepared
+            ]
             draft = repository.create_policy_version(
                 metadata=entry.metadata(),
                 sources=prepared,
-                storage_keys=[f"import/{uuid4()}.txt" for _ in prepared],
+                storage_keys=storage_keys,
                 trace_id=str(uuid4()),
             )
             print(

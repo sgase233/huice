@@ -171,3 +171,39 @@ def test_it_bumps_the_revision_so_stale_etags_cannot_undo_it(
             "SELECT revision FROM policy_version WHERE version = %s", ("深工信规〔2025〕4号",)
         ).fetchone()[0]
     assert after != before
+
+
+def test_a_stale_revision_is_refused_by_the_update(database_url_schema: str, repo) -> None:
+    """读完之后被改过（revision 变了）：那一行命中 0 行，调用方整批回滚。"""
+
+    _draft(
+        repo,
+        version="深工信规〔2025〕4号",
+        source_url=SMART_URL,
+        effective_from="2025-06-13",
+        effective_to="2025-07-07",
+    )
+    conn = psycopg.connect(database_url_schema)
+    try:
+        row = conn.execute(
+            "SELECT id, review_status, published_at, effective_from, effective_to, revision "
+            "FROM policy_version WHERE version = %s",
+            ("深工信规〔2025〕4号",),
+        ).fetchone()
+        # 模拟审核员在读取之后另存过：revision 变了
+        conn.execute(
+            "UPDATE policy_version SET revision = gen_random_uuid() WHERE id = %s", (row[0],)
+        )
+        conn.commit()
+
+        assert fixer.update_row(conn, row) is False
+        conn.rollback()
+    finally:
+        conn.close()
+
+    with psycopg.connect(database_url_schema) as conn:
+        effective = conn.execute(
+            "SELECT effective_from FROM policy_version WHERE version = %s",
+            ("深工信规〔2025〕4号",),
+        ).fetchone()[0]
+    assert str(effective) == "2025-06-13"
