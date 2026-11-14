@@ -109,11 +109,11 @@ M1 在 `9d23483` 上补建 SMART/GREEN 两个版本后，对云端库干跑输�
 "reviewEvidence": {
   "reviewedBy": "wlj80176-creator",
   "reviewedAt": "2026-11-14",
-  "reference": "<M3 最终批准评论 URL>"
+  "reference": "https://github.com/sgase233/huice/pull/69#issuecomment-6874894563"
 }
 ```
 
-- `reference` 用 M3 在 PR #69 的最终批准评论链接（即 M1 2026-11-14T07:36:50Z 答复后 M3 发布的批准评论）；不能只写 PR 主页面。
+- `reference` 用 M3 在 PR #69 的最终批准评论链接（`issuecomment-6874894563`，2026-11-14）；不能只写 PR 主页面。
 - `reviewedAt` 以批准评论日期为准；若跨日再改。
 - M3 不改 `infra/**`；由 M1 填写后执行 `--apply`，并把「改动行数、9/9 或 9/12 口径、无已发布行被触碰」回告。
 
