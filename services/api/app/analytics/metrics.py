@@ -81,6 +81,10 @@ def _from_gaps(base: Availability, day: date, gaps: Iterable[tuple[datetime, dat
     if any(gap_to is None for _gap_from, gap_to in overlapping):
         return Availability(PARTIAL, None, "OPEN_GAP")
     latest = max(gap_to for _gap_from, gap_to in overlapping if gap_to is not None)
+    # 覆盖起点不能早于已有采集起点：缺口在起点之前结束时，09:00 并不能证明
+    # 09:00—10:00 有采集，起点仍是 10:00（#79 M2）。
+    if base.coverage_from is not None and base.coverage_from > latest:
+        latest = base.coverage_from
     return Availability(PARTIAL, latest, None)
 
 

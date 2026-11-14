@@ -374,3 +374,27 @@ def test_gap_scope_host_and_source_must_match_the_metric(
     assert review["availability"]["reviewsCompleted"].get("reason") != "HEARTBEAT_GAP_NOT_IMPORTED"
     assert runs["availability"]["total"]["state"] == PARTIAL
     assert runs["availability"]["total"]["reason"] == "HEARTBEAT_GAP_NOT_IMPORTED"
+
+
+@pytest.mark.parametrize(
+    ("gap_start", "gap_end", "expected"),
+    [
+        (_at(DAY, 8), _at(DAY, 9), _at(DAY, 10)),
+        (_at(DAY, 10, 30), _at(DAY, 11, 30), _at(DAY, 11, 30)),
+    ],
+)
+def test_coverage_from_never_moves_earlier_than_the_collection_start(
+    database_url_schema: str, gap_start, gap_end, expected
+) -> None:
+    with psycopg.connect(database_url_schema) as conn:
+        _baseline(conn, review_from=_at(DAY, 10), run_from=None)
+        _gap(conn, scope="review", start=gap_start, end=gap_end)
+        conn.commit()
+
+    rows = _reader(database_url_schema).review_workload(
+        start=DAY, end=DAY, now=_at(date(2026, 11, 21), 12)
+    )
+
+    availability = rows[0]["availability"]["reviewsCompleted"]
+    assert availability["state"] == PARTIAL
+    assert availability["coverageFrom"] == expected.isoformat()
