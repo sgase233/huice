@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -63,6 +64,8 @@ from ..schemas import (
     TraceStep,
     ValidationFinding,
 )
+
+logger = logging.getLogger("huice.api")
 
 _CLOSED_CONDITION = """(
         (pv.effective_to IS NOT NULL
@@ -372,6 +375,86 @@ def _preparation_template(draft: PolicyDraft) -> PreparationTemplate:
         deadline=draft.application_window.closes_at if draft.application_window else None,
         items=[],
     )
+
+
+#: 失败分类：只放分类，不放消息。详细原因仍走日志，库里的列不承载堆栈或连接串。
+ERROR_CATEGORIES = (
+    "policy_not_published",
+    "model_unavailable",
+    "dependency_unavailable",
+    "internal",
+)
+
+
+@dataclass(frozen=True)
+class RunHeader:
+    """T1 要写的身份信息。评估开始前就固定下来，之后任何一步都不许改写。"""
+
+    id: UUID
+    enterprise_id: UUID
+    as_of: datetime
+    created_at: datetime
+    period_start: date
+    period_end: date
+    fact_version: str
+    model_or_rule_version: str
+    supersedes_run_id: UUID | None
+    user_id: UUID | None
+
+
+class RunSession:
+    """``begin_run`` 打开的一次运行：T2 成功、T3 失败，各自一个事务。
+
+    两条路径都不改身份列——库里的触发器会拦（012 的 ``guard_assessment_run_update``）。
+    """
+
+    def __init__(self, repository: "PolicyRepository", conn: Connection, header: RunHeader) -> None:
+        self._repository = repository
+        self._conn = conn
+        self._header = header
+
+    def succeed(
+        self,
+        *,
+        run: AssessmentRun,
+        dependencies: Mapping[UUID, Sequence[tuple[str, Any, Any]]],
+        trace_steps: Sequence[Any],
+        trace_id: str,
+        policy_version_ids: Mapping[UUID, UUID],
+    ) -> None:
+        """T2：结果行与 ``succeeded`` 在同一个事务里提交。
+
+        只提交一次：结果已写、状态还停在 ``running`` 的中间态不允许被看到。
+        """
+
+        with self._conn.transaction():
+            self._repository.save_run(
+                run=run,
+                dependencies=dependencies,
+                trace_steps=trace_steps,
+                trace_id=trace_id,
+                policy_version_ids=policy_version_ids,
+                user_id=self._header.user_id,
+                connection=self._conn,
+                insert=False,
+            )
+            self._conn.execute(
+                "UPDATE assessment_run SET status = 'succeeded', finished_at = now() "
+                "WHERE id = %s",
+                (self._header.id,),
+            )
+
+    def fail(self, error_category: str) -> None:
+        """T3：失败只写状态与分类，不写任何 ``assessment`` 行。"""
+
+        if error_category not in ERROR_CATEGORIES:  # pragma: no cover - 调用方只传常量
+            error_category = "internal"
+        with self._conn.transaction():
+            self._conn.execute(
+                "UPDATE assessment_run SET status = 'failed', finished_at = now(), "
+                "error_category = %s WHERE id = %s",
+                (error_category, self._header.id),
+            )
 
 
 class PolicyRepository:
@@ -1545,6 +1628,102 @@ class PolicyRepository:
             "policy_ids": policies,
         }
 
+    @contextmanager
+    def begin_run(self, header: "RunHeader") -> Iterator["RunSession"]:
+        """T1：插 ``running`` 行并占住该 run 的 advisory lock（E3 B2）。
+
+        连接用 ``dedicated_connection`` 而不是池里的：会话级 advisory lock 跟着连接走，
+        而池会把连接还回去给别的请求；评估还可能持续数十秒到数分钟，占着池里的名额会
+        把并发上限耗光。这也是 E2 发现运行已经采用的同一条规则。
+
+        锁键用 ``hashtextextended(id, 0)``：与中断扫描里的表达式必须逐字一致，否则
+        「锁还被持有」这一判据会永远为假。
+        """
+
+        with self._db.dedicated_connection() as conn:
+            conn.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (str(header.id),))
+            try:
+                with conn.transaction():
+                    self._execute(
+                        conn,
+                        """
+                        INSERT INTO assessment_run (
+                            id, enterprise_id, as_of, status, fact_version, model_or_rule_version,
+                            created_at, period_start, period_end, supersedes_run_id, user_id,
+                            lock_owner_pid, lock_owner_started_at
+                        ) VALUES (
+                            %(id)s, %(enterprise_id)s, %(as_of)s, 'running', %(fact_version)s,
+                            %(rule_version)s, %(created_at)s, %(period_start)s, %(period_end)s,
+                            %(supersedes_run_id)s, %(user_id)s, pg_backend_pid(),
+                            (SELECT backend_start FROM pg_stat_activity
+                              WHERE pid = pg_backend_pid())
+                        )
+                        """,
+                        {
+                            "id": header.id,
+                            "enterprise_id": header.enterprise_id,
+                            "as_of": header.as_of,
+                            "fact_version": header.fact_version,
+                            "rule_version": header.model_or_rule_version,
+                            "created_at": header.created_at,
+                            "period_start": header.period_start,
+                            "period_end": header.period_end,
+                            "supersedes_run_id": header.supersedes_run_id,
+                            "user_id": header.user_id,
+                        },
+                    )
+                yield RunSession(self, conn, header)
+            finally:
+                try:
+                    conn.execute(
+                        "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (str(header.id),)
+                    )
+                except Exception:  # noqa: BLE001 - 连接已断时锁随连接消失，不能掩盖真实异常
+                    logger.debug("释放 run 锁失败，已忽略", exc_info=True)
+
+    def mark_interrupted_runs(self, *, max_duration_seconds: int) -> list[UUID]:
+        """把「超时 + 锁未被持有 + 原连接已断开」三者同时成立的 running 行标为中断。
+
+        三条缺一不可（METRICS_SPEC §8.1 第 5 项）：少任何一条都会把仍在跑的运行标死。
+        原连接用 ``(pid, backend_start)`` 成对判断——PID 会被复用，只比 pid 会把活着
+        的新连接当成死掉的旧连接。
+        """
+
+        marked: list[UUID] = []
+        with self._db.dedicated_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, lock_owner_pid, lock_owner_started_at
+                FROM assessment_run
+                WHERE status = 'running'
+                  AND lock_owner_pid IS NOT NULL
+                  AND created_at < now() - make_interval(secs => %s)
+                """,
+                (max_duration_seconds,),
+            ).fetchall()
+            for run_id, pid, started_at in rows:
+                key = str(run_id)
+                got = conn.execute(
+                    "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (key,)
+                ).fetchone()
+                if not got or not got[0]:
+                    continue  # 锁仍被持有：这一轮还在跑
+                # 立刻释放：扫描只是试探，不能顺手占着锁让下一轮扫不到
+                conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (key,))
+                alive = conn.execute(
+                    "SELECT 1 FROM pg_stat_activity WHERE pid = %s AND backend_start = %s",
+                    (pid, started_at),
+                ).fetchone()
+                if alive:
+                    continue  # 原连接还在
+                conn.execute(
+                    "UPDATE assessment_run SET status = 'interrupted', finished_at = now() "
+                    "WHERE id = %s AND status = 'running'",
+                    (run_id,),
+                )
+                marked.append(run_id)
+        return marked
+
     def save_run(
         self,
         *,
@@ -1554,14 +1733,35 @@ class PolicyRepository:
         trace_id: str,
         policy_version_ids: Mapping[UUID, UUID],
         user_id: UUID | None = None,
+        connection: Connection | None = None,
+        insert: bool = True,
     ) -> None:
         """一次事务写入 run、每项政策的结果快照、依赖与在线轨迹。
 
         ``user_id`` 是发起账号（E1 归属）；demo 建的 run 与历史数据为 ``None``，
         列表与读取按「无主」对待。
+
+        ``connection`` 给定时并入调用方已打开的那条连接：B2 的运行生命周期把 T1
+        （插 ``running`` 行）与 T2（写结果 + 改 ``succeeded``）拆成两个事务，但都
+        在同一条连接、同一把 advisory lock 之下。``insert=False`` 表示 run 行已经
+        由 T1 插入，这里只写结果。
         """
 
-        with self._db.connection() as conn, conn.transaction():
+        if connection is None:
+            with self._db.connection() as conn, conn.transaction():
+                self.save_run(
+                    run=run,
+                    dependencies=dependencies,
+                    trace_steps=trace_steps,
+                    trace_id=trace_id,
+                    policy_version_ids=policy_version_ids,
+                    user_id=user_id,
+                    connection=conn,
+                )
+            return
+
+        conn = connection
+        if insert:
             self._execute(
                 conn,
                 """
@@ -1588,92 +1788,92 @@ class PolicyRepository:
                     "user_id": user_id,
                 },
             )
-            for assessment in run.assessments:
-                version_id = policy_version_ids.get(assessment.policy_id)
-                if version_id is None:  # pragma: no cover - 快照与结果一一对应
-                    raise ApiProblem(500, "INTERNAL_ERROR", "判断结果缺少对应的政策版本。")
+        for assessment in run.assessments:
+            version_id = policy_version_ids.get(assessment.policy_id)
+            if version_id is None:  # pragma: no cover - 快照与结果一一对应
+                raise ApiProblem(500, "INTERNAL_ERROR", "判断结果缺少对应的政策版本。")
+            self._execute(
+                conn,
+                """
+                INSERT INTO assessment (
+                    run_id, policy_id, policy_version_id, result, citation, snapshot, created_at
+                ) VALUES (
+                    %(run_id)s, %(policy_id)s, %(policy_version_id)s, %(result)s,
+                    %(citation)s, %(snapshot)s, %(created_at)s
+                )
+                """,
+                {
+                    "run_id": run.id,
+                    "policy_id": assessment.policy_id,
+                    "policy_version_id": version_id,
+                    "result": assessment.result,
+                    "citation": Jsonb(
+                        [
+                            evidence.model_dump(by_alias=True, mode="json")
+                            for criterion in assessment.criteria_results
+                            for evidence in criterion.evidence_refs
+                        ]
+                    ),
+                    "snapshot": Jsonb(
+                        assessment.model_dump(
+                            by_alias=True, mode="json", exclude={"policy_id", "result"}
+                        )
+                    ),
+                    "created_at": run.created_at,
+                },
+            )
+            for key, start, end in dependencies.get(assessment.policy_id, ()):
                 self._execute(
                     conn,
-                    """
-                    INSERT INTO assessment (
-                        run_id, policy_id, policy_version_id, result, citation, snapshot, created_at
-                    ) VALUES (
-                        %(run_id)s, %(policy_id)s, %(policy_version_id)s, %(result)s,
-                        %(citation)s, %(snapshot)s, %(created_at)s
-                    )
-                    """,
+                    "INSERT INTO assessment_dependency "
+                    "(run_id, policy_id, fact_key, fact_period_start, fact_period_end) "
+                    "VALUES (%(run_id)s, %(policy_id)s, %(key)s, %(start)s, %(end)s) "
+                    "ON CONFLICT DO NOTHING",
                     {
                         "run_id": run.id,
                         "policy_id": assessment.policy_id,
-                        "policy_version_id": version_id,
-                        "result": assessment.result,
-                        "citation": Jsonb(
-                            [
-                                evidence.model_dump(by_alias=True, mode="json")
-                                for criterion in assessment.criteria_results
-                                for evidence in criterion.evidence_refs
-                            ]
-                        ),
-                        "snapshot": Jsonb(
-                            assessment.model_dump(
-                                by_alias=True, mode="json", exclude={"policy_id", "result"}
-                            )
-                        ),
-                        "created_at": run.created_at,
+                        "key": key,
+                        "start": start,
+                        "end": end,
                     },
                 )
-                for key, start, end in dependencies.get(assessment.policy_id, ()):
-                    self._execute(
-                        conn,
-                        "INSERT INTO assessment_dependency "
-                        "(run_id, policy_id, fact_key, fact_period_start, fact_period_end) "
-                        "VALUES (%(run_id)s, %(policy_id)s, %(key)s, %(start)s, %(end)s) "
-                        "ON CONFLICT DO NOTHING",
-                        {
-                            "run_id": run.id,
-                            "policy_id": assessment.policy_id,
-                            "key": key,
-                            "start": start,
-                            "end": end,
-                        },
-                    )
 
-            for step in trace_steps:
-                self._execute(
-                    conn,
-                    """
-                    INSERT INTO trace_step (
-                        id, trace_id, run_id, sequence, stage, status, summary,
-                        evidence_refs, model_or_rule_version, elapsed_ms,
-                        input_summary, output_summary, policy_id, policy_version,
-                        error_code, human_action
-                    ) VALUES (
-                        %(id)s, %(trace_id)s, %(run_id)s, %(sequence)s, %(stage)s, %(status)s,
-                        %(summary)s, %(evidence_refs)s, %(model_or_rule_version)s, %(elapsed_ms)s,
-                        %(input_summary)s, %(output_summary)s, %(policy_id)s, %(policy_version)s,
-                        %(error_code)s, %(human_action)s
-                    )
-                    """,
-                    {
-                        "id": uuid4(),
-                        "trace_id": trace_id,
-                        "run_id": run.id,
-                        "sequence": step.sequence,
-                        "stage": step.stage,
-                        "status": step.status,
-                        "summary": f"{step.input_summary} → {step.output_summary}",
-                        # 列名沿用 evidence_refs（迁移不改列），内容是 TraceStep.objectRefs。
-                        "evidence_refs": Jsonb(list(step.object_refs)),
-                        "model_or_rule_version": step.model_or_rule_version,
-                        "elapsed_ms": step.elapsed_ms,
-                        "input_summary": step.input_summary,
-                        "output_summary": step.output_summary,
-                        "policy_id": step.policy_id,
-                        "policy_version": step.policy_version,
-                        "error_code": step.error_code,
-                        "human_action": step.human_action,
-                    },
+        for step in trace_steps:
+            self._execute(
+                conn,
+                """
+                INSERT INTO trace_step (
+                    id, trace_id, run_id, sequence, stage, status, summary,
+                    evidence_refs, model_or_rule_version, elapsed_ms,
+                    input_summary, output_summary, policy_id, policy_version,
+                    error_code, human_action
+                ) VALUES (
+                    %(id)s, %(trace_id)s, %(run_id)s, %(sequence)s, %(stage)s, %(status)s,
+                    %(summary)s, %(evidence_refs)s, %(model_or_rule_version)s, %(elapsed_ms)s,
+                    %(input_summary)s, %(output_summary)s, %(policy_id)s, %(policy_version)s,
+                    %(error_code)s, %(human_action)s
                 )
+                """,
+                {
+                    "id": uuid4(),
+                    "trace_id": trace_id,
+                    "run_id": run.id,
+                    "sequence": step.sequence,
+                    "stage": step.stage,
+                    "status": step.status,
+                    "summary": f"{step.input_summary} → {step.output_summary}",
+                    # 列名沿用 evidence_refs（迁移不改列），内容是 TraceStep.objectRefs。
+                    "evidence_refs": Jsonb(list(step.object_refs)),
+                    "model_or_rule_version": step.model_or_rule_version,
+                    "elapsed_ms": step.elapsed_ms,
+                    "input_summary": step.input_summary,
+                    "output_summary": step.output_summary,
+                    "policy_id": step.policy_id,
+                    "policy_version": step.policy_version,
+                    "error_code": step.error_code,
+                    "human_action": step.human_action,
+                },
+            )
 
     def get_run(self, run_id: UUID) -> AssessmentRun:
         """读取 run 并**重算**有效性视图；四态与解释等快照内容原样返回。"""
@@ -1684,6 +1884,15 @@ class PolicyRepository:
             header = cur.fetchone()
             if header is None:
                 raise ApiProblem(404, "RUN_NOT_FOUND", "没有找到对应的判断运行。")
+            # E3 B2：运行有生命周期了，未成功的 run 能列、能查状态，但拿不到结果。
+            # 409 而不是 404——「还没完成」与「不存在」从此可区分，也与 API-13 同码。
+            if header["status"] != "succeeded":
+                raise ApiProblem(
+                    409,
+                    "RUN_NOT_COMPLETED",
+                    "该判断运行尚未成功完成，暂时没有结果。",
+                    {"status": header["status"]},
+                )
             cur.execute(
                 """
                 SELECT a.policy_id, a.result, a.snapshot, pv.version,

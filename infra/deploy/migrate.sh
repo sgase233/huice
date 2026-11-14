@@ -42,6 +42,7 @@ MIGRATIONS=(
     008_material_requirements
     009_users_sessions
     010_policy_discovery
+    012_e3_metrics
 )
 
 # 只报变量名与原因：连接串里有口令，绝不能回显。

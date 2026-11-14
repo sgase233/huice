@@ -37,6 +37,12 @@ DEFAULT_SESSION_TTL_HOURS = 12
 DEFAULT_SESSION_IDLE_MINUTES = 30
 DEFAULT_DEMO_SESSION_QUOTA = 20
 
+#: E3 B2 运行生命周期（D5）。上限是**部署参数**，不是业务口径：2 小时覆盖 deepseek
+#: 抽取加规则评估的长尾，实际取值按部署调整。中断扫描每小时一次——只在启动时扫一次，
+#: 「重启时还没超时、之后才超时」的行会一直停在 running。
+DEFAULT_RUN_MAX_DURATION_SECONDS = 7200
+DEFAULT_RUN_INTERRUPT_SCAN_SECONDS = 3600
+
 
 class ConfigError(RuntimeError):
     """Raised when the process cannot start because configuration is invalid."""
@@ -70,6 +76,8 @@ class Settings:
     session_ttl_hours: int = DEFAULT_SESSION_TTL_HOURS
     session_idle_minutes: int = DEFAULT_SESSION_IDLE_MINUTES
     demo_session_quota: int = DEFAULT_DEMO_SESSION_QUOTA
+    run_max_duration_seconds: int = DEFAULT_RUN_MAX_DURATION_SECONDS
+    run_interrupt_scan_seconds: int = DEFAULT_RUN_INTERRUPT_SCAN_SECONDS
 
     @property
     def effective_public_origin(self) -> str:
@@ -181,6 +189,12 @@ class Settings:
         demo_session_quota = _positive_int(
             env, "DEMO_SESSION_QUOTA", DEFAULT_DEMO_SESSION_QUOTA, problems
         )
+        run_max_duration_seconds = _positive_int(
+            env, "RUN_MAX_DURATION_SECONDS", DEFAULT_RUN_MAX_DURATION_SECONDS, problems
+        )
+        run_interrupt_scan_seconds = _positive_int(
+            env, "RUN_INTERRUPT_SCAN_SECONDS", DEFAULT_RUN_INTERRUPT_SCAN_SECONDS, problems
+        )
 
         deepseek_base_url = _text(env, "DEEPSEEK_BASE_URL", "")
         deepseek_model = _text(env, "DEEPSEEK_MODEL", "")
@@ -241,6 +255,8 @@ class Settings:
             session_ttl_hours=session_ttl_hours,
             session_idle_minutes=session_idle_minutes,
             demo_session_quota=demo_session_quota,
+            run_max_duration_seconds=run_max_duration_seconds,
+            run_interrupt_scan_seconds=run_interrupt_scan_seconds,
         )
 
 
