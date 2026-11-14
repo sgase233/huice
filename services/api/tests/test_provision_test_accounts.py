@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -153,12 +154,16 @@ def test_a_second_run_keeps_existing_passwords(database_url_schema, tmp_path: Pa
             conn.execute("SELECT username, password_hash FROM app_user").fetchall()
         )
 
+    original = first_out.read_text(encoding="utf-8")
+
     second_out = tmp_path / "second.txt"
     second = run_script("--out", str(second_out), DATABASE_URL=database_url_schema)
 
     assert second.returncode == 0, second.stderr
-    assert "已存在跳过 3 个" in second.stdout
-    assert credential_lines(second_out) == []
+    assert "本轮没有新口令" in second.stdout
+    # 没有任何新口令就不该生成（更没有权利覆盖）一份只有标题的凭证文件
+    assert not second_out.exists()
+    assert first_out.read_text(encoding="utf-8") == original
     with psycopg.connect(database_url_schema) as conn:
         after = dict(
             conn.execute("SELECT username, password_hash FROM app_user").fetchall()
@@ -199,3 +204,123 @@ def test_reset_passwords_rewrites_the_credentials(database_url_schema, tmp_path:
         assert auth_tools.verify_password(
             {entry["username"]: entry["password"] for entry in entries}[username], stored
         )
+
+
+def _seed_user(dsn: str, username: str, *, role: str, status: str = "active", enterprise=None):
+    """造一个同名但身份不符的账号，模拟「这台环境上已经有人占了这个名字」。"""
+
+    user_id = uuid4()
+    with psycopg.connect(dsn) as conn:
+        conn.execute(
+            "INSERT INTO app_user (id, username, password_hash, role, status) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (user_id, username, "x" * 16, role, status),
+        )
+        if enterprise is not None:
+            conn.execute(
+                "INSERT INTO enterprise (id, name_synthetic, period_start, period_end, owner_user_id) "
+                "VALUES (%s, %s, '2026-01-01', '2026-12-31', %s)",
+                (uuid4(), enterprise, user_id),
+            )
+        conn.commit()
+    return user_id
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_force_without_new_credentials_leaves_the_only_file_untouched(
+    database_url_schema, tmp_path: Path
+) -> None:
+    """全部跳过时 `--force` 也不能把唯一一份还在用的口令文件清空。"""
+
+    out = tmp_path / "creds.txt"
+    assert run_script("--out", str(out), DATABASE_URL=database_url_schema).returncode == 0
+    original = out.read_text(encoding="utf-8")
+    assert len(credential_lines(out)) == 3
+
+    result = run_script("--out", str(out), "--force", DATABASE_URL=database_url_schema)
+
+    assert result.returncode == 0, result.stderr
+    assert out.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_same_name_account_with_another_role_stops_the_whole_run(
+    database_url_schema, tmp_path: Path
+) -> None:
+    """同名但角色不同：整批停下（退出码 5），其余账号一个也不建。"""
+
+    _seed_user(database_url_schema, "reviewer.demo", role="enterprise")
+    out = tmp_path / "creds.txt"
+
+    result = run_script("--out", str(out), DATABASE_URL=database_url_schema)
+
+    assert result.returncode == 5
+    assert "reviewer.demo" in result.stderr
+    assert not out.exists()
+    with psycopg.connect(database_url_schema) as conn:
+        count = conn.execute("SELECT count(*) FROM app_user").fetchone()[0]
+    assert count == 1
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_disabled_account_stops_the_run(database_url_schema, tmp_path: Path) -> None:
+    _seed_user(database_url_schema, "acme.alpha", role="enterprise", status="disabled")
+
+    result = run_script(
+        "--out", str(tmp_path / "creds.txt"), DATABASE_URL=database_url_schema
+    )
+
+    assert result.returncode == 5
+    assert "acme.alpha" in result.stderr
+    assert "disabled" in result.stderr
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_an_enterprise_with_another_name_stops_the_run(database_url_schema, tmp_path: Path) -> None:
+    """同名同角色但企业归属不对：可能是真实客户账号，重置口令会踢掉它。"""
+
+    _seed_user(
+        database_url_schema, "acme.beta", role="enterprise", enterprise="某个真实企业"
+    )
+
+    result = run_script(
+        "--out", str(tmp_path / "creds.txt"), DATABASE_URL=database_url_schema
+    )
+
+    assert result.returncode == 5
+    assert "acme.beta" in result.stderr
+
+
+@pytest.mark.db
+@pytest.mark.usefixtures("clean_tables")
+def test_a_same_name_reviewer_carrying_an_enterprise_stops_the_run(
+    database_url_schema, tmp_path: Path
+) -> None:
+    _seed_user(
+        database_url_schema, "reviewer.demo", role="reviewer", enterprise="不该有的企业"
+    )
+
+    result = run_script(
+        "--out", str(tmp_path / "creds.txt"), DATABASE_URL=database_url_schema
+    )
+
+    assert result.returncode == 5
+    assert "reviewer.demo" in result.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="符号链接语义只在 POSIX 上可测")
+def test_a_symlinked_out_path_is_refused(tmp_path: Path) -> None:
+    real = tmp_path / "real.txt"
+    real.write_text("keep", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+
+    result = run_script("--out", str(link), "--force", DATABASE_URL=UNREACHABLE)
+
+    assert result.returncode == 4
+    assert "符号链接" in result.stderr
+    assert real.read_text(encoding="utf-8") == "keep"

@@ -402,23 +402,33 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 | `acme.beta` | `enterprise` | 合成企业B（region `440300`、industry `C39`） |
 
 - **口令只在凭证文件里出现一次**：脚本生成 24 位随机口令，写成 `0600` 的 `--out` 文件，stdout 只打印用户名与计数。交付走机密渠道（当面对传、私聊、受控网盘），**不进仓库、不进文档、不进聊天、不进 PR**；本文件本身按 §7 的口径处理，交付完 `shred -u`。
-- **先查文件再建账号**：`--out` 已存在且没给 `--force` 时直接退出 `4`，不连库——反过来做会留下「账号建好了、口令没落盘」的账号，只能靠 `--reset-passwords` 重发。
-- **重跑不踢人**：已存在的账号默认跳过、不改口令（M2 可能正拿着用）；要重发口令加 `--reset-passwords --force`，凭证文件会整份重写。
-- **验证**（在 ECS 本机，`curl` 的 cookie 落 0600 文件，别回显）：
+- **同名账号先验身份**：库里已有同名账号时，脚本先核对角色、状态（必须 `active`）与企业归属（企业账号的企业名必须正好是「合成企业A/B」，审核员必须没有企业）。任何一项不符就**整批停下、退出码 `5`**，一个账号都不建、不改、不重置——`--reset-passwords` 会顺带撤销该账号的会话，误伤真实账号的代价比少建一个合成账号大得多。确认这台环境没问题后，先人工改掉同名账号再跑。
+- **口令边建边落盘**：每建好（或重置）一个账号就写一行并 `fsync`；中途失败时已经产生的口令就在文件里（覆盖模式写在同目录临时文件、收尾原子替换），不会出现「账号建了、口令没了」。失败会打印「已生成 N 条口令，写在哪个文件」。
+- **文件按受控方式创建**：父目录不允许组/其他可写；目标不能是符号链接；新文件用 `O_EXCL` + `0600` 建；`--force` 时先写临时文件再 `os.replace`，宽权限的旧文件不会出现「写内容时还是 0644」的窗口。`--out` 已存在且没给 `--force` 时直接退出 `4`，不连库。
+- **重跑不踢人、也不动文件**：已存在的账号默认跳过、不改口令（M2 可能正拿着用）；**三个账号都已存在时本轮不写凭证文件**，`--force` 也一样——唯一一份还在用的口令不会被一个只剩标题的文件覆盖。要重发口令加 `--reset-passwords`。
+- **退出码**：`0` 成功（含「已存在跳过」「没有新口令、文件未改动」）；`2` 环境变量或参数不合法；`3` 写库失败；`4` 凭证文件路径不可用（已存在且没给 `--force`、父目录组/其他可写、目标是符号链接）；`5` 同名账号身份不符（角色／状态／企业归属），整批未执行。
+- **验证**（在 ECS 本机；口令、cookie 与响应体都落 `0600` 文件，别让它进终端回显）：
 
   ```bash
-  # 登录（口令从凭证文件读，不进 shell 历史）
-  curl -sS -c /root/alpha.cookies -H "Origin: https://<站点域名>" \
-    -H "Content-Type: application/json" \
+  umask 077
+  # 登录请求体写进 0600 文件：不要把口令放进 -d 参数（ps 与 shell 历史都看得到）
+  printf '{"username":"acme.alpha","password":"%s"}' \
+    "$(sed -n 's/.*username=acme.alpha.*password=\([^ ]*\).*/\1/p' /root/huice-test-accounts-*.txt)" \
+    > /root/login-alpha.json
+  curl -sS -c /root/alpha.cookies -o /root/login-alpha.out -w '%{http_code}\n' \
+    -H "Origin: https://<站点域名>" -H "Content-Type: application/json" \
     --data @/root/login-alpha.json https://<站点域名>/api/v1/auth/login
-  # 看自己绑定的企业
-  curl -sS -b /root/alpha.cookies https://<站点域名>/api/v1/auth/me
-  # 越权：用 alpha 的会话请求 beta 的企业，应 404 且响应体不含 beta 的任何字段
-  curl -sS -b /root/alpha.cookies -o /dev/null -w '%{http_code}\n' \
+  curl -sS -b /root/alpha.cookies -o /root/alpha-me.out -w '%{http_code}\n' \
+    https://<站点域名>/api/v1/auth/me
+  # 越权：响应体存文件再检查，不能只看状态码
+  curl -sS -b /root/alpha.cookies -o /root/cross.out -w '%{http_code}\n' \
     https://<站点域名>/api/v1/enterprises/<beta 的 enterpriseId>
+  chmod 600 /root/login-alpha.json /root/alpha.cookies /root/login-alpha.out \
+    /root/alpha-me.out /root/cross.out
+  grep -c '合成企业B' /root/cross.out    # 期望 0：响应体里不应出现 beta 的企业名
   ```
 
-  restricted 部署先过演示门禁（§3.1），没有有效演示 cookie 时这些请求一律 403 `DEMO_SESSION_REQUIRED`——那不是账号有问题。
+  期望：login 200、`/auth/me` 200 且 `enterpriseId` 是 alpha 自己的、跨企业请求 404 且响应体不含 beta 的任何字段。检查完把上面几个文件一起 `shred -u`。restricted 部署先过演示门禁（§3.1），没有有效演示 cookie 时这些请求一律 403 `DEMO_SESSION_REQUIRED`——那不是账号有问题。
 - **这些账号是联调账号，不是验收证据**：账号存在只说明环境可用，不说明越权、配额、改密、并发已经验过；E1/E2 的验收结论仍以 M2/M3 的独立复核为准。
 - **收尾**：联调结束后把凭证文件 `shred -u`；账号在隔离环境里保留（M2 可能还要复跑），确需停用就在该库执行 `UPDATE app_user SET status = 'disabled' WHERE username IN ('reviewer.demo', 'acme.alpha', 'acme.beta');`——只动隔离环境，不碰生产库。
 
