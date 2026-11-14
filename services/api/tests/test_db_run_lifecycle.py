@@ -354,3 +354,58 @@ def test_the_lifecycle_start_uses_the_earliest_lifecycle_run(database_url_schema
         database_url_schema, "SELECT created_at FROM assessment_run WHERE id = %s", (run_id,)
     )[0]
     assert started == first_run
+
+
+def test_a_later_discovered_earlier_run_moves_the_start_earlier(
+    database_url_schema: str, repo
+) -> None:
+    """回退重部署或并发 T1 晚于首次校准：下次校准把起点向前挪，不缩小覆盖。"""
+
+    repo.mark_run_lifecycle_start()
+    first = query_one(
+        database_url_schema,
+        "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'",
+    )[0]
+    assert first is not None
+
+    enterprise = _enterprise(repo)
+    run_id = _insert_running(
+        database_url_schema, enterprise.id, minutes_ago=90, pid=998_000, started=AS_OF
+    )
+    run_created = query_one(
+        database_url_schema, "SELECT created_at FROM assessment_run WHERE id = %s", (run_id,)
+    )[0]
+
+    repo.mark_run_lifecycle_start()
+
+    moved = query_one(
+        database_url_schema,
+        "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'",
+    )[0]
+    assert moved == run_created
+    assert moved < first
+
+
+def test_the_start_never_moves_later(database_url_schema: str, repo) -> None:
+    """已有起点比所有运行都早：校准不能把它往后推。"""
+
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "INSERT INTO collection_baseline (id, run_lifecycle_from) "
+            "VALUES ('default', now() - interval '2 hours')"
+        )
+        conn.commit()
+        before = conn.execute(
+            "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'"
+        ).fetchone()[0]
+
+    enterprise = _enterprise(repo)
+    _insert_running(database_url_schema, enterprise.id, minutes_ago=10, pid=997_000, started=AS_OF)
+
+    repo.mark_run_lifecycle_start()
+
+    after = query_one(
+        database_url_schema,
+        "SELECT run_lifecycle_from FROM collection_baseline WHERE id = 'default'",
+    )[0]
+    assert after == before
