@@ -723,3 +723,101 @@ test('重新分析进行中不把旧分布显示为本次结果', async ({ page 
   await page.getByRole('button', { name: '分析所选政策' }).click();
   await expect(page.getByText('最近一次新分析结果未确认；当前记录来自此前的分析。')).toHaveCount(0);
 });
+
+test('审核员运行记录使用可读时间并将结果置顶', async ({ page }) => {
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/auth/me')) return route.fallback();
+    if (url.pathname.endsWith('/enterprises')) return route.fulfill({ json: { items: [{ id, nameSynthetic: '测试企业', period, ownership: 'other' }], nextCursor: null } });
+    if (url.pathname.endsWith(`/enterprises/${id}`)) return route.fulfill({ json: { id, nameSynthetic: '测试企业', facts: [] } });
+    if (url.pathname.endsWith('/assessment-runs')) return route.fulfill({ json: { items: [{ id: rid, enterpriseId: id, status: 'succeeded', reportAvailable: true, createdAt: '2026-11-15T03:44:39.942642Z', asOf: '2026-11-15T03:44:39Z' }], nextCursor: null } });
+    if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: run });
+    if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: [] } });
+    return route.abort();
+  });
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '企业与运行记录' }).click();
+  await page.getByRole('button', { name: '读取企业列表' }).click();
+  await page.getByRole('button', { name: '测试企业' }).click();
+  await expect(page.getByText('2026-11-15 11:44:39（北京时间） · 已完成')).toBeVisible();
+  await expect(page.locator('.reviewer-read')).not.toContainText(rid);
+  await expect(page.locator('.reviewer-read')).not.toContainText(id);
+  for (const width of [375, 1440]) {
+    await page.setViewportSize({ width, height: 850 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const row = page.locator('.reviewer-runs li');
+    const view = await row.getByRole('button', { name: '查看结果' }).boundingBox();
+    const download = await row.getByRole('button', { name: '下载报告' }).boundingBox();
+    expect(view && download && (view.x + view.width < download.x || view.y + view.height < download.y)).toBeTruthy();
+  }
+  await page.getByRole('button', { name: '查看结果' }).click();
+  await expect(page.getByRole('heading', { name: '已审合成政策' })).toBeVisible();
+  await expect(page.locator('.reviewer-result')).toBeFocused();
+  expect(await page.locator('.reviewer-result').evaluate(element => !!(element.compareDocumentPosition(document.querySelector('.reviewer-runs')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+});
+
+test('首次分析结果未确认时读取已提交记录而不重复分析', async ({ page }) => {
+  let posts = 0;
+  await page.route('**/api/v1/**', route => {
+    const req = route.request(), url = new URL(req.url());
+    if (url.pathname.endsWith('/auth/me')) return route.fallback();
+    if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') return route.fulfill({ json: { ...req.postDataJSON(), id, factVersion: 'abc' }, headers: { ETag: `"${'a'.repeat(64)}"` } });
+    if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (url.pathname.endsWith('/assessment-runs') && req.method() === 'POST') { posts++; return route.fulfill({ status: 503, json: { error: { code: 'RUN_RESULT_UNCONFIRMED', message: '结果未确认', details: { runId: rid } }, traceId: 't' } }); }
+    if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: run });
+    return route.abort();
+  });
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await expect(page.getByRole('button', { name: '分析所选政策' })).toBeDisabled();
+  await expect(page.locator('main')).not.toContainText(rid);
+  await page.getByRole('button', { name: '读取已提交的结果' }).click();
+  await expect(page.getByText('不满足条件', { exact: true })).toBeVisible();
+  expect(posts).toBe(1);
+});
+
+test('补充事实后的分析结果未确认时恢复已提交记录', async ({ page }) => {
+  const question = { factRef: { key: 'taxableIncome', period }, prompt: '请填写应纳税所得额', reason: '影响一项政策', rank: 1 };
+  const first = { ...run, assessments: [{ ...assessment, result: 'insufficient_evidence', nextQuestion: question }] };
+  const nextId = '44444444-4444-4444-8444-444444444444';
+  const second = { ...run, id: nextId };
+  let posts = 0; let enterprise: any;
+  await page.route('**/api/v1/**', route => {
+    const req = route.request(), url = new URL(req.url());
+    if (url.pathname.endsWith('/auth/me')) return route.fallback();
+    if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') { enterprise = { ...req.postDataJSON(), id, factVersion: 'abc' }; return route.fulfill({ json: enterprise, headers: { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' } }); }
+    if (url.pathname.endsWith('/facts/taxableIncome')) return route.fulfill({ json: enterprise, headers: { ETag: `"${'b'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' } });
+    if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (url.pathname.endsWith('/assessment-runs') && req.method() === 'POST') { posts++; return posts === 1 ? route.fulfill({ json: first }) : route.fulfill({ status: 503, json: { error: { code: 'RUN_RESULT_UNCONFIRMED', message: '结果未确认', details: { runId: nextId } }, traceId: 't' } }); }
+    if (url.pathname.endsWith(`/assessment-runs/${nextId}`)) return route.fulfill({ json: second });
+    return route.abort();
+  });
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await page.getByLabel('回答（元）').fill('100'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await expect(page.getByRole('button', { name: '重试分析' })).toHaveCount(0);
+  await page.getByRole('button', { name: '读取已提交的结果' }).click();
+  await expect(page.getByText('不满足条件', { exact: true })).toBeVisible();
+  expect(posts).toBe(2);
+});
+
+test('刷新页面后仍可恢复已提交的分析', async ({ page }) => {
+  let posts = 0;
+  await page.route('**/api/v1/**', route => {
+    const req = route.request(), url = new URL(req.url());
+    if (url.pathname.endsWith('/auth/me')) return route.fulfill({ json: { user: { id: 'u', username: 'u', role: 'enterprise', enterpriseId: id }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } });
+    if (url.pathname.endsWith(`/enterprises/${id}`)) return route.fulfill({ json: { id, nameSynthetic: '测试企业', period, factVersion: 'v1', facts: [{ key: 'region', value: '440300', unit: 'code', period, source: 'user_input', verified: false }, { key: 'industry', value: 'C39', unit: 'code', period, source: 'user_input', verified: false }] }, headers: { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' } });
+    if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (url.pathname.endsWith('/assessment-runs') && req.method() === 'POST') { posts++; return route.fulfill({ status: 503, json: { error: { code: 'RUN_RESULT_UNCONFIRMED', message: '结果未确认', details: { runId: rid } }, traceId: 't' } }); }
+    if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: run });
+    return route.abort();
+  });
+  await page.goto('/#enterprise'); await expect(page.getByText('已保存合成企业：测试企业')).toBeVisible();
+  await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await expect(page.getByRole('button', { name: '读取已提交的结果' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: '读取已提交的结果' })).toBeVisible();
+  await page.getByRole('button', { name: '读取已提交的结果' }).click();
+  await expect(page.getByText('不满足条件', { exact: true })).toBeVisible();
+  expect(posts).toBe(1);
+});

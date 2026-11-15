@@ -51,9 +51,10 @@ test('registration validates normalized username and displays server field error
 test('reviewer can read trace without exposing it to enterprise accounts', async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('reviewer', 'reviewer', null) }));
   await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [] } }));
+  await page.route('**/api/v1/assessment-runs', route => route.fulfill({ json: { items: [{ id: '123e4567-e89b-42d3-a456-426614174000', enterpriseId: 'e1', createdAt: '2026-11-15T03:44:39Z', asOf: '2026-11-15T03:44:39Z', status: 'succeeded', reportAvailable: true }], nextCursor: null } }));
   await page.goto('/#enterprise');
   await page.getByRole('button', { name: '处理轨迹' }).click();
-  await page.getByLabel('分析记录编号').fill('123e4567-e89b-42d3-a456-426614174000');
+  await page.getByLabel('选择运行记录').selectOption('123e4567-e89b-42d3-a456-426614174000');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   await expect(page.getByText('这条分析记录没有处理步骤。')).toBeVisible();
 });
@@ -225,20 +226,16 @@ test('fact conflict preserves input until the profile is reloaded', async ({ pag
     return writes === 1 ? route.fulfill({ status: 409, json: error('VERSION_CONFLICT') }) : route.fulfill({ json: profile('F51'), headers: { ETag: tag3, 'Access-Control-Expose-Headers': 'ETag' } });
   });
   await page.goto('/#enterprise');
-  await page.getByRole('button', { name: '编辑行业' }).click();
-  await page.locator('.fact-card form').getByLabel('值', { exact: true }).fill('F51');
-  page.once('dialog', dialog => dialog.dismiss());
-  await page.getByRole('button', { name: '账号与退出' }).click();
-  await expect(page.locator('.fact-card form').getByLabel('值', { exact: true })).toHaveValue('F51');
-  await page.getByRole('button', { name: '保存该项' }).click();
+  const industry = page.locator('.fact-card').nth(1).getByLabel('值', { exact: true });
+  await industry.fill('F51');
   await expect.poll(() => writes).toBe(1);
   await expect(page.getByRole('alert')).toContainText('请重新读取画像');
-  await expect(page.getByRole('button', { name: '保存该项' })).toBeDisabled();
-  await expect(page.locator('.fact-card form').getByLabel('值', { exact: true })).toHaveValue('F51');
+  await expect(industry).toHaveValue('F51');
+  page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: '重新读取画像' }).click();
-  await expect(page.locator('.fact-card form').getByLabel('值', { exact: true })).toHaveValue('F51');
-  await page.getByRole('button', { name: '保存该项' }).click();
-  await expect(page.getByRole('status')).toContainText('该项信息已保存');
+  await expect(industry).toHaveValue('C39');
+  await industry.fill('F51');
+  await expect(page.getByRole('status')).toContainText('信息已保存');
   expect(sentTag).toBe(tag2);
   expect(writes).toBe(2);
 });
@@ -357,9 +354,8 @@ test('fact editor is labelled and fits a narrow screen in both themes', async ({
     await expect(page.getByRole('button', { name: '机会列表' })).toHaveCSS('color', theme === 'dark' ? 'rgb(221, 221, 221)' : 'rgb(61, 61, 61)');
     await page.screenshot({ path: `test-results/e1-facts-${theme}.png`, fullPage: true });
   }
-  await page.getByRole('button', { name: '编辑行业' }).focus();
-  await page.keyboard.press('Enter');
-  await expect(page.locator('.fact-card form').getByLabel('值', { exact: true })).toHaveValue('C39');
+  await page.locator('.fact-card').nth(1).getByLabel('值', { exact: true }).focus();
+  await expect(page.locator('.fact-card').nth(1).getByLabel('值', { exact: true })).toHaveValue('C39');
 });
 
 test('企业画像按卡片展示并可新增保存信息', async ({ page }) => {
@@ -369,18 +365,18 @@ test('企业画像按卡片展示并可新增保存信息', async ({ page }) => 
   const headers = { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' };
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', 'e1') }));
   await page.route('**/api/v1/enterprises/e1', route => route.fulfill({ json: profile(), headers }));
-  await page.route('**/api/v1/enterprises/e1/facts/taxableIncome', route => { facts.push({ key: 'taxableIncome', ...route.request().postDataJSON(), verified: false }); return route.fulfill({ json: profile(), headers }); });
+  await page.route('**/api/v1/enterprises/e1/facts/taxableIncome', route => { const value = { key: 'taxableIncome', ...route.request().postDataJSON(), verified: false }; const index = facts.findIndex(item => item.key === value.key && item.period.startDate === value.period.startDate && item.period.endDate === value.period.endDate); if (index < 0) facts.push(value); else facts[index] = value; return route.fulfill({ json: profile(), headers }); });
   await page.goto('/#enterprise');
   await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
   await expect(page.locator('.fact-card')).toHaveCount(2);
   await expect(page.locator('.fact-card').getByText('未核实')).toHaveCount(0);
   await page.getByRole('button', { name: '添加一项信息' }).click();
-  const editor = page.locator('.fact-card form');
+  const editor = page.locator('.fact-card').last();
   await editor.getByLabel('信息类型').selectOption('taxableIncome');
-  await editor.getByLabel('未知').uncheck();
+  await editor.getByLabel('未知', { exact: true }).uncheck();
   await editor.getByLabel('值', { exact: true }).fill('500000');
-  await editor.getByRole('button', { name: '保存该项' }).click();
-  await expect(page.getByRole('status').filter({ hasText: '该项信息已保存' })).toBeVisible();
+  await page.getByRole('heading', { name: '企业信息与来源' }).click();
+  await expect(page.getByRole('status').filter({ hasText: '信息已保存' })).toBeVisible();
   await expect(page.locator('.fact-card')).toHaveCount(3);
-  await expect(page.getByRole('button', { name: '编辑应纳税所得额' })).toBeVisible();
+  await expect(editor.getByLabel('信息类型')).toHaveValue('taxableIncome');
 });

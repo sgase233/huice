@@ -44,6 +44,10 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
   const [lastAnalysisFailed, setLastAnalysisFailed] = useState(false);
   const [skipped, setSkipped] = useState<FactRef[]>([]);
   const [retryRun, setRetryRun] = useState(false);
+  const [unconfirmed, setUnconfirmed] = useState<{ id: string | null; skipped: FactRef[]; first: boolean } | null>(null);
+  const recoveryKey = enterprise ? `huice-unconfirmed:${user?.id ?? 'demo'}:${enterprise.id}` : null;
+  function rememberUnconfirmed(value: { id: string | null; skipped: FactRef[]; first: boolean }) { setUnconfirmed(value); if (recoveryKey) { try { sessionStorage.setItem(recoveryKey, JSON.stringify(value)); } catch { /* 当前页面仍保留恢复入口。 */ } } }
+  useEffect(() => { if (!recoveryKey) return; try { const stored = sessionStorage.getItem(recoveryKey); if (stored) { const value = JSON.parse(stored); if ((value.id === null || (typeof value.id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id))) && typeof value.first === 'boolean' && Array.isArray(value.skipped)) setUnconfirmed(value); } } catch { /* 不可用时保留当前页面状态。 */ } }, [recoveryKey]);
   const [detail, setDetail] = useState<PolicyDetail | null>(null);
   const [reportPolicies, setReportPolicies] = useState<PolicyDetail[]>([]);
   const [reportReady, setReportReady] = useState(false);
@@ -60,8 +64,8 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
   const skipPolicyHash = useRef(false);
   const [page, setPage] = useState<Page>(pageFromHash);
   const mainContent = useWorkflowTransition(page);
-  const navigationState = useRef({ page, adminDirty });
-  navigationState.current = { page, adminDirty };
+  const navigationState = useRef({ page, adminDirty, factDirty });
+  navigationState.current = { page, adminDirty, factDirty };
   const [type, setType] = useState<'' | 'tax' | 'grant'>('');
   const [status, setStatus] = useState<'' | 'published' | 'closed'>('');
   useEffect(() => {
@@ -80,6 +84,7 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
     const onHashChange = () => {
       if (!['', '#enterprise', '#opportunities', '#policy', '#report', '#trace', '#admin', '#reviewer'].includes(location.hash)) return;
       const next = pageFromHash();
+      if (navigationState.current.page === 'enterprise' && next !== 'enterprise' && navigationState.current.factDirty) { setError('企业信息尚未保存，请完成或核对输入后再离开。'); history.replaceState(history.state, '', '#enterprise'); return; }
       const confirmedHome = location.hash === '' && skipHomeConfirmation.current;
       skipHomeConfirmation.current = false;
       if (!confirmedHome && navigationState.current.page === 'admin' && next !== 'admin' && navigationState.current.adminDirty && !window.confirm('审核修改尚未保存，确定离开吗？')) { history.replaceState(history.state, '', '#admin'); return; }
@@ -99,7 +104,7 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
 
-  function navigate(next: Page) { if (page === 'admin' && next !== 'admin' && adminDirty && !window.confirm('审核修改尚未保存，确定离开吗？')) return false; navigationState.current = { page: next, adminDirty }; setPage(next); location.hash = next; return true; }
+  function navigate(next: Page) { if (page === 'enterprise' && next !== 'enterprise' && factDirty) { setError('企业信息尚未保存，请完成或核对输入后再离开。'); return false; } if (page === 'admin' && next !== 'admin' && adminDirty && !window.confirm('审核修改尚未保存，确定离开吗？')) return false; navigationState.current = { page: next, adminDirty, factDirty }; setPage(next); location.hash = next; return true; }
 
 
   async function loadPolicies(next?: string) {
@@ -117,7 +122,7 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
   }
   refreshPolicies.current = () => { void loadPolicies(); };
   async function analyze() {
-    if (!enterprise || !selected.length || selected.length > 7) return;
+    if (!enterprise || !selected.length || selected.length > 7 || unconfirmed) return;
     const id = ++requestId.current;
     setBusy(true); setError(''); setRunFresh(false);
     try {
@@ -125,10 +130,10 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
       if (id !== requestId.current) return;
       skippedByRun.current = { [result.data.id]: [] };
       setRun(result.data); setRunIds([result.data.id]); setRunFresh(true); setResultNeedsRefresh(false); setLastAnalysisFailed(false); setSkipped([]); setRetryRun(false); setDetail(null); lastPolicyId.current = null;
-    } catch (e) { if (id === requestId.current) { setRunFresh(false); setLastAnalysisFailed(true); setError(message(e)); } } finally { if (id === requestId.current) setBusy(false); }
+    } catch (e) { if (id === requestId.current) { setRunFresh(false); setLastAnalysisFailed(true); if (e instanceof ApiRequestError && e.code === 'RUN_RESULT_UNCONFIRMED') { const runId = e.details.runId; rememberUnconfirmed({ id: typeof runId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId) ? runId : null, skipped: [], first: true }); setError('分析已提交，结果暂时无法确认，请读取已提交的结果。'); } else setError(message(e)); } } finally { if (id === requestId.current) setBusy(false); }
   }
   async function continueRun(nextSkipped: FactRef[], answer?: string | boolean) {
-    if (!run || !enterprise) return;
+    if (!run || !enterprise || unconfirmed) return;
     const question = run.assessments.find(item => item.nextQuestion)?.nextQuestion;
     if (answer !== undefined && (!question || !etag)) { setError('当前问题或企业信息的版本不可用，请刷新后再试。'); return; }
     const id = ++requestId.current;
@@ -149,7 +154,8 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
       setRun(result.data); setRunIds(previous => [...previous, result.data.id]); setRunFresh(true); setResultNeedsRefresh(false); setLastAnalysisFailed(false); setRetryRun(false);
     } catch (e) {
       if (id !== requestId.current) return;
-      if (saved) { setRetryRun(true); setError(`事实已保存，但分析未完成。${message(e)}`); }
+      if (e instanceof ApiRequestError && e.code === 'RUN_RESULT_UNCONFIRMED') { const runId = e.details.runId; rememberUnconfirmed({ id: typeof runId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId) ? runId : null, skipped: nextSkipped, first: false }); setRetryRun(false); setRunFresh(false); setError('分析已提交，结果暂时无法确认，请读取已提交的结果。'); }
+      else if (saved) { setRetryRun(true); setError(`事实已保存，但分析未完成。${message(e)}`); }
       else if (answer === undefined) { setRetryRun(true); setError(message(e)); }
       else {
         setResultNeedsRefresh(true);
@@ -157,6 +163,19 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
         try { const current = await api.getEnterprise(enterprise.id); if (id === requestId.current) { setEnterprise(current.data); setEtag(current.etag); } } catch { setEtag(null); }
       }
     } finally { if (id === requestId.current) setBusy(false); }
+  }
+  async function recoverRun() {
+    if (!unconfirmed?.id || !enterprise) return;
+    const pending = unconfirmed; const id = ++requestId.current;
+    setBusy(true); setError('');
+    try {
+      const result = await api.getRun(pending.id!);
+      if (id !== requestId.current) return;
+      if (result.data.enterpriseId.toLowerCase() !== enterprise.id.toLowerCase()) throw new Error('结果与当前企业不一致。');
+      skippedByRun.current[pending.id!] = pending.skipped;
+      setRun(result.data); setRunIds(previous => pending.first ? [result.data.id] : [...previous.filter(item => item !== result.data.id), result.data.id]); setSkipped(pending.skipped); setRunFresh(true); setResultNeedsRefresh(false); setLastAnalysisFailed(false); setRetryRun(false); setUnconfirmed(null); if (recoveryKey) { try { sessionStorage.removeItem(recoveryKey); } catch { /* 不影响结果展示。 */ } } setDetail(null); lastPolicyId.current = null;
+    } catch { if (id === requestId.current) setError('结果暂时无法读取，请稍后再次读取已提交的结果。'); }
+    finally { if (id === requestId.current) setBusy(false); }
   }
   async function selectRun(runId: string) {
     const id = ++requestId.current;
@@ -229,13 +248,14 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
     } catch (e) { setError(message(e)); } finally { setBusy(false); }
   }
   async function reloadEnterprise() {
-    if (!enterprise) return;
+    if (!enterprise) throw new Error('企业信息不可用。');
     const id = ++requestId.current;
     setBusy(true);
     try {
       const result = await api.getEnterprise(enterprise.id);
-      if (id !== requestId.current) return;
+      if (id !== requestId.current) throw new Error('读取已被新操作替代。');
       setEnterprise(result.data); setEtag(result.etag); setRunFresh(false); setResultNeedsRefresh(true);
+      return result.data;
     } catch (e) { if (id === requestId.current) setEtag(null); throw new Error(message(e)); }
     finally { if (id === requestId.current) setBusy(false); }
   }
@@ -246,10 +266,35 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
     try {
       const { key, ...input } = fact;
       const result = await api.updateFact(enterprise.id, key, input, etag);
-      if (id !== requestId.current) return;
+      if (id !== requestId.current) throw new Error('保存结果未确认，请重新读取画像。');
       setEnterprise(result.data); setEtag(result.etag);
-    } catch (e) { if (id === requestId.current) setEtag(null); throw new Error(`${message(e)} 请重新读取画像后核对输入。`); }
-    finally { if (id === requestId.current) setBusy(false); }
+    } catch (e) {
+      if (id === requestId.current) {
+        setEtag(null);
+        if (e instanceof ApiRequestError && (e.status === 404 || e.status === 409)) {
+          try { const current = await api.getEnterprise(enterprise.id); if (id === requestId.current) { setEnterprise(current.data); setEtag(current.etag); } } catch { /* 保持版本不可用，提示手动重读。 */ }
+        }
+      }
+      throw new Error('保存未确认，请重新读取画像后核对输入。');
+    } finally { if (id === requestId.current) setBusy(false); }
+  }
+  async function deleteEnterpriseFact(fact: FactInput) {
+    if (!enterprise || !etag || !/^"[a-f0-9]{64}"$/.test(etag)) throw new Error('画像版本不可用，请先重新读取。');
+    const id = ++requestId.current; setBusy(true); setRunFresh(false); setResultNeedsRefresh(true);
+    try {
+      const result = await api.deleteFact(enterprise.id, fact.key, fact.period, etag);
+      if (id !== requestId.current) throw new Error('操作已被新请求替代，请重新读取画像。');
+      setEnterprise(result.data); setEtag(result.etag);
+    } catch (e) {
+      if (id === requestId.current) {
+        setEtag(null);
+        if (e instanceof ApiRequestError && (e.status === 404 || e.status === 409)) {
+          try { const current = await api.getEnterprise(enterprise.id); if (id === requestId.current) { setEnterprise(current.data); setEtag(current.etag); } } catch { /* 保持版本不可用，提示手动重读。 */ }
+          throw new Error('信息已发生变化，已尝试重新读取画像，请核对后再操作。');
+        }
+      }
+      throw new Error('删除未确认，请重新读取画像后核对。');
+    } finally { if (id === requestId.current) setBusy(false); }
   }
   const assessment = runFresh && !resultNeedsRefresh ? run?.assessments.find(item => item.policyId === detail?.id) : undefined;
   const question = run && (runFresh || resultNeedsRefresh) && run.id === runIds[runIds.length - 1] ? run.assessments.find(item => item.nextQuestion)?.nextQuestion : null;
@@ -257,15 +302,16 @@ export default function RealApp({ user, onExit, onEnterpriseCreated }: { user: U
     <div className="shell-layout"><MagnifyingDock page={page} real><button className="dock-item" aria-label="企业画像" aria-current={page === 'enterprise' ? 'page' : undefined} disabled={busy} onClick={() => navigate('enterprise')}><WorkflowIcon name="enterprise" /><span className="dock-label">企业画像</span></button><button className="dock-item" aria-label="机会列表" aria-current={page === 'opportunities' ? 'page' : undefined} disabled={busy} onClick={() => { if (location.hash === '#opportunities') void loadPolicies(); else navigate('opportunities'); }}><WorkflowIcon name="opportunities" /><span className="dock-label">机会列表</span></button><button className="dock-item" aria-label="政策详情" aria-current={page === 'policy' ? 'page' : undefined} disabled={busy} onClick={() => { if (lastPolicyId.current) void openPolicy(lastPolicyId.current); else navigate('policy'); }}><WorkflowIcon name="policy" /><span className="dock-label">政策详情</span></button><button className="dock-item" aria-label="清单与报告" aria-current={page === 'report' ? 'page' : undefined} disabled={busy} onClick={() => void openReport()}><WorkflowIcon name="report" /><span className="dock-label">清单与报告</span></button>{user?.role === 'reviewer' && <button className="dock-item" aria-label="企业与运行记录" aria-current={page === 'reviewer' ? 'page' : undefined} disabled={busy} onClick={() => navigate('reviewer')}><WorkflowIcon name="enterprise" /><span className="dock-label">企业与运行记录</span></button>}{user?.role === 'reviewer' && <button className="dock-item" aria-label="处理轨迹" aria-current={page === 'trace' ? 'page' : undefined} disabled={busy} onClick={() => navigate('trace')}><WorkflowIcon name="trace" /><span className="dock-label">处理轨迹</span></button>}{user?.role === 'reviewer' && <button className="dock-item" aria-label="政策审核" aria-current={page === 'admin' ? 'page' : undefined} disabled={busy} onClick={() => navigate('admin')}><WorkflowIcon name="admin" /><span className="dock-label">政策审核</span></button>}</MagnifyingDock>
     <main id="real-main" ref={mainContent} className="main-content"><div className="demo-banner">当前使用示例企业数据，分析结果需结合政策原文复核</div>
       {error && <p role="alert" className="notice warning">{error}</p>}
+      {page === 'opportunities' && unconfirmed && <p className="notice warning">{unconfirmed.id ? <>分析已提交，请读取已提交的结果。 <button disabled={busy} onClick={() => void recoverRun()}>读取已提交的结果</button></> : '分析已提交但无法定位结果，请联系管理员核对，暂不要重新分析。'}</p>}
       {lastAnalysisFailed && run && !busy && <p className="notice warning">最近一次新分析结果未确认；当前记录来自此前的分析。</p>}
-      {runIds.length > 1 && page === 'opportunities' && <label>本次会话的分析历史 <select disabled={busy || retryRun} value={run?.id ?? ''} onChange={event => void selectRun(event.target.value)}>{runIds.map((id, index) => <option value={id} key={id}>第 {index + 1} 次分析 · {id}</option>)}</select></label>}
+      {runIds.length > 1 && page === 'opportunities' && <label>本次会话的分析历史 <select disabled={busy || retryRun} value={run?.id ?? ''} onChange={event => void selectRun(event.target.value)}>{runIds.map((id, index) => <option value={id} key={id}>第 {index + 1} 次分析</option>)}</select></label>}
       {page === 'opportunities' && run && (runFresh && !resultNeedsRefresh && !busy && !retryRun ? <ResultDistribution run={run} /> : <p className="notice warning">{busy ? '正在更新分析结果…' : retryRun ? '重新分析尚未确认，请重试分析。' : '分析结果分布暂不可用，请刷新后核对。'}</p>)}
-      {run && page === 'opportunities' && <>{retryRun && <button disabled={busy} onClick={() => void continueRun(skipped)}>重试分析</button>}{question && enterprise && !retryRun && <NextQuestion key={`${question.factRef.key}/${question.factRef.period.startDate}/${question.factRef.period.endDate}`} question={question} enterprise={enterprise} pending={busy} onAnswer={value => void continueRun(skipped, value)} onSkip={() => void continueRun([...skipped, question.factRef])} />}{runFresh && !question && run.id === runIds[runIds.length - 1] && <p>当前没有需要补充的问题；如有人工核查事项，请查看政策详情。</p>}</>}
-      <div hidden={page !== 'enterprise'}>{enterprise ? <EnterpriseFacts enterprise={enterprise} canSave={!!etag && /^"[a-f0-9]{64}"$/.test(etag) && !busy} onSave={saveEnterpriseFact} onReload={reloadEnterprise} onDirtyChange={setFactDirty} /> : user?.enterpriseId ? <div><p>正在读取已绑定企业；如读取失败，请重试。</p><button className="button button-secondary" onClick={() => { setError(''); setEnterpriseRetry(value => value + 1); }}>重新读取企业</button></div> : <EnterprisePage real value={draft} onSave={async input => { const request = ++requestId.current; setBusy(true); try { const result = await api.createEnterprise(input); if (request !== requestId.current) throw new Error("请求已被新操作替代，请重新核对。"); setEnterprise(result.data); setEtag(result.etag); setRun(null); setSelected([]); setDetail(null); lastPolicyId.current = null; onEnterpriseCreated?.(result.data.id); } catch (e) { throw new Error(message(e)); } finally { if (request === requestId.current) setBusy(false); } }} />}</div>
-      {page === 'opportunities' && <section className="page-block"><h1>政策机会</h1>{error && policies.length > 0 && <p className="notice warning">列表可能是上次加载的内容，请重试后核对筛选结果。</p>}<p>选择 1—7 项政策进行条件分析。</p><div className="panel filter-panel"><label>政策类型<select disabled={busy} value={type} onChange={e => setType(e.target.value as typeof type)}><option value="">全部类型</option><option value="tax">税收</option><option value="grant">资金</option></select></label><label>窗口状态<select disabled={busy} value={status} onChange={e => setStatus(e.target.value as typeof status)}><option value="">全部状态</option><option value="published">开放</option><option value="closed">已关闭</option></select></label><button className="button button-secondary" onClick={() => void loadPolicies()} disabled={busy}>应用筛选</button></div><p>已选择 {selected.length} 项政策（包含其他筛选页中的选择）。 <button className="button button-secondary" disabled={busy || selected.length === 0} onClick={() => setSelected([])}>清空选择</button></p><button className="button" disabled={busy || !enterprise || selected.length === 0} onClick={() => void analyze()}>{busy ? '处理中…' : '分析所选政策'}</button>{!enterprise && <p>请先保存企业画像。</p>}{policies.length === 0 && !busy && <p>暂无政策。可重试加载。</p>}<button className="button button-secondary" onClick={() => void loadPolicies()} disabled={busy}>刷新列表</button><div className="policy-grid">{policies.map(policy => { const result = runFresh && !resultNeedsRefresh ? run?.assessments.find(item => item.policyId === policy.id) : undefined; const pendingRefresh = (!runFresh || resultNeedsRefresh) && run?.assessments.some(item => item.policyId === policy.id); return <article className="panel" key={policy.id}><label className="inline-check"><input type="checkbox" checked={selected.includes(policy.id)} disabled={busy || (!selected.includes(policy.id) && selected.length >= 7)} onChange={e => setSelected(old => e.target.checked ? [...old, policy.id] : old.filter(id => id !== policy.id))} />选择分析</label><h2>{policy.title}</h2><p>{policy.issuer} · {policy.region} · {policy.version}</p>{pendingRefresh ? <p>结果暂不可用，请刷新后核对。</p> : <StatusBadge result={result?.result} validity={result?.validity} policyStatus={policy.status} />}{result && <p>分析依据版本：{run?.policyVersionMap[policy.id] ?? '缺失'}</p>}<button className="button button-secondary" onClick={() => void openPolicy(policy.id)} disabled={busy}>查看详情</button></article>; })}</div>{cursor && <button disabled={busy} onClick={() => void loadPolicies(cursor)}>加载更多</button>}</section>}
+      {run && page === 'opportunities' && <>{retryRun && <button disabled={busy} onClick={() => void continueRun(skipped)}>重试分析</button>}{question && enterprise && !retryRun && !unconfirmed && <NextQuestion key={`${question.factRef.key}/${question.factRef.period.startDate}/${question.factRef.period.endDate}`} question={question} enterprise={enterprise} pending={busy} onAnswer={value => void continueRun(skipped, value)} onSkip={() => void continueRun([...skipped, question.factRef])} />}{runFresh && !question && run.id === runIds[runIds.length - 1] && <p>当前没有需要补充的问题；如有人工核查事项，请查看政策详情。</p>}</>}
+      <div hidden={page !== 'enterprise'}>{enterprise ? <EnterpriseFacts enterprise={enterprise} canSave={!!etag && /^"[a-f0-9]{64}"$/.test(etag) && !busy} onSave={saveEnterpriseFact} onDelete={deleteEnterpriseFact} onReload={reloadEnterprise} onDirtyChange={setFactDirty} /> : user?.enterpriseId ? <div><p>正在读取已绑定企业；如读取失败，请重试。</p><button className="button button-secondary" onClick={() => { setError(''); setEnterpriseRetry(value => value + 1); }}>重新读取企业</button></div> : <EnterprisePage real value={draft} onSave={async input => { const request = ++requestId.current; setBusy(true); try { const result = await api.createEnterprise(input); if (request !== requestId.current) throw new Error("请求已被新操作替代，请重新核对。"); setEnterprise(result.data); setEtag(result.etag); setRun(null); setSelected([]); setDetail(null); lastPolicyId.current = null; onEnterpriseCreated?.(result.data.id); } catch (e) { throw new Error(message(e)); } finally { if (request === requestId.current) setBusy(false); } }} />}</div>
+      {page === 'opportunities' && <section className="page-block"><h1>政策机会</h1>{error && policies.length > 0 && <p className="notice warning">列表可能是上次加载的内容，请重试后核对筛选结果。</p>}<p>选择 1—7 项政策进行条件分析。</p><div className="panel filter-panel"><label>政策类型<select disabled={busy} value={type} onChange={e => setType(e.target.value as typeof type)}><option value="">全部类型</option><option value="tax">税收</option><option value="grant">资金</option></select></label><label>窗口状态<select disabled={busy} value={status} onChange={e => setStatus(e.target.value as typeof status)}><option value="">全部状态</option><option value="published">开放</option><option value="closed">已关闭</option></select></label><button className="button button-secondary" onClick={() => void loadPolicies()} disabled={busy}>应用筛选</button></div><p>已选择 {selected.length} 项政策（包含其他筛选页中的选择）。 <button className="button button-secondary" disabled={busy || selected.length === 0} onClick={() => setSelected([])}>清空选择</button></p><button className="button" disabled={busy || !!unconfirmed || !enterprise || selected.length === 0} onClick={() => void analyze()}>{busy ? '处理中…' : '分析所选政策'}</button>{!enterprise && <p>请先保存企业画像。</p>}{policies.length === 0 && !busy && <p>暂无政策。可重试加载。</p>}<button className="button button-secondary" onClick={() => void loadPolicies()} disabled={busy}>刷新列表</button><div className="policy-grid">{policies.map(policy => { const result = runFresh && !resultNeedsRefresh ? run?.assessments.find(item => item.policyId === policy.id) : undefined; const pendingRefresh = (!runFresh || resultNeedsRefresh) && run?.assessments.some(item => item.policyId === policy.id); return <article className="panel" key={policy.id}><label className="inline-check"><input type="checkbox" checked={selected.includes(policy.id)} disabled={busy || (!selected.includes(policy.id) && selected.length >= 7)} onChange={e => setSelected(old => e.target.checked ? [...old, policy.id] : old.filter(id => id !== policy.id))} />选择分析</label><h2 className="policy-title">{policy.title} {!pendingRefresh && <StatusBadge result={result?.result} validity={result?.validity} policyStatus={policy.status} />}</h2><p>{policy.issuer} · {policy.region} · {policy.version}</p>{pendingRefresh && <p>结果暂不可用，请刷新后核对。</p>}{result && <p>分析依据版本：{run?.policyVersionMap[policy.id] ?? '缺失'}</p>}<button className="button button-secondary" onClick={() => void openPolicy(policy.id)} disabled={busy}>查看详情</button></article>; })}</div>{cursor && <button disabled={busy} onClick={() => void loadPolicies(cursor)}>加载更多</button>}</section>}
       {page === 'reviewer' && (user?.role === 'reviewer' ? <ReviewerReadPage /> : <p>此入口仅供审核员使用。</p>)}
       {page === 'trace' && (user?.role === 'reviewer' ? <TracePage runId={run?.id ?? null} onUnauthorized={() => setError('轨迹权限或会话不可用，请检查登录状态及演示门禁。')} /> : <p>此入口仅供审核员使用；本人轨迹暂未开放。</p>)}
-      {page === 'admin' && (user?.role === 'reviewer' ? <RealAdminReviewPage accountId={user.id} onDirtyChange={setAdminDirty} onUnauthorized={() => setError('审核权限或会话不可用，请检查登录状态及演示门禁。')} /> : <p>此入口仅供审核员使用。</p>)}
+      {page === 'admin' && (user?.role === 'reviewer' ? <RealAdminReviewPage onViewPublished={() => { navigate('opportunities'); }} accountId={user.id} onDirtyChange={setAdminDirty} onUnauthorized={() => setError('审核权限或会话不可用，请检查登录状态及演示门禁。')} /> : <p>此入口仅供审核员使用。</p>)}
       {page === 'report' && (run && reportReady ? <RealReportPage run={run} policies={reportPolicies} busy={busy} onDownload={() => void downloadReport()} /> : <p>{busy ? '正在加载报告…' : error ? '报告暂不可用。' : '请先完成分析，再打开报告。'}</p>)}
       {page === 'policy' && (detail ? <section className="page-block"><h1>{detail.title}</h1><p>{detail.issuer} · {detail.version}</p><StatusBadge result={assessment?.result} validity={assessment?.validity} policyStatus={detail.status} />{detail.status === 'closed' && <p>申报窗口已关闭，当前展示历史信息。</p>}{assessment && <><p>{assessment.explanation}</p><p>说明来源：{explanationLabels[assessment.explanationMode]}</p>{assessment.missingFacts.length > 0 && <p>缺少的企业信息：{assessment.missingFacts.map(ref => `${factLabels[ref.key]}（${ref.period.startDate} 至 ${ref.period.endDate}）`).join('、')}</p>}{assessment.warnings.map(w => <p className="notice warning" key={w}>{w}</p>)}{assessment.staleReasons.map((r, i) => <p className="notice warning" key={i}>{r.message}</p>)}{assessment.validUntil && <p>有效截止：{assessment.validUntil}</p>}</>}
         <PolicyDates policy={detail} />{detail.criteria.map(criterion => { const result = assessment?.criteriaResults.find(c => c.criterionId === criterion.id); const evidence = result?.evidenceRefs ?? criterion.sourceSpans; return <article className="panel" key={criterion.id}><h2>{criterion.title}</h2><ExpressionTree expression={criterion.expression} />{result && <><StatusBadge result={result.result} /><p>{result.reason}</p>{result.factRefs.map((ref, i) => { const fact = run?.factVersion === enterprise?.factVersion ? enterprise?.facts.find(f => f.key === ref.key && f.period.startDate === ref.period.startDate && f.period.endDate === ref.period.endDate) : undefined; return <p key={i}>{factLabels[ref.key]}（{ref.period.startDate} 至 {ref.period.endDate}）：{fact ? `${formatFact(fact.value, fact.unit)} · ${fact.source === 'user_input' ? '用户填写' : '合成材料'}` : run?.factVersion === enterprise?.factVersion ? '未填写' : '历史事实不可用'}</p>; })}{result.calculation && <CalculationDetails calculation={result.calculation} />}</>}{evidence.map((source, i) => <blockquote key={i}><p>{source.quote}</p><a href={source.sourceUrl} target="_blank" rel="noreferrer">官方原文</a> · {source.sourceVersion} {source.section} {source.page && `第 ${source.page} 页`}<details><summary>查看原文校验信息</summary>{source.textHash}</details></blockquote>)}</article>; })}<p>政策信息辅助整理；非税务专业意见；申报前请企业财税人员核对。</p></section> : <p>{busy ? '正在加载详情…' : '请选择政策查看详情。'}</p>)}

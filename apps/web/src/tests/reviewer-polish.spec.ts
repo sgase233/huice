@@ -3,11 +3,12 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
 });
 test('审核员记录标题简洁，轨迹输入与按钮间有焦点空间', async ({ page }) => {
+  await page.route('**/api/v1/assessment-runs', route => route.fulfill({ json: { items: [], nextCursor: null } }));
   await page.goto('/#reviewer');
   await expect(page.getByRole('heading', { name: '企业与运行记录', exact: true })).toBeVisible();
   await expect(page.getByText('服务端决定可见范围；此处不提供修改企业事实的操作。')).toHaveCount(0);
   await page.getByRole('button', { name: '处理轨迹' }).click();
-  const input = page.getByLabel('分析记录编号'); const button = page.getByRole('button', { name: '读取轨迹' });
+  const input = page.getByLabel('选择运行记录'); const button = page.getByRole('button', { name: '读取轨迹' });
   await input.focus();
   const a = await input.boundingBox(); const b = await button.boundingBox();
   expect(a && b && b.y - (a.y + a.height)).toBeGreaterThanOrEqual(12);
@@ -71,4 +72,27 @@ test('审核草稿避免重复展示相同标题和引文，操作按钮留有�
   const check = await panel.getByLabel('我已人工核对条件及来源').boundingBox();
   const publish = await panel.getByRole('button', { name: '确认发布' }).boundingBox();
   expect(check && publish && publish.y - (check.y + check.height)).toBeGreaterThanOrEqual(8);
+  for (const width of [1440, 375]) {
+    await page.setViewportSize({ width, height: 850 });
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+    const criterion = panel.locator('.admin-criterion').first();
+    for (const name of ['删除引用', '添加引用']) {
+      const button = criterion.getByRole('button', { name });
+      const buttonBox = await button.boundingBox();
+      const borderBox = await button.locator('xpath=ancestor::fieldset[1]').boundingBox();
+      expect(buttonBox && borderBox && buttonBox.x - borderBox.x).toBeGreaterThanOrEqual(8);
+      expect(buttonBox && borderBox && borderBox.y + borderBox.height - (buttonBox.y + buttonBox.height)).toBeGreaterThanOrEqual(8);
+    }
+    const outer = await criterion.locator(':scope > fieldset').boundingBox();
+    const remove = await criterion.getByRole('button', { name: '删除条件', exact: true }).boundingBox();
+    expect(outer && remove && remove.y - (outer.y + outer.height)).toBeGreaterThanOrEqual(8);
+    const addAtWidth = await panel.getByRole('button', { name: '添加条件', exact: true }).boundingBox();
+    const saveAtWidth = await panel.getByRole('button', { name: '保存并校验' }).boundingBox();
+    expect(addAtWidth && saveAtWidth && (saveAtWidth.y > addAtWidth.y ? saveAtWidth.y - (addAtWidth.y + addAtWidth.height) : saveAtWidth.x - (addAtWidth.x + addAtWidth.width))).toBeGreaterThanOrEqual(8);
+    const checkAtWidth = await panel.getByLabel('我已人工核对条件及来源').boundingBox();
+    const publishAtWidth = await panel.getByRole('button', { name: '确认发布' }).boundingBox();
+    expect(checkAtWidth && publishAtWidth && publishAtWidth.y - (checkAtWidth.y + checkAtWidth.height)).toBeGreaterThanOrEqual(8);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await criterion.screenshot({ path: `test-results/review-spacing-${width}.png` });
+  }
 });

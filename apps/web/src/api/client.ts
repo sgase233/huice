@@ -235,6 +235,11 @@ export const api = {
     if (response.data.id.toLowerCase() !== enterpriseId.toLowerCase()) throw new Error('接口契约错误：返回的企业与请求不一致');
     return response;
   },
+  deleteFact: async (enterpriseId: string, key: FactKey, period: { startDate: string; endDate: string }, etag: string) => {
+    const response = await request<Enterprise>(`/enterprises/${segment(enterpriseId)}/facts/${segment(key)}${query({ periodStart: period.startDate, periodEnd: period.endDate })}`, 'Enterprise', { method: 'DELETE', headers: match(etag) });
+    if (response.data.id.toLowerCase() !== enterpriseId.toLowerCase()) throw new Error('接口契约错误：返回的企业与请求不一致');
+    return response;
+  },
   createRun: (input: AssessmentInput) => request<AssessmentRun>('/assessment-runs', 'AssessmentRun', { method: 'POST', body: json(input) }),
   getRun: async (runId: string) => {
     const response = await request<AssessmentRun>(`/assessment-runs/${segment(runId)}`, 'AssessmentRun');

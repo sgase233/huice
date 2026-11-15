@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test';
 // E1 审核用例使用模拟审核员会话；旧令牌授权轨迹用例暂标记 fixme，待按审核员会话重写；本人轨迹仍待脱敏边界确认。
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+  await page.route('**/api/v1/assessment-runs', route => route.fulfill({ json: { items: [{ id: '11111111-1111-4111-8111-111111111111', enterpriseId: '22222222-2222-4222-8222-222222222222', createdAt: '2026-11-15T03:44:39Z', asOf: '2026-11-15T03:44:39Z', status: 'succeeded', reportAvailable: true }], nextCursor: null } }));
 });
 const testSource = { id: 'test-source', title: '合成来源', text: '合成引文', sourceUrl: 'https://www.gov.cn/' };
 const testSpan = { sourceId: 'test-source', sourceUrl: 'https://www.gov.cn/', sourceVersion: 'v1', page: 1, section: null, quote: '合成引文', textHash: 'hash' };
@@ -70,7 +71,7 @@ test('轨迹按序展示降级、失败、版本和人工动作', async ({ page 
     { ...base, sequence: 3, stage: 'extraction', status: 'fatal_error', errorCode: 'FAILED' },
   ] } }));
   await page.goto('/#trace');
-  await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
+  await page.getByLabel('选择运行记录').selectOption('11111111-1111-4111-8111-111111111111');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   const steps = page.locator('.trace-steps > li');
   await expect(page.getByText('按已记录的顺序展示；当前记录未区分政策处理与企业分析。')).toBeVisible();
@@ -78,7 +79,8 @@ test('轨迹按序展示降级、失败、版本和人工动作', async ({ page 
   await expect(steps.nth(0).getByRole('heading')).toHaveText('1. 引用校验 · 需要审核');
   await expect(steps.nth(0)).toContainText('版本：v2');
   await expect(steps.nth(1).getByRole('heading')).toHaveText('2. 结果解释 · 可重试错误');
-  await expect(steps.nth(1)).toContainText('DEPENDENCY_UNAVAILABLE');
+  await expect(steps.nth(1)).toContainText('该步骤处理遇到问题');
+  await expect(steps.nth(1)).not.toContainText('DEPENDENCY_UNAVAILABLE');
   await expect(steps.nth(1)).toContainText('人工复核');
   await expect(steps.nth(1)).toContainText('rule-v2');
   await expect(steps.nth(1)).toContainText('18 毫秒');
@@ -97,11 +99,11 @@ test('轨迹序号不符合契约时显示错误而不保留旧轨迹', async ({
   const step = { sequence: 1, stage: 'profile', status: 'ok', inputSummary: '输入', outputSummary: '旧轨迹', objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'v1', elapsedMs: 0, errorCode: null, humanAction: null };
   await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [{ ...step, sequence: ++calls === 1 ? 1 : 0 }] } }));
   await page.goto('/#trace');
-  await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
+  await page.getByLabel('选择运行记录').selectOption('11111111-1111-4111-8111-111111111111');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   await expect(page.getByText('输出：旧轨迹')).toBeVisible();
   await page.getByRole('button', { name: '读取轨迹' }).click();
-  await expect(page.getByRole('alert')).toContainText('轨迹步骤无效');
+  await expect(page.getByRole('alert')).toContainText('处理轨迹暂时无法读取，请重试');
   await expect(page.locator('.trace-steps')).toHaveCount(0);
 });
 
@@ -116,7 +118,7 @@ for (const status of [200, 401]) {
     });
     await page.goto('/#trace');
     await page.getByLabel('管理令牌').fill('old-token'); await page.getByRole('button', { name: '使用令牌' }).click();
-    await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
+    await page.getByLabel('选择运行记录').selectOption('11111111-1111-4111-8111-111111111111');
     const response = page.waitForResponse(result => result.url().includes('/trace'));
     await page.getByRole('button', { name: '读取轨迹' }).click();
     await expect(page.getByRole('button', { name: '正在加载…' })).toBeDisabled();
@@ -188,8 +190,16 @@ test('审核草稿编辑保存使用当前 ETag，发布需人工确认', async 
   await page.getByLabel('我已人工核对条件及来源').check();
   await expect(page.getByRole('button', { name: '确认发布' })).toBeEnabled();
   await page.getByRole('button', { name: '确认发布' }).click();
-  await expect(page.getByText(/发布请求已成功/)).toBeVisible();
+  const result = page.getByRole('status').filter({ hasText: '发布请求已成功' });
+  await expect(result).toBeVisible();
+  await expect(result).toBeFocused();
+  await expect(result).toBeInViewport();
+  await expect(result).toContainText('合成草稿 · v1');
+  await expect(result.getByRole('button', { name: '前往政策机会' })).toBeVisible();
   expect(published).toEqual({ match: '"revision-2"', body: { version: 'v1', reviewConfirmed: true } });
+  await page.route('**/api/v1/policies**', route => route.fulfill({ json: { items: [], nextCursor: null } }));
+  await result.getByRole('button', { name: '前往政策机会' }).click();
+  await expect(page.getByRole('heading', { name: '政策机会' })).toBeVisible();
 });
 
 test('版本冲突保留本地修改，读取最新版本后逐条恢复', async ({ page }) => {
@@ -723,3 +733,38 @@ for (const scenario of [
     await expect(page.getByText(scenario.hidden)).toHaveCount(0);
   });
 }
+
+
+test('运行记录选择支持分页并使用可读时间', async ({ page }) => {
+  const first = '11111111-1111-4111-8111-111111111111';
+  const second = '33333333-3333-4333-8333-333333333333';
+  const entry = (id: string) => ({ id, enterpriseId: '22222222-2222-4222-8222-222222222222', createdAt: '2026-11-15T03:44:39.123Z', asOf: '2026-11-15T03:44:39Z', status: 'succeeded', reportAvailable: true });
+  await page.route('**/api/v1/assessment-runs**', route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/trace')) return route.fulfill({ json: { steps: [] } });
+    return route.fulfill({ json: url.searchParams.has('cursor') ? { items: [entry(second)], nextCursor: null } : { items: [entry(first)], nextCursor: 'next' } });
+  });
+  await page.goto('/#trace');
+  const select = page.getByLabel('选择运行记录');
+  await expect(select.locator('option')).toHaveCount(2);
+  await expect(select.locator('option').nth(1)).toHaveText('2026-11-15 11:44:39（北京时间） · 已完成 · 第 1 条');
+  await expect(select).not.toContainText(first);
+  await page.getByRole('button', { name: '加载更多运行记录' }).click();
+  await expect(select.locator('option')).toHaveCount(3);
+  await select.selectOption(second);
+  await page.getByRole('button', { name: '读取轨迹' }).click();
+  await expect(page.getByText('这条分析记录没有处理步骤。')).toBeVisible();
+  await select.selectOption(first);
+  await expect(page.getByText('这条分析记录没有处理步骤。')).toHaveCount(0);
+});
+
+
+test('轨迹读取失败时不暴露运行编号或服务端错误', async ({ page }) => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ status: 404, json: { error: { code: 'RUN_NOT_FOUND', message: `运行 ${id} 不存在`, details: {} }, traceId: id } }));
+  await page.goto('/#trace');
+  await page.getByLabel('选择运行记录').selectOption(id);
+  await page.getByRole('button', { name: '读取轨迹' }).click();
+  await expect(page.getByRole('alert')).toContainText('这条运行记录不存在或已不可查看');
+  await expect(page.getByRole('alert')).not.toContainText(id);
+});

@@ -93,7 +93,7 @@ test('键盘可以填写导入表单、选择正文并抽取', async ({ page }) 
     await tabTo(page, page.getByLabel(label, { exact: true })); await page.keyboard.insertText(value);
   }
   for (const label of ['发布日期', '生效日期']) {
-    const date = page.getByLabel(label); await tabTo(page, date); await page.keyboard.type('2026'); await page.keyboard.press('ArrowRight'); await page.keyboard.type('01'); await page.keyboard.press('ArrowRight'); await page.keyboard.type('01');
+    const date = page.getByLabel(label); await tabTo(page, date); await page.keyboard.type('2026-01-01');
     await expect(date).toHaveValue('2026-01-01');
   }
   for (const label of ['官方原文网址', '官方办理网址']) {
