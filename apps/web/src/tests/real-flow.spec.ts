@@ -255,7 +255,7 @@ test('字段错误提示关联输入且摘要可定位至出错值', async ({ pa
   await expect(input).toBeFocused();
 });
 
-test('分页、筛选保留可见的选择计数，切换模式清空会话', async ({ page }) => {
+test('分页、筛选保留可见的选择计数且不显示固定样例入口', async ({ page }) => {
   const second = { ...policy, id: '44444444-4444-4444-8444-444444444444', title: '另一项合成政策', type: 'grant' };
   await page.route('**/api/v1/policies**', route => {
     const url = new URL(route.request().url());
@@ -272,11 +272,7 @@ test('分页、筛选保留可见的选择计数，切换模式清空会话', as
   await expect(page.getByText('已选择 1 项政策', { exact: false })).toBeVisible();
   await expect(page.getByText('已审合成政策')).toHaveCount(0);
   await page.getByRole('button', { name: '账号与退出' }).click();
-  await page.getByRole('link', { name: '切换固定样例演示' }).click();
-  await expect(page.getByText('静态合成演示 · 未进行真实资格判断')).toBeVisible();
-  await page.getByRole('link', { name: '切换真实接口' }).click();
-  await page.getByRole('button', { name: '机会列表' }).click();
-  await expect(page.getByText('已选择 0 项政策', { exact: false })).toBeVisible();
+  await expect(page.locator('a[href*="mode=demo"]')).toHaveCount(0);
 });
 
 test('真实模式支持 hash 入口与浏览器前进后退', async ({ page }) => {

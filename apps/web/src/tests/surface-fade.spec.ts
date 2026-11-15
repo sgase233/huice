@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => { await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } })); });
 
-for (const entry of [{ link: '开始使用工作台', target: /#enterprise$/ }, { link: '先体验固定样例', target: /mode=demo#enterprise$/ }]) {
+for (const entry of [{ link: '开始使用工作台', target: /#enterprise$/ }]) {
   test(`首页与工作台之间淡出淡入：${entry.link}`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'no-preference' });
     await page.addInitScript(() => {
