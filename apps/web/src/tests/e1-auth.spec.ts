@@ -119,6 +119,8 @@ test('register sends normalized username and required enterprise facts', async (
   await page.getByRole('button', { name: '注册', exact: true }).click();
   await expect(page.getByText('注册成功，请登录。')).toBeVisible();
   expect(sent.username).toBe('acme');
+  await expect(page.getByLabel('用户名')).toHaveValue('acme');
+  await expect(page.getByLabel('密码', { exact: true })).toHaveValue('password-12345');
   expect(sent.enterprise.facts.map((f: { key: string }) => f.key)).toEqual(['region', 'industry']);
 });
 
@@ -137,6 +139,9 @@ test('reviewer registration explains and preserves optional enterprise binding',
   await page.getByLabel('审核员注册密钥（仅审核员）').fill('synthetic-key-12345');
   await page.getByRole('button', { name: '注册', exact: true }).click();
   await expect(page.getByText('注册成功，请登录。')).toBeVisible();
+  await expect(page.getByLabel('用户名')).toHaveValue('reviewer');
+  await expect(page.getByLabel('密码', { exact: true })).toHaveValue('password-12345');
+  await expect(page.getByLabel('审核员注册密钥（仅审核员）')).toHaveCount(0);
   expect(sent.enterprise.nameSynthetic).toBe('合成企业');
   expect(sent.reviewerSignupKey).toBe('synthetic-key-12345');
 });
@@ -221,17 +226,17 @@ test('fact conflict preserves input until the profile is reloaded', async ({ pag
   });
   await page.goto('/#enterprise');
   await page.getByRole('button', { name: '编辑行业' }).click();
-  await page.getByLabel('值', { exact: true }).fill('F51');
+  await page.locator('.fact-card form').getByLabel('值', { exact: true }).fill('F51');
   page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('button', { name: '账号与退出' }).click();
-  await expect(page.getByLabel('值', { exact: true })).toHaveValue('F51');
+  await expect(page.locator('.fact-card form').getByLabel('值', { exact: true })).toHaveValue('F51');
   await page.getByRole('button', { name: '保存该项' }).click();
   await expect.poll(() => writes).toBe(1);
   await expect(page.getByRole('alert')).toContainText('请重新读取画像');
   await expect(page.getByRole('button', { name: '保存该项' })).toBeDisabled();
-  await expect(page.getByLabel('值', { exact: true })).toHaveValue('F51');
+  await expect(page.locator('.fact-card form').getByLabel('值', { exact: true })).toHaveValue('F51');
   await page.getByRole('button', { name: '重新读取画像' }).click();
-  await expect(page.getByLabel('值', { exact: true })).toHaveValue('F51');
+  await expect(page.locator('.fact-card form').getByLabel('值', { exact: true })).toHaveValue('F51');
   await page.getByRole('button', { name: '保存该项' }).click();
   await expect(page.getByRole('status')).toContainText('该项信息已保存');
   expect(sentTag).toBe(tag2);
@@ -344,15 +349,38 @@ test('fact editor is labelled and fits a narrow screen in both themes', async ({
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', 'e1') }));
   await page.route('**/api/v1/enterprises/e1', route => route.fulfill({ json: { id: 'e1', nameSynthetic: '合成企业', period, factVersion: 'a', facts: [{ key: 'region', value: '440300', unit: 'code', period, source: 'user_input', verified: false }, { key: 'industry', value: 'C39', unit: 'code', period, source: 'user_input', verified: false }] }, headers: { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' } }));
   await page.goto('/#enterprise');
-  await expect(page.getByRole('heading', { name: '企业事实' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '企业信息与来源' })).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await expect(page.getByLabel('信息类型')).toBeVisible();
+    await expect(page.getByLabel('信息类型').first()).toBeVisible();
     await expect(page.getByRole('button', { name: '机会列表' })).toHaveCSS('color', theme === 'dark' ? 'rgb(221, 221, 221)' : 'rgb(61, 61, 61)');
     await page.screenshot({ path: `test-results/e1-facts-${theme}.png`, fullPage: true });
   }
   await page.getByRole('button', { name: '编辑行业' }).focus();
   await page.keyboard.press('Enter');
-  await expect(page.getByLabel('值', { exact: true })).toHaveValue('C39');
+  await expect(page.locator('.fact-card form').getByLabel('值', { exact: true })).toHaveValue('C39');
+});
+
+test('企业画像按卡片展示并可新增保存信息', async ({ page }) => {
+  const period = { startDate: '2026-01-01', endDate: '2026-12-31' };
+  const facts: any[] = [{ key: 'region', value: '440300', unit: 'code', period, source: 'user_input', verified: false }, { key: 'industry', value: 'C39', unit: 'code', period, source: 'user_input', verified: false }];
+  const profile = () => ({ id: 'e1', nameSynthetic: '合成企业', period, factVersion: 'v1', facts });
+  const headers = { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' };
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', 'e1') }));
+  await page.route('**/api/v1/enterprises/e1', route => route.fulfill({ json: profile(), headers }));
+  await page.route('**/api/v1/enterprises/e1/facts/taxableIncome', route => { facts.push({ key: 'taxableIncome', ...route.request().postDataJSON(), verified: false }); return route.fulfill({ json: profile(), headers }); });
+  await page.goto('/#enterprise');
+  await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
+  await expect(page.locator('.fact-card')).toHaveCount(2);
+  await expect(page.locator('.fact-card').getByText('未核实')).toHaveCount(0);
+  await page.getByRole('button', { name: '添加一项信息' }).click();
+  const editor = page.locator('.fact-card form');
+  await editor.getByLabel('信息类型').selectOption('taxableIncome');
+  await editor.getByLabel('未知').uncheck();
+  await editor.getByLabel('值', { exact: true }).fill('500000');
+  await editor.getByRole('button', { name: '保存该项' }).click();
+  await expect(page.getByRole('status').filter({ hasText: '该项信息已保存' })).toBeVisible();
+  await expect(page.locator('.fact-card')).toHaveCount(3);
+  await expect(page.getByRole('button', { name: '编辑应纳税所得额' })).toBeVisible();
 });

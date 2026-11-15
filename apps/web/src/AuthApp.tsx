@@ -69,8 +69,9 @@ export default function AuthApp() {
       if (mode === 'register') {
         if (!/^[a-z0-9_.-]{3,32}$/.test(username.trim().toLowerCase())) { setNotice('用户名须为 3—32 位字母、数字、下划线、点或连字符。'); return; }
         const period = { startDate: start, endDate: end };
-        await api.register({ username: username.trim().toLowerCase(), password, ...(company ? { enterprise: { nameSynthetic: company, period, facts: [{ key: 'region', value: region, unit: 'code', period, source: 'user_input' }, { key: 'industry', value: industry, unit: 'code', period, source: 'user_input' }] } } : {}), ...(reviewerKey ? { reviewerSignupKey: reviewerKey } : {}) });
-        setMode('login'); setPassword(''); setReviewerKey(''); setNotice('注册成功，请登录。');
+        const registeredPassword = password;
+        const result = await api.register({ username: username.trim().toLowerCase(), password: registeredPassword, ...(company ? { enterprise: { nameSynthetic: company, period, facts: [{ key: 'region', value: region, unit: 'code', period, source: 'user_input' }, { key: 'industry', value: industry, unit: 'code', period, source: 'user_input' }] } } : {}), ...(reviewerKey ? { reviewerSignupKey: reviewerKey } : {}) });
+        setUsername(result.data.user.username); setPassword(registeredPassword); setMode('login'); setReviewerKey(''); setNotice('注册成功，请登录。');
       } else accept((await api.login({ username, password })).data);
     } catch (error) { showError(error); } finally { setBusy(false); }
   }

@@ -4,7 +4,7 @@ import type { AssessmentRunsResponse, CompletenessResponse, MetricAvailability, 
 import { factLabels } from '../demo';
 import type { FactKey } from '../api/types';
 
-const status: Record<string, string> = { filled: '已填写', filled_unverified: '已填写，待核实', answered_unknown: '已回答未知', not_answered: '待填写', not_applicable: '不适用', applicability_unknown: '适用性未知', not_due: '未到期' };
+const status: Record<string, string> = { filled: '已填写', filled_unverified: '已填写', answered_unknown: '已回答未知', not_answered: '待填写', not_applicable: '不适用', applicability_unknown: '适用性未知', not_due: '未到期' };
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 function metric(value: number | null | undefined, availability: MetricAvailability | undefined, open = false) {
   if (open && value == null) return '未结算';
