@@ -3,7 +3,7 @@
 > 口径（据 M1 反馈，2026-10-28）：结论永远由规则给出，模型只改解释；四态优先级 conflict > not_satisfied > insufficient_evidence > satisfied，补问清单只在 insufficient_evidence 出现；closed 是读取时派生、不落库；演示只许用合成企业；当前不是云端环境、`MODEL_MODE` 默认仍为 fixture。
 
 1. 30 秒说明企业为什么需要同时核查国家税收政策和地方资金项目。
-2. 展示真实的 RDS/Redis/OBS 部署证据与 DeepSeek 调用记录；开发工具按实际填写（Claude Code 辅助 + 人工复核）。不把未使用的 MaaS/CodeArts 写成已使用。
+2. 展示真实的 RDS/Redis/OBS 部署证据与 DeepSeek 调用记录；开发工具按实际填写（CodeArts + 人工复核）。
 3. 输入合成企业，演示行业排除条款使候选项目从“看似匹配”变为“不满足”。
    - 讲解口径：该结论是规则求值的 `not_satisfied`，不是“AI 判断”；若解释被模型改写，页面 warnings 会带「解释由模型改写，结论以规则结果为准。」，照此讲解。
 4. 改变演示政策版本，展示旧结论失效与原文差异。
