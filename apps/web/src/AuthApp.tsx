@@ -5,7 +5,7 @@ import RealApp from './RealApp';
 import ThemeToggle from './components/ThemeToggle';
 
 function AuthLayout({ children }: { children: React.ReactNode }) {
-  return <div className="app-shell"><header className="site-header"><div className="header-inner"><a className="brand" href="/">惠策协同</a><ThemeToggle /></div></header><main className="main-content auth-content">{children}</main></div>;
+  return <div className="app-shell"><header className="site-header"><div className="header-inner"><a className="brand" href="/" aria-label="惠策协同首页"><span className="brand-mark" aria-hidden="true">惠</span><span><strong>惠策协同</strong><small>企业政策核对工作台</small></span></a><ThemeToggle /></div></header><main className="main-content auth-content">{children}</main></div>;
 }
 
 export default function AuthApp() {

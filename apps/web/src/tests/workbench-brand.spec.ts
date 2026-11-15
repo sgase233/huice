@@ -31,3 +31,19 @@ test('移动端工作台顶部标识与切换操作保持可见', async ({ page 
   await expect(page.getByRole('button', { name: /切换.*色模式/ })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+test('登录与注册页面展示完整品牌标识', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: { error: { code: 'UNAUTHENTICATED', message: '请登录', details: {} } } }));
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto('/#enterprise');
+  const brand = page.getByRole('link', { name: '惠策协同首页' });
+  await expect(brand.locator('.brand-mark')).toHaveText('惠');
+  await expect(brand.locator('strong')).toHaveText('惠策协同');
+  await expect(brand.locator('small')).toHaveText('企业政策核对工作台');
+  await page.getByRole('button', { name: '注册账号' }).click();
+  await expect(brand.locator('small')).toBeVisible();
+  await page.getByRole('button', { name: '切换深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(brand.locator('.brand-mark')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

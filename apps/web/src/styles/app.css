@@ -400,3 +400,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
 
 
 .metrics-table table { min-width: 640px; }
+
+.trace-input { margin-bottom: 1rem; }
+.policy-import-input { position: relative; display: block; }
+.policy-import-input .date-placeholder { position: absolute; left: .7rem; top: 50%; transform: translateY(-50%); color: var(--ink); pointer-events: none; font-weight: 400; font-size: 1rem; }
+.policy-import-input .date-empty:not(:focus)::-webkit-datetime-edit { color: transparent; }
+.policy-import-input input:focus + .date-placeholder { display: none; }

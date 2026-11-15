@@ -54,7 +54,7 @@ export default function ReviewerReadPage() {
       const link = document.createElement('a'); link.href = url; link.download = `assessment-${item.id}.md`; link.click(); URL.revokeObjectURL(url);
     } catch (e) { if (request === sequence.current) setError(fail(e)); } finally { if (request === sequence.current) setBusy(false); }
   }
-  return <section className="page-block reviewer-read"><h1>企业与运行记录（只读）</h1><p>服务端决定可见范围；此处不提供修改企业事实的操作。</p>
+  return <section className="page-block reviewer-read"><h1>企业与运行记录</h1>
     {error && <p role="alert" className="notice warning">{error}</p>}
     <button disabled={busy} onClick={() => void list()}>读取企业列表</button>
     {loaded && enterprises.length === 0 && <p>当前没有可见企业。</p>}
