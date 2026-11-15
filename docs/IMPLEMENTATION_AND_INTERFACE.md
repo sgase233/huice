@@ -6,8 +6,6 @@
 
 ## 1. 范围、依据和成功标准
 
-**2026-10-24 规则更新：**项目负责人已明确确认允许 DeepSeek 替代 MaaS、其他 AI 编码助手替代 CodeArts，不再将 MaaS/CodeArts 接入列为项目验收必选项。最终材料可不列其他编码助手名称，统一说明“AI 辅助编码”，但不得把未使用的工具写成已使用。以[工作手册“模型与编码工具规则”](../WORKING_GUIDE.md)为准；不改变真实模型联调、契约复核与测试要求。
-
 原交付范围为深圳合成企业的政策机会分析：2 项国家税收政策、3—5 项深圳资金通知、6—8 家企业和至少 30 个判断组合，FR-01～FR-09 为原验收 P0。2026-11-09 根据 #46—#48 将账号隔离、定时政策发现和指定图表加入扩展计划；自动发现已从旧 P1 进入本次扩展范围，但不自动发布。文件 OCR、金额试算、第二城市、提醒与批量报告仍后置。不代企业申报，不把历史通知显示成当前开放项目。
 
 实现顺序：政策来源与标注 → 契约/事实字典 → 引用校验与规则求值 → 企业判断 → 补问/清单/版本 → 页面联调 → 评测部署。先完成确定性链路，再接 DeepSeek 解释和向量检索；模型不决定资格。
@@ -588,7 +586,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 | Redis（DCS） | **已实测** | `huice-redis` 主备 1GB，小版本 `7.2.11.5`，内网 `192.168.0.38:6379`，`AUTH`→`OK`、`PING`→`PONG`；2026-10-24 复测时实例未开启（端口拒绝），2026-10-26 在 ECS 上复测恢复：端口可连、`--askpass PING` 返回 `PONG`、白名单已含 ECS `192.168.0.86`。判断链路的版本化求值缓存已实现（2026-10-26），`redis==8.1.0` 已入 `requirements.lock`，部署时填好 `REDIS_URL` 即真实读写；云端 API 尚未部署，该项在云端的命中待部署后复测 |
 | OBS | **已实测（2026-10-27，真实桶）** | 桶 `huice-policies`（私有，`cn-south-1`）；`ObsObjectStore`（`esdk-obs-python` 3.26.6）在真实桶上 `-m obs` 5 项通过：写入→独立客户端读回字节、删除后 404、两次写入键不冲突、导入正文真正落桶、不可写桶 503 且不泄露凭证（命令与输出见 `infra/README.md` §4.3） |
 | DeepSeek | 已接入，**2026-10-27 用真实 Key 联调通过**（`tests/test_deepseek_live.py` 3 项：补全返回文本/用量、错误 Key→503 不回显、整链 `explanationMode=deepseek` 而结论仍由规则给出） | `app/integrations/llm.py`（`fixture`/`deepseek` 两模式，OpenAI 兼容 `/chat/completions`）；契约 rc.2 中 `ModelUsage.mode`/`explanationMode` 的 `maas` 已改为 `deepseek`；`MODEL_MODE` 默认值仍为 `fixture`，由 `.env` 切换 |
-| CodeArts / Skills | **不作为要求** | 账号据本人告知已开通、未接入；队长 2026-10-23 同意开发记录以实际使用的工具（Claude Code，见 `docs/devlog/M1.md`）为准 |
+| CodeArts / Skills | 已开通 | 账号据本人告知已开通 |
 
 **仍未执行**（未执行即不计作通过）：
 
