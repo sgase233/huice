@@ -28,6 +28,7 @@ class ContractTests(unittest.TestCase):
             ("put", "/admin/policies/{policyId}/criteria"), ("post", "/admin/policies/{policyId}/publish"),
             ("post", "/enterprises"), ("get", "/enterprises/{enterpriseId}"),
             ("patch", "/enterprises/{enterpriseId}/facts/{factKey}"),
+            ("delete", "/enterprises/{enterpriseId}/facts/{factKey}"),
             ("post", "/assessment-runs"), ("get", "/assessment-runs/{runId}"),
             ("get", "/assessment-runs/{runId}/report.md"),
             ("get", "/assessment-runs/{runId}/trace"),
@@ -44,7 +45,7 @@ class ContractTests(unittest.TestCase):
         actual = {(method, path) for path, ops in CONTRACT["paths"].items() for method in ops}
         self.assertEqual(actual, expected)
         ids = [op["operationId"] for ops in CONTRACT["paths"].values() for op in ops.values()]
-        self.assertEqual(len(set(ids)), 26)
+        self.assertEqual(len(set(ids)), 27)
         self.assertEqual(CONTRACT["openapi"], "3.1.0")
         self.assertEqual(CONTRACT["servers"], [{"url": "/api/v1"}])
 

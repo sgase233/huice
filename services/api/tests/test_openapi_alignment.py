@@ -22,6 +22,7 @@ IMPLEMENTED = {
     ("post", "/enterprises"): "createEnterprise",
     ("get", "/enterprises/{enterpriseId}"): "getEnterprise",
     ("patch", "/enterprises/{enterpriseId}/facts/{factKey}"): "updateFact",
+    ("delete", "/enterprises/{enterpriseId}/facts/{factKey}"): "deleteFact",
     ("post", "/assessment-runs"): "createRun",
     ("get", "/assessment-runs/{runId}"): "getRun",
     ("get", "/assessment-runs/{runId}/report.md"): "downloadReport",

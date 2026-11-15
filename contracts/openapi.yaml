@@ -2,8 +2,8 @@
 openapi: 3.1.0
 info:
   title: 惠策协同 HTTP 协作契约
-  version: 1.3.0-rc.1
-  description: "2026-11-15 候选冻结版（1.3.0-rc.1：并入 E3 的 3 个只读统计端点——GET /admin/metrics/review-workload、/admin/metrics/assessment-runs、/admin/metrics/completeness——与 PolicySummary/PolicyDetail/PolicyDraft 上**可选**的 dateProvenance（旁表无记录时省略，既有响应逐字段不变）。本版是纯增量：既有 21 个操作的 schema、security 与错误码未改。E2 的 8 个发现/候选操作仍在 contracts/openapi.e2-draft.yaml，尚未并入，因此版本从 1.1.0 直接升到 1.3.0（跳过预留的 1.2.0）。前端类型 apps/web/src/api/types.ts 必须由 M2 重新生成，生成前 contracts/generate_types.py --check 与类型对齐用例会红，这是已知中间状态。上一版 1.1.0-rc.1（2026-11-11）：把 E1 的 7 个端点与账号/会话 schema 并入正式契约——AUTH-01 注册、AUTH-02 登录、AUTH-03 登出、AUTH-04 会话恢复、AUTH-05 改密，以及按身份与归属过滤的 AUTH-06 企业列表、AUTH-07 分析运行列表。版本从 1.0.0 升到 1.1.0 是因为这些新增改了组件、前端类型 `apps/web/src/api/types.ts` 必须重新生成，所以不是补丁级；生成脚本 `contracts/generate_types.py --check` 在类型重新生成前会红，这是本次并入的已知中间状态。兼容性必须分两层说，否则会被读成一个笼统的「向后兼容」：**相对本 PR 的 rc.10 是纯增量**——既有 16 个操作的 schema 与 security 一字未改；**相对 main 上的 rc.9 与按 rc.9 写的旧调用方则是破坏性鉴权变更**——rc.10 已把后台写权限从运维 Bearer 改为审核员会话（Bearer 只读，拿 Bearer 写后台会 403），从 rc.9 升级必须同时切换调用方。`1.1.0-rc.1` 是候选版本号，最终版本口径由 M1/M2 确认。rc.10 为 2026-11-11 版（rc.10：security 与 E1 的实际授权对齐——后台写操作只接受 UserSession，运维 Bearer 从「可写」改为「只读」；业务接口是 UserSession 或 DemoSession，不再声称 Bearer 能读；轨迹三个身份都可读。新增 securitySchemes.UserSession（cookie huice_session）。应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」；rc.9 为 2026-11-06 版（rc.9：PreparationItem.status 的取值改为事实口径 facts_filled / facts_missing / manual_check / policy_closed。原来的 provided 会被读成「材料已提交」，而服务端只读企业事实、不读材料，`provided` 实际只说「这份材料要证明的事实都有取值」——名字比它能证明的多说了一层；`missing` 同理，它说的是事实缺项，不是「材料没交」。missing 布尔字段的语义不变（保守口径，manual_check 也算 true）。应答 M2 对 PR #40 的 P1）。rc.8 为 2026-11-06 版（PreparationItem 新增必填 materialId 与 status，把「资料缺失」拆成 provided / missing / manual_check / policy_closed 四种明确状态——没有事实键的材料（申请书等）本就判断不了，不能显示成「资料缺失」；政策已关闭时材料不再提交，也不能记成缺失。missing 保留且仍是保守口径（manual_check 也算 true），展示以 status 为准。应答 M2 对 PR #37 的 P1；其中 provided / missing 两个名字在 rc.9 改为 facts_filled / facts_missing）。rc.7 为 2026-11-05 版（ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。现行 API-01—API-16 均已有实现；最终联合验收仍须留证，M1/M2 复核后定版。2026-11-09 的 issue #46—#48 扩展设计见 docs/EXTENSION_INTERFACES.md；7 个新端点自 1.1.0-rc.1 起已并入本契约，contracts/openapi.e1-draft.yaml 保留为设计记录（门禁/身份真值表、错误码与可复核请求样例）。restricted 模式需要网关会话；local 模式免 DemoSession，但业务接口仍需身份（UserSession 或 DemoSession），后台写操作只接受审核员 UserSession。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。每个操作另有 x-e1-gate：local 无门禁，restricted 部署要**先**过演示会话门禁（huice_demo_session），只有 GET /health 与 POST /auth/logout 豁免；标准 security 只表达身份，restricted 下的实际要求是「门禁 + 该操作的 security」，连 security 为空的注册/登录也不例外。门禁在**解析请求体之前**执行（服务端由路由类 GatedRoute 保证）：缺 cookie 时即使请求体缺字段、类型不对、为空或不是 JSON，也一律 403 DEMO_SESSION_REQUIRED，不会先回 422。前端约定：所有请求都带门禁 cookie；收到 403 DEMO_SESSION_REQUIRED 就回演示入口重取，不要把它当成「表单填错」或「登录失效」——前者是 422 VALIDATION_ERROR，后者是 401。语义/流程见 docs/IMPLEMENTATION_AND_INTERFACE.md。"
+  version: 1.4.0-rc.1
+  description: "2026-11-15 候选冻结版（1.4.0-rc.1：新增 DELETE /enterprises/{enterpriseId}/facts/{factKey}，按 key+精确期间删除一条事实，鉴权/CSRF/If-Match 与 API-10 更新一致；注册地与行业不可删除（422 FACT_REQUIRED）。本版为纯增量。上一版 1.3.0-rc.1：并入 E3 的 3 个只读统计端点——GET /admin/metrics/review-workload、/admin/metrics/assessment-runs、/admin/metrics/completeness——与 PolicySummary/PolicyDetail/PolicyDraft 上**可选**的 dateProvenance（旁表无记录时省略，既有响应逐字段不变）。本版是纯增量：既有 21 个操作的 schema、security 与错误码未改。E2 的 8 个发现/候选操作仍在 contracts/openapi.e2-draft.yaml，尚未并入，因此版本从 1.1.0 直接升到 1.3.0（跳过预留的 1.2.0）。前端类型 apps/web/src/api/types.ts 必须由 M2 重新生成，生成前 contracts/generate_types.py --check 与类型对齐用例会红，这是已知中间状态。上一版 1.1.0-rc.1（2026-11-11）：把 E1 的 7 个端点与账号/会话 schema 并入正式契约——AUTH-01 注册、AUTH-02 登录、AUTH-03 登出、AUTH-04 会话恢复、AUTH-05 改密，以及按身份与归属过滤的 AUTH-06 企业列表、AUTH-07 分析运行列表。版本从 1.0.0 升到 1.1.0 是因为这些新增改了组件、前端类型 `apps/web/src/api/types.ts` 必须重新生成，所以不是补丁级；生成脚本 `contracts/generate_types.py --check` 在类型重新生成前会红，这是本次并入的已知中间状态。兼容性必须分两层说，否则会被读成一个笼统的「向后兼容」：**相对本 PR 的 rc.10 是纯增量**——既有 16 个操作的 schema 与 security 一字未改；**相对 main 上的 rc.9 与按 rc.9 写的旧调用方则是破坏性鉴权变更**——rc.10 已把后台写权限从运维 Bearer 改为审核员会话（Bearer 只读，拿 Bearer 写后台会 403），从 rc.9 升级必须同时切换调用方。`1.1.0-rc.1` 是候选版本号，最终版本口径由 M1/M2 确认。rc.10 为 2026-11-11 版（rc.10：security 与 E1 的实际授权对齐——后台写操作只接受 UserSession，运维 Bearer 从「可写」改为「只读」；业务接口是 UserSession 或 DemoSession，不再声称 Bearer 能读；轨迹三个身份都可读。新增 securitySchemes.UserSession（cookie huice_session）。应答 M2 对 PR #61 的 P1「发布的 OpenAPI 与真实授权不符」；rc.9 为 2026-11-06 版（rc.9：PreparationItem.status 的取值改为事实口径 facts_filled / facts_missing / manual_check / policy_closed。原来的 provided 会被读成「材料已提交」，而服务端只读企业事实、不读材料，`provided` 实际只说「这份材料要证明的事实都有取值」——名字比它能证明的多说了一层；`missing` 同理，它说的是事实缺项，不是「材料没交」。missing 布尔字段的语义不变（保守口径，manual_check 也算 true）。应答 M2 对 PR #40 的 P1）。rc.8 为 2026-11-06 版（PreparationItem 新增必填 materialId 与 status，把「资料缺失」拆成 provided / missing / manual_check / policy_closed 四种明确状态——没有事实键的材料（申请书等）本就判断不了，不能显示成「资料缺失」；政策已关闭时材料不再提交，也不能记成缺失。missing 保留且仍是保守口径（manual_check 也算 true），展示以 status 为准。应答 M2 对 PR #37 的 P1；其中 provided / missing 两个名字在 rc.9 改为 facts_filled / facts_missing）。rc.7 为 2026-11-05 版（ModelUsage 新增可选字段 tokensUnknown，缺省 = inputTokens/outputTokens 为真实用量，true = 上游没有返回可用用量、两个数值是占位 0、不得当作真实用量；服务端已知时省略该字段，使常路径响应与 rc.6 逐字段一致——ModelUsage 是 additionalProperties:false，恒定输出 false 会让按 rc.6 严格校验的旧消费者拒绝正常响应。应答 M2 对 PR #34 的两条 P1：「API-05 把未知用量当确定的 0 返回」与「rc.7 兼容与迁移尚未闭环」）。rc.6 为 2026-11-03 版（轨迹步骤的 evidenceRefs 改为 objectRefs，元素为 TraceObjectRef={type,id}，与 CriterionResult.evidenceRefs 的引文分开；应答 M2 issue #27）。rc.5 为 2026-10-31 版（新增 manual_review 算子，表达「本条须人工核查、不得自动下结论」；同时修正 rc.4 的 DateExpression.factKey 实际仍写死 establishedDate 的问题，改为 enum 两个日期键）。rc.4 为 2026-10-29 版（事实字典再扩 2 键 specificMarketSince / independentLegalEntity，见 FactKey；date 算子不再只认 establishedDate）。rc.3 为 2026-10-28 版（事实字典扩 6 键，新增 ratio 单位的条件取值校验）。rc.2 为 2026-10-23 版（模型模式 maas 改为 deepseek）。现行 API-01—API-16 均已有实现；最终联合验收仍须留证，M1/M2 复核后定版。2026-11-09 的 issue #46—#48 扩展设计见 docs/EXTENSION_INTERFACES.md；7 个新端点自 1.1.0-rc.1 起已并入本契约，contracts/openapi.e1-draft.yaml 保留为设计记录（门禁/身份真值表、错误码与可复核请求样例）。restricted 模式需要网关会话；local 模式免 DemoSession，但业务接口仍需身份（UserSession 或 DemoSession），后台写操作只接受审核员 UserSession。导入后草稿为 pending_parse，条款抽取（API-05）完成后才进入 pending_review。每个操作另有 x-e1-gate：local 无门禁，restricted 部署要**先**过演示会话门禁（huice_demo_session），只有 GET /health 与 POST /auth/logout 豁免；标准 security 只表达身份，restricted 下的实际要求是「门禁 + 该操作的 security」，连 security 为空的注册/登录也不例外。门禁在**解析请求体之前**执行（服务端由路由类 GatedRoute 保证）：缺 cookie 时即使请求体缺字段、类型不对、为空或不是 JSON，也一律 403 DEMO_SESSION_REQUIRED，不会先回 422。前端约定：所有请求都带门禁 cookie；收到 403 DEMO_SESSION_REQUIRED 就回演示入口重取，不要把它当成「表单填错」或「登录失效」——前者是 422 VALIDATION_ERROR，后者是 401。语义/流程见 docs/IMPLEMENTATION_AND_INTERFACE.md。"
 servers:
 - url: /api/v1
 tags:
@@ -53,7 +53,7 @@ paths:
                 $ref: '#/components/schemas/HealthResponse'
               example:
                 status: ok
-                version: 1.3.0-rc.1
+                version: 1.4.0-rc.1
         default:
           $ref: '#/components/responses/ApiFailure'
         '400': &id004
@@ -679,6 +679,63 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/FactUpdate'
+    delete:
+      operationId: deleteFact
+      summary: API-10
+      description: >-
+        按 key + 精确期间删除一条事实。鉴权、CSRF/Origin 与 If-Match 与 PATCH 相同：
+        企业本人或可写 demo；缺 If-Match 428、版本已变 409、key+期间不存在 404
+        FACT_NOT_FOUND。注册地（region）与行业（industry）是画像必填键，删除画像年度
+        的那两条返回 422 FACT_REQUIRED，应改用 PATCH 更正取值。删除会生成新的
+        factVersion，并像更新一样让读过该事实的 run 变为 stale。
+      tags:
+      - public
+      security:
+      - UserSession: []
+      - DemoSession: []
+      x-e1-gate:
+        local: none
+        restricted: DemoSession
+        note: restricted 部署下先过 demo 门禁（同一个 huice_demo_session cookie）；缺失、破损或过期一律 403 DEMO_SESSION_REQUIRED。门禁在解析请求体之前执行，先于字段校验也先于身份判定。
+      parameters:
+      - $ref: '#/components/parameters/enterpriseId'
+      - $ref: '#/components/parameters/factKey'
+      - name: periodStart
+        in: query
+        required: true
+        description: 目标事实期间的开始日期（含），必须与已存行逐字一致。
+        schema:
+          type: string
+          format: date
+      - name: periodEnd
+        in: query
+        required: true
+        description: 目标事实期间的结束日期（含），必须与已存行逐字一致。
+        schema:
+          type: string
+          format: date
+      - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '200':
+          description: 成功；返回删除后的完整画像
+          headers:
+            X-Trace-Id: *id001
+            ETag: *id012
+          content:
+            application/json:
+              schema: *id020
+        default:
+          $ref: '#/components/responses/ApiFailure'
+        '400': *id004
+        '401': *id005
+        '403': *id006
+        '404': *id013
+        '409': *id014
+        '422': *id015
+        '428': *id017
+        '429': *id016
+        '500': *id007
+        '503': *id008
   /assessment-runs:
     get:
       operationId: listRuns

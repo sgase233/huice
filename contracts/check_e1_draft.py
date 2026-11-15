@@ -58,8 +58,9 @@ E1_ENDPOINTS = {
     "GET /assessment-runs",
 }
 
-#: 1.3.0-rc.1 并入的 E3 统计端点，同样不属于 ``x-e1-impact`` 的 16 个基线端点。
-E3_ENDPOINTS = {
+#: 1.3/1.4 并入的 E3 统计端点与事实删除，同样不属于 ``x-e1-impact`` 的 16 个基线端点。
+POST_E1_ENDPOINTS = {
+    "DELETE /enterprises/{enterpriseId}/facts/{factKey}",
     "GET /admin/metrics/review-workload",
     "GET /admin/metrics/assessment-runs",
     "GET /admin/metrics/completeness",
@@ -197,7 +198,7 @@ def check(draft_path: Path = DRAFT, base_path: Path = BASE) -> tuple[dict, list[
             errors.append(f"{oid}: 缺 OriginHeader 参数")
 
     # 7. 16 个既有操作逐项覆盖（并入正式契约后要先减掉 E1 新增的 7 个操作）
-    base_ops = _endpoint_set(base) - E1_ENDPOINTS - E3_ENDPOINTS
+    base_ops = _endpoint_set(base) - E1_ENDPOINTS - POST_E1_ENDPOINTS
     impact = draft.get("x-e1-impact") or []
     impact_set = {row["endpoint"] for row in impact}
     counts["impact_rows"] = len(impact)

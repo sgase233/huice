@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, Path, Query, Request, Response
@@ -174,6 +175,47 @@ def update_fact(
     return enterprise
 
 
+@router.delete(
+    "/enterprises/{enterpriseId}/facts/{factKey}",
+    response_model=Enterprise,
+    operation_id="deleteFact",
+    summary="API-10",
+)
+def delete_fact(
+    request: Request,
+    response: Response,
+    enterpriseId: UUID = Path(),
+    factKey: FactKey = Path(),
+    periodStart: date = Query(alias="periodStart"),
+    periodEnd: date = Query(alias="periodEnd"),
+) -> Enterprise:
+    """删除一条事实（key + 精确期间）；鉴权、CSRF 与 If-Match 同 PATCH。
+
+    删除后 ``factVersion`` 必变（除非并发冲突）。注册地与行业是画像的必填键，
+    删除画像年度的那两条返回 422 ``FACT_REQUIRED``，应改用 PATCH 更正取值。
+    """
+
+    identity = require_public_identity(request)
+    require_enterprise_access(request, identity, enterpriseId, write=True)
+    if identity.is_user:
+        require_csrf(request, identity)
+    else:
+        require_writable_demo(request, identity)
+    if periodStart > periodEnd:
+        raise ApiProblem(400, "INVALID_PERIOD", "开始日期不能晚于结束日期。")
+    expected_version = _require_fact_version(request)
+    enterprise = request.app.state.repository.delete_fact(
+        enterprise_id=enterpriseId,
+        fact_key=factKey,
+        period_start=periodStart,
+        period_end=periodEnd,
+        expected_fact_version=expected_version,
+        trace_id=trace_id_of(request),
+    )
+    response.headers["ETag"] = f'"{enterprise.fact_version}"'
+    return enterprise
+
+
 def _require_fact_version(request: Request) -> str:
     """解析 If-Match：只接受强 ETag，值必须是 64 位小写十六进制的 factVersion。"""
 
@@ -182,7 +224,7 @@ def _require_fact_version(request: Request) -> str:
         raise ApiProblem(
             428,
             "MISSING_IF_MATCH",
-            "更新事实必须带 If-Match：取自 API-08/API-09/上一次 PATCH 响应里的 ETag，原样回传。",
+            "更新或删除事实必须带 If-Match：取自 API-08/API-09/上一次写响应的 ETag，原样回传。",
         )
     value = raw.strip()
     if value == "*" or value.upper().startswith("W/"):

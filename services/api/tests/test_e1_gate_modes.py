@@ -85,7 +85,7 @@ def test_restricted_mode_never_bypasses_a_documented_gate():
 
     # 16 个现行操作 + 7 个 E1 操作 + 8 个 E2 发现/候选操作 + 3 个 E3 统计操作里，
     # 只有 health 与 logout 两侧豁免。E2/E3 虽只在各自草案里，门禁同样不能漏。
-    assert checked == 21 + 8 + 3
+    assert checked == 21 + 8 + 3 + 1
 
 
 def test_the_exempt_endpoints_reach_their_handlers():

@@ -54,6 +54,7 @@ M1/M2 按实际兼容性选择下一契约版本，不预定 `1.1.0`；每个实
 | API-08 `createEnterprise` | `POST /enterprises` | 已实现；返回 `factVersion` 作为 ETag |
 | API-09 `getEnterprise` | `GET /enterprises/{enterpriseId}` | 已实现 |
 | API-10 `updateFact` | `PATCH /enterprises/{enterpriseId}/facts/{factKey}` | 已实现；`factVersion` CAS，冲突 409/428 |
+| API-10 `deleteFact` | `DELETE /enterprises/{enterpriseId}/facts/{factKey}` | 已实现（`1.4.0-rc.1`）；按 key+精确期间删除，注册地/行业 422 `FACT_REQUIRED` |
 | API-11 `createRun` | `POST /assessment-runs` | 已实现；四态求值 + 补问 + 清单 + 解释 + 轨迹，缓存可绕过 |
 | API-12 `getRun` | `GET /assessment-runs/{runId}` | 已实现；返回 run 快照 + 读取时有效性视图 |
 | API-13 `downloadReport` | `GET /assessment-runs/{runId}/report.md` | 已实现；Markdown 附件，附「截至下载时刻」的有效性 |

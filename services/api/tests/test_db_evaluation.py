@@ -654,3 +654,59 @@ def test_unknown_run_is_404(repo):
         repo.get_run(uuid4())
     assert missing.value.status_code == 404
     assert repo.get_run_header(uuid4()) is None
+
+
+def test_delete_fact_removes_the_row_and_uses_compare_and_swap(repo):
+    created = make_enterprise(repo)
+
+    deleted = repo.delete_fact(
+        enterprise_id=created.id,
+        fact_key="taxableIncome",
+        period_start=PERIOD[0],
+        period_end=PERIOD[1],
+        expected_fact_version=created.fact_version,
+        trace_id=str(uuid4()),
+    )
+
+    assert [item.key for item in deleted.facts] == ["industry", "region"]
+    assert deleted.fact_version != created.fact_version
+
+    with pytest.raises(ApiProblem) as conflict:
+        repo.delete_fact(
+            enterprise_id=created.id,
+            fact_key="taxableIncome",
+            period_start=PERIOD[0],
+            period_end=PERIOD[1],
+            expected_fact_version=created.fact_version,
+            trace_id=str(uuid4()),
+        )
+    assert conflict.value.status_code == 409
+
+    with pytest.raises(ApiProblem) as missing:
+        repo.delete_fact(
+            enterprise_id=created.id,
+            fact_key="taxableIncome",
+            period_start=PERIOD[0],
+            period_end=PERIOD[1],
+            expected_fact_version=deleted.fact_version,
+            trace_id=str(uuid4()),
+        )
+    assert missing.value.status_code == 404
+    assert missing.value.code == "FACT_NOT_FOUND"
+
+
+def test_required_profile_keys_cannot_be_deleted(repo):
+    created = make_enterprise(repo)
+
+    with pytest.raises(ApiProblem) as rejected:
+        repo.delete_fact(
+            enterprise_id=created.id,
+            fact_key="region",
+            period_start=PERIOD[0],
+            period_end=PERIOD[1],
+            expected_fact_version=created.fact_version,
+            trace_id=str(uuid4()),
+        )
+
+    assert rejected.value.status_code == 422
+    assert rejected.value.code == "FACT_REQUIRED"
