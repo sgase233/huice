@@ -40,7 +40,7 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
     if (url.pathname.endsWith('/policies')) { expect(url.searchParams.get('region')).toBe('440300'); return json({ items: [policy], nextCursor: null }); }
     if (url.pathname.endsWith('/assessment-runs') && request.method() === 'POST') { expect(request.postDataJSON().policyIds).toEqual([pid]); return json(run); }
     if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return json(run);
-    if (url.pathname.endsWith(`/policies/${pid}`)) { detailUrl = request.url(); return json({ ...policy, criteria: [{ id, title: '行业条件', expression: { op: 'and', children: [{ op: 'manual_review', reason: '人工核查' }, { op: 'not', child: { op: 'or', children: [{ op: 'industry_exclusion', factKey: 'industry', period: 'assessment', excluded: ['A'] }, { op: 'manual_review', reason: '另行核对' }] } }] }, sourceSpans: [ref] }] }); }
+    if (url.pathname.endsWith(`/policies/${pid}`)) { detailUrl = request.url(); return json({ ...policy, dateProvenance: { version: 1, effectiveFrom: { status: 'verified', source: 'body', locator: '第一条' }, effectiveTo: { status: 'unknown' }, applicationWindow: { status: 'not_applicable' } }, criteria: [{ id, title: '行业条件', expression: { op: 'and', children: [{ op: 'manual_review', reason: '人工核查' }, { op: 'not', child: { op: 'or', children: [{ op: 'industry_exclusion', factKey: 'industry', period: 'assessment', excluded: ['A'] }, { op: 'manual_review', reason: '另行核对' }] } }] }, sourceSpans: [ref] }] }); }
     return route.abort();
   });
   await page.goto('/#enterprise');
@@ -49,6 +49,14 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
   await page.getByRole('button', { name: '机会列表' }).click();
   await expect(page.getByText('已审合成政策')).toBeVisible();
   await page.getByRole('checkbox', { name: '选择分析' }).check();
+  for (const [theme, background, foreground] of [['light', 'rgb(23, 23, 23)', 'rgb(255, 255, 255)'], ['dark', 'rgb(237, 237, 237)', 'rgb(23, 23, 23)']] as const) {
+    await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+    for (const name of ['刷新列表', '应用筛选', '清空选择', '查看详情']) {
+      const button = page.getByRole('button', { name, exact: true });
+      await expect(button).toHaveCSS('background-color', background);
+      await expect(button).toHaveCSS('color', foreground);
+    }
+  }
   await page.getByRole('button', { name: '分析所选政策' }).click();
   await expect(page.getByText('不满足条件', { exact: true })).toBeVisible();
   for (const width of [375, 768, 1440]) {
@@ -60,6 +68,8 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
   }
   await page.getByRole('button', { name: '查看详情' }).click();
   await expect(page.getByText('测试原文')).toBeVisible();
+  await expect(page.getByText('2026-01-01 · 已核实 · 正文 · 第一条')).toBeVisible();
+  await expect(page.getByText('未提供 · 不适用')).toBeVisible();
   await page.getByText('查看资格逻辑结构').click();
   await expect(page.getByText('且（全部条件）')).toBeVisible();
   await expect(page.getByText('非', { exact: true })).toBeVisible();
@@ -245,7 +255,7 @@ test('字段错误提示关联输入且摘要可定位至出错值', async ({ pa
   await expect(input).toBeFocused();
 });
 
-test('分页、筛选保留可见的选择计数，切换模式清空会话', async ({ page }) => {
+test('分页、筛选保留可见的选择计数且不显示固定样例入口', async ({ page }) => {
   const second = { ...policy, id: '44444444-4444-4444-8444-444444444444', title: '另一项合成政策', type: 'grant' };
   await page.route('**/api/v1/policies**', route => {
     const url = new URL(route.request().url());
@@ -261,11 +271,8 @@ test('分页、筛选保留可见的选择计数，切换模式清空会话', as
   await page.getByRole('button', { name: '应用筛选' }).click();
   await expect(page.getByText('已选择 1 项政策', { exact: false })).toBeVisible();
   await expect(page.getByText('已审合成政策')).toHaveCount(0);
-  await page.getByRole('link', { name: '切换固定样例演示' }).click();
-  await expect(page.getByText('静态合成演示 · 未进行真实资格判断')).toBeVisible();
-  await page.getByRole('link', { name: '切换真实接口' }).click();
-  await page.getByRole('button', { name: '机会列表' }).click();
-  await expect(page.getByText('已选择 0 项政策', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: '账号与退出' }).click();
+  await expect(page.locator('a[href*="mode=demo"]')).toHaveCount(0);
 });
 
 test('真实模式支持 hash 入口与浏览器前进后退', async ({ page }) => {
@@ -720,4 +727,148 @@ test('重新分析进行中不把旧分布显示为本次结果', async ({ page 
   await expect(page.getByText('最近一次新分析结果未确认；当前记录来自此前的分析。')).toBeVisible();
   await page.getByRole('button', { name: '分析所选政策' }).click();
   await expect(page.getByText('最近一次新分析结果未确认；当前记录来自此前的分析。')).toHaveCount(0);
+});
+
+test('审核员运行结果位于企业列表之后，列表按钮保持间距', async ({ page }) => {
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/auth/me')) return route.fallback();
+    if (url.pathname.endsWith('/enterprises')) return route.fulfill({ json: { items: [{ id, nameSynthetic: '测试企业', period, ownership: 'other' }, { id: '44444444-4444-4444-8444-444444444444', nameSynthetic: '另一家企业', period, ownership: 'other' }, { id: '55555555-5555-4555-8555-555555555555', nameSynthetic: '第三家企业', period, ownership: 'other' }], nextCursor: null } });
+    if (url.pathname.endsWith(`/enterprises/${id}`)) return route.fulfill({ json: { id, nameSynthetic: '测试企业', facts: [] } });
+    if (url.pathname.endsWith('/assessment-runs')) return route.fulfill({ json: { items: [{ id: rid, enterpriseId: id, status: 'succeeded', reportAvailable: true, createdAt: '2026-11-15T03:44:39.942642Z', asOf: '2026-11-15T03:44:39Z' }], nextCursor: null } });
+    if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: run });
+    if (url.pathname.endsWith(`/policies/${pid}`)) return route.fulfill({ json: { ...policy, criteria: [] } });
+    return route.abort();
+  });
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '企业与运行记录' }).click();
+  await page.getByRole('button', { name: '读取企业列表' }).click();
+  await page.getByRole('button', { name: '测试企业' }).click();
+  await expect(page.getByText('2026-11-15 11:44:39（北京时间） · 已完成')).toBeVisible();
+  await expect(page.locator('.reviewer-read')).not.toContainText(rid);
+  await expect(page.locator('.reviewer-read')).not.toContainText(id);
+  for (const width of [375, 1440]) {
+    await page.setViewportSize({ width, height: 850 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const buttons = page.locator('.reviewer-enterprises button');
+    const first = await buttons.nth(0).boundingBox();
+    const second = await buttons.nth(1).boundingBox();
+    const third = await buttons.nth(2).boundingBox();
+    expect(first && second && second.y - first.y - first.height).toBeGreaterThanOrEqual(10);
+    expect(second && third && third.y - second.y - second.height).toBeGreaterThanOrEqual(10);
+    const row = page.locator('.reviewer-runs li');
+    const view = await row.getByRole('button', { name: '查看结果' }).boundingBox();
+    const download = await row.getByRole('button', { name: '下载报告' }).boundingBox();
+    expect(view && download && (view.x + view.width < download.x || view.y + view.height < download.y)).toBeTruthy();
+  }
+  await page.getByRole('button', { name: '查看结果' }).click();
+  await expect(page.getByRole('heading', { name: '已审合成政策' })).toBeVisible();
+  await expect(page.locator('.reviewer-result')).toBeFocused();
+  expect(await page.locator('.reviewer-result').evaluate(element => !!(element.compareDocumentPosition(document.querySelector('.reviewer-enterprises')!) & Node.DOCUMENT_POSITION_PRECEDING))).toBe(true);
+  expect(await page.locator('.reviewer-result').evaluate(element => !!(element.compareDocumentPosition(document.querySelector('.reviewer-runs')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+});
+
+test('首次分析结果未确认时读取已提交记录而不重复分析', async ({ page }) => {
+  let posts = 0;
+  await page.route('**/api/v1/**', route => {
+    const req = route.request(), url = new URL(req.url());
+    if (url.pathname.endsWith('/auth/me')) return route.fallback();
+    if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') return route.fulfill({ json: { ...req.postDataJSON(), id, factVersion: 'abc' }, headers: { ETag: `"${'a'.repeat(64)}"` } });
+    if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (url.pathname.endsWith('/assessment-runs') && req.method() === 'POST') { posts++; return route.fulfill({ status: 503, json: { error: { code: 'RUN_RESULT_UNCONFIRMED', message: '结果未确认', details: { runId: rid } }, traceId: 't' } }); }
+    if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: run });
+    return route.abort();
+  });
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await expect(page.getByRole('button', { name: '分析所选政策' })).toBeDisabled();
+  await expect(page.locator('main')).not.toContainText(rid);
+  await page.getByRole('button', { name: '读取已提交的结果' }).click();
+  await expect(page.getByText('不满足条件', { exact: true })).toBeVisible();
+  expect(posts).toBe(1);
+});
+
+test('补充事实后的分析结果未确认时恢复已提交记录', async ({ page }) => {
+  const question = { factRef: { key: 'taxableIncome', period }, prompt: '请填写应纳税所得额', reason: '影响一项政策', rank: 1 };
+  const first = { ...run, assessments: [{ ...assessment, result: 'insufficient_evidence', nextQuestion: question }] };
+  const nextId = '44444444-4444-4444-8444-444444444444';
+  const second = { ...run, id: nextId };
+  let posts = 0; let enterprise: any;
+  await page.route('**/api/v1/**', route => {
+    const req = route.request(), url = new URL(req.url());
+    if (url.pathname.endsWith('/auth/me')) return route.fallback();
+    if (url.pathname.endsWith('/enterprises') && req.method() === 'POST') { enterprise = { ...req.postDataJSON(), id, factVersion: 'abc' }; return route.fulfill({ json: enterprise, headers: { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' } }); }
+    if (url.pathname.endsWith('/facts/taxableIncome')) return route.fulfill({ json: enterprise, headers: { ETag: `"${'b'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' } });
+    if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (url.pathname.endsWith('/assessment-runs') && req.method() === 'POST') { posts++; return posts === 1 ? route.fulfill({ json: first }) : route.fulfill({ status: 503, json: { error: { code: 'RUN_RESULT_UNCONFIRMED', message: '结果未确认', details: { runId: nextId } }, traceId: 't' } }); }
+    if (url.pathname.endsWith(`/assessment-runs/${nextId}`)) return route.fulfill({ json: second });
+    return route.abort();
+  });
+  await page.goto('/#enterprise'); await page.getByRole('button', { name: '保存当前样本' }).click();
+  await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await page.getByLabel('回答（元）').fill('100'); await page.getByRole('button', { name: '保存并重新分析' }).click();
+  await expect(page.getByRole('button', { name: '重试分析' })).toHaveCount(0);
+  await page.getByRole('button', { name: '读取已提交的结果' }).click();
+  await expect(page.getByText('不满足条件', { exact: true })).toBeVisible();
+  expect(posts).toBe(2);
+});
+
+test('刷新页面后仍可恢复已提交的分析', async ({ page }) => {
+  let posts = 0;
+  await page.route('**/api/v1/**', route => {
+    const req = route.request(), url = new URL(req.url());
+    if (url.pathname.endsWith('/auth/me')) return route.fulfill({ json: { user: { id: 'u', username: 'u', role: 'enterprise', enterpriseId: id }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } });
+    if (url.pathname.endsWith(`/enterprises/${id}`)) return route.fulfill({ json: { id, nameSynthetic: '测试企业', period, factVersion: 'v1', facts: [{ key: 'region', value: '440300', unit: 'code', period, source: 'user_input', verified: false }, { key: 'industry', value: 'C39', unit: 'code', period, source: 'user_input', verified: false }] }, headers: { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' } });
+    if (url.pathname.endsWith('/policies')) return route.fulfill({ json: { items: [policy], nextCursor: null } });
+    if (url.pathname.endsWith('/assessment-runs') && req.method() === 'POST') { posts++; return route.fulfill({ status: 503, json: { error: { code: 'RUN_RESULT_UNCONFIRMED', message: '结果未确认', details: { runId: rid } }, traceId: 't' } }); }
+    if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return route.fulfill({ json: run });
+    return route.abort();
+  });
+  await page.goto('/#enterprise'); await expect(page.getByText('已保存合成企业：测试企业')).toBeVisible();
+  await page.getByRole('button', { name: '机会列表' }).click(); await page.getByRole('checkbox', { name: '选择分析' }).check(); await page.getByRole('button', { name: '分析所选政策' }).click();
+  await expect(page.getByRole('button', { name: '读取已提交的结果' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('button', { name: '读取已提交的结果' })).toBeVisible();
+  await page.getByRole('button', { name: '读取已提交的结果' }).click();
+  await expect(page.getByText('不满足条件', { exact: true })).toBeVisible();
+  expect(posts).toBe(1);
+});
+
+test('企业列表逐项出现，同一列表重读不重复播放', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.addInitScript(() => {
+    (window as any).enterpriseAnimations = [];
+    document.addEventListener('animationstart', event => {
+      if (event.animationName === 'reviewer-enterprise-enter') (window as any).enterpriseAnimations.push({ text: (event.target as HTMLElement).textContent, delay: getComputedStyle(event.target as Element).animationDelay });
+    });
+  });
+  let revision = 0; let requests = 0;
+  const item = (id: string, nameSynthetic: string) => ({ id, nameSynthetic, period, ownership: 'other' });
+  await page.route('**/api/v1/enterprises', route => {
+    requests++;
+    const items = [item('e1', '企业一'), item('e2', revision ? '企业二（更新）' : '企业二'), item('e3', '企业三')];
+    if (revision) items.push(item('e4', '企业四'));
+    return route.fulfill({ json: { items, nextCursor: null } });
+  });
+  await page.goto('/#reviewer');
+  await page.getByRole('button', { name: '读取企业列表' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).enterpriseAnimations.length)).toBe(3);
+  await expect(page.locator('.reviewer-enterprises .is-entering')).toHaveCount(0);
+  const initial = await page.evaluate(() => (window as any).enterpriseAnimations);
+  expect(initial.map((entry: { delay: string }) => entry.delay)).toEqual(['0s', '0.08s', '0.16s']);
+  await page.getByRole('button', { name: '读取企业列表' }).click();
+  await expect.poll(() => requests).toBe(2);
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => (window as any).enterpriseAnimations.length)).toBe(3);
+  revision = 1;
+  await page.getByRole('button', { name: '读取企业列表' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).enterpriseAnimations.length)).toBe(5);
+  const changed = await page.evaluate(() => (window as any).enterpriseAnimations.slice(3).map((entry: { text: string }) => entry.text));
+  expect(changed[0]).toContain('企业二（更新）');
+  expect(changed[1]).toContain('企业四');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.reload();
+  await page.getByRole('button', { name: '读取企业列表' }).click();
+  await expect(page.locator('.reviewer-enterprises li')).toHaveCount(4);
+  expect(await page.evaluate(() => (window as any).enterpriseAnimations.length)).toBe(0);
 });

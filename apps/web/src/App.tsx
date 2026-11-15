@@ -37,7 +37,7 @@ export default function App() {
     if (pending || surface !== previousSurface.current) {
       leaving.current?.cancel();
       leaving.current = null;
-      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) document.getElementById('root')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 520, easing: 'ease-in-out' });
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) document.getElementById('root')?.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 400, easing: 'ease-in-out' });
     }
     previousSurface.current = surface;
   }, [hash]);
@@ -63,7 +63,7 @@ export default function App() {
       if (leaving.current) return;
       const root = document.getElementById('root');
       if (!root) { navigate(); return; }
-      const animation = root.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 520, easing: 'ease-in-out', fill: 'forwards' });
+      const animation = root.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 400, easing: 'ease-in-out', fill: 'forwards' });
       leaving.current = animation;
       void animation.finished.then(() => {
         try { sessionStorage.setItem('huice-surface-fade', '1'); } catch { /* The destination remains usable without an entrance animation. */ }

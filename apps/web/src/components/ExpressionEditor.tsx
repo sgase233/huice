@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import AnimatedCards from './AnimatedCards';
 import type { Comparator, Expression, ExpressionPeriod, FactKey } from '../api/types';
 import { factLabels, factUnitLabels, factUnits } from '../demo';
 
@@ -24,8 +25,13 @@ export default function ExpressionEditor({ value, onChange, path = 'root', inval
   const errorAttrs = (field: string) => invalidField === field ? { 'aria-invalid': true, 'aria-describedby': errorId } : {};
   const addChild = useRef<HTMLButtonElement>(null);
   const lastChild = useRef<HTMLDivElement>(null);
+  const childKeys = useRef<number[]>([]);
+  const nextChildKey = useRef(0);
+  const childCount = value.op === 'and' || value.op === 'or' ? value.children.length : 0;
+  while (childKeys.current.length < childCount) childKeys.current.push(nextChildKey.current++);
+  if (childKeys.current.length > childCount) childKeys.current.length = childCount;
   return <fieldset><legend>规则：{labels[value.op]}</legend><label>类型<select {...errorAttrs(`expression-${path}-type`)} data-error-field={`expression-${path}-type`} value={value.op} onChange={e => { const op = e.target.value as Expression['op']; if (op !== value.op) { if (window.confirm('切换类型将丢弃当前节点内容，继续吗？')) onChange(create(op)); else e.currentTarget.value = value.op; } }}>{Object.entries(labels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-    {(value.op === 'and' || value.op === 'or') && <>{value.children.map((child, i) => <div key={i} ref={i === value.children.length - 1 ? lastChild : undefined}><ExpressionEditor invalidField={invalidField} errorId={errorId} value={child} path={`${path}.${i}`} onChange={next => onChange({ ...value, children: value.children.map((item, index) => index === i ? next : item) })} /><button type="button" disabled={value.children.length <= 2} onClick={() => { if (window.confirm('删除此条件？')) { onChange({ ...value, children: value.children.filter((_, index) => index !== i) }); requestAnimationFrame(() => addChild.current?.focus()); } }}>删除子条件 {i + 1}</button></div>)}<button ref={addChild} type="button" onClick={() => { onChange({ ...value, children: [...value.children, create('manual_review')] }); requestAnimationFrame(() => lastChild.current?.querySelector('select')?.focus()); }}>添加子条件</button></>}
+    {(value.op === 'and' || value.op === 'or') && <><AnimatedCards items={value.children.map((child, i) => <div className="expression-child" key={childKeys.current[i]} ref={i === value.children.length - 1 ? lastChild : undefined}><ExpressionEditor invalidField={invalidField} errorId={errorId} value={child} path={`${path}.${i}`} onChange={next => onChange({ ...value, children: value.children.map((item, index) => index === i ? next : item) })} /><button type="button" disabled={value.children.length <= 2} onClick={() => { if (window.confirm('删除此条件？')) { childKeys.current.splice(i, 1); onChange({ ...value, children: value.children.filter((_, index) => index !== i) }); requestAnimationFrame(() => addChild.current?.focus()); } }}>删除子条件 {i + 1}</button></div>)} /><button ref={addChild} type="button" onClick={() => { childKeys.current.push(nextChildKey.current++); onChange({ ...value, children: [...value.children, create('manual_review')] }); requestAnimationFrame(() => lastChild.current?.querySelector('select')?.focus()); }}>添加子条件</button></>}
     {value.op === 'not' && <ExpressionEditor invalidField={invalidField} errorId={errorId} value={value.child} path={`${path}.0`} onChange={child => onChange({ ...value, child })} />}
     {value.op === 'manual_review' && <label>人工核查原因<input {...errorAttrs(`expression-${path}-reason`)} data-error-field={`expression-${path}-reason`} value={value.reason} onChange={e => onChange({ ...value, reason: e.target.value })} /></label>}
     {value.op === 'industry_exclusion' && <label>排除行业代码（每行一个）<textarea {...errorAttrs(`expression-${path}-excluded`)} data-error-field={`expression-${path}-excluded`} value={value.excluded.join('\n')} onChange={e => onChange({ ...value, excluded: e.target.value.split('\n') })} /></label>}

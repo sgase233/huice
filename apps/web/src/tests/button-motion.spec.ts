@@ -35,3 +35,15 @@ test('侧边栏控件不使用按钮动效', async ({ page }) => {
   await expect(toggle).toHaveCSS('scale', 'none');
   await page.mouse.up();
 });
+
+test('画像操作按钮随主题保持清晰对比', async ({ page }) => {
+  await page.goto('/?mode=demo#enterprise');
+  for (const [theme, background, foreground] of [['light', 'rgb(23, 23, 23)', 'rgb(255, 255, 255)'], ['dark', 'rgb(237, 237, 237)', 'rgb(23, 23, 23)']] as const) {
+    await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+    for (const name of ['添加一项信息', '保存当前样本']) {
+      const button = page.getByRole('button', { name, exact: true });
+      await expect(button).toHaveCSS('background-color', background);
+      await expect(button).toHaveCSS('color', foreground);
+    }
+  }
+});

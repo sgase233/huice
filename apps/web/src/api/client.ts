@@ -4,6 +4,7 @@ import type {
   PolicyDraftList, PolicyImportMetadata, PolicyList, PublishPolicyInput,
   SaveCriteriaInput, SaveCriteriaResult, TraceResponse, RegisterRequest, RegisterResponse,
   LoginRequest, PasswordChangeRequest, SessionResponse, EnterpriseSummaryList, RunSummaryList,
+  ReviewWorkloadResponse, AssessmentRunsResponse, CompletenessResponse,
 } from './types';
 import { factUnits } from '../demo';
 import type { DiscoverySettings, DiscoveryRunList, CandidateList, CandidateDetail, CandidateUpdate } from './discoveryTypes';
@@ -74,6 +75,13 @@ function assertShape(value: unknown, kind: string): void {
   if (kind === 'CandidateDetail' && (!isObject(value) || typeof value.id !== 'string' || typeof value.status !== 'string' || typeof value.bodyText !== 'string' || typeof value.sourceUrl !== 'string' || typeof value.fetchedAt !== 'string' || typeof value.contentHash !== 'string' || !isObject(value.metadata) || !Array.isArray(value.criteria) || !value.criteria.every(safeCriterion) || !Array.isArray(value.validationFindings) || !value.validationFindings.every(safeFinding) || !Array.isArray(value.attachmentUrls) || !value.attachmentUrls.every(item => typeof item === 'string') || !Array.isArray(value.unsupportedAttachmentUrls) || !value.unsupportedAttachmentUrls.every(item => typeof item === 'string') || !Array.isArray(value.missingFields) || !value.missingFields.every(item => typeof item === 'string'))) throw new Error('接口契约错误：候选详情无效');
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`接口契约错误：${kind} 不是对象`);
   const record = value as Record<string, unknown>;
+  if (kind === 'ReviewWorkloadResponse' || kind === 'AssessmentRunsResponse') {
+    const keys = kind === 'ReviewWorkloadResponse' ? ['newDrafts', 'reviewsCompleted', 'pendingAtEndOfDay'] : ['total', 'succeeded', 'failed', 'unfinished', 'durationSampleCount', 'avgDurationMs'];
+    if (!Array.isArray(record.days) || typeof record.generatedAt !== 'string' || record.timeZone !== 'Asia/Shanghai' || record.days.some(day => !isObject(day) || typeof day.date !== 'string' || typeof day.dayOpen !== 'boolean' || !isObject(day.availability) || keys.some(key => !(day[key] === null || (typeof day[key] === 'number' && Number.isFinite(day[key]) && (day[key] as number) >= 0)) || !isObject(day.availability) || !isObject(day.availability[key]) || !['precise', 'partial', 'not_collected'].includes(String(day.availability[key].state))))) throw new Error('接口契约错误：统计数据无效');
+  }
+  if (kind === 'CompletenessResponse') {
+    if (typeof record.enterpriseId !== 'string' || !Array.isArray(record.units) || record.units.some(unit => !isObject(unit) || typeof unit.factKey !== 'string' || typeof unit.periodStart !== 'string' || typeof unit.periodEnd !== 'string' || !['filled', 'filled_unverified', 'answered_unknown', 'not_answered', 'not_applicable', 'applicability_unknown', 'not_due'].includes(String(unit.status))) || !Array.isArray(record.groups) || record.groups.some(group => !isObject(group) || typeof group.key !== 'string' || typeof group.label !== 'string' || typeof group.filledCount !== 'number' || typeof group.applicableCount !== 'number') || !Array.isArray(record.manualReview) || record.manualReview.some(item => !isObject(item) || typeof item.title !== 'string' || typeof item.reason !== 'string') || !isObject(record.totals) || typeof record.totals.filledCount !== 'number' || typeof record.totals.applicableCount !== 'number' || typeof record.totals.applicabilityUnknownCount !== 'number' || !(record.totals.ratio === null || typeof record.totals.ratio === 'number') || typeof record.generatedAt !== 'string') throw new Error('接口契约错误：完整度数据无效');
+  }
   if (kind === 'SessionResponse' || kind === 'RegisterResponse') {
     const user = record.user;
     if (!isObject(user) || typeof user.id !== 'string' || typeof user.username !== 'string' || !['enterprise', 'reviewer'].includes(String(user.role)) || !(user.enterpriseId === null || typeof user.enterpriseId === 'string')) throw new Error('接口契约错误：账号信息无效');
@@ -190,6 +198,13 @@ const json = (value: unknown) => JSON.stringify(value);
 const match = (etag: string) => ({ 'If-Match': etag });
 
 export const api = {
+  reviewWorkload: (from: string, to: string) => request<ReviewWorkloadResponse>(`/admin/metrics/review-workload${query({ from, to })}`, 'ReviewWorkloadResponse'),
+  assessmentTrends: (from: string, to: string) => request<AssessmentRunsResponse>(`/admin/metrics/assessment-runs${query({ from, to })}`, 'AssessmentRunsResponse'),
+  completeness: async (enterpriseId: string) => {
+    const result = await request<CompletenessResponse>(`/admin/metrics/completeness${query({ enterpriseId })}`, 'CompletenessResponse');
+    if (result.data.enterpriseId.toLowerCase() !== enterpriseId.toLowerCase()) throw new Error('接口契约错误：完整度企业不匹配');
+    return result;
+  },
   discoverySettings: () => request<DiscoverySettings>('/admin/discovery/settings', 'DiscoverySettings'),
   updateDiscoverySettings: (input: Pick<DiscoverySettings, 'enabled' | 'sourceUrls' | 'intervalMinutes' | 'timeZone'>, etag: string) => request<DiscoverySettings>('/admin/discovery/settings', 'DiscoverySettings', { method: 'PUT', headers: match(etag), body: json(input) }),
   discoveryRuns: (cursor?: string) => request<DiscoveryRunList>(`/admin/discovery/runs${query({ cursor })}`, 'DiscoveryRunList'),
@@ -217,6 +232,11 @@ export const api = {
   },
   updateFact: async (enterpriseId: string, key: FactKey, input: FactUpdate, etag: string) => {
     const response = await request<Enterprise>(`/enterprises/${segment(enterpriseId)}/facts/${segment(key)}`, 'Enterprise', { method: 'PATCH', headers: match(etag), body: json(input) });
+    if (response.data.id.toLowerCase() !== enterpriseId.toLowerCase()) throw new Error('接口契约错误：返回的企业与请求不一致');
+    return response;
+  },
+  deleteFact: async (enterpriseId: string, key: FactKey, period: { startDate: string; endDate: string }, etag: string) => {
+    const response = await request<Enterprise>(`/enterprises/${segment(enterpriseId)}/facts/${segment(key)}${query({ periodStart: period.startDate, periodEnd: period.endDate })}`, 'Enterprise', { method: 'DELETE', headers: match(etag) });
     if (response.data.id.toLowerCase() !== enterpriseId.toLowerCase()) throw new Error('接口契约错误：返回的企业与请求不一致');
     return response;
   },

@@ -51,9 +51,10 @@ test('registration validates normalized username and displays server field error
 test('reviewer can read trace without exposing it to enterprise accounts', async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('reviewer', 'reviewer', null) }));
   await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [] } }));
+  await page.route('**/api/v1/assessment-runs', route => route.fulfill({ json: { items: [{ id: '123e4567-e89b-42d3-a456-426614174000', enterpriseId: 'e1', createdAt: '2026-11-15T03:44:39Z', asOf: '2026-11-15T03:44:39Z', status: 'succeeded', reportAvailable: true }], nextCursor: null } }));
   await page.goto('/#enterprise');
   await page.getByRole('button', { name: '处理轨迹' }).click();
-  await page.getByLabel('分析记录编号').fill('123e4567-e89b-42d3-a456-426614174000');
+  await page.getByLabel('选择运行记录').selectOption('123e4567-e89b-42d3-a456-426614174000');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   await expect(page.getByText('这条分析记录没有处理步骤。')).toBeVisible();
 });
@@ -79,7 +80,9 @@ test('demo entry restores csrf before retrying a rejected logout', async ({ page
   });
   await page.goto('/#enterprise');
   await page.getByRole('button', { name: '进入服务端演示' }).click();
-  await expect(page.getByText('服务端演示', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '账号与退出' }).click();
+  await expect(page.getByRole('heading', { name: '服务端演示' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭账号面板' }).click();
   expect(logouts).toBe(2);
 });
 
@@ -89,7 +92,8 @@ test('password change exposes server field errors', async ({ page }) => {
   await page.goto('/#enterprise');
   await page.getByRole('button', { name: '账号与退出' }).click();
   await page.getByLabel('当前密码').fill('password-12345');
-  await page.getByLabel('新密码').fill('password-67890');
+  await page.getByLabel('新密码', { exact: true }).fill('password-67890');
+  await page.getByLabel('确认新密码').fill('password-67890');
   await page.getByRole('button', { name: '修改密码' }).click();
   await expect(page.getByRole('alert')).toContainText('密码不符合要求');
 });
@@ -119,6 +123,8 @@ test('register sends normalized username and required enterprise facts', async (
   await page.getByRole('button', { name: '注册', exact: true }).click();
   await expect(page.getByText('注册成功，请登录。')).toBeVisible();
   expect(sent.username).toBe('acme');
+  await expect(page.getByLabel('用户名')).toHaveValue('acme');
+  await expect(page.getByLabel('密码', { exact: true })).toHaveValue('password-12345');
   expect(sent.enterprise.facts.map((f: { key: string }) => f.key)).toEqual(['region', 'industry']);
 });
 
@@ -137,6 +143,9 @@ test('reviewer registration explains and preserves optional enterprise binding',
   await page.getByLabel('审核员注册密钥（仅审核员）').fill('synthetic-key-12345');
   await page.getByRole('button', { name: '注册', exact: true }).click();
   await expect(page.getByText('注册成功，请登录。')).toBeVisible();
+  await expect(page.getByLabel('用户名')).toHaveValue('reviewer');
+  await expect(page.getByLabel('密码', { exact: true })).toHaveValue('password-12345');
+  await expect(page.getByLabel('审核员注册密钥（仅审核员）')).toHaveCount(0);
   expect(sent.enterprise.nameSynthetic).toBe('合成企业');
   expect(sent.reviewerSignupKey).toBe('synthetic-key-12345');
 });
@@ -152,7 +161,7 @@ test('logout clears account data and reviewer navigation follows the next sessio
   await expect(page.getByText('已保存合成企业：旧账号企业')).toBeVisible();
   await expect(page.getByRole('button', { name: '政策审核' })).toHaveCount(0);
   await page.getByRole('button', { name: '账号与退出' }).click();
-  await page.getByRole('button', { name: '退出并切换账号' }).click();
+  await page.getByRole('button', { name: '退出登录' }).click();
   await page.getByLabel('用户名').fill('second');
   await page.getByLabel('密码', { exact: true }).fill('password-12345');
   await page.getByRole('button', { name: '登录', exact: true }).click();
@@ -176,7 +185,7 @@ test('late enterprise response cannot replace the next account', async ({ page }
   await page.goto('/#enterprise');
   await requested;
   await page.getByRole('button', { name: '账号与退出' }).click();
-  await page.getByRole('button', { name: '退出并切换账号' }).click();
+  await page.getByRole('button', { name: '退出登录' }).click();
   await page.getByLabel('用户名').fill('second');
   await page.getByLabel('密码', { exact: true }).fill('password-12345');
   await page.getByRole('button', { name: '登录', exact: true }).click();
@@ -220,20 +229,16 @@ test('fact conflict preserves input until the profile is reloaded', async ({ pag
     return writes === 1 ? route.fulfill({ status: 409, json: error('VERSION_CONFLICT') }) : route.fulfill({ json: profile('F51'), headers: { ETag: tag3, 'Access-Control-Expose-Headers': 'ETag' } });
   });
   await page.goto('/#enterprise');
-  await page.getByRole('button', { name: '编辑行业' }).click();
-  await page.getByLabel('值', { exact: true }).fill('F51');
-  page.once('dialog', dialog => dialog.dismiss());
-  await page.getByRole('button', { name: '账号与退出' }).click();
-  await expect(page.getByLabel('值', { exact: true })).toHaveValue('F51');
-  await page.getByRole('button', { name: '保存该项' }).click();
+  const industry = page.locator('.fact-card').nth(1).getByLabel('值', { exact: true });
+  await industry.fill('F51');
   await expect.poll(() => writes).toBe(1);
   await expect(page.getByRole('alert')).toContainText('请重新读取画像');
-  await expect(page.getByRole('button', { name: '保存该项' })).toBeDisabled();
-  await expect(page.getByLabel('值', { exact: true })).toHaveValue('F51');
+  await expect(industry).toHaveValue('F51');
+  page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: '重新读取画像' }).click();
-  await expect(page.getByLabel('值', { exact: true })).toHaveValue('F51');
-  await page.getByRole('button', { name: '保存该项' }).click();
-  await expect(page.getByRole('status')).toContainText('该项信息已保存');
+  await expect(industry).toHaveValue('C39');
+  await industry.fill('F51');
+  await expect(page.getByRole('status')).toContainText('信息已保存');
   expect(sentTag).toBe(tag2);
   expect(writes).toBe(2);
 });
@@ -248,7 +253,7 @@ test('a reviewer keeps the newly bound enterprise when returning from account se
   await page.getByRole('button', { name: '保存当前样本' }).click();
   await expect(page.getByText('已保存合成企业：合成企业 A')).toBeVisible();
   await page.getByRole('button', { name: '账号与退出' }).click();
-  await page.getByRole('button', { name: '返回工作台' }).click();
+  await page.getByRole('button', { name: '关闭账号面板' }).click();
   await expect(page.getByText('已保存合成企业：合成企业 A')).toBeVisible();
   await expect(page.getByRole('button', { name: '保存当前样本' })).toHaveCount(0);
 });
@@ -294,7 +299,9 @@ test('valid demo identity can enter demo after session restoration is forbidden'
   await expect(page.getByText('请登录账号，或进入服务端演示。')).toBeVisible();
   await expect(page.getByText('会话已失效，请重新登录。')).toHaveCount(0);
   await page.getByRole('button', { name: '进入服务端演示' }).click();
-  await expect(page.getByText('服务端演示', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '账号与退出' }).click();
+  await expect(page.getByRole('heading', { name: '服务端演示' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭账号面板' }).click();
 });
 
 test('gate failure stays distinct from an expired session', async ({ page }) => {
@@ -317,7 +324,9 @@ test('server demo is separate and shows quota recovery', async ({ page }) => {
   await page.route('**/api/v1/enterprises', route => route.fulfill({ status: 429, json: error('DEMO_QUOTA_EXCEEDED') }));
   await page.goto('/#enterprise');
   await page.getByRole('button', { name: '进入服务端演示' }).click();
-  await expect(page.getByText('服务端演示', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '账号与退出' }).click();
+  await expect(page.getByRole('heading', { name: '服务端演示' })).toBeVisible();
+  await page.getByRole('button', { name: '关闭账号面板' }).click();
   await expect(page.getByRole('button', { name: '政策审核' })).toHaveCount(0);
   await page.getByRole('button', { name: '保存当前样本' }).click();
   await expect(page.getByRole('alert')).toContainText('演示样本配额已用完');
@@ -344,15 +353,86 @@ test('fact editor is labelled and fits a narrow screen in both themes', async ({
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', 'e1') }));
   await page.route('**/api/v1/enterprises/e1', route => route.fulfill({ json: { id: 'e1', nameSynthetic: '合成企业', period, factVersion: 'a', facts: [{ key: 'region', value: '440300', unit: 'code', period, source: 'user_input', verified: false }, { key: 'industry', value: 'C39', unit: 'code', period, source: 'user_input', verified: false }] }, headers: { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' } }));
   await page.goto('/#enterprise');
-  await expect(page.getByRole('heading', { name: '企业事实' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '企业信息与来源' })).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await expect(page.getByLabel('信息类型')).toBeVisible();
+    await expect(page.getByLabel('信息类型').first()).toBeVisible();
     await expect(page.getByRole('button', { name: '机会列表' })).toHaveCSS('color', theme === 'dark' ? 'rgb(221, 221, 221)' : 'rgb(61, 61, 61)');
     await page.screenshot({ path: `test-results/e1-facts-${theme}.png`, fullPage: true });
   }
-  await page.getByRole('button', { name: '编辑行业' }).focus();
-  await page.keyboard.press('Enter');
-  await expect(page.getByLabel('值', { exact: true })).toHaveValue('C39');
+  await page.locator('.fact-card').nth(1).getByLabel('值', { exact: true }).focus();
+  await expect(page.locator('.fact-card').nth(1).getByLabel('值', { exact: true })).toHaveValue('C39');
+});
+
+test('企业画像按卡片展示并可新增保存信息', async ({ page }) => {
+  const period = { startDate: '2026-01-01', endDate: '2026-12-31' };
+  const facts: any[] = [{ key: 'region', value: '440300', unit: 'code', period, source: 'user_input', verified: false }, { key: 'industry', value: 'C39', unit: 'code', period, source: 'user_input', verified: false }];
+  const profile = () => ({ id: 'e1', nameSynthetic: '合成企业', period, factVersion: 'v1', facts });
+  const headers = { ETag: `"${'a'.repeat(64)}"`, 'Access-Control-Expose-Headers': 'ETag' };
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', 'e1') }));
+  await page.route('**/api/v1/enterprises/e1', route => route.fulfill({ json: profile(), headers }));
+  await page.route('**/api/v1/enterprises/e1/facts/taxableIncome', route => { const value = { key: 'taxableIncome', ...route.request().postDataJSON(), verified: false }; const index = facts.findIndex(item => item.key === value.key && item.period.startDate === value.period.startDate && item.period.endDate === value.period.endDate); if (index < 0) facts.push(value); else facts[index] = value; return route.fulfill({ json: profile(), headers }); });
+  await page.goto('/#enterprise');
+  await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
+  await expect(page.locator('.fact-card')).toHaveCount(2);
+  await expect(page.locator('.fact-card').getByText('未核实')).toHaveCount(0);
+  await page.getByRole('button', { name: '添加一项信息' }).click();
+  const editor = page.locator('.fact-card').last();
+  await editor.getByLabel('信息类型').selectOption('taxableIncome');
+  await editor.getByLabel('未知', { exact: true }).uncheck();
+  await editor.getByLabel('值', { exact: true }).fill('500000');
+  await page.getByRole('heading', { name: '企业信息与来源' }).click();
+  await expect(page.getByRole('status').filter({ hasText: '信息已保存' })).toBeVisible();
+  await expect(page.locator('.fact-card')).toHaveCount(3);
+  await expect(editor.getByLabel('信息类型')).toHaveValue('taxableIncome');
+});
+
+test('头像抽屉在两种主题下不改变工作台布局并支持键盘和遮罩关闭', async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'reviewer', null) }));
+  await page.goto('/#enterprise');
+  const trigger = page.getByRole('button', { name: '账号与退出' });
+  for (const width of [1440, 375]) {
+    await page.setViewportSize({ width, height: 850 });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+      await trigger.hover();
+      await expect(page.getByRole('tooltip')).toHaveText('first');
+      await expect(page.getByRole('tooltip')).toBeVisible();
+      const before = await page.locator('.shell-layout').boundingBox();
+      await trigger.click();
+      const dialog = page.getByRole('dialog', { name: 'first' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByLabel('当前密码')).toBeVisible();
+      await expect(dialog.getByLabel('新密码', { exact: true })).toBeVisible();
+      await expect(dialog.getByLabel('确认新密码')).toBeVisible();
+      await dialog.screenshot({ path: `test-results/account-drawer-${width}-${theme}.png` });
+      const after = await page.locator('.shell-layout').boundingBox();
+      expect(after?.width).toBe(before?.width);
+      const change = await dialog.getByRole('button', { name: '修改密码' }).boundingBox();
+      const logout = await dialog.getByRole('button', { name: '退出登录' }).boundingBox();
+      expect(change && logout && Math.abs(change.y - logout.y)).toBeLessThan(2);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(trigger).toBeFocused();
+      await trigger.click();
+      await page.locator('.account-overlay').click({ position: { x: 2, y: 2 } });
+      await expect(dialog).toBeHidden();
+    }
+  }
+});
+
+test('修改密码时确认输入不一致不会提交', async ({ page }) => {
+  let requests = 0;
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', null) }));
+  await page.route('**/api/v1/auth/password', route => { requests++; return route.fulfill({ status: 204 }); });
+  await page.goto('/#enterprise');
+  await page.getByRole('button', { name: '账号与退出' }).click();
+  await page.getByLabel('当前密码').fill('password-12345');
+  await page.getByLabel('新密码', { exact: true }).fill('password-67890');
+  await page.getByLabel('确认新密码').fill('password-other-123');
+  await page.getByRole('button', { name: '修改密码' }).click();
+  await expect(page.getByRole('alert')).toContainText('两次输入的新密码不一致');
+  expect(requests).toBe(0);
 });

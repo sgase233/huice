@@ -42,8 +42,6 @@
 [data-theme="dark"] .app-shell input[type="checkbox"]:focus-visible { outline-color: #eee; }
 [data-theme="dark"] .app-shell .button, [data-theme="dark"] .app-shell .main-content button:not(.button):not(.text-button) { background: #ededed; border-color: #ededed; color: #171717; }
 [data-theme="dark"] .app-shell .button:hover:not(:disabled), [data-theme="dark"] .app-shell .main-content button:not(.button):not(.text-button):hover:not(:disabled) { background: #ccc; border-color: #ccc; color: #111; }
-[data-theme="dark"] .app-shell .button-secondary { background: #292929; color: #eee; border-color: #777; }
-[data-theme="dark"] .app-shell .button-secondary:hover:not(:disabled) { background: #444; color: #fff; border-color: #aaa; }
 [data-theme="dark"] .app-shell .main-content button:disabled { background: #363636; border-color: #555; color: #b8b8b8; }
 [data-theme="dark"] .app-shell .main-content .fact-delete { background: #eee; color: #171717; }
 [data-theme="dark"] .app-shell .main-content .fact-delete:focus-visible { background: #db4444; color: #fff; outline-color: #eee; }

@@ -3,23 +3,43 @@ import { api, ApiRequestError } from '../api/client';
 import type { AssessmentRun, Enterprise, EnterpriseSummary, RunSummary } from '../api/types';
 import { factLabels } from '../demo';
 import StatusBadge from '../components/StatusBadge';
+import MetricsPanel from './MetricsPanel';
+import AnimatedCards from '../components/AnimatedCards';
+import { formatTime } from '../formatTime';
 
 export default function ReviewerReadPage() {
   const [enterprises, setEnterprises] = useState<EnterpriseSummary[]>([]);
+  const [enteringEnterprises, setEnteringEnterprises] = useState<Record<string, { delay: number; request: number }>>({});
   const [cursor, setCursor] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<Enterprise | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [runCursor, setRunCursor] = useState<string | null>(null);
   const [run, setRun] = useState<AssessmentRun | null>(null);
+  const [policyTitles, setPolicyTitles] = useState<Record<string, string>>({});
+  const resultRef = useRef<HTMLElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const sequence = useRef(0);
   useEffect(() => () => { sequence.current++; }, []);
-  const fail = (e: unknown) => e instanceof ApiRequestError ? `${e.message}${e.traceId ? `（追踪 ID：${e.traceId}）` : ''}` : e instanceof Error ? e.message : '请求失败。';
+  useEffect(() => { if (!run) return; const previousFocus = document.activeElement; const timeout = window.setTimeout(() => { if (document.activeElement === previousFocus) resultRef.current?.focus(); }, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 400); return () => window.clearTimeout(timeout); }, [run]);
+  const fail = (e: unknown) => e instanceof ApiRequestError && (e.status === 401 || e.status === 403) ? '无法访问这些信息，请检查登录状态或联系管理员。' : e instanceof ApiRequestError && e.status === 404 ? '所选信息不存在或已不可查看，请刷新后重试。' : '信息暂时无法读取，请重试。';
   async function list(next?: string) {
     const request = ++sequence.current; setBusy(true); setError('');
-    try { const result = await api.listEnterprises(next); if (request === sequence.current) { setEnterprises(old => next ? [...old, ...result.data.items] : result.data.items); setCursor(result.data.nextCursor); setLoaded(true); } }
+    try {
+      const result = await api.listEnterprises(next);
+      if (request === sequence.current) {
+        const items = next ? [...enterprises, ...result.data.items] : result.data.items;
+        if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          const changed = items.filter((item, index) => {
+            const old = enterprises.find(entry => entry.id === item.id);
+            return !old || old.nameSynthetic !== item.nameSynthetic || old.ownership !== item.ownership || old.period.startDate !== item.period.startDate || old.period.endDate !== item.period.endDate || (!next && enterprises[index]?.id !== item.id);
+          });
+          if (changed.length) setEnteringEnterprises(current => ({ ...current, ...Object.fromEntries(changed.map((item, index) => [item.id, { delay: index * 80, request }])) }));
+        }
+        setEnterprises(items); setCursor(result.data.nextCursor); setLoaded(true);
+      }
+    }
     catch (e) { if (request === sequence.current) setError(fail(e)); } finally { if (request === sequence.current) setBusy(false); }
   }
   async function open(item: EnterpriseSummary) {
@@ -40,7 +60,7 @@ export default function ReviewerReadPage() {
   async function openRun(item: RunSummary) {
     if (item.status !== 'succeeded') return;
     const request = ++sequence.current; setBusy(true); setError(''); setRun(null);
-    try { const result = await api.getRun(item.id); if (request !== sequence.current) return; if (!selected || result.data.enterpriseId.toLowerCase() !== selected.id.toLowerCase()) throw new Error('接口契约错误：运行记录与所选企业不一致。'); setRun(result.data); }
+    try { const result = await api.getRun(item.id); if (request !== sequence.current) return; if (!selected || result.data.enterpriseId.toLowerCase() !== selected.id.toLowerCase()) throw new Error('接口契约错误：运行记录与所选企业不一致。'); const titles = await Promise.allSettled(result.data.assessments.map(assessment => api.getPolicy(assessment.policyId, result.data.policyVersionMap[assessment.policyId]))); if (request !== sequence.current) return; setPolicyTitles(Object.fromEntries(titles.flatMap((title, index) => title.status === 'fulfilled' && title.value.data.id === result.data.assessments[index].policyId && title.value.data.version === result.data.policyVersionMap[result.data.assessments[index].policyId] ? [[result.data.assessments[index].policyId, title.value.data.title]] : []))); setRun(result.data); }
     catch (e) { if (request === sequence.current) setError(fail(e)); } finally { if (request === sequence.current) setBusy(false); }
   }
   async function download(item: RunSummary) {
@@ -53,15 +73,16 @@ export default function ReviewerReadPage() {
       const link = document.createElement('a'); link.href = url; link.download = `assessment-${item.id}.md`; link.click(); URL.revokeObjectURL(url);
     } catch (e) { if (request === sequence.current) setError(fail(e)); } finally { if (request === sequence.current) setBusy(false); }
   }
-  return <section className="page-block reviewer-read"><h1>企业与运行记录（只读）</h1><p>服务端决定可见范围；此处不提供修改企业事实的操作。</p>
+  return <section className="page-block reviewer-read"><h1>企业与运行记录</h1>
     {error && <p role="alert" className="notice warning">{error}</p>}
     <button disabled={busy} onClick={() => void list()}>读取企业列表</button>
     {loaded && enterprises.length === 0 && <p>当前没有可见企业。</p>}
-    <ul>{enterprises.map(item => <li key={item.id}><button disabled={busy} onClick={() => void open(item)}>{item.nameSynthetic}</button> · {item.ownership === 'self' ? '本人企业' : item.ownership === 'other' ? '其他企业' : '无主样本'} · {item.period.startDate} 至 {item.period.endDate}</li>)}</ul>
+    <ul className="reviewer-enterprises">{enterprises.map(item => <li key={item.id} className={enteringEnterprises[item.id] ? 'is-entering' : undefined} style={enteringEnterprises[item.id] ? { animationDelay: `${enteringEnterprises[item.id].delay}ms` } : undefined} onAnimationEnd={event => { if (event.target !== event.currentTarget) return; const request = enteringEnterprises[item.id]?.request; setEnteringEnterprises(current => { if (current[item.id]?.request !== request) return current; const next = { ...current }; delete next[item.id]; return next; }); }}><button disabled={busy} onClick={() => void open(item)}>{item.nameSynthetic}</button> · {item.ownership === 'self' ? '本人企业' : item.ownership === 'other' ? '其他企业' : '无主样本'} · {item.period.startDate} 至 {item.period.endDate}</li>)}</ul>
     {cursor && <button disabled={busy} onClick={() => void list(cursor)}>加载更多企业</button>}
-    {selected && <section className="panel"><h2>{selected.nameSynthetic}</h2><p>企业 ID：{selected.id}</p><ul>{selected.facts.map(item => <li key={`${item.key}/${item.period.startDate}/${item.period.endDate}`}>{factLabels[item.key]}：{item.value === null ? '未知' : typeof item.value === 'boolean' ? (item.value ? '是' : '否') : item.value}（{item.period.startDate} 至 {item.period.endDate}，{item.verified ? '已核实' : '未核实'}）</li>)}</ul>
-      <h3>运行记录</h3>{runs.length === 0 && <p>当前没有可见运行记录。</p>}<ul>{runs.map(item => <li key={item.id}>{item.createdAt} · {item.status === 'succeeded' ? '已完成' : item.status === 'running' ? '运行中' : item.status === 'queued' ? '排队中' : item.status === 'failed' ? '失败' : '未知状态'} · {item.id} {item.status === 'succeeded' && <button disabled={busy} onClick={() => void openRun(item)}>查看结果</button>} {item.status === 'succeeded' && item.reportAvailable && <button disabled={busy} onClick={() => void download(item)}>下载报告</button>}</li>)}</ul>{runCursor && <button disabled={busy} onClick={() => void moreRuns()}>加载更多运行记录</button>}
-    </section>}
-    {run && <section className="panel"><h2>运行结果</h2>{run.assessments.map(item => <article key={item.policyId}><h3>政策 {item.policyId}</h3><StatusBadge result={item.result} validity={item.validity} /><p>{item.explanation}</p></article>)}</section>}
+    <AnimatedCards items={run ? [<section key={run.id} className="panel reviewer-result" ref={resultRef} tabIndex={-1}><h2>运行结果</h2><p>分析时间：{formatTime(run.createdAt)}（北京时间）</p>{run.assessments.map((item, index) => <article key={item.policyId}><h3>{policyTitles[item.policyId] ?? `政策 ${index + 1}`}</h3><StatusBadge result={item.result} validity={item.validity} /><p>{item.explanation}</p></article>)}</section>] : []} />
+    <AnimatedCards items={selected ? [<section key={selected.id} className="panel"><h2>{selected.nameSynthetic}</h2><ul>{selected.facts.map(item => <li key={`${item.key}/${item.period.startDate}/${item.period.endDate}`}>{factLabels[item.key]}：{item.value === null ? '未知' : typeof item.value === 'boolean' ? (item.value ? '是' : '否') : item.value}（{item.period.startDate} 至 {item.period.endDate}）</li>)}</ul>
+      <h3>运行记录</h3>{runs.length === 0 && <p>当前没有可见运行记录。</p>}<ul className="reviewer-runs">{runs.map(item => <li key={item.id}><span>{formatTime(item.createdAt)}（北京时间） · {item.status === 'succeeded' ? '已完成' : item.status === 'running' ? '运行中' : item.status === 'queued' ? '排队中' : item.status === 'failed' ? '失败' : '未知状态'}</span><div className="reviewer-run-actions">{item.status === 'succeeded' && <button disabled={busy} onClick={() => void openRun(item)}>查看结果</button>}{item.status === 'succeeded' && item.reportAvailable && <button disabled={busy} onClick={() => void download(item)}>下载报告</button>}</div></li>)}</ul>{runCursor && <button disabled={busy} onClick={() => void moreRuns()}>加载更多运行记录</button>}
+    </section>] : []} />
+    <MetricsPanel enterpriseId={selected?.id ?? null} />
   </section>;
 }

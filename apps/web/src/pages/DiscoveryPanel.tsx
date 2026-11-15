@@ -24,7 +24,7 @@ export default function DiscoveryPanel({ onDirtyChange, accountId, onOpenDraft }
   const [candidateEtag, setCandidateEtag] = useState<string | null>(null);
   const [candidateDirty, setCandidateDirty] = useState(false);
   useEffect(() => { onDirtyChange(dirty || busy || candidateDirty); return () => onDirtyChange(false); }, [dirty, busy, candidateDirty, onDirtyChange]);
-  useEffect(() => { const warn = (e: BeforeUnloadEvent) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn); }, [dirty]);
+  useEffect(() => { const warn = (e: BeforeUnloadEvent) => { if (dirty || candidateDirty) { e.preventDefault(); e.returnValue = ''; } }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn); }, [dirty, candidateDirty]);
   async function loadSettings() {
     if (dirty && !window.confirm('放弃未保存的发现设置并重新读取？')) return;
     setBusy(true); setError(''); setNotice('');

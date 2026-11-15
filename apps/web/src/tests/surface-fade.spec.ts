@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => { await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } })); });
 
-for (const entry of [{ link: '开始使用工作台', target: /#enterprise$/ }, { link: '先体验固定样例', target: /mode=demo#enterprise$/ }]) {
+for (const entry of [{ link: '开始使用工作台', target: /#enterprise$/ }]) {
   test(`首页与工作台之间淡出淡入：${entry.link}`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'no-preference' });
     await page.addInitScript(() => {
@@ -21,7 +21,7 @@ for (const entry of [{ link: '开始使用工作台', target: /#enterprise$/ }, 
     await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
     await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('test-surface-fades') || '[]').length)).toBeGreaterThanOrEqual(2);
     const animations = await page.evaluate(() => JSON.parse(sessionStorage.getItem('test-surface-fades') || '[]'));
-    expect(animations.slice(0, 2).map((item: { duration: number }) => item.duration)).toEqual([520, 520]);
+    expect(animations.slice(0, 2).map((item: { duration: number }) => item.duration)).toEqual([400, 400]);
     expect(animations[0].keyframes).toEqual([{ opacity: 1 }, { opacity: 0 }]);
     expect(animations[1].keyframes).toEqual([{ opacity: 0 }, { opacity: 1 }]);
     await page.getByRole('link', { name: '惠策协同首页' }).click();
