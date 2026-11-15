@@ -209,6 +209,27 @@ WHERE r.enterprise_id = %(enterprise_id)s
   AND d.fact_period_end = %(end)s
 """
 
+#: 分析开始时读了旧事实、落库前事实才被改/删的补记（#82 M2 P1）。
+#: 删除/更新时依赖还没写进来，失效查询命不中；这里在 T2 写入依赖后比较
+#: ``fact_version``，变了就给本次 run 补一条 fact_changed，避免结果仍显示 current。
+_INSERT_RUN_FACT_EVENTS = """
+INSERT INTO invalidation_event
+    (id, run_id, reason, policy_id, fact_key, fact_period_start, fact_period_end, created_at)
+SELECT gen_random_uuid(), d.run_id, 'fact_changed', d.policy_id,
+       d.fact_key, d.fact_period_start, d.fact_period_end, now()
+FROM assessment_dependency d
+WHERE d.run_id = %(run_id)s
+  AND NOT EXISTS (
+      SELECT 1 FROM invalidation_event e
+      WHERE e.run_id = d.run_id
+        AND e.reason = 'fact_changed'
+        AND e.policy_id IS NOT DISTINCT FROM d.policy_id
+        AND e.fact_key = d.fact_key
+        AND e.fact_period_start IS NOT DISTINCT FROM d.fact_period_start
+        AND e.fact_period_end IS NOT DISTINCT FROM d.fact_period_end
+  )
+"""
+
 #: 发布新版本使引用旧版本的判断失效（与发布同事务）。
 _INSERT_POLICY_EVENTS = """
 INSERT INTO invalidation_event (id, run_id, reason, policy_id, created_at)
@@ -1994,6 +2015,11 @@ class PolicyRepository:
                         "end": end,
                     },
                 )
+
+        # T1 读画像与 T2 写依赖之间可能夹着一次事实变更（含删除）。变更事件当时
+        # 命不中这个 run 的依赖，所以这里用 fact_version 做一致性检查并补记事件。
+        if fact_version_of(self._load_facts(conn, run.enterprise_id)) != run.fact_version:
+            self._execute(conn, _INSERT_RUN_FACT_EVENTS, {"run_id": run.id})
 
         for step in trace_steps:
             self._execute(

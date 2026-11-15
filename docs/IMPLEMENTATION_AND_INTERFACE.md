@@ -161,7 +161,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 所有事实 `value=null` 均表示未知；省略事实等价于尚未提供。空字符串、字符串 `"null"`、NaN 均拒绝。数值的通用词法允许最多 6 位小数，按上述字段进一步校验；`"0"` 是有效已知值。`period={startDate,endDate}` 使用日期，包含两端；开始不能晚于结束。同一 key 不同年度是不同事实，不互相覆盖。
 
-编辑接口 API-10 的路径仅传 key，**目标期间在 body.period 中确定**，完整提交 value/unit/period/source；null 用于把值清成「未知」，不删除行。删除改用 `DELETE /enterprises/{enterpriseId}/facts/{factKey}?periodStart=…&periodEnd=…`：按 key+精确期间物理删除一条事实，鉴权/CSRF/If-Match 与编辑相同；注册地 `region` 与行业 `industry` 是画像必填键，删除画像年度的那两条返回 422 `FACT_REQUIRED`，应改用编辑更正取值。每次成功变更生成 `factVersion`（完整画像规范化快照的 SHA-256；数组按 key/期间排序，Decimal 规范化），相同内容不产生新版本。不从前端接受哈希。ETag 采用带双引号的 factVersion，前端必须保留原样。
+编辑接口 API-10 的路径仅传 key，**目标期间在 body.period 中确定**，完整提交 value/unit/period/source；null 用于把值清成「未知」，不删除行。删除改用 `DELETE /enterprises/{enterpriseId}/facts/{factKey}?periodStart=…&periodEnd=…`：按 key+精确期间物理删除一条事实，鉴权/CSRF/If-Match 与编辑相同；删除与更新都会写失效事件，且分析结果落库时会比较 `factVersion`——分析期间事实被改/删也补记 `fact_changed`，不会让旧结果继续显示 `current`；注册地 `region` 与行业 `industry` 是画像必填键，删除画像年度的那两条返回 422 `FACT_REQUIRED`，应改用编辑更正取值。每次成功变更生成 `factVersion`（完整画像规范化快照的 SHA-256；数组按 key/期间排序，Decimal 规范化），相同内容不产生新版本。不从前端接受哈希。ETag 采用带双引号的 factVersion，前端必须保留原样。
 
 ### 2.4 FR-04：候选与确定性判断
 

@@ -684,7 +684,8 @@ paths:
       summary: API-10
       description: >-
         按 key + 精确期间删除一条事实。鉴权、CSRF/Origin 与 If-Match 与 PATCH 相同：
-        企业本人或可写 demo；缺 If-Match 428、版本已变 409、key+期间不存在 404
+        企业本人或可写 demo；会话写请求必须带同源 `Origin` 与 `X-CSRF-Token`，
+        demo 写请求必须带同源 `Origin`（不要求 CSRF）；缺 If-Match 428、版本已变 409、key+期间不存在 404
         FACT_NOT_FOUND。注册地（region）与行业（industry）是画像必填键，删除画像年度
         的那两条返回 422 FACT_REQUIRED，应改用 PATCH 更正取值。删除会生成新的
         factVersion，并像更新一样让读过该事实的 run 变为 stale。
@@ -715,6 +716,9 @@ paths:
           type: string
           format: date
       - $ref: '#/components/parameters/IfMatch'
+      # 会话写要同源 Origin + X-CSRF-Token；demo 写只校验 Origin（见参数说明）。
+      - $ref: '#/components/parameters/CsrfToken'
+      - $ref: '#/components/parameters/OriginHeaderOptional'
       responses:
         '200':
           description: 成功；返回删除后的完整画像

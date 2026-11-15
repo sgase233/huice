@@ -710,3 +710,35 @@ def test_required_profile_keys_cannot_be_deleted(repo):
 
     assert rejected.value.status_code == 422
     assert rejected.value.code == "FACT_REQUIRED"
+
+
+def test_delete_between_read_and_save_marks_the_run_stale(
+    repo, database_url_schema, monkeypatch
+):
+    """分析读了旧值、结果落库前事实被删：T2 必须补记失效，不能仍显示 current。"""
+
+    enterprise = make_enterprise(repo, income="4000000")
+    policy_id, _ = publish_policy(repo, expressions=[INCOME_GATE])
+    original = repo.save_run
+    raced = {"done": False}
+
+    def racing_save_run(**kwargs):
+        if not raced["done"]:
+            raced["done"] = True
+            with psycopg.connect(database_url_schema) as conn:
+                conn.execute(
+                    "DELETE FROM enterprise_fact WHERE enterprise_id = %s "
+                    "AND key = 'taxableIncome' AND period_start = %s AND period_end = %s",
+                    (enterprise.id, PERIOD[0], PERIOD[1]),
+                )
+                conn.commit()
+        return original(**kwargs)
+
+    monkeypatch.setattr(repo, "save_run", racing_save_run)
+    run = run_assessment(repo, enterprise.id, [policy_id])
+
+    assessment = repo.get_run(run.id).assessments[0]
+    assert assessment.result == "satisfied"
+    assert assessment.validity == "stale"
+    assert [reason.code for reason in assessment.stale_reasons] == ["fact_changed"]
+    assert assessment.stale_reasons[0].changed_fact_refs[0].key == "taxableIncome"
