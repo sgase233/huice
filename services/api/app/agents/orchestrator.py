@@ -218,7 +218,19 @@ def assess(
                 logger.warning("失败状态没有落库，运行行会保持 running，等中断扫描处理", exc_info=True)
             raise
 
-    return run
+    # T2 已提交：返回**读取视图**，而不是尚未应用刚写入失效事件的内存快照。
+    # 否则「分析期间事实被改/删」时，POST 首次响应会显示 current，稍后 GET 才是
+    # stale（#82 M2 P1）。读不到就明确报结果不可确认，不回退到旧快照。
+    try:
+        return repository.get_run(run.id)
+    except Exception as exc:  # noqa: BLE001 - 任何读取失败都按「结果未确认」处理
+        logger.warning("运行已成功落库，但读取结果视图失败；请按运行 ID 重试查询", exc_info=True)
+        raise ApiProblem(
+            503,
+            "RUN_RESULT_UNCONFIRMED",
+            "判断已完成，但暂时无法确认结果视图；请按运行 ID 重试查询。",
+            {"runId": str(run.id)},
+        ) from exc
 
 
 # ------------------------------------------------------------------ 组装件

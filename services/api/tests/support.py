@@ -12,6 +12,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from app import auth as auth_tools
 from app.agents.contracts import PolicySnapshot, SnapshotCriterion
 from app.agents.profile import (
+    REQUIRED_PROFILE_KEYS,
     NormalizedFact,
     NormalizedProfile,
     fact_version_of,
@@ -508,6 +509,48 @@ class FakeRepository:
         else:
             facts = [*facts, fact]
         return self._store_enterprise(enterprise_id, name, period, facts)
+
+    def delete_fact(
+        self,
+        *,
+        enterprise_id,
+        fact_key,
+        period_start,
+        period_end,
+        expected_fact_version,
+        trace_id,
+    ) -> Enterprise:
+        current = self.get_enterprise(enterprise_id)
+        if expected_fact_version != current.fact_version:
+            raise ApiProblem(
+                409,
+                "VERSION_CONFLICT",
+                "画像已被他人更新，请重新读取后再提交。",
+                {"currentVersion": current.fact_version},
+            )
+        name, period, facts = self.normalized[enterprise_id]
+        if (
+            fact_key in REQUIRED_PROFILE_KEYS
+            and (period_start, period_end) == (period.start_date, period.end_date)
+        ):
+            raise ApiProblem(
+                422,
+                "FACT_REQUIRED",
+                "注册地与行业不能删除；如需更正请直接更新取值。",
+                {"factKey": fact_key},
+            )
+        remaining = [
+            item
+            for item in facts
+            if not (
+                item.key == fact_key
+                and item.period_start == period_start
+                and item.period_end == period_end
+            )
+        ]
+        if len(remaining) == len(facts):
+            raise ApiProblem(404, "FACT_NOT_FOUND", "没有找到对应的事实。")
+        return self._store_enterprise(enterprise_id, name, period, remaining)
 
     def add_enterprise(self, profile: NormalizedProfile, *, owner_user_id=None) -> Enterprise:
         """直接放一家企业（用例准备数据用，不走 API）。"""

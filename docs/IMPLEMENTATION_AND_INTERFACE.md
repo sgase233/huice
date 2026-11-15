@@ -161,7 +161,7 @@ AST 中 `period` 是 `assessment`（本次判断所属年度）或显式 `{start
 
 所有事实 `value=null` 均表示未知；省略事实等价于尚未提供。空字符串、字符串 `"null"`、NaN 均拒绝。数值的通用词法允许最多 6 位小数，按上述字段进一步校验；`"0"` 是有效已知值。`period={startDate,endDate}` 使用日期，包含两端；开始不能晚于结束。同一 key 不同年度是不同事实，不互相覆盖。
 
-编辑接口 API-10 的路径仅传 key，**目标期间在 body.period 中确定**，完整提交 value/unit/period/source；null 用于清除值，不物理删除历史记录。每次成功变更生成 `factVersion`（完整画像规范化快照的 SHA-256；数组按 key/期间排序，Decimal 规范化），相同内容不产生新版本。不从前端接受哈希。ETag 采用带双引号的 factVersion，前端必须保留原样。
+编辑接口 API-10 的路径仅传 key，**目标期间在 body.period 中确定**，完整提交 value/unit/period/source；null 用于把值清成「未知」，不删除行。删除改用 `DELETE /enterprises/{enterpriseId}/facts/{factKey}?periodStart=…&periodEnd=…`：按 key+精确期间物理删除一条事实，鉴权/CSRF/If-Match 与编辑相同；删除与更新都会写失效事件；分析结果落库（T2）时先锁企业行再比较 `factVersion`——与事实写串行化，分析期间事实被改/删也会补记 `fact_changed`，不会让旧结果继续显示 `current`。漂移事件只声明「画像有变化、结论需重算」，不指认具体键/期间，避免把没变过的依赖报成已变化；注册地 `region` 与行业 `industry` 是画像必填键，删除画像年度的那两条返回 422 `FACT_REQUIRED`，应改用编辑更正取值。每次成功变更生成 `factVersion`（完整画像规范化快照的 SHA-256；数组按 key/期间排序，Decimal 规范化），相同内容不产生新版本。不从前端接受哈希。ETag 采用带双引号的 factVersion，前端必须保留原样。
 
 ### 2.4 FR-04：候选与确定性判断
 
@@ -351,6 +351,7 @@ python -m app.ablation review-sheet --baseline runs/baseline.jsonl --pipeline ru
 | API-08 `POST /enterprises` | JSON `EnterpriseInput`，见 2.3。会话写要 CSRF + Origin；demo 写只要 Origin，并占用本次演示会话的一个建样名额 | 201 `Enterprise` + ETag；账号已绑企业 409 `ENTERPRISE_ALREADY_BOUND`（`details.enterpriseId` 给已绑的那家；两个并发请求同时到达时同样 409，由 `owner_user_id` 部分唯一索引兜底）；演示配额用完 429 `DEMO_QUOTA_EXCEEDED`（`details.limit`） |
 | API-09 `GET /enterprises/{enterpriseId}` | path UUID | 200 `Enterprise` + ETag |
 | API-10 `PATCH /enterprises/{enterpriseId}/facts/{factKey}` | path ID/key；If-Match 头必填；JSON `FactUpdate` 不含 key，period 必填；仅企业本人可写（审核员、demo、Bearer 不行） | 200 完整 `Enterprise` + 新 ETag |
+| API-10 `DELETE /enterprises/{enterpriseId}/facts/{factKey}` | path ID/key；query `periodStart`/`periodEnd` 必填且与已存行逐字一致；If-Match 必填；鉴权同 PATCH | 200 删除后的完整 `Enterprise` + 新 ETag；key+期间不存在 404 `FACT_NOT_FOUND`；删除注册地/行业（画像年度）422 `FACT_REQUIRED` |
 | AUTH-06 `GET /enterprises`（E1 新增） | query cursor/limit 可选；服务端按身份过滤：企业会话只看本人、审核员看全部、demo 只看无主样本、Bearer 403 | 200 `EnterpriseSummaryList` = `{items:EnterpriseSummary[],nextCursor}`，`EnterpriseSummary={id,nameSynthetic,period,ownership}`；`ownership` 为 `self/other/unowned`。列表不带 `facts`：一次拉全量事实会让导航页变成画像下载 |
 
 `Enterprise={id,nameSynthetic,period,facts:EnterpriseFact[],factVersion}`。API-02 只给政策元数据，不含企业判断；M2 按 policyId 将 API-11/12 的 assessments 合并到列表。未分析时显示“尚未分析”，不得猜测四态。
@@ -380,7 +381,7 @@ API-05 同一 policyId/version/Idempotency-Key 和相同 body 的已成功请求
 
 | ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
 | --- | --- | --- |
-| API-11 `POST /assessment-runs` | JSON `{enterpriseId,policyIds,asOf,period,supersedesRunId?,skippedFactRefs?}` | 200 `AssessmentRun`；同步完成，不返回未定义 taskId |
+| API-11 `POST /assessment-runs` | JSON `{enterpriseId,policyIds,asOf,period,supersedesRunId?,skippedFactRefs?}` | 200 `AssessmentRun`；同步完成，不返回未定义 taskId。响应是与 API-12 一致的**读取视图**（已应用分析期间写入的失效事件）；落库后读不回来时返回 503 `RUN_RESULT_UNCONFIRMED`（`details.runId`），不回退到旧快照 |
 | API-12 `GET /assessment-runs/{runId}` | path UUID | 200 `AssessmentRun`，读取时刷新有效性视图；**运行未成功完成（`running`/`failed`/`interrupted`）→ 409 `RUN_NOT_COMPLETED`（`details.status`）**，与「不存在」的 404 从此可区分（E3 B2，随契约 `1.3.0-rc.1` 定稿） |
 | API-13 `GET /assessment-runs/{runId}/report.md` | path UUID；Accept=`text/markdown` | 200 `text/markdown; charset=utf-8`，Content-Disposition 为安全文件名的 attachment |
 | API-14 `GET /assessment-runs/{runId}/trace` | path UUID；企业会话（本人 run）/ 审核员会话 / 运维 Bearer | 200 `{steps:TraceStep[]}`，sequence 升序 |
@@ -601,7 +602,7 @@ python -m unittest discover -s services/api/tests -p test_contract.py -v
 
 运行环境同前（Windows 11 `10.0.26200`、CPython 3.12.10、`services/api/.venv`、本地 PostgreSQL 16.15 + pgvector 0.8.7）。
 
-接口实现状态：契约 16 个端点**全部实现**——API-01（健康检查）、API-02/03（公开政策列表与详情）、API-04/05/06/07（导入、抽取、保存条款、发布）、API-08/09/10（企业画像与 `factVersion` CAS）、API-11/12（判断运行与读取）、API-13（Markdown 报告）、API-14（轨迹）、API-15/16（后台草稿读取）。API-13/14 只读既有历史：报告是 run 快照的转写并在正文前单列「截至下载时刻」的有效性，轨迹先列入库/审核步骤再列在线步骤。
+接口实现状态：契约 16 个端点**全部实现**——API-01（健康检查）、API-02/03（公开政策列表与详情）、API-04/05/06/07（导入、抽取、保存条款、发布）、API-08/09/10（企业画像、`factVersion` CAS 与事实删除）、API-11/12（判断运行与读取）、API-13（Markdown 报告）、API-14（轨迹）、API-15/16（后台草稿读取）。API-13/14 只读既有历史：报告是 run 快照的转写并在正文前单列「截至下载时刻」的有效性，轨迹先列入库/审核步骤再列在线步骤。
 
 从 `huice/services/api` 执行：
 

@@ -355,3 +355,85 @@ def test_new_keys_are_validated_through_the_fact_endpoint(client, key, value, un
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def delete(client, enterprise_id: str, key: str, *, if_match=None, period=None):
+    headers = {} if if_match is None else {"If-Match": if_match}
+    chosen = period or YEAR
+    return client.delete(
+        f"/api/v1/enterprises/{enterprise_id}/facts/{key}",
+        params={"periodStart": chosen["startDate"], "periodEnd": chosen["endDate"]},
+        headers=headers,
+    )
+
+
+def test_delete_fact_returns_full_enterprise_and_new_etag(client):
+    created = create(client).json()
+
+    response = delete(
+        client, created["id"], "taxableIncome", if_match=f'"{created["factVersion"]}"'
+    )
+
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["factVersion"] != created["factVersion"]
+    assert response.headers["ETag"] == f'"{updated["factVersion"]}"'
+    assert all(item["key"] != "taxableIncome" for item in updated["facts"])
+
+
+def test_delete_requires_if_match(client):
+    created = create(client).json()
+
+    response = delete(client, created["id"], "taxableIncome")
+
+    assert response.status_code == 428
+    assert response.json()["error"]["code"] == "MISSING_IF_MATCH"
+
+
+def test_delete_with_stale_version_is_409(client):
+    created = create(client).json()
+    moved = patch(
+        client, created["id"], "taxableIncome", income_update(), if_match=f'"{created["factVersion"]}"'
+    ).json()
+
+    response = delete(client, created["id"], "taxableIncome", if_match=f'"{created["factVersion"]}"')
+
+    assert response.status_code == 409
+    assert response.json()["error"]["details"]["currentVersion"] == moved["factVersion"]
+
+
+def test_deleting_a_required_profile_key_is_422(client):
+    created = create(client).json()
+
+    response = delete(client, created["id"], "region", if_match=f'"{created["factVersion"]}"')
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "FACT_REQUIRED"
+
+
+def test_deleting_an_unknown_period_is_404(client):
+    created = create(client).json()
+    other = {"startDate": "2026-01-01", "endDate": "2026-03-31"}
+
+    response = delete(
+        client,
+        created["id"],
+        "taxableIncome",
+        if_match=f'"{created["factVersion"]}"',
+        period=other,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "FACT_NOT_FOUND"
+
+
+def test_inverted_period_is_400(client):
+    created = create(client).json()
+    other = {"startDate": "2026-12-31", "endDate": "2026-01-01"}
+
+    response = delete(
+        client, created["id"], "taxableIncome", period=other, if_match=f'"{created["factVersion"]}"'
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_PERIOD"

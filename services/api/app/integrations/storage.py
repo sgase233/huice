@@ -27,6 +27,7 @@ from psycopg.types.json import Jsonb
 from ..agents.contracts import MaterialRequirement, PolicySnapshot, SnapshotCriterion
 from ..agents.ingestion import PreparedSource
 from ..agents.profile import (
+    REQUIRED_PROFILE_KEYS,
     NormalizedFact,
     NormalizedProfile,
     fact_version_of,
@@ -206,6 +207,19 @@ WHERE r.enterprise_id = %(enterprise_id)s
   AND d.fact_key = %(key)s
   AND d.fact_period_start = %(start)s
   AND d.fact_period_end = %(end)s
+"""
+
+#: 分析开始时读了旧事实、落库前事实才被改/删的补记（#82 M2 P1）。
+#: 删除/更新时依赖还没写进来，失效查询命不中；这里在 T2 写入依赖后比较
+#: ``fact_version``，变了就给本次 run 补一条 fact_changed，避免结果仍显示 current。
+_INSERT_RUN_FACT_EVENTS = """
+INSERT INTO invalidation_event
+    (id, run_id, reason, policy_id, fact_key, fact_period_start, fact_period_end, created_at)
+SELECT gen_random_uuid(), %(run_id)s, 'fact_changed', NULL, NULL, NULL, NULL, now()
+WHERE NOT EXISTS (
+    SELECT 1 FROM invalidation_event
+    WHERE run_id = %(run_id)s AND reason = 'fact_changed' AND fact_key IS NULL
+)
 """
 
 #: 发布新版本使引用旧版本的判断失效（与发布同事务）。
@@ -1392,6 +1406,86 @@ class PolicyRepository:
             row["id"], row["name_synthetic"], row["period_start"], row["period_end"], facts
         )
 
+    def delete_fact(
+        self,
+        *,
+        enterprise_id: UUID,
+        fact_key: str,
+        period_start: date,
+        period_end: date,
+        expected_fact_version: str,
+        trace_id: str,
+    ) -> Enterprise:
+        """按 key+期间删除一条事实；``factVersion`` 做 compare-and-swap。
+
+        注册地与行业必须始终有非空值（创建时 ``normalize_profile`` 强制），删除画像
+        年度的这两条会让后续判断失去基本信息，因此按 422 拒绝，提示改为更新取值。
+        """
+
+        with self._db.connection() as conn, conn.transaction():
+            row = self._fetchone(
+                conn,
+                "SELECT id, name_synthetic, period_start, period_end FROM enterprise "
+                "WHERE id = %s FOR UPDATE",
+                (enterprise_id,),
+            )
+            if row is None:
+                raise ApiProblem(404, "ENTERPRISE_NOT_FOUND", "没有找到对应的企业画像。")
+
+            current = fact_version_of(self._load_facts(conn, enterprise_id))
+            if expected_fact_version != current:
+                raise ApiProblem(
+                    409,
+                    "VERSION_CONFLICT",
+                    "画像已被他人更新，请重新读取后再提交。",
+                    {"currentVersion": current},
+                )
+
+            profile_period = (row["period_start"], row["period_end"])
+            if fact_key in REQUIRED_PROFILE_KEYS and (period_start, period_end) == profile_period:
+                raise ApiProblem(
+                    422,
+                    "FACT_REQUIRED",
+                    "注册地与行业不能删除；如需更正请直接更新取值。",
+                    {"factKey": fact_key},
+                )
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM enterprise_fact WHERE enterprise_id = %s AND key = %s "
+                    "AND period_start = %s AND period_end = %s",
+                    (enterprise_id, fact_key, period_start, period_end),
+                )
+                deleted = cur.rowcount
+            if deleted == 0:
+                raise ApiProblem(404, "FACT_NOT_FOUND", "没有找到对应的事实。")
+
+            # 与更新同口径：删除也是一次事实变更，读过它的 run 必须标 stale。
+            self._execute(
+                conn,
+                _INSERT_FACT_EVENTS,
+                {
+                    "enterprise_id": enterprise_id,
+                    "key": fact_key,
+                    "start": period_start,
+                    "end": period_end,
+                },
+            )
+            self._insert_trace(
+                conn,
+                trace_id=trace_id,
+                stage="profile",
+                input_summary=f"删除事实 {fact_key}（{period_start}~{period_end}）",
+                output_summary="画像版本已更新",
+                policy_version_id=None,
+                model_or_rule_version="rule:profile@1",
+                elapsed_ms=0,
+            )
+            facts = self._load_facts(conn, enterprise_id)
+        return _enterprise_of(
+            row["id"], row["name_synthetic"], row["period_start"], row["period_end"], facts
+        )
+
     @staticmethod
     def _fact_params(enterprise_id: UUID, fact: NormalizedFact) -> dict[str, Any]:
         """保留为方法名是为了不动 ``update_fact`` 的调用点；实现在模块级（注册事务共用）。"""
@@ -1913,6 +2007,20 @@ class PolicyRepository:
                         "end": end,
                     },
                 )
+
+        # T1 读画像与 T2 写依赖之间可能夹着一次事实变更（含删除）。先锁企业行，
+        # 与 update_fact/delete_fact 的 FOR UPDATE 串行化：要么变更先提交、这里读到
+        # 新版本；要么变更等 T2 提交后再查，此时依赖已可见、对方会写具体事件。
+        # 两边都拿不到「检查后、提交前」的窗口（#82 M2 二次复审）。
+        self._fetchone(
+            conn,
+            "SELECT id FROM enterprise WHERE id = %s FOR UPDATE",
+            (run.enterprise_id,),
+        )
+        # 版本漂移时只记「画像有变化、结论需重算」，不指认具体键/期间：
+        # 分析期间的变化未必是本次 run 依赖的那几条（#82 M2 P2）。
+        if fact_version_of(self._load_facts(conn, run.enterprise_id)) != run.fact_version:
+            self._execute(conn, _INSERT_RUN_FACT_EVENTS, {"run_id": run.id})
 
         for step in trace_steps:
             self._execute(

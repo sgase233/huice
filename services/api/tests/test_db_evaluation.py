@@ -9,20 +9,26 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from fastapi.testclient import TestClient
 
+from app import auth as auth_tools
 from app.agents.contracts import AgentContext
 from app.agents.orchestrator import assess
 from app.agents.profile import normalize_fact_update, normalize_profile
 from app.domain.versioning import SHANGHAI
+from app.db import Database
 from app.errors import ApiProblem
-from app.integrations.storage import CriterionRecord
+from app.integrations.storage import CriterionRecord, PolicyRepository
+from app.main import create_app
 from app.schemas import AssessmentInput, EnterpriseInput, FactUpdate, PolicyImportMetadata
 from db_support import create, query_all, source
+from support import FakeAccounts
 
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
 
@@ -654,3 +660,268 @@ def test_unknown_run_is_404(repo):
         repo.get_run(uuid4())
     assert missing.value.status_code == 404
     assert repo.get_run_header(uuid4()) is None
+
+
+def test_delete_fact_removes_the_row_and_uses_compare_and_swap(repo):
+    created = make_enterprise(repo)
+
+    deleted = repo.delete_fact(
+        enterprise_id=created.id,
+        fact_key="taxableIncome",
+        period_start=PERIOD[0],
+        period_end=PERIOD[1],
+        expected_fact_version=created.fact_version,
+        trace_id=str(uuid4()),
+    )
+
+    assert [item.key for item in deleted.facts] == ["industry", "region"]
+    assert deleted.fact_version != created.fact_version
+
+    with pytest.raises(ApiProblem) as conflict:
+        repo.delete_fact(
+            enterprise_id=created.id,
+            fact_key="taxableIncome",
+            period_start=PERIOD[0],
+            period_end=PERIOD[1],
+            expected_fact_version=created.fact_version,
+            trace_id=str(uuid4()),
+        )
+    assert conflict.value.status_code == 409
+
+    with pytest.raises(ApiProblem) as missing:
+        repo.delete_fact(
+            enterprise_id=created.id,
+            fact_key="taxableIncome",
+            period_start=PERIOD[0],
+            period_end=PERIOD[1],
+            expected_fact_version=deleted.fact_version,
+            trace_id=str(uuid4()),
+        )
+    assert missing.value.status_code == 404
+    assert missing.value.code == "FACT_NOT_FOUND"
+
+
+def test_required_profile_keys_cannot_be_deleted(repo):
+    created = make_enterprise(repo)
+
+    with pytest.raises(ApiProblem) as rejected:
+        repo.delete_fact(
+            enterprise_id=created.id,
+            fact_key="region",
+            period_start=PERIOD[0],
+            period_end=PERIOD[1],
+            expected_fact_version=created.fact_version,
+            trace_id=str(uuid4()),
+        )
+
+    assert rejected.value.status_code == 422
+    assert rejected.value.code == "FACT_REQUIRED"
+
+
+def test_delete_between_read_and_save_marks_the_run_stale(
+    repo, database_url_schema, monkeypatch
+):
+    """分析读了旧值、结果落库前事实被删：T2 必须补记失效，不能仍显示 current。"""
+
+    enterprise = make_enterprise(repo, income="4000000")
+    policy_id, _ = publish_policy(repo, expressions=[INCOME_GATE])
+    original = repo.save_run
+    raced = {"done": False}
+
+    def racing_save_run(**kwargs):
+        if not raced["done"]:
+            raced["done"] = True
+            with psycopg.connect(database_url_schema) as conn:
+                conn.execute(
+                    "DELETE FROM enterprise_fact WHERE enterprise_id = %s "
+                    "AND key = 'taxableIncome' AND period_start = %s AND period_end = %s",
+                    (enterprise.id, PERIOD[0], PERIOD[1]),
+                )
+                conn.commit()
+        return original(**kwargs)
+
+    monkeypatch.setattr(repo, "save_run", racing_save_run)
+    run = run_assessment(repo, enterprise.id, [policy_id])
+
+    # assess 返回的首次响应也必须是读取视图，不能是未应用事件的快照。
+    assert run.assessments[0].validity == "stale"
+    assessment = repo.get_run(run.id).assessments[0]
+    assert assessment.result == "satisfied"
+    assert assessment.validity == "stale"
+    assert [reason.code for reason in assessment.stale_reasons] == ["fact_changed"]
+    # 漂移事件不指认具体事实：不能把没变过的依赖报成已变化。
+    assert assessment.stale_reasons[0].changed_fact_refs == []
+
+
+def test_unrelated_fact_change_during_analysis_does_not_blame_a_dependency(
+    repo, database_url_schema, monkeypatch
+):
+    enterprise = make_enterprise(repo, income="4000000")
+    policy_id, _ = publish_policy(repo, expressions=[INCOME_GATE])
+    original = repo.save_run
+    raced = {"done": False}
+
+    def racing_save_run(**kwargs):
+        if not raced["done"]:
+            raced["done"] = True
+            with psycopg.connect(database_url_schema) as conn:
+                conn.execute(
+                    "INSERT INTO enterprise_fact (enterprise_id, key, period_start, period_end, "
+                    "unit, source, verified, value_boolean) "
+                    "VALUES (%s, 'creditRecord', %s, %s, 'boolean', 'user_input', false, true)",
+                    (enterprise.id, PERIOD[0], PERIOD[1]),
+                )
+                conn.commit()
+        return original(**kwargs)
+
+    monkeypatch.setattr(repo, "save_run", racing_save_run)
+    run = run_assessment(repo, enterprise.id, [policy_id])
+
+    assessment = repo.get_run(run.id).assessments[0]
+    assert assessment.validity == "stale"
+    assert [reason.code for reason in assessment.stale_reasons] == ["fact_changed"]
+    assert assessment.stale_reasons[0].changed_fact_refs == []
+    assert assessment.stale_reasons[0].changed_criterion_ids == []
+
+
+def test_fact_delete_waits_for_t2_before_recording(monkeypatch, repo):
+    enterprise = make_enterprise(repo, income="4000000")
+    policy_id, _ = publish_policy(repo, expressions=[INCOME_GATE])
+    reached, release = threading.Event(), threading.Event()
+    state = {"armed": False, "paused": False}
+    original_load = repo._load_facts
+
+    def hooked_load(conn, enterprise_id):
+        facts = original_load(conn, enterprise_id)
+        if state["armed"] and not state["paused"]:
+            state["paused"] = True
+            reached.set()
+            release.wait(5)
+        return facts
+
+    monkeypatch.setattr(repo, "_load_facts", hooked_load)
+    original_save = repo.save_run
+
+    def armed_save(**kwargs):
+        state["armed"] = True
+        try:
+            return original_save(**kwargs)
+        finally:
+            state["armed"] = False
+
+    monkeypatch.setattr(repo, "save_run", armed_save)
+
+    results, deleted, started = {}, {}, threading.Event()
+
+    def run_worker():
+        try:
+            results["run"] = run_assessment(repo, enterprise.id, [policy_id])
+        except Exception as exc:  # pragma: no cover - 测试失败时带出原始异常
+            results["error"] = exc
+
+    def delete_worker():
+        started.set()
+        try:
+            deleted["enterprise"] = repo.delete_fact(
+                enterprise_id=enterprise.id,
+                fact_key="taxableIncome",
+                period_start=PERIOD[0],
+                period_end=PERIOD[1],
+                expected_fact_version=enterprise.fact_version,
+                trace_id=str(uuid4()),
+            )
+        except Exception as exc:  # pragma: no cover
+            deleted["error"] = exc
+
+    run_thread = threading.Thread(target=run_worker)
+    run_thread.start()
+    assert reached.wait(5), "一致性检查没有执行"
+    delete_thread = threading.Thread(target=delete_worker)
+    delete_thread.start()
+    assert started.wait(5)
+    # T2 还没提交：删除必须被企业行锁挡住，而不是先删成功。
+    delete_thread.join(0.2)
+    assert delete_thread.is_alive(), "删除没有等待 T2 的企业行锁"
+    release.set()
+    run_thread.join(10)
+    delete_thread.join(10)
+
+    assert "error" not in results and "error" not in deleted
+    assessment = repo.get_run(results["run"].id).assessments[0]
+    assert assessment.validity == "stale"
+    assert [reason.code for reason in assessment.stale_reasons] == ["fact_changed"]
+
+
+def test_post_first_response_is_stale_after_a_delete_race(
+    database_url_schema, settings, monkeypatch
+):
+    """POST /assessment-runs 的首次响应必须与随后 GET 一样应用失效事件。"""
+
+    database = Database(database_url_schema)
+    repo = PolicyRepository(database, cursor_secret="http-race")
+    application = create_app(settings)
+    application.state.repository = repo
+    accounts = FakeAccounts(repo)
+    application.state.accounts = accounts
+
+    user = accounts.seed_user("race.enterprise", role="enterprise")
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "INSERT INTO app_user (id, username, password_hash, role) "
+            "VALUES (%s, 'race.enterprise', 'scrypt$test', 'enterprise')",
+            (user["id"],),
+        )
+        conn.commit()
+    enterprise = repo.create_enterprise(
+        profile=normalize_profile(enterprise_input(income="4000000")),
+        trace_id=str(uuid4()),
+        owner_user_id=user["id"],
+    )
+    accounts.user_enterprises[user["id"]] = enterprise.id
+    token = accounts.seed_session("race.enterprise", token="race-http-token-0001")
+    policy_id, _ = publish_policy(repo, expressions=[INCOME_GATE])
+
+    original = repo.save_run
+    raced = {"done": False}
+
+    def racing_save_run(**kwargs):
+        if not raced["done"]:
+            raced["done"] = True
+            with psycopg.connect(database_url_schema) as conn:
+                conn.execute(
+                    "DELETE FROM enterprise_fact WHERE enterprise_id = %s "
+                    "AND key = 'taxableIncome' AND period_start = %s AND period_end = %s",
+                    (enterprise.id, PERIOD[0], PERIOD[1]),
+                )
+                conn.commit()
+        return original(**kwargs)
+
+    monkeypatch.setattr(repo, "save_run", racing_save_run)
+
+    client = TestClient(
+        application,
+        headers={
+            "Origin": settings.effective_public_origin,
+            "X-CSRF-Token": auth_tools.csrf_token_for(token),
+        },
+    )
+    client.cookies.set("huice_session", token, path="/api")
+    payload = {
+        "enterpriseId": str(enterprise.id),
+        "policyIds": [str(policy_id)],
+        "asOf": AS_OF.isoformat(),
+        "period": YEAR,
+    }
+
+    response = client.post("/api/v1/assessment-runs", json=payload)
+
+    assert response.status_code == 200
+    first = response.json()["assessments"][0]
+    assert first["result"] == "satisfied"
+    assert first["validity"] == "stale"
+    assert [reason["code"] for reason in first["staleReasons"]] == ["fact_changed"]
+
+    reread = client.get(f"/api/v1/assessment-runs/{response.json()['id']}").json()
+    assert reread["assessments"][0]["validity"] == "stale"
+    assert reread["assessments"][0]["staleReasons"] == first["staleReasons"]
+    database.close()
