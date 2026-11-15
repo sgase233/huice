@@ -40,7 +40,7 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
     if (url.pathname.endsWith('/policies')) { expect(url.searchParams.get('region')).toBe('440300'); return json({ items: [policy], nextCursor: null }); }
     if (url.pathname.endsWith('/assessment-runs') && request.method() === 'POST') { expect(request.postDataJSON().policyIds).toEqual([pid]); return json(run); }
     if (url.pathname.endsWith(`/assessment-runs/${rid}`)) return json(run);
-    if (url.pathname.endsWith(`/policies/${pid}`)) { detailUrl = request.url(); return json({ ...policy, criteria: [{ id, title: '行业条件', expression: { op: 'and', children: [{ op: 'manual_review', reason: '人工核查' }, { op: 'not', child: { op: 'or', children: [{ op: 'industry_exclusion', factKey: 'industry', period: 'assessment', excluded: ['A'] }, { op: 'manual_review', reason: '另行核对' }] } }] }, sourceSpans: [ref] }] }); }
+    if (url.pathname.endsWith(`/policies/${pid}`)) { detailUrl = request.url(); return json({ ...policy, dateProvenance: { version: 1, effectiveFrom: { status: 'verified', source: 'body', locator: '第一条' }, effectiveTo: { status: 'unknown' }, applicationWindow: { status: 'not_applicable' } }, criteria: [{ id, title: '行业条件', expression: { op: 'and', children: [{ op: 'manual_review', reason: '人工核查' }, { op: 'not', child: { op: 'or', children: [{ op: 'industry_exclusion', factKey: 'industry', period: 'assessment', excluded: ['A'] }, { op: 'manual_review', reason: '另行核对' }] } }] }, sourceSpans: [ref] }] }); }
     return route.abort();
   });
   await page.goto('/#enterprise');
@@ -60,6 +60,8 @@ test('真实模式通过 API 创建画像、分析并按快照版本读取证据
   }
   await page.getByRole('button', { name: '查看详情' }).click();
   await expect(page.getByText('测试原文')).toBeVisible();
+  await expect(page.getByText('2026-01-01 · 已核实 · 正文 · 第一条')).toBeVisible();
+  await expect(page.getByText('未提供 · 不适用')).toBeVisible();
   await page.getByText('查看资格逻辑结构').click();
   await expect(page.getByText('且（全部条件）')).toBeVisible();
   await expect(page.getByText('非', { exact: true })).toBeVisible();

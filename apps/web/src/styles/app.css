@@ -385,3 +385,18 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .expression-tree ul { padding-left: 1rem; overflow-wrap: anywhere; }
 @media (max-width: 520px) { .expression-tree ul { padding-left: .6rem; } }
 .expression-tree ul ul ul ul { padding-left: .2rem; }
+
+.metrics-table { overflow-x: auto; }
+.metrics-table table { border-collapse: collapse; width: 100%; }
+.metrics-table th, .metrics-table td { padding: .65rem; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.metrics-panel h3 { margin-top: 2rem; }
+
+.metrics-chart { margin: 1rem 0; }
+.metrics-chart figcaption { font-weight: 600; margin-bottom: .75rem; }
+.metrics-bar-row { display: grid; grid-template-columns: 7rem minmax(4rem, 1fr) minmax(4rem, auto); gap: .6rem; align-items: center; margin: .4rem 0; }
+.metrics-bar-track { background: var(--line); height: .75rem; }
+.metrics-bar { display: block; height: 100%; background: var(--brand); }
+@media (max-width: 550px) { .metrics-bar-row { grid-template-columns: 6rem 1fr; } .metrics-bar-row > :last-child { grid-column: 2; overflow-wrap: anywhere; } }
+
+
+.metrics-table table { min-width: 640px; }

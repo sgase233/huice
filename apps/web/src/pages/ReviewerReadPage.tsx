@@ -3,6 +3,7 @@ import { api, ApiRequestError } from '../api/client';
 import type { AssessmentRun, Enterprise, EnterpriseSummary, RunSummary } from '../api/types';
 import { factLabels } from '../demo';
 import StatusBadge from '../components/StatusBadge';
+import MetricsPanel from './MetricsPanel';
 
 export default function ReviewerReadPage() {
   const [enterprises, setEnterprises] = useState<EnterpriseSummary[]>([]);
@@ -62,6 +63,7 @@ export default function ReviewerReadPage() {
     {selected && <section className="panel"><h2>{selected.nameSynthetic}</h2><p>企业 ID：{selected.id}</p><ul>{selected.facts.map(item => <li key={`${item.key}/${item.period.startDate}/${item.period.endDate}`}>{factLabels[item.key]}：{item.value === null ? '未知' : typeof item.value === 'boolean' ? (item.value ? '是' : '否') : item.value}（{item.period.startDate} 至 {item.period.endDate}，{item.verified ? '已核实' : '未核实'}）</li>)}</ul>
       <h3>运行记录</h3>{runs.length === 0 && <p>当前没有可见运行记录。</p>}<ul>{runs.map(item => <li key={item.id}>{item.createdAt} · {item.status === 'succeeded' ? '已完成' : item.status === 'running' ? '运行中' : item.status === 'queued' ? '排队中' : item.status === 'failed' ? '失败' : '未知状态'} · {item.id} {item.status === 'succeeded' && <button disabled={busy} onClick={() => void openRun(item)}>查看结果</button>} {item.status === 'succeeded' && item.reportAvailable && <button disabled={busy} onClick={() => void download(item)}>下载报告</button>}</li>)}</ul>{runCursor && <button disabled={busy} onClick={() => void moreRuns()}>加载更多运行记录</button>}
     </section>}
+    <MetricsPanel enterpriseId={selected?.id ?? null} />
     {run && <section className="panel"><h2>运行结果</h2>{run.assessments.map(item => <article key={item.policyId}><h3>政策 {item.policyId}</h3><StatusBadge result={item.result} validity={item.validity} /><p>{item.explanation}</p></article>)}</section>}
   </section>;
 }
