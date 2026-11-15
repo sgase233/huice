@@ -768,3 +768,42 @@ test('轨迹读取失败时不暴露运行编号或服务端错误', async ({ pa
   await expect(page.getByRole('alert')).toContainText('这条运行记录不存在或已不可查看');
   await expect(page.getByRole('alert')).not.toContainText(id);
 });
+
+test('读取草稿逐项出现，相同列表重新读取不重播', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.addInitScript(() => {
+    (window as any).draftAnimations = [];
+    document.addEventListener('animationstart', event => {
+      if (event.animationName === 'reviewer-enterprise-enter' && (event.target as Element).closest('.admin-drafts')) (window as any).draftAnimations.push({ text: (event.target as HTMLElement).textContent, delay: getComputedStyle(event.target as Element).animationDelay });
+    });
+  });
+  let revision = 0; let requests = 0;
+  const item = (id: string, title: string, rev = 'r1') => ({ id, version: 'v1', title, issuer: '测试机关', revision: rev, status: 'pending_review', sources: [], criteria: [], validationFindings: [] });
+  await page.route('**/api/v1/admin/policies**', route => {
+    requests++;
+    const items = [item('a', '草稿一'), item('b', revision ? '草稿二（更新）' : '草稿二', revision ? 'r2' : 'r1'), item('c', '草稿三')];
+    if (revision) items.push(item('d', '草稿四'));
+    return route.fulfill({ json: { items, nextCursor: null } });
+  });
+  await page.goto('/#admin');
+  await page.getByRole('button', { name: '读取草稿' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).draftAnimations.length)).toBe(3);
+  await expect(page.locator('.admin-drafts .is-entering')).toHaveCount(0);
+  const initial = await page.evaluate(() => (window as any).draftAnimations);
+  expect(initial.map((entry: { delay: string }) => entry.delay)).toEqual(['0s', '0.08s', '0.16s']);
+  await page.getByRole('button', { name: '读取草稿' }).click();
+  await expect.poll(() => requests).toBe(2);
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => (window as any).draftAnimations.length)).toBe(3);
+  revision = 1;
+  await page.getByRole('button', { name: '读取草稿' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).draftAnimations.length)).toBe(5);
+  const changed = await page.evaluate(() => (window as any).draftAnimations.slice(3).map((entry: { text: string }) => entry.text));
+  expect(changed[0]).toContain('草稿二（更新）');
+  expect(changed[1]).toContain('草稿四');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.reload();
+  await page.getByRole('button', { name: '读取草稿' }).click();
+  await expect(page.locator('.admin-drafts li')).toHaveCount(4);
+  expect(await page.evaluate(() => (window as any).draftAnimations.length)).toBe(0);
+});

@@ -72,10 +72,26 @@ test('审核草稿避免重复展示相同标题和引文，操作按钮留有�
   const check = await panel.getByLabel('我已人工核对条件及来源').boundingBox();
   const publish = await panel.getByRole('button', { name: '确认发布' }).boundingBox();
   expect(check && publish && publish.y - (check.y + check.height)).toBeGreaterThanOrEqual(8);
+  page.once('dialog', dialog => dialog.accept());
+  await panel.locator('.admin-criterion').first().locator('select[data-error-field="expression-root-type"]').selectOption('and');
   for (const width of [1440, 375]) {
     await page.setViewportSize({ width, height: 850 });
     await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
     const criterion = panel.locator('.admin-criterion').first();
+    const nextCriterion = panel.locator('.admin-criterion').nth(1);
+    const firstBox = await criterion.boundingBox();
+    const secondBox = await nextCriterion.boundingBox();
+    expect(firstBox && secondBox && secondBox.y - (firstBox.y + firstBox.height)).toBeGreaterThanOrEqual(16);
+    const children = criterion.locator('.expression-child');
+    await expect(children).toHaveCount(2);
+    for (const child of await children.all()) {
+      const childBox = await child.locator(':scope > fieldset').boundingBox();
+      const childButton = await child.locator(':scope > button').boundingBox();
+      const parentBox = await child.locator('xpath=ancestor::fieldset[1]').boundingBox();
+      expect(childBox && childButton && childButton.y - (childBox.y + childBox.height)).toBeGreaterThanOrEqual(10);
+      expect(parentBox && childButton && childButton.x - parentBox.x).toBeGreaterThanOrEqual(12);
+      expect(parentBox && childButton && parentBox.x + parentBox.width - childButton.x - childButton.width).toBeGreaterThanOrEqual(12);
+    }
     for (const name of ['删除引用', '添加引用']) {
       const button = criterion.getByRole('button', { name });
       const buttonBox = await button.boundingBox();

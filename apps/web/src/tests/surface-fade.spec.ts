@@ -21,7 +21,7 @@ for (const entry of [{ link: '开始使用工作台', target: /#enterprise$/ }, 
     await expect(page.getByRole('heading', { name: '先把企业情况说清楚' })).toBeVisible();
     await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('test-surface-fades') || '[]').length)).toBeGreaterThanOrEqual(2);
     const animations = await page.evaluate(() => JSON.parse(sessionStorage.getItem('test-surface-fades') || '[]'));
-    expect(animations.slice(0, 2).map((item: { duration: number }) => item.duration)).toEqual([520, 520]);
+    expect(animations.slice(0, 2).map((item: { duration: number }) => item.duration)).toEqual([400, 400]);
     expect(animations[0].keyframes).toEqual([{ opacity: 1 }, { opacity: 0 }]);
     expect(animations[1].keyframes).toEqual([{ opacity: 0 }, { opacity: 1 }]);
     await page.getByRole('link', { name: '惠策协同首页' }).click();

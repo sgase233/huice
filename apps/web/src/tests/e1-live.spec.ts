@@ -40,14 +40,15 @@ test('isolated HTTP: account lifecycle and enterprise ownership', async ({ page 
   await expect(page.getByText(`已保存合成企业：合成${first}`)).toBeVisible();
   await expect(page.locator('.fact-card').filter({ has: page.getByRole('button', { name: '编辑行业' }) }).getByLabel('值', { exact: true })).toHaveValue('F51');
   await page.getByRole('button', { name: '账号与退出' }).click();
-  await page.getByRole('button', { name: '退出并切换账号' }).click();
+  await page.getByRole('button', { name: '退出登录' }).click();
   await register(second);
   await login(second);
   await expect(page.getByText(`已保存合成企业：合成${second}`)).toBeVisible();
   expect((await page.request.get(`http://127.0.0.1:8000/api/v1/enterprises/${enterpriseId}`)).status()).toBe(404);
   await page.getByRole('button', { name: '账号与退出' }).click();
   await page.getByLabel('当前密码').fill(password);
-  await page.getByLabel('新密码').fill('synthetic-new-pass-12345');
+  await page.getByLabel('新密码', { exact: true }).fill('synthetic-new-pass-12345');
+  await page.getByLabel('确认新密码').fill('synthetic-new-pass-12345');
   await page.getByRole('button', { name: '修改密码' }).click();
   await expect(page.getByText('密码已更新，请重新登录。')).toBeVisible();
   expect((await page.request.get('http://127.0.0.1:8000/api/v1/auth/me')).status()).toBe(401);
