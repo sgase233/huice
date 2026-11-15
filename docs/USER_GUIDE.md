@@ -36,6 +36,71 @@
 - `restricted` 公网部署还需要演示门禁 cookie，它按浏览器生效，不与某个账号绑定；
 - 演示数据、门禁与配额仅用于展示，不代表真实政策或企业资格。
 
+### 1.3 restricted 部署：进入前设置演示 cookie
+
+当前公网演示使用 `DEMO_ACCESS_MODE=restricted`。在这种部署下，**打开页面还不够**：所有接口（包括登录、注册）都先经过演示门禁，浏览器必须带 `huice_demo_session`。这个 cookie 按**浏览器/设备**生效，不需要每个账号登录都重设。
+
+#### 第一步：运维签发（在 ECS 上执行）
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/issue-session.py --hours 12
+```
+
+输出两行：
+
+- `value:` 后面是 cookie 值；
+- `Set-Cookie:` 是完整的响应头，**不要整串粘进浏览器**，只取 `value:` 那一段。
+
+`--hours` 可改大（例如 `168` 表示 7 天）；过期时间与 `demo_quota.expires_at` 同步。签发值属于演示凭证，不要写进文档、聊天、截图或仓库。
+
+#### 第二步：在浏览器设置（每位评委/每台设备一次）
+
+1. 打开部署站点，例如 `https://<站点地址>`；首次会停在登录页或提示「演示入口已失效」。
+2. 按 `F12` 打开开发者工具，切到 **Console**。
+3. 把 `<value>` 换成第一步 `value:` 后面的内容，执行：
+
+```js
+document.cookie = "huice_demo_session=<value>; path=/; secure; samesite=lax; max-age=43200";
+```
+
+`max-age` 以秒为单位，应**不超过令牌剩余有效期**（12 小时令牌用 `43200`，7 天令牌用 `604800`）。不要把 `max-age` 设得比令牌长，否则浏览器会保留一个服务端已拒绝的值。
+
+4. 刷新页面，或点「重新检查会话」/「进入服务端演示」。
+
+> 也可以在 DevTools → Application → Cookies 里手工新增，但浏览器对 `HttpOnly`/`SameSite` 的编辑支持不一致；Console 写入更可靠。用 Console 写入的 cookie 不是 `HttpOnly`，不影响服务端校验。
+
+#### 第三步：确认是否生效
+
+在 Console 执行：
+
+```js
+fetch("/api/v1/policies", { credentials: "include" }).then(r => r.status)
+```
+
+- 返回 `200`：门禁已通过，可以继续登录或使用演示；
+- 返回 `403` 且错误码 `DEMO_SESSION_REQUIRED`：cookie 没写进去、域/路径不对或已过期；
+- 返回 `401` 且错误码 `DEMO_SESSION_INVALID`：cookie 值无效（常见于整串 `Set-Cookie` 被当成值）；
+- 补充：`/auth/me` 对纯 demo 身份会返回 `403 ROLE_FORBIDDEN`，这是「演示身份有效但不是登录账号」的正常结果，不代表门禁失败。
+
+#### 常见问题
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 页面能打开，点按钮提示「演示入口已失效」 | cookie 缺失/过期 | 重新签发并按上面步骤设置 |
+| 同一浏览器换账号后仍可用 | demo cookie 按浏览器生效，与账号无关 | 正常；不需要重设 |
+| 换无痕窗口/换设备后失效 | 新浏览器没有 cookie | 重新设置一次 |
+| 关浏览器后失效 | cookie 没有 `max-age`，是会话 cookie | 写入时加 `max-age`，且不超过令牌有效期 |
+| 设置后仍 403 | 域不是站点域名、`path` 不是 `/`、或把整串 `Set-Cookie` 当成了值 | 只取 `value:`，并确认在 `https://站点` 下执行 |
+
+#### 安全说明
+
+- 该 cookie 只证明「演示访客」，不等于登录账号；企业数据仍按归属过滤。
+- 轮换 `DEMO_SESSION_SECRET` 会让所有已签发 cookie 立即失效。
+- 不要把它发到公开群聊或截图里；评委设备用完可清除。
+- 这是当前 `restricted` 部署的临时操作步骤；后续若增加「演示入口」自动下发 cookie，本节会同步简化。
+
 ## 2. 企业用户：从画像到判断
 
 ### 2.1 注册与登录
