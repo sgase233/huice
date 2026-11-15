@@ -15,15 +15,20 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from fastapi.testclient import TestClient
 
+from app import auth as auth_tools
 from app.agents.contracts import AgentContext
 from app.agents.orchestrator import assess
 from app.agents.profile import normalize_fact_update, normalize_profile
 from app.domain.versioning import SHANGHAI
+from app.db import Database
 from app.errors import ApiProblem
-from app.integrations.storage import CriterionRecord
+from app.integrations.storage import CriterionRecord, PolicyRepository
+from app.main import create_app
 from app.schemas import AssessmentInput, EnterpriseInput, FactUpdate, PolicyImportMetadata
 from db_support import create, query_all, source
+from support import FakeAccounts
 
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("clean_tables")]
 
@@ -738,6 +743,8 @@ def test_delete_between_read_and_save_marks_the_run_stale(
     monkeypatch.setattr(repo, "save_run", racing_save_run)
     run = run_assessment(repo, enterprise.id, [policy_id])
 
+    # assess 返回的首次响应也必须是读取视图，不能是未应用事件的快照。
+    assert run.assessments[0].validity == "stale"
     assessment = repo.get_run(run.id).assessments[0]
     assert assessment.result == "satisfied"
     assert assessment.validity == "stale"
@@ -843,3 +850,78 @@ def test_fact_delete_waits_for_t2_before_recording(monkeypatch, repo):
     assessment = repo.get_run(results["run"].id).assessments[0]
     assert assessment.validity == "stale"
     assert [reason.code for reason in assessment.stale_reasons] == ["fact_changed"]
+
+
+def test_post_first_response_is_stale_after_a_delete_race(
+    database_url_schema, settings, monkeypatch
+):
+    """POST /assessment-runs 的首次响应必须与随后 GET 一样应用失效事件。"""
+
+    database = Database(database_url_schema)
+    repo = PolicyRepository(database, cursor_secret="http-race")
+    application = create_app(settings)
+    application.state.repository = repo
+    accounts = FakeAccounts(repo)
+    application.state.accounts = accounts
+
+    user = accounts.seed_user("race.enterprise", role="enterprise")
+    with psycopg.connect(database_url_schema) as conn:
+        conn.execute(
+            "INSERT INTO app_user (id, username, password_hash, role) "
+            "VALUES (%s, 'race.enterprise', 'scrypt$test', 'enterprise')",
+            (user["id"],),
+        )
+        conn.commit()
+    enterprise = repo.create_enterprise(
+        profile=normalize_profile(enterprise_input(income="4000000")),
+        trace_id=str(uuid4()),
+        owner_user_id=user["id"],
+    )
+    accounts.user_enterprises[user["id"]] = enterprise.id
+    token = accounts.seed_session("race.enterprise", token="race-http-token-0001")
+    policy_id, _ = publish_policy(repo, expressions=[INCOME_GATE])
+
+    original = repo.save_run
+    raced = {"done": False}
+
+    def racing_save_run(**kwargs):
+        if not raced["done"]:
+            raced["done"] = True
+            with psycopg.connect(database_url_schema) as conn:
+                conn.execute(
+                    "DELETE FROM enterprise_fact WHERE enterprise_id = %s "
+                    "AND key = 'taxableIncome' AND period_start = %s AND period_end = %s",
+                    (enterprise.id, PERIOD[0], PERIOD[1]),
+                )
+                conn.commit()
+        return original(**kwargs)
+
+    monkeypatch.setattr(repo, "save_run", racing_save_run)
+
+    client = TestClient(
+        application,
+        headers={
+            "Origin": settings.effective_public_origin,
+            "X-CSRF-Token": auth_tools.csrf_token_for(token),
+        },
+    )
+    client.cookies.set("huice_session", token, path="/api")
+    payload = {
+        "enterpriseId": str(enterprise.id),
+        "policyIds": [str(policy_id)],
+        "asOf": AS_OF.isoformat(),
+        "period": YEAR,
+    }
+
+    response = client.post("/api/v1/assessment-runs", json=payload)
+
+    assert response.status_code == 200
+    first = response.json()["assessments"][0]
+    assert first["result"] == "satisfied"
+    assert first["validity"] == "stale"
+    assert [reason["code"] for reason in first["staleReasons"]] == ["fact_changed"]
+
+    reread = client.get(f"/api/v1/assessment-runs/{response.json()['id']}").json()
+    assert reread["assessments"][0]["validity"] == "stale"
+    assert reread["assessments"][0]["staleReasons"] == first["staleReasons"]
+    database.close()

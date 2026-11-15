@@ -381,7 +381,7 @@ API-05 同一 policyId/version/Idempotency-Key 和相同 body 的已成功请求
 
 | ID / 方法路径 | 参数位置与必填约束 | 成功响应 |
 | --- | --- | --- |
-| API-11 `POST /assessment-runs` | JSON `{enterpriseId,policyIds,asOf,period,supersedesRunId?,skippedFactRefs?}` | 200 `AssessmentRun`；同步完成，不返回未定义 taskId |
+| API-11 `POST /assessment-runs` | JSON `{enterpriseId,policyIds,asOf,period,supersedesRunId?,skippedFactRefs?}` | 200 `AssessmentRun`；同步完成，不返回未定义 taskId。响应是与 API-12 一致的**读取视图**（已应用分析期间写入的失效事件）；落库后读不回来时返回 503 `RUN_RESULT_UNCONFIRMED`（`details.runId`），不回退到旧快照 |
 | API-12 `GET /assessment-runs/{runId}` | path UUID | 200 `AssessmentRun`，读取时刷新有效性视图；**运行未成功完成（`running`/`failed`/`interrupted`）→ 409 `RUN_NOT_COMPLETED`（`details.status`）**，与「不存在」的 404 从此可区分（E3 B2，随契约 `1.3.0-rc.1` 定稿） |
 | API-13 `GET /assessment-runs/{runId}/report.md` | path UUID；Accept=`text/markdown` | 200 `text/markdown; charset=utf-8`，Content-Disposition 为安全文件名的 attachment |
 | API-14 `GET /assessment-runs/{runId}/trace` | path UUID；企业会话（本人 run）/ 审核员会话 / 运维 Bearer | 200 `{steps:TraceStep[]}`，sequence 升序 |

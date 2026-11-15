@@ -855,8 +855,12 @@ paths:
     post:
       operationId: createRun
       summary: API-11
-      description: Synchronous immutable snapshot. Resolve currently published versions, never draft versions. History
-        creates a new run ID.
+      description: >-
+        Synchronous immutable snapshot. Resolve currently published versions, never draft versions.
+        History creates a new run ID. The response is the same read-time validity view as API-12:
+        it already applies invalidation events written while the run was executing. If that view
+        cannot be read after the result commits, the operation fails with 503
+        RUN_RESULT_UNCONFIRMED (details.runId) instead of returning the stale in-memory snapshot.
       tags:
       - public
       security:
