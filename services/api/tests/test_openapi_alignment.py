@@ -26,6 +26,10 @@ IMPLEMENTED = {
     ("get", "/assessment-runs/{runId}"): "getRun",
     ("get", "/assessment-runs/{runId}/report.md"): "downloadReport",
     ("get", "/assessment-runs/{runId}/trace"): "getTrace",
+    # E3 的 3 个统计操作：自 1.3.0-rc.1 起并入正式契约。
+    ("get", "/admin/metrics/review-workload"): "getReviewWorkload",
+    ("get", "/admin/metrics/assessment-runs"): "getAssessmentRunTrends",
+    ("get", "/admin/metrics/completeness"): "getProfileCompleteness",
     # E1（#46）的 7 个操作：自 1.1.0-rc.1 起已并入 contracts/openapi.yaml，
     # 不再是「只在草案里」的集合。
     ("post", "/auth/register"): "registerUser",

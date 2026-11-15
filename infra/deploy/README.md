@@ -11,7 +11,11 @@
 | `create-admin.py` | 不安装，直接跑 | 建首个审核员账号（保底初始化，§3.4） |
 | `import-policy-sources.py` + `policy-source-import.json` + `policy-sources/` | 不安装，直接跑 | 补 SMART／GREEN 两个只有版本与来源的政策（它们的窗口只在附件里，之前没导入）——`011` 回填干跑的前置（§2.2） |
 | `fix-draft-effective-dates.py` + `draft-effective-dates.json` | 不安装，直接跑 | 把 SMART／GREEN 两行**草稿**的有效期改成中性占位（`effective_from = published_at`、`effective_to = NULL`）。只动未发布行，命中已发布行整批拒绝；写前写后比对已发布行 `xmin` 指纹。M3 在 PR #69 收口里要求发布前完成（§2.2） |
-| `retire-test-policy-version.py` + `retire-test-versions.json` | 不安装，直接跑 | 把已发布的**测试**版本降级为 `pending_parse`（M3 第三轮 B 方案）：只降级、不删除；只在该语句范围内临时禁用 `policy_version_guard_published` 并立即恢复，提交前后比对其它已发布行的 `xmin` 指纹，提交后验证守卫仍拒绝已发布行的 UPDATE。**执行前需 M2 与项目负责人同意** |
+| `retire-test-policy-version.py` + `retire-test-versions.json` | 不安装，直接跑 | 把已发布的**测试**版本降级为 `pending_parse`（M3 第三轮 B 方案）：只降级、不删除；只在该语句范围内临时禁用 `policy_version_guard_published` 并立即恢复，提交前后比对其它已发布行的 `xmin` 指纹，提交后验证守卫仍拒绝已发布行的 UPDATE。**执行前需 M2 与项目负责人同意**（§2.3） |
+| `preflight-exception-ops.py` | 不安装，直接跑 | 例外操作前的只读快照：迁移清单、12/8/4 计数、已发布行与 `xmin`、`v1.0`／SRDI 目标行、来源逐行、引用计数、两个守卫是否启用、排除目标后的指纹。不取锁、不写库（§2.3） |
+| `add-published-policy-source.py` + `srdi-detail-source.json` + `policy-sources/SRDI-attachment-detail.txt` | 不安装，直接跑 | 给已发布版本补一条**细则正文来源**（SRDI 的 B 第一步）：只新增 `policy_source` 行，不动 `policy_version`；干跑打印拟插入行形状（kind/ordinal/file_name/source_url/content_hash/byte_size）与原件 SHA-256，`--write-plan` 固定来源集合，执行前后比对指纹并验证 `policy_source_guard_published` 已恢复。**执行前需 M2 与项目负责人同意**（§2.3） |
+| `fix-published-effective-dates.py` + `srdi-effective-dates.json` | 不安装，直接跑 | 受控修正**已发布**版本的有效期（SRDI 的 B 第二步）：`FOR UPDATE` + 旧值/`revision`/`xmin` 逐项比对，临时禁用 `policy_version_guard_published` 后只改有效期与 `revision`，提交前后比对其它已发布行指纹，提交后验证守卫恢复。**执行前需 M2 与项目负责人同意**（§2.3） |
+| `date-provenance-backfill-srdi.json` | 不安装，直接跑（配合 `backfill-date-provenance.py`） | SRDI 的 B 执行后的 provenance **草案**：`reviewStatus` 为 `draft-pending-m3`，`effectiveFrom` 绑新增细则行、`applicationWindow` 绑通知正文。M3 重新复核并更新 `reviewEvidence` 前，`--apply` 会被拒绝；不能沿用旧的 9 条批准（§2.3） |
 | `record-collection-event.py` | 不安装，直接跑（unit 钩子调用） | 把采集生命周期事件（start/stop/beat/migrate/rollback/maintenance）写进 `/var/lib/huice/collection-lifecycle-<host>.jsonl`：哈希链 + 心跳，库不可用时也能记（013，§3.5.1） |
 | `backfill-review-baseline.py` | 不安装，直接跑 | 把已发布版本补成 `actor_kind='baseline'`、`review_revision=0` 的审核事件，并写 `collection_baseline.review_events_from` / `review_source`（只写自己那两列，与 B2 的运行起点按列幂等；已有基线时退出 0）。基线事件只用于日终待办回放，不计 `reviewsCompleted`（§3.5.1） |
 | `import-collection-journal.py` | 不安装，直接跑 | 读主机事件日志、推出中断区间（配对缺口 + 心跳缺口）并按 `event_id` 幂等导入 `collection_gap`；链不完整时拒绝导入（013，§3.5.1） |
@@ -223,7 +227,7 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 - **已导入的两行仍是早期形状（不改）**：云端 SMART/GREEN 的 `policy_source` 是第一次导入时写的——`file_name` 用原附件名（`.docx`/`.doc`）、`content_hash` 却是提取文本的哈希。脚本已改成如实登记（`.txt` + `text/plain` + 文本哈希 + 真实对象键），但**已入库的两行不动**：`file_name` 正是回填干跑里显示「附件1.docx」的那一列，改名会让 M3 已核对过的记录对不上。两行都还没发布，发布前再统一处理。
 - **云端那两行草稿已于 2026-11-14 修正**（M3 第四轮关闭）：`effective_from` 改为 `published_at`、`effective_to` 置空、`revision` 换新；工具 `fix-draft-effective-dates.py` 保留，具备幂等（已是目标值就跳过）、按读到的 `revision` 校验并发编辑、命中已发布行整批拒绝。**SMART/GREEN 仍不得发布**，直到 VIS-06 的展示条件满足。
 - **两个导入版本的有效期是中性占位**：SMART（深工信规〔2025〕4号）与 GREEN（深工信规〔2024〕12号）由 `import-policy-sources.py` 导入，`effectiveFrom` 取 `publishedAt`、`effectiveTo` 留空——申报窗口不是政策有效期（M3 在 PR #69 复核里点名）。它们在 provenance 里仍是 `unverified`/`unknown`；页面与时间线不得把这两个版本的有效期显示为已核实，也不得用它们算 `policy_expired`。发布前若要改成真实有效期，先由 M3 给依据并复核。
-- **申报窗口关闭 ≠ 政策过期（临时口径）**：SRDI（深工信规〔2025〕8号）的 `effective_from/to` 与申报窗口同值（2025-10-15—11-10）。**B 是目标处置**（受控把有效期改成细则第二十四条的「自印发之日起 5 年」，需 M2 与项目负责人同意，尚未执行）；**A 只是 B 未执行前的展示口径**：页面写「申报窗口已关闭」（详情注明本年度受理已于 2025-11-10 截止），不出现「政策已过期/政策失效」。注意 API 层的 `validity` 仍是 `closed`、`staleReasons` 仍可能含 `policy_expired`——只有展示层映射时，验收记录必须写「API 层仍可能含，待 B 修复」，不能写成引擎已不再产生。
+- **SRDI 的 B 已于 2026-11-15 执行（数据层）**：`深工信规〔2025〕8号` 的 `effective_from/to` 已从窗口值 `2025-10-15—2025-11-10` 改为细则第二十四条口径 **`2025-10-14—2030-10-13`**（成文日期作印发日起算，「5 年减 1 日」；官方页面「失效日期」2030-10-14 的一日差异写进 provenance note）。同时补了细则正文来源行 `post_12435148`（`kind=attachment`，ordinal 1，文本哈希 `a91369d4…`），该版本来源数 1 → 2。**provenance 仍是旧值**（`effectiveFrom/To: unverified`，note 还写着「登记值等于申报窗口」），M3 回来后须按 `date-provenance-backfill-srdi.json` 重新复核并更新 `reviewEvidence`；在那之前日期来源展示不得写「已核实」。API 新读取按新日期判断，不再因旧窗口判 `policy_expired`；历史 run 在写入时记录过的 `staleReasons` 不改写。
 - **SMART 的 `application_window` 只是合并区间**：库里存的是 `2025-06-13 00:00`—`2025-07-07 18:00`，压平了四段窗口、也漏掉书面材料到 07-11 的部分。时间线/详情页必须读 provenance 的 `note`（四段 + 办理方式），不得把 07-07 当成全部受理截止；GREEN 只有一段，注记「来源附件，非正文」即可。
 - **干跑会打印每条日期字段绑到哪一行**：`entries[i] <文号> applicationWindow → 附件第 1 份（policy_source.ordinal=1）：<文件名>（大小）`。压缩件（`.zip`/`.rar`/`.7z`）另给一条提示——整包导入时「第 1 份」是包、逐份导入时是包内文件，两种情况的绑定不同，只能靠这一行看出来。
 - **数据文件里的附件序号是「第几份附件」，从 1 起**，不是数据库 `policy_source.ordinal`（那里正文占 0、附件从 1 起但会随份数变化）。脚本按 `ORDER BY ordinal` 的第 n 份去查，不拿绝对号硬匹配。
@@ -235,6 +239,120 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 - **执行期间锁定来源写路径**：`--apply` 在读来源之前取 `LOCK TABLE policy_source IN SHARE ROW EXCLUSIVE MODE`，并发的新增、删除与重排（`UPDATE ordinal`）都会等这把锁释放；否则「校验过的 sourceId/contentHash」与「提交时库里的样子」之间仍有窗口。
   复核后用 `--apply --plan /path/plan.json` 执行；**首次插入也同样受计划保护**。执行时逐项校验，数据文件变了、目标值变了、附件重排或替换、旧值被改，任一不符就整批回滚（退出码 `2`/`3`）。计划里标了 `allowOverwrite` 的条目还要显式加 `--overwrite` 才会改写。
 - 退出码：`0` 成功（含干跑）；`1` 数据库读写失败；`2` 数据文件/环境不合法、版本或来源定位不到、数据未获批准或缺少复核证据；`3` 与库里已有值冲突且未加 `--overwrite`。报错只给字段路径与变量名，不含连接串。
+
+### 2.3 已发布行例外操作（`v1.0` 降级 / SRDI 的 B）
+
+两条都是「已发布行 + 守卫例外」。**必须 M2 与项目负责人分别明确同意**，在维护窗口内**分别执行、分别快照、分别验证守卫恢复、分别回告**；「方向同意」不等于授权，脚本加固也不改变授权边界。
+
+#### 2.3.1 执行前只读快照
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/preflight-exception-ops.py \
+  > /tmp/preflight-before.json
+cat /tmp/preflight-before.json
+```
+
+判据（M3 第三轮勾稽）：`policyVersions.total = 12`、`byStatus.published = 8`、其余 4 行为未发布；`targets.testVersion.matched = 1` 且 `reviewStatus = published`；`targets.srdi.matched = 1` 且 `reviewStatus = published`；`guards` 里两个触发器都是 `O`。任何一项对不上就停下，不执行。记下 `publishedFingerprintExcludingTargets`，执行后要用同一批排除 id 再算一次。
+
+#### 2.3.2 `v1.0` 测试版本降级
+
+脚本只降级、不删除，只对目标行临时禁用守卫。先干跑看快照与引用计数，再加 `--apply`：
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/retire-test-policy-version.py
+
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/retire-test-policy-version.py --apply
+```
+
+成功时打印「已降级 1 个测试版本为 pending_parse；未删除任何行」与「守卫已验证恢复」。退出码 `4` = 目标已不是 `published`（拒绝），`3` = 指纹变化/写库失败（已回滚）。
+
+#### 2.3.3 SRDI 的 B（顺序固定：来源 → 有效期 → provenance）
+
+**第一步：补细则来源行。** 干跑并生成计划；把打印的「拟插入行」形状（`kind=attachment ordinal=N file_name=… source_url=… content_hash=… byte_size=…`、原件 `post_12435148.html` 49,372 B `SHA-256 047835c1…`）贴给 M3 确认后，再执行：
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  -p Environment=PYTHONPATH=/opt/huice/app/services/api \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/add-published-policy-source.py \
+  --write-plan /tmp/srdi-source-plan.json
+cat /tmp/srdi-source-plan.json
+
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  -p Environment=PYTHONPATH=/opt/huice/app/services/api \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/add-published-policy-source.py \
+  --apply --plan /tmp/srdi-source-plan.json
+```
+
+成功时打印「来源数 N → N+1」与「守卫已验证恢复」。`kind=attachment` 是存储层语义（每个版本只能有一份 `body`，正文已被 2025 年度申报通知占用），不代表细则不是政策本体；这一句要写进回告。
+
+**第二步：改有效期。** 数据文件固定旧值 `2025-10-15—2025-11-10`、新值 `2025-10-14—2030-10-13`（细则第二十四条 5 年，按官方页面成文日期起算、5 年减 1 日；页面「失效日期」栏 2030-10-14，一日差异写进 provenance note）：
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/fix-published-effective-dates.py \
+  --write-plan /tmp/srdi-dates-plan.json
+cat /tmp/srdi-dates-plan.json
+
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/fix-published-effective-dates.py \
+  --apply --plan /tmp/srdi-dates-plan.json
+```
+
+成功时打印「有效期 … 改为 2025-10-14→2030-10-13，revision 已换新」与「守卫已验证恢复」。`expectedOld` 对不上（例如云端已是别的值）时返回 `2`，先核对再重跑干跑，不能手改数据文件绕过。
+
+**第三步：provenance 新数据等 M3 重新复核。** `date-provenance-backfill-srdi.json` 是 `draft-pending-m3`；先把有效期绑定的附件序号从占位 `0` 换成第一步打印的「第几份」（从 1 起）：
+
+```bash
+/opt/huice/venv/bin/python - <<'PY'
+import json
+plan = json.load(open('/tmp/srdi-source-plan.json', encoding='utf-8'))
+position = sum(1 for s in plan['entries'][0]['expectedSources'] if s['kind'] == 'attachment') + 1
+source = '/opt/huice/app/infra/deploy/date-provenance-backfill-srdi.json'
+data = json.load(open(source, encoding='utf-8'))
+data['entries'][0]['provenance']['effectiveFrom']['source']['ordinal'] = position
+target = '/tmp/date-provenance-backfill-srdi.json'
+json.dump(data, open(target, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+print('effectiveFrom 绑附件第', position, '份；草案写到', target)
+PY
+
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/backfill-date-provenance.py \
+  --data /tmp/date-provenance-backfill-srdi.json --write-plan /tmp/srdi-prov-plan.json
+cat /tmp/srdi-prov-plan.json
+```
+
+把干跑输出（尤其是 `effectiveFrom → 附件第 N 份（policy_source.ordinal=…）：<文件名>`）与计划交给 M3。M3 复核通过后，把 `/tmp/date-provenance-backfill-srdi.json` 的 `reviewStatus` 改成 `approved-by-m3`、补 `reviewEvidence`（`reviewedBy` / `reviewedAt` / `reference`），**重新干跑并重新生成计划**（数据文件摘要变了，旧计划会被拒绝），再执行：
+
+```bash
+systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+  -p WorkingDirectory=/opt/huice/app \
+  /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/backfill-date-provenance.py \
+  --data /tmp/date-provenance-backfill-srdi.json \
+  --apply --plan /tmp/srdi-prov-plan.json --overwrite
+```
+
+`--overwrite` 只解锁计划里 `allowOverwrite=true` 的那一条（SRDI 已有旧值）；计划外冲突整批回滚。
+
+#### 2.3.4 执行后
+
+再跑一次 `preflight-exception-ops.py > /tmp/preflight-after.json`，回告里给出：
+
+- 前后 `policyVersions`（12 / 8 / 4）与两个目标的 id、状态、`revision`、`xmin`、有效期、来源行数；
+- 前后 `publishedFingerprintExcludingTargets`（应一致；SRDI 目标本身被排除，`v1.0` 降级后也不在已发布集合里）；
+- 三次守卫验证的原话（`v1.0` 降级、来源补录、有效期修正各一次「UPDATE 仍被拒绝」）；
+- 授权记录（M2 与项目负责人分别同意的评论链接/时间）、执行人与时间、退出码；
+- SRDI provenance 的 `reviewStatus` 状态：M3 复核前写 `draft-pending-m3`，验收记录写「API 层仍可能含 `policy_expired`，待 provenance 更新后复核」，不能写成已解决。
 
 ## 3. 填配置
 
@@ -261,6 +379,7 @@ chown root:huice /etc/huice/api.env && chmod 640 /etc/huice/api.env
 | `OBJECT_STORE_MODE` | `local` 或 `obs`（`obs` 还需 `OBS_BUCKET`/`OBS_ENDPOINT`/`OBS_AK`/`OBS_SK`） |
 | `LOCAL_OBJECT_DIR` | `.local-objects`（`obs` 模式下不生效） |
 | `RUN_MAX_DURATION_SECONDS` | 可选，默认 `7200`。运行超过它仍满足另两条判据时，启动/定时扫描才把 `running` 标成 `interrupted`。这是**部署参数**，不是业务口径；按实际模型与部署条件调，不要写进验收文档当阈值 |
+| `COLLECTION_JOURNAL_DIR` | 可选，默认 `/var/lib/huice`。指标读侧从这里核验主机事件日志（链完整、主机未换、缺口已导入、心跳未超时）；读不到或证据不全时 `precise` 降为 `partial`。设为空串按 NO_JOURNAL 降级（不会返回 precise） |
 | `RUN_INTERRUPT_SCAN_SECONDS` | 可选，默认 `3600`。中断扫描间隔；启动时另扫一次，所以「重启时还没超时、之后才超时」的行不会一直停在 `running` |
 | `RUN_LIFECYCLE_CONTRACT_ENABLED` | 可选，默认 `0`（关闭）。打开后同时启用两项**新契约行为**：中断扫描会写 `interrupted`，API-12 对未成功的运行返回 `409 RUN_NOT_COMPLETED`。两项都必须与契约 `1.3.0-rc.1`、前端类型同窗发布，**不允许后端单边先行**；关闭时保持既有行为（未成功的运行按「没有结果」404，残留的 `running` 行原样保留） |
 | `RUN_LIFECYCLE_START_RETRY_SECONDS` | 可选，默认 `60`。运行采集起点在启动时写入；库暂时不可用不挡服务，后台按这个间隔重试到成功。起点取「已有值、当前时刻、最早一条新生命周期运行」三者最小，只向前校准、不往后推；补记不会把恢复时刻当成真实采集起点，也不证明此后持续完整采集（中断/回退期间由 B3 标 `partial`） |

@@ -110,6 +110,13 @@ E1_ONLY_OPERATIONS = {
     "listRuns",
 }
 
+#: 1.3.0-rc.1 并入的 E3 统计操作，不属于 E1 草案的 16 个基线端点。
+E3_ONLY_OPERATIONS = {
+    "getReviewWorkload",
+    "getAssessmentRunTrends",
+    "getProfileCompleteness",
+}
+
 
 def test_impact_rows_cover_exactly_the_mounted_operations():
     contract = _contract_operations(BASE_PATH)
@@ -117,14 +124,14 @@ def test_impact_rows_cover_exactly_the_mounted_operations():
     baseline_mounted = {
         operation_id: deps
         for operation_id, deps in mounted.items()
-        if operation_id not in E1_ONLY_OPERATIONS
+        if operation_id not in E1_ONLY_OPERATIONS and operation_id not in E3_ONLY_OPERATIONS
     }
 
-    # 契约里的 16 个基线操作（并入前的集合）；E1 的 7 个已并进契约，单独算。
+    # 契约里的 16 个基线操作（并入前的集合）；E1 的 7 个与 E3 的 3 个已并进契约，单独算。
     baseline_contract = {
         operation_id: endpoint
         for operation_id, endpoint in contract.items()
-        if operation_id not in E1_ONLY_OPERATIONS
+        if operation_id not in E1_ONLY_OPERATIONS and operation_id not in E3_ONLY_OPERATIONS
     }
 
     assert set(baseline_mounted) == set(baseline_contract), (
@@ -137,7 +144,7 @@ def test_impact_rows_cover_exactly_the_mounted_operations():
     assert E1_ONLY_OPERATIONS <= set(contract)
     baseline = set(baseline_contract.values())
     assert len(baseline) == 16
-    assert len(contract) == 23
+    assert len(contract) == 26
 
     draft = yaml.safe_load(DRAFT_PATH.read_text(encoding="utf-8"))
     rows = {row["endpoint"] for row in draft["x-e1-impact"]}
@@ -240,6 +247,6 @@ def test_published_security_matches_current_classification():
                 problems.append(f"{method.upper()} {path}: {operation.get('security')} != {expected}")
     assert problems == [], "\n".join(problems)
     # 21 条是已发布契约（`contracts/openapi.yaml`）的路径数；另 6 条是 E2 的发现/候选
-    # 操作，已在跑但只写在 `contracts/openapi.e2-draft.yaml` 里。它们同样要过上面的
-    # security 分类——草案评审通过并并入契约前，这份盘点把两批一起数着。
-    assert len(schema["paths"]) == 21 + 6
+    # 路径、3 条是 E3 的统计路径，已在跑但只写在各自的草案里。它们同样要过上面的
+    # security 分类——草案评审通过并并入契约前，这份盘点把几批一起数着。
+    assert len(schema["paths"]) == 21 + 6 + 3

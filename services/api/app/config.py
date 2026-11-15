@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 #: **必须等于 ``contracts/openapi.yaml`` 的 ``info.version``**：它曾停在 rc.3，而契约
 #: 已经走到 rc.5，健康检查于是对外报了一个不存在的版本。``tests/test_openapi_alignment.py``
 #: 里有一条用例把两者锁死，改动任意一侧都会转红。
-APP_VERSION = "1.1.0-rc.1"
+APP_VERSION = "1.3.0-rc.1"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -51,6 +51,9 @@ DEFAULT_RUN_LIFECYCLE_CONTRACT_ENABLED = False
 DEFAULT_RUN_LIFECYCLE_START_RETRY_SECONDS = 60
 #: 成功写入后周期性重校准的间隔（秒）：后提交的更早 T1 会在下一轮把起点向前挪。
 DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS = 600
+#: 采集生命周期日志目录（#77 的主机事件日志）。指标读侧用它核验覆盖证据；
+#: 目录未配置、不存在或无文件时降级为 partial（NO_JOURNAL），而不是假装精确。
+DEFAULT_COLLECTION_JOURNAL_DIR = "/var/lib/huice"
 
 
 class ConfigError(RuntimeError):
@@ -92,6 +95,8 @@ class Settings:
     run_lifecycle_start_recalibrate_seconds: int = (
         DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS
     )
+    #: 空串按「无证据」处理（NO_JOURNAL），不会直接返回 precise。
+    collection_journal_dir: str = DEFAULT_COLLECTION_JOURNAL_DIR
 
     @property
     def effective_public_origin(self) -> str:
@@ -221,6 +226,9 @@ class Settings:
             DEFAULT_RUN_LIFECYCLE_START_RECALIBRATE_SECONDS,
             problems,
         )
+        collection_journal_dir = _text(
+            env, "COLLECTION_JOURNAL_DIR", DEFAULT_COLLECTION_JOURNAL_DIR
+        )
 
         deepseek_base_url = _text(env, "DEEPSEEK_BASE_URL", "")
         deepseek_model = _text(env, "DEEPSEEK_MODEL", "")
@@ -286,6 +294,7 @@ class Settings:
             run_lifecycle_contract_enabled=run_lifecycle_contract_enabled,
             run_lifecycle_start_retry_seconds=run_lifecycle_start_retry_seconds,
             run_lifecycle_start_recalibrate_seconds=run_lifecycle_start_recalibrate_seconds,
+            collection_journal_dir=collection_journal_dir,
         )
 
 

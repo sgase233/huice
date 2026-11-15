@@ -35,6 +35,7 @@ from .routes import (
     discovery,
     enterprises,
     health,
+    metrics,
     policies,
 )
 
@@ -196,6 +197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(assessment_runs.admin_router)
     api.include_router(admin_policies.router)
     api.include_router(discovery.router)
+    api.include_router(metrics.router)
     app.include_router(api, prefix=API_PREFIX)
 
     # 先加 TraceId、后加 CORS：CORS 位于最外层，错误响应也能带上跨域头。

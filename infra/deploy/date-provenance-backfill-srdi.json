@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "reviewStatus": "draft-pending-m3",
+  "sourceNote": "SRDI 的 B 执行后的新 provenance 草案。不能沿用 9 条回填的旧 approved-by-m3：M3 明确要求「提交新数据后由 M3 重新复核并更新 reviewEvidence」。effectiveFrom 绑新增的细则来源行（post_12435148，第二十四条），applicationWindow 仍绑年度申报通知正文（post_12433720，正文「三、申报时间」）。执行顺序：先跑 add-published-policy-source.py 干跑并生成计划，把本文件 provenance.effectiveFrom.source.ordinal 的 0 换成该细则行在附件中的「第几份」（从 1 起），再干跑 backfill-date-provenance.py 生成计划，交 M3 复核；reviewStatus 在 M3 签认前保持 draft-pending-m3，脚本会拒绝 --apply。成文日期 2025-10-14 作印发日起算；官方页面「失效日期」栏 2030-10-14，按「5 年减 1 日」推算 2030-10-13，一日差异写进 note 待 M3 复核。",
+  "entries": [
+    {
+      "sourceUrl": "https://www.sz.gov.cn/cn/xxgk/zfxxgj/tzgg/content/post_12433720.html",
+      "version": "深工信规〔2025〕8号",
+      "provenance": {
+        "version": 1,
+        "effectiveFrom": {
+          "status": "verified",
+          "source": {
+            "kind": "attachment",
+            "ordinal": 0
+          },
+          "locator": "第二十四条「自印发之日起施行」；深圳市工信局政府信息公开页「成文日期」2025-10-14"
+        },
+        "effectiveTo": {
+          "status": "derived",
+          "basis": "细则第二十四条「有效期5年」；按 2025-10-14 起算，5 年减 1 日得 2030-10-13；深圳市工信局政府信息公开页「失效日期」栏为 2030-10-14，存在一日差异",
+          "derivedFrom": "2025-10-14"
+        },
+        "applicationWindow": {
+          "status": "verified",
+          "source": {
+            "kind": "body"
+          },
+          "locator": "正文「三、申报时间」"
+        },
+        "note": "申报窗口 2025-10-15—2025-11-10；各区初审 2025-12-10 前是初审节点，不是申报截止，须与主窗口分开。窗口来源是年度申报通知正文（post_12433720）；有效期来源是实施细则正文（post_12435148，第二十四条），两者不是同一份文件。细则第二十四条「自印发之日起施行，有效期5年」；官方页面「成文日期」2025-10-14 作印发日起算，「失效日期」栏 2030-10-14，按「满5年减1日」推算为 2030-10-13，一日差异待 M3 复核。窗口不是有效期。"
+      }
+    }
+  ]
+}
