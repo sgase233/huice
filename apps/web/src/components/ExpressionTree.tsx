@@ -24,5 +24,5 @@ function Node({ expression, path }: { expression: Expression; path: string }) {
 }
 
 export default function ExpressionTree({ expression }: { expression: unknown }) {
-  return <details className="expression-tree"><summary>查看资格逻辑结构</summary>{validExpression(expression) ? <><p>以下为该条款的规则结构；服务未提供各节点的独立判断结果。</p><p>编号表示节点层级。</p><ul><Node expression={expression} path="1" /></ul></> : <p>该版本的规则结构未提供或无法识别，请核对政策来源。</p>}</details>;
+  return <details className="expression-tree"><summary>查看资格逻辑结构</summary>{validExpression(expression) ? <><p>以下为该条款的规则结构；节点判断结果暂未提供。</p><p>编号表示节点层级。</p><ul><Node expression={expression} path="1" /></ul></> : <p>该版本的规则结构未提供或无法识别，请核对政策来源。</p>}</details>;
 }

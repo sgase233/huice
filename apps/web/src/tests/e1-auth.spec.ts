@@ -3,6 +3,27 @@ import { expect, test } from '@playwright/test';
 const session = (name: string, role: 'enterprise' | 'reviewer', enterpriseId: string | null) => ({ user: { id: name, username: name, role, enterpriseId }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' });
 const error = (code: string) => ({ error: { code, message: code, details: {} }, traceId: 'test' });
 
+for (const theme of ['light', 'dark']) test(`登录注册表单在窄屏下保持按钮间距与浮动标签：${theme}`, async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 800 });
+  await page.addInitScript(value => localStorage.setItem('huice-theme', value), theme);
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
+  await page.goto('/#enterprise');
+  const username = page.getByLabel('用户名');
+  await expect(username).toHaveAttribute('placeholder', '请输入用户名');
+  await username.focus();
+  await expect(username).toBeFocused();
+  const label = page.locator('.auth-field').filter({ has: username }).locator('span');
+  await expect.poll(async () => (await label.boundingBox())!.y - (await username.boundingBox())!.y).toBeLessThan(2);
+  const login = await page.getByRole('button', { name: '登录', exact: true }).boundingBox();
+  const register = await page.getByRole('button', { name: '注册账号' }).boundingBox();
+  expect(register!.y - (login!.y + login!.height)).toBeGreaterThanOrEqual(8);
+  await page.screenshot({ path: `test-results/auth-login-${theme}.png`, fullPage: true, animations: 'disabled' });
+  await page.getByRole('button', { name: '注册账号' }).click();
+  await expect(page.getByLabel('企业名称')).toHaveAttribute('placeholder', '请输入企业名称');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `test-results/auth-register-${theme}.png`, fullPage: true, animations: 'disabled' });
+});
+
 test('anonymous first visit does not report an expired session', async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
   await page.goto('/#enterprise');

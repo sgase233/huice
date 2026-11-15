@@ -62,7 +62,7 @@ test.fixme('受限轨迹携带内存令牌，退出后不再显示数据', async
   await expect(page.getByLabel('管理令牌')).toBeVisible();
 });
 
-test.fixme('轨迹按序展示降级、失败、版本和人工动作', async ({ page }) => {
+test('轨迹按序展示降级、失败、版本和人工动作', async ({ page }) => {
   const base = { inputSummary: '输入', outputSummary: '输出', objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'rule-v2', elapsedMs: 18, errorCode: null, humanAction: null };
   await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [
     { ...base, sequence: 2, stage: 'explanation', status: 'retryable_error', errorCode: 'DEPENDENCY_UNAVAILABLE', humanAction: '人工复核' },
@@ -70,7 +70,6 @@ test.fixme('轨迹按序展示降级、失败、版本和人工动作', async ({
     { ...base, sequence: 3, stage: 'extraction', status: 'fatal_error', errorCode: 'FAILED' },
   ] } }));
   await page.goto('/#trace');
-  await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   const steps = page.locator('.trace-steps > li');
@@ -93,12 +92,11 @@ test.fixme('轨迹按序展示降级、失败、版本和人工动作', async ({
   await steps.first().screenshot({ path: 'test-results/trace-flow-dark.png' });
 });
 
-test.fixme('轨迹序号不符合契约时显示错误而不保留旧轨迹', async ({ page }) => {
+test('轨迹序号不符合契约时显示错误而不保留旧轨迹', async ({ page }) => {
   let calls = 0;
   const step = { sequence: 1, stage: 'profile', status: 'ok', inputSummary: '输入', outputSummary: '旧轨迹', objectRefs: [], policyId: null, policyVersion: null, modelOrRuleVersion: 'v1', elapsedMs: 0, errorCode: null, humanAction: null };
   await page.route('**/api/v1/assessment-runs/*/trace', route => route.fulfill({ json: { steps: [{ ...step, sequence: ++calls === 1 ? 1 : 0 }] } }));
   await page.goto('/#trace');
-  await page.getByLabel('管理令牌').fill('test'); await page.getByRole('button', { name: '使用令牌' }).click();
   await page.getByLabel('分析记录编号').fill('11111111-1111-4111-8111-111111111111');
   await page.getByRole('button', { name: '读取轨迹' }).click();
   await expect(page.getByText('输出：旧轨迹')).toBeVisible();

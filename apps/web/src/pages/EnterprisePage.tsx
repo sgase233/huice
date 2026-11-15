@@ -3,6 +3,7 @@ import type { EnterpriseInput, FactInput, FactKey } from '../api/types';
 import { factLabels, factUnits, factUnitLabels } from '../demo';
 
 const keys = Object.keys(factLabels) as FactKey[];
+const profileScopedKeys: FactKey[] = ['region', 'industry', 'establishedDate', 'specificMarketSince'];
 const decimal = /^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/;
 const signedDecimal = /^-?(?:0|[1-9]\d*)(?:\.\d{1,6})?$/;
 const validDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
@@ -123,7 +124,7 @@ export default function EnterprisePage({ value, onSave, real = false }: Props) {
         <label>画像结束日期<input type="date" value={draft.period.endDate} onChange={event => { setSaved(false); setDraft({ ...draft, period: { ...draft.period, endDate: event.target.value } }); }} /></label>
       </div>
       <h2>企业信息与来源</h2>
-      <p className="muted">不清楚时请选择“未知”；未知不等于 0。每项信息可单独填写所属期间，填写来源不代表内容已核实。</p>
+      <p className="muted">不清楚时请选择“未知”（区别于 0）。每项信息可填写所属期间；来源填写后仍需核实。</p>
       <div className="facts-list" ref={factsList}>
         {draft.facts.map((fact, index) => <div className={`fact-slot${enteringFact === index ? ' is-entering' : ''}${removingFact === index ? ' is-removing' : ''}`} key={index} onAnimationEnd={event => { if (event.target === event.currentTarget && enteringFact === index) { followNewFact(); setEnteringFact(null); } }}><div><fieldset className="fact-card" inert={removingFact === index} aria-describedby={factErrors(fact).length ? `fact-error-${index}` : undefined}>
           <legend>信息 {index + 1}</legend>
@@ -131,7 +132,7 @@ export default function EnterprisePage({ value, onSave, real = false }: Props) {
             <label>信息类型<select id={`fact-field-${index}`} value={fact.key} onChange={event => {
               const key = event.target.value as FactKey;
               editFact(index, { key, unit: factUnits[key], value: null });
-            }}>{keys.map(key => <option key={key} value={key}>{factLabels[key]}</option>)}</select></label>
+            }}>{keys.filter(key => key === fact.key || !profileScopedKeys.includes(key) || !draft.facts.some((other, i) => i !== index && other.key === key)).map(key => <option key={key} value={key}>{factLabels[key]}</option>)}</select></label>
             <label>值{fact.value === null ? <input value="未知" disabled aria-label={`${factLabels[fact.key]}未知`} /> : fact.unit === 'boolean' ?
               <select id={`fact-value-${index}`} aria-describedby={factErrors(fact).length ? `fact-error-${index}` : undefined} value={String(fact.value)} onChange={event => editFact(index, { value: event.target.value === 'true' })}><option value="true">是</option><option value="false">否</option></select> :
               <input id={`fact-value-${index}`} aria-describedby={factErrors(fact).length ? `fact-error-${index}` : undefined} aria-invalid={factErrors(fact).length > 0 || undefined} type={fact.unit === 'date' ? 'date' : 'text'} inputMode={fact.unit === 'CNY' || fact.unit === 'person' || fact.unit === 'ratio' ? 'decimal' : undefined} value={String(fact.value)} onChange={event => editFact(index, { value: event.target.value })} />}{fact.key === 'rdExpenseRevenueRatio' && <small>例如 3% 填 0.03。</small>}{fact.key === 'rdExpenseIncrease' && <small>投入下降时填写负值。</small>}{fact.key === 'creditRecord' && <small>“是”表示诚信记录良好。</small>}</label>
