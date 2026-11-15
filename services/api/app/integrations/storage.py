@@ -215,19 +215,11 @@ WHERE r.enterprise_id = %(enterprise_id)s
 _INSERT_RUN_FACT_EVENTS = """
 INSERT INTO invalidation_event
     (id, run_id, reason, policy_id, fact_key, fact_period_start, fact_period_end, created_at)
-SELECT gen_random_uuid(), d.run_id, 'fact_changed', d.policy_id,
-       d.fact_key, d.fact_period_start, d.fact_period_end, now()
-FROM assessment_dependency d
-WHERE d.run_id = %(run_id)s
-  AND NOT EXISTS (
-      SELECT 1 FROM invalidation_event e
-      WHERE e.run_id = d.run_id
-        AND e.reason = 'fact_changed'
-        AND e.policy_id IS NOT DISTINCT FROM d.policy_id
-        AND e.fact_key = d.fact_key
-        AND e.fact_period_start IS NOT DISTINCT FROM d.fact_period_start
-        AND e.fact_period_end IS NOT DISTINCT FROM d.fact_period_end
-  )
+SELECT gen_random_uuid(), %(run_id)s, 'fact_changed', NULL, NULL, NULL, NULL, now()
+WHERE NOT EXISTS (
+    SELECT 1 FROM invalidation_event
+    WHERE run_id = %(run_id)s AND reason = 'fact_changed' AND fact_key IS NULL
+)
 """
 
 #: 发布新版本使引用旧版本的判断失效（与发布同事务）。
@@ -2016,8 +2008,17 @@ class PolicyRepository:
                     },
                 )
 
-        # T1 读画像与 T2 写依赖之间可能夹着一次事实变更（含删除）。变更事件当时
-        # 命不中这个 run 的依赖，所以这里用 fact_version 做一致性检查并补记事件。
+        # T1 读画像与 T2 写依赖之间可能夹着一次事实变更（含删除）。先锁企业行，
+        # 与 update_fact/delete_fact 的 FOR UPDATE 串行化：要么变更先提交、这里读到
+        # 新版本；要么变更等 T2 提交后再查，此时依赖已可见、对方会写具体事件。
+        # 两边都拿不到「检查后、提交前」的窗口（#82 M2 二次复审）。
+        self._fetchone(
+            conn,
+            "SELECT id FROM enterprise WHERE id = %s FOR UPDATE",
+            (run.enterprise_id,),
+        )
+        # 版本漂移时只记「画像有变化、结论需重算」，不指认具体键/期间：
+        # 分析期间的变化未必是本次 run 依赖的那几条（#82 M2 P2）。
         if fact_version_of(self._load_facts(conn, run.enterprise_id)) != run.fact_version:
             self._execute(conn, _INSERT_RUN_FACT_EVENTS, {"run_id": run.id})
 

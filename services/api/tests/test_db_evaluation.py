@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -741,4 +742,104 @@ def test_delete_between_read_and_save_marks_the_run_stale(
     assert assessment.result == "satisfied"
     assert assessment.validity == "stale"
     assert [reason.code for reason in assessment.stale_reasons] == ["fact_changed"]
-    assert assessment.stale_reasons[0].changed_fact_refs[0].key == "taxableIncome"
+    # 漂移事件不指认具体事实：不能把没变过的依赖报成已变化。
+    assert assessment.stale_reasons[0].changed_fact_refs == []
+
+
+def test_unrelated_fact_change_during_analysis_does_not_blame_a_dependency(
+    repo, database_url_schema, monkeypatch
+):
+    enterprise = make_enterprise(repo, income="4000000")
+    policy_id, _ = publish_policy(repo, expressions=[INCOME_GATE])
+    original = repo.save_run
+    raced = {"done": False}
+
+    def racing_save_run(**kwargs):
+        if not raced["done"]:
+            raced["done"] = True
+            with psycopg.connect(database_url_schema) as conn:
+                conn.execute(
+                    "INSERT INTO enterprise_fact (enterprise_id, key, period_start, period_end, "
+                    "unit, source, verified, value_boolean) "
+                    "VALUES (%s, 'creditRecord', %s, %s, 'boolean', 'user_input', false, true)",
+                    (enterprise.id, PERIOD[0], PERIOD[1]),
+                )
+                conn.commit()
+        return original(**kwargs)
+
+    monkeypatch.setattr(repo, "save_run", racing_save_run)
+    run = run_assessment(repo, enterprise.id, [policy_id])
+
+    assessment = repo.get_run(run.id).assessments[0]
+    assert assessment.validity == "stale"
+    assert [reason.code for reason in assessment.stale_reasons] == ["fact_changed"]
+    assert assessment.stale_reasons[0].changed_fact_refs == []
+    assert assessment.stale_reasons[0].changed_criterion_ids == []
+
+
+def test_fact_delete_waits_for_t2_before_recording(monkeypatch, repo):
+    enterprise = make_enterprise(repo, income="4000000")
+    policy_id, _ = publish_policy(repo, expressions=[INCOME_GATE])
+    reached, release = threading.Event(), threading.Event()
+    state = {"armed": False, "paused": False}
+    original_load = repo._load_facts
+
+    def hooked_load(conn, enterprise_id):
+        facts = original_load(conn, enterprise_id)
+        if state["armed"] and not state["paused"]:
+            state["paused"] = True
+            reached.set()
+            release.wait(5)
+        return facts
+
+    monkeypatch.setattr(repo, "_load_facts", hooked_load)
+    original_save = repo.save_run
+
+    def armed_save(**kwargs):
+        state["armed"] = True
+        try:
+            return original_save(**kwargs)
+        finally:
+            state["armed"] = False
+
+    monkeypatch.setattr(repo, "save_run", armed_save)
+
+    results, deleted, started = {}, {}, threading.Event()
+
+    def run_worker():
+        try:
+            results["run"] = run_assessment(repo, enterprise.id, [policy_id])
+        except Exception as exc:  # pragma: no cover - 测试失败时带出原始异常
+            results["error"] = exc
+
+    def delete_worker():
+        started.set()
+        try:
+            deleted["enterprise"] = repo.delete_fact(
+                enterprise_id=enterprise.id,
+                fact_key="taxableIncome",
+                period_start=PERIOD[0],
+                period_end=PERIOD[1],
+                expected_fact_version=enterprise.fact_version,
+                trace_id=str(uuid4()),
+            )
+        except Exception as exc:  # pragma: no cover
+            deleted["error"] = exc
+
+    run_thread = threading.Thread(target=run_worker)
+    run_thread.start()
+    assert reached.wait(5), "一致性检查没有执行"
+    delete_thread = threading.Thread(target=delete_worker)
+    delete_thread.start()
+    assert started.wait(5)
+    # T2 还没提交：删除必须被企业行锁挡住，而不是先删成功。
+    delete_thread.join(0.2)
+    assert delete_thread.is_alive(), "删除没有等待 T2 的企业行锁"
+    release.set()
+    run_thread.join(10)
+    delete_thread.join(10)
+
+    assert "error" not in results and "error" not in deleted
+    assessment = repo.get_run(results["run"].id).assessments[0]
+    assert assessment.validity == "stale"
+    assert [reason.code for reason in assessment.stale_reasons] == ["fact_changed"]

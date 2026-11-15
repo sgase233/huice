@@ -160,6 +160,13 @@ def resolve_validity(
             fact_refs=_unique(affected_refs),
         )
 
+    # 分析期间画像发生漂移、但无法指认具体事实：只声明「有变化」，不填 refs。
+    if any(event.reason == FACT_CHANGED and not event.fact_key for event in relevant):
+        view.add(
+            "fact_changed",
+            "本次分析期间企业画像有更新，结论需要重算。",
+        )
+
     if boundary.window_closes_at is not None and boundary.window_closes_at <= now:
         view.add("window_closed", "该政策的申报窗口已关闭，不能再提交申报。")
 
