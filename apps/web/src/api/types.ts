@@ -256,6 +256,7 @@ export type PolicySummary = {
   effectiveTo: (Date) | (null);
   applicationWindow: (ApplicationWindow) | (null);
   sourceUrl: OfficialUrl;
+  dateProvenance?: (DateProvenance) | (null);
 };
 
 export type PolicyDetail = {
@@ -277,6 +278,7 @@ export type PolicyDetail = {
   sources: Array<SourceDocument>;
   criteria: Array<PublishedCriterion>;
   preparationTemplate: PreparationTemplate;
+  dateProvenance?: (DateProvenance) | (null);
 };
 
 export type PolicyDraft = {
@@ -299,6 +301,7 @@ export type PolicyDraft = {
   sources: Array<SourceDocument>;
   criteria: Array<Criterion>;
   validationFindings: Array<ValidationFinding>;
+  dateProvenance?: (DateProvenance) | (null);
 };
 
 export type PolicyList = {
@@ -536,4 +539,126 @@ export type RunSummary = {
 export type RunSummaryList = {
   items: Array<RunSummary>;
   nextCursor: (string) | (null);
+};
+
+export type MetricAvailability = {
+  state: "precise" | "partial" | "not_collected";
+  coverageFrom?: (Timestamp) | (null);
+  reason?: (string) | (null);
+};
+
+export type ReviewWorkloadDay = {
+  date: string;
+  newDrafts: number;
+  reviewsCompleted: (number) | (null);
+  pendingAtEndOfDay: (number) | (null);
+  availability: {
+  [key: string]: MetricAvailability;
+};
+  dayOpen: boolean;
+};
+
+export type ReviewWorkloadResponse = {
+  from: string;
+  to: string;
+  timeZone: "Asia/Shanghai";
+  generatedAt: Timestamp;
+  days: Array<ReviewWorkloadDay>;
+};
+
+export type AssessmentRunsDay = {
+  date: string;
+  total: (number) | (null);
+  succeeded: (number) | (null);
+  failed: (number) | (null);
+  unfinished: (number) | (null);
+  durationSampleCount: number;
+  avgDurationMs: (number) | (null);
+  availability: {
+  [key: string]: MetricAvailability;
+};
+  dayOpen: boolean;
+};
+
+export type AssessmentRunsResponse = {
+  from: string;
+  to: string;
+  timeZone: "Asia/Shanghai";
+  generatedAt: Timestamp;
+  days: Array<AssessmentRunsDay>;
+};
+
+export type CompletenessStatus = "filled" | "filled_unverified" | "answered_unknown" | "not_answered" | "not_applicable" | "applicability_unknown" | "not_due";
+
+export type CompletenessUnit = {
+  factKey: string;
+  periodStart: string;
+  periodEnd: string;
+  group: "basic" | "operation" | "rd" | "credit" | "other";
+  status: CompletenessStatus;
+};
+
+export type CompletenessGroup = {
+  key: "basic" | "operation" | "rd" | "credit" | "other";
+  label: string;
+  applicableCount: number;
+  filledCount: number;
+  ratio: (number) | (null);
+};
+
+export type CompletenessManualReview = {
+  policyId: UUID;
+  policyVersion: string;
+  criterionId: (UUID) | (null);
+  title: string;
+  reason: string;
+};
+
+export type CompletenessTotals = {
+  applicableCount: number;
+  filledCount: number;
+  ratio: (number) | (null);
+  answeredUnknownCount: number;
+  notDueCount: number;
+  notApplicableCount: number;
+  applicabilityUnknownCount: number;
+};
+
+export type CompletenessScope = {
+  mode: "profile" | "run" | "explicit";
+  policyVersions: {
+  [key: string]: string;
+};
+};
+
+export type CompletenessResponse = {
+  enterpriseId: UUID;
+  asOf: Timestamp;
+  scope: CompletenessScope;
+  definitionVersion: "d4.static.v1";
+  applicabilityMode: "static";
+  units: Array<CompletenessUnit>;
+  groups: Array<CompletenessGroup>;
+  totals: CompletenessTotals;
+  manualReview: Array<CompletenessManualReview>;
+  generatedAt: Timestamp;
+};
+
+export type DateProvenanceStatus = "verified" | "derived" | "unverified" | "not_applicable" | "unknown";
+
+export type DateProvenanceField = {
+  status: DateProvenanceStatus;
+  source?: ("body" | "attachment") | (null);
+  locator?: (string) | (null);
+  basis?: (string) | (null);
+  derivedFrom?: (string) | (null);
+  note?: (string) | (null);
+};
+
+export type DateProvenance = {
+  version: number;
+  effectiveFrom?: (DateProvenanceField) | (null);
+  effectiveTo?: (DateProvenanceField) | (null);
+  applicationWindow?: (DateProvenanceField) | (null);
+  note?: (string) | (null);
 };
