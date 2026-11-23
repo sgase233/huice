@@ -124,12 +124,12 @@ python3 -m venv /opt/huice/venv
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `APP_ENV` | 是 | `local` 或 `demo`；公网演示用 `demo` |
+| `APP_ENV` | 是 | `local` 或 `demo`；`demo` 与 `restricted` 绑定、`local` 与 `local` 绑定（见 §4.7.1） |
 | `API_HOST` / `API_PORT` | 是 | `127.0.0.1` / `8000` |
 | `DATABASE_URL` | 是 | PostgreSQL 连接串；不要贴进命令行参数 |
 | `ADMIN_TOKEN` | 是 | 运维 Bearer，≥16 位；只读后台接口 |
 | `DEMO_SESSION_SECRET` | 是（restricted） | ≥32 位，演示门禁签名密钥 |
-| `DEMO_ACCESS_MODE` | 是 | `local` 或 `restricted`；公网用 `restricted` |
+| `DEMO_ACCESS_MODE` | 是 | `local` 或 `restricted`；公网长期用 `restricted`，演示期可临时切 `local`（见 §4.7.1） |
 | `CORS_ORIGINS` | 是 | 前端真实源，禁止 `*` |
 | `PUBLIC_ORIGIN` | 建议 | 登录/注册的 Origin 校验；必须与访问地址完全一致 |
 | `MODEL_MODE` | 是 | `fixture` 或 `deepseek` |
@@ -227,6 +227,32 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 
 输出 `value:` 与 `Set-Cookie:`。每个浏览器/设备配一次即可，不需要每个用户登录都配；过期或换设备再签。不要把这个值写进文档或仓库。
 
+#### 4.7.1 演示期临时切成 local（免 cookie）
+
+如果要求「打开站点就到了登录页、不配任何 cookie」，可以把门禁临时关掉：`/etc/huice/api.env` 里 `APP_ENV=local`、`DEMO_ACCESS_MODE=local`。
+
+- 两个变量**必须成对改**：`APP_ENV=demo` 强制 `restricted`、`APP_ENV=local` 强制 `local`，只改一个服务会启动失败（只报变量名）。`local` 模式还要求 `API_HOST` 是回环地址。
+- 改完 `systemctl restart huice-api`。验证：`/api/v1/health` 200；不带 cookie 的 `POST /api/v1/auth/login` 返回 `401`（身份校验失败），而不是 `403 DEMO_SESSION_REQUIRED`。注意不带 cookie 的 `GET /api/v1/policies` 在 `local` 下是 `401`，不是 `200`——未登录没有身份。
+
+切换前先处理三条副作用：
+
+1. **会话 cookie 不再带 `Secure`**（`local` 模式下 `session_cookie_attributes` 置 `secure=False`）。切之前把 80 端口改成跳转，否则明文 `/api/v1` 会成为 cookie 泄露口：
+
+   ```nginx
+   server {
+       listen 80;
+       listen [::]:80;
+       server_name _;
+       return 301 https://$host$request_uri;
+   }
+   ```
+
+   改完 `nginx -t && systemctl reload nginx`。仓库模板 `infra/deploy/nginx-huice.conf` 是反代形态（纯 http 部署也要用它），所以这一步在切 `local` 时是手工改动，恢复 `restricted` 后可按需要还原。
+2. **企业注册入口对公网开放**；审核员注册仍受 `REVIEWER_SIGNUP_KEY` 约束。
+3. **演示门禁与 demo 配额失效**：未登录请求的身份是 `None`，公开列表也要登录后才能读。
+
+回滚：改回 `APP_ENV=demo` + `DEMO_ACCESS_MODE=restricted`（或还原 `/etc/huice/api.env` 的备份）后重启；切回后每个浏览器都要按本节重新配演示 cookie。
+
 ### 4.8 定时任务
 
 ```bash
@@ -318,8 +344,9 @@ systemctl restart huice-api
 | --- | --- | --- |
 | `/health` 503 `DEPENDENCY_UNAVAILABLE` | 数据库不可达/欠费/白名单 | 查 RDS 状态与安全组；不要先怀疑 DSN 格式 |
 | 登录页「无法连接服务」 | 前端构建没设 `VITE_API_BASE_URL=/api/v1`，产物指向 `127.0.0.1:8000` | 用第 4.6 节命令重新构建并替换 |
-| 页面「演示入口已失效」 | restricted 门禁 cookie 缺失/过期 | 重新 `issue-session.py`，按浏览器设置 cookie |
-| 80 端口返回 JSON 404 | 站点走 443；80 默认 server 落到 API | 用 `https://` 访问；如需 80 跳转再加 nginx 规则 |
+| 页面「演示入口已失效」（仅 `restricted`） | 门禁 cookie 缺失/过期 | 重新 `issue-session.py`，按浏览器设置 cookie；`local` 部署不会出现这条 |
+| 80 端口返回 JSON 404 | 站点走 443；80 默认 server 落到 API | 用 `https://` 访问；切 `local` 模式时应把 80 改成跳转（见 §4.7.1） |
+| 登录/注册 403 `ORIGIN_MISMATCH` | `PUBLIC_ORIGIN` 与浏览器实际访问的源不一致（常见：写成 `http://` 而站点是 `https://`，或留空后取到 `CORS_ORIGINS` 第一项） | 按访问地址改 `PUBLIC_ORIGIN`（scheme + host，不带路径）后重启 |
 | 迁移后仍报缺表 | 某迁移执行失败但未登记 | 看 `migrate.sh` 输出与 `schema_migration`，修好重跑 |
 | `python3: Permission denied`（Windows） | WindowsApps 的 `python3` 别名 | 用 `python` 或在 Git Bash 里显式指定解释器 |
 

@@ -10,9 +10,9 @@
 | --- | --- | --- |
 | 企业用户 | 维护本企业画像、查看已发布政策、发起判断、下载报告/轨迹 | 访问后台审核、发现配置、全量统计 |
 | 审核员 | 导入/抽取/审核发布政策、候选审核、查看全部运行与统计 | 修改他人企业画像、代替企业发起判断 |
-| 演示访客 | 在 `restricted` 部署下凭演示门禁 cookie 浏览演示内容 | 默认只读；写操作受演示配额与归属限制 |
+| 演示访客 | `restricted` 部署下凭演示门禁 cookie 浏览公开内容；`local` 部署不提供匿名浏览，需登录 | 默认只读；写操作受演示配额与归属限制 |
 
-登录页的「进入服务端演示」只在 `local` 演示或已通过演示门禁时可用；公网 `restricted` 部署需要先有 `huice_demo_session`（由运维签发，每个浏览器一次，不是每个账号一次）。
+**当前线上演示是 `local` 模式**：打开站点就是登录页，用发放的演示账号登录即可，不需要任何 cookie（见 §1.3）。只有切回 `restricted` 时，才需要先有 `huice_demo_session`（由运维签发，每个浏览器一次，不是每个账号一次）。
 
 ### 1.1 页面地图
 
@@ -33,14 +33,24 @@
 ### 1.2 演示模式
 
 - 本地/演示入口带 `?mode=demo` 时使用固定合成样例，不读写真实企业数据；
-- `restricted` 公网部署还需要演示门禁 cookie，它按浏览器生效，不与某个账号绑定；
+- `restricted` 部署另需演示门禁 cookie，它按浏览器生效，不与某个账号绑定；`local` 部署不需要；
 - 演示数据、门禁与配额仅用于展示，不代表真实政策或企业资格。
 
-### 1.3 restricted 部署：进入前设置演示 cookie
+### 1.3 演示部署：怎么进入
 
-当前公网演示使用 `DEMO_ACCESS_MODE=restricted`。在这种部署下，**打开页面还不够**：所有接口（包括登录、注册）都先经过演示门禁，浏览器必须带 `huice_demo_session`。这个 cookie 按**浏览器/设备**生效，不需要每个账号登录都重设。
+当前公网演示使用 `APP_ENV=local` + `DEMO_ACCESS_MODE=local`，**没有演示门禁**，也没有 demo 配额：
 
-#### 第一步：运维签发（在 ECS 上执行）
+1. 打开 `https://<站点地址>`。证书是自签名的，浏览器会先提示不安全，点「继续前往」即可。
+2. 停在登录页，用发放的演示账号登录：审核员用 `reviewer.demo`，企业侧用 `acme.alpha` / `acme.beta`。口令只走私聊渠道，不写进文档、截图或仓库。
+3. 登录后按 §2（企业侧）或 §3（审核员）操作。换浏览器、换设备、清 cookie 都不影响，重新登录就行。
+
+`local` 模式同时关闭了演示门禁与演示配额，企业注册入口对公网开放（审核员注册仍要审核员注册密钥）。比赛演示结束后应切回 `restricted`，恢复 §1.3.1 的流程。
+
+#### 1.3.1 如切回 restricted：进入前设置演示 cookie
+
+`DEMO_ACCESS_MODE=restricted` 下，**打开页面还不够**：所有接口（包括登录、注册）都先经过演示门禁，浏览器必须带 `huice_demo_session`。这个 cookie 按**浏览器/设备**生效，不需要每个账号登录都重设。切换方式是在 `/etc/huice/api.env` 里把 `APP_ENV` 设为 `demo`、`DEMO_ACCESS_MODE` 设为 `restricted`（两者必须成对，否则服务启动失败并只报变量名），然后重启 `huice-api`。
+
+##### 第一步：运维签发（在 ECS 上执行）
 
 ```bash
 systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
@@ -55,7 +65,7 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 
 `--hours` 可改大（例如 `168` 表示 7 天）；过期时间与 `demo_quota.expires_at` 同步。签发值属于演示凭证，不要写进文档、聊天、截图或仓库。
 
-#### 第二步：在浏览器设置（每位评委/每台设备一次）
+##### 第二步：在浏览器设置（每位评委/每台设备一次）
 
 1. 打开部署站点，例如 `https://<站点地址>`；首次会停在登录页或提示「演示入口已失效」。
 2. 按 `F12` 打开开发者工具，切到 **Console**。
@@ -71,7 +81,7 @@ document.cookie = "huice_demo_session=<value>; path=/; secure; samesite=lax; max
 
 > 也可以在 DevTools → Application → Cookies 里手工新增，但浏览器对 `HttpOnly`/`SameSite` 的编辑支持不一致；Console 写入更可靠。用 Console 写入的 cookie 不是 `HttpOnly`，不影响服务端校验。
 
-#### 第三步：确认是否生效
+##### 第三步：确认是否生效
 
 在 Console 执行：
 
@@ -84,7 +94,7 @@ fetch("/api/v1/policies", { credentials: "include" }).then(r => r.status)
 - 返回 `401` 且错误码 `DEMO_SESSION_INVALID`：cookie 值无效（常见于整串 `Set-Cookie` 被当成值）；
 - 补充：`/auth/me` 对纯 demo 身份会返回 `403 ROLE_FORBIDDEN`，这是「演示身份有效但不是登录账号」的正常结果，不代表门禁失败。
 
-#### 常见问题
+##### 常见问题
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
@@ -94,12 +104,12 @@ fetch("/api/v1/policies", { credentials: "include" }).then(r => r.status)
 | 关浏览器后失效 | cookie 没有 `max-age`，是会话 cookie | 写入时加 `max-age`，且不超过令牌有效期 |
 | 设置后仍 403 | 域不是站点域名、`path` 不是 `/`、或把整串 `Set-Cookie` 当成了值 | 只取 `value:`，并确认在 `https://站点` 下执行 |
 
-#### 安全说明
+##### 安全说明
 
 - 该 cookie 只证明「演示访客」，不等于登录账号；企业数据仍按归属过滤。
 - 轮换 `DEMO_SESSION_SECRET` 会让所有已签发 cookie 立即失效。
 - 不要把它发到公开群聊或截图里；评委设备用完可清除。
-- 这是当前 `restricted` 部署的临时操作步骤；后续若增加「演示入口」自动下发 cookie，本节会同步简化。
+- 本节只在 `restricted` 部署需要；`local` 部署（当前线上）跳过整节，直接登录即可。
 
 ## 2. 企业用户：从画像到判断
 
@@ -200,7 +210,7 @@ fetch("/api/v1/policies", { credentials: "include" }).then(r => r.status)
 | 提示 | 处理 |
 | --- | --- |
 | 会话已失效 | 重新登录；管理员改密会使全部会话失效 |
-| 演示入口已失效 | 找运维重签演示门禁 cookie，或从演示入口重新进入 |
+| 演示入口已失效（仅 `restricted`） | 找运维重签演示门禁 cookie，或从演示入口重新进入；`local` 部署不会出现这条 |
 | 版本冲突（409） | 页面会提示重新加载；以服务端最新版本为准再提交 |
 | 该版本没有条件，不能发布 | 先保存至少一条通过校验的条件 |
 | 该政策已过有效期/窗口关闭 | 只能查看历史，不能再按当前状态申报 |
