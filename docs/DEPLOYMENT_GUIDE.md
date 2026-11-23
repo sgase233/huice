@@ -232,11 +232,39 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 如果要求「打开站点就到了登录页、不配任何 cookie」，可以把门禁临时关掉：`/etc/huice/api.env` 里 `APP_ENV=local`、`DEMO_ACCESS_MODE=local`。
 
 - 两个变量**必须成对改**：`APP_ENV=demo` 强制 `restricted`、`APP_ENV=local` 强制 `local`，只改一个服务会启动失败（只报变量名）。`local` 模式还要求 `API_HOST` 是回环地址。
-- 改完 `systemctl restart huice-api`。验证：`/api/v1/health` 200；不带 cookie 的 `POST /api/v1/auth/login` 返回 `401`（身份校验失败），而不是 `403 DEMO_SESSION_REQUIRED`。注意不带 cookie 的 `GET /api/v1/policies` 在 `local` 下是 `401`，不是 `200`——未登录没有身份。
+- 改完 `systemctl restart huice-api`，先看服务起来没有：`systemctl is-active huice-api`、`/api/v1/health` 200。
+
+- 验证门禁确实关了。**只有「Origin 正确 + 请求体合法」时才该看到 `401`**；请求体不合法是 `422`、Origin 缺失或不匹配是 `403 ORIGIN_MISMATCH`，这两种不代表切换失败：
+
+  ```bash
+  API=http://127.0.0.1:8000
+  ORIGIN=https://<站点地址>        # 必须等于 PUBLIC_ORIGIN
+
+  # 1) 门禁已关：合法请求体 + 正确 Origin + 错凭据 → 401 INVALID_CREDENTIALS
+  curl -s -o /dev/null -w 'login=%{http_code}\n' -X POST $API/api/v1/auth/login \
+    -H 'Content-Type: application/json' -H "Origin: $ORIGIN" \
+    -d '{"username":"nobody.check","password":"wrong-password-123"}'
+
+  # 2) Origin 校验仍在（不是门禁）：403 ORIGIN_MISMATCH
+  curl -s -o /dev/null -w 'no-origin=%{http_code}\n' -X POST $API/api/v1/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"nobody.check","password":"wrong-password-123"}'
+
+  # 3) 请求体不合法：422 VALIDATION_ERROR
+  curl -s -o /dev/null -w 'bad-body=%{http_code}\n' -X POST $API/api/v1/auth/login \
+    -H 'Content-Type: application/json' -H "Origin: $ORIGIN" -d '{}'
+
+  # 4) 未登录没有身份：401 UNAUTHENTICATED（local 下不是 200）
+  curl -s -o /dev/null -w 'policies=%{http_code}\n' $API/api/v1/policies
+  ```
+
+  期望依次是 `401`、`403`、`422`、`401`。前三条都不再是 `403 DEMO_SESSION_REQUIRED`，就说明门禁关了；第 1 条只能证明「进到了身份校验」，不能证明账号可用，账号可用与否要在浏览器里登一次。
 
 切换前先处理三条副作用：
 
-1. **会话 cookie 不再带 `Secure`**（`local` 模式下 `session_cookie_attributes` 置 `secure=False`）。切之前把 80 端口改成跳转，否则明文 `/api/v1` 会成为 cookie 泄露口：
+1. **会话 cookie 的 `Secure` 由站点源决定，不由 `APP_ENV` 决定**。`PUBLIC_ORIGIN` 是 `https://` 时会话 cookie 一律带 `Secure`（`session_cookie_attributes`：`app_env != "local"` 或源是 https），浏览器不会把它发往明文 `http://`；纯 http 的本机开发仍不带 `Secure`，否则浏览器不保存。切换后请在浏览器 DevTools → Application → Cookies 里确认 `huice_session` 的 `Secure` 已勾上。
+
+   **不要把 80 端口跳转当防泄露手段**：301 是服务器收到请求之后才回的，明文请求连同 cookie 已经发出去了，挡不住泄露；它只改善「用户输 `http://` 时看到什么」。真正的控制是两条：① 公网不暴露明文入口——安全组不放行 80，或 nginx 只 `listen 443`；② https 站点上的会话 cookie 必须带 `Secure`（上一条）。确实需要 80 只做跳转时：
 
    ```nginx
    server {

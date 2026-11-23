@@ -439,6 +439,39 @@ def test_session_cookie_is_httponly_lax_and_scoped_to_api(client, accounts):
     assert "Path=/api" in header
 
 
+def test_https_site_sets_secure_cookie_even_when_app_env_is_local():
+    """演示期是 ``APP_ENV=local`` + HTTPS 站点：cookie 必须带 ``Secure``。
+
+    否则浏览器会把会话 cookie 发往明文 ``http://站点/...``，而 80 端口的 301 是收到请求
+    之后才回的，拦不住已经发出去的凭据（PR #84 复审 P1）。
+    """
+
+    origin = "https://139.9.33.46"
+    client, application = build_client(public_origin=origin)
+    client.headers["origin"] = origin
+    application.state.accounts.seed_user("cookie.secure")
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "cookie.secure", "password": PASSWORD},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "Secure" in response.headers["set-cookie"]
+
+
+def test_http_development_keeps_cookie_without_secure_so_browsers_store_it():
+    """纯 http 本机开发不能下发 ``Secure``：浏览器会直接丢掉这个 cookie。"""
+
+    client, application = build_client()
+    application.state.accounts.seed_user("cookie.plain")
+
+    response = login(client, "cookie.plain")
+
+    assert response.status_code == 200, response.text
+    assert "Secure" not in response.headers["set-cookie"]
+
+
 # ------------------------------------------------------------------ 限流（D1.7）
 
 
