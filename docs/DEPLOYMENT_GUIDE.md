@@ -281,6 +281,29 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 
 回滚：改回 `APP_ENV=demo` + `DEMO_ACCESS_MODE=restricted`（或还原 `/etc/huice/api.env` 的备份）后重启；切回后每个浏览器都要按本节重新配演示 cookie。
 
+**已登录浏览器的迁移**：新代码只影响**之后签发**的 cookie。镜像里已经存在的旧会话 cookie 不会因为部署而变成 `Secure`，在用户重新登录或清除之前，浏览器仍会把它发往明文的 `http://站点/api/...`。所以升级顺序固定为：
+
+1. **先关明文入口**：安全组不放行 80，或 nginx 只 `listen 443`。这一步必须在部署前完成——它才是旧 cookie 的可控边界，301 跳转不算。
+2. 部署新代码并重启（§4.9 的冒烟照做）。
+3. **撤销旧会话**（可选；要让旧凭据立即失效就必须做）。脚本默认只统计：
+
+   ```bash
+   # 两次都用 systemd-run + --pipe --wait --collect，才能把输出拿回来
+   systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+     /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/revoke-sessions.py            # 统计
+   systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+     /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/revoke-sessions.py --apply    # 撤销
+   ```
+
+   只处理 `revoked_at IS NULL AND expires_at > now()` 的会话，不删行（与登出同一语义）；加 `--username <账号>` 可只清某个人。过期的会话不动。
+4. **迁移验收**：拿一台升级前已登录的浏览器——
+   - 关掉 80 后访问 `https://<站点>` 仍可用（旧 cookie 在 https 下仍有效），说明这不是"部署即失效"；
+   - 第 3 步撤销后再请求一次，`GET /api/v1/policies` 返回 `401 SESSION_INVALID`，页面跳登录页；
+   - 重新登录后 DevTools → Application → Cookies 里 `huice_session` 的 `Secure` 已勾上；
+   - `curl -s -o /dev/null -w '%{http_code}\n' http://<站点>/api/v1/policies` 在关掉 80 后连接不成功（不是 301、也不是 200）。
+
+回滚：改回 `APP_ENV=demo` + `DEMO_ACCESS_MODE=restricted`（或还原 `/etc/huice/api.env` 的备份）后重启；切回后每个浏览器都要按本节重新配演示 cookie。
+
 ### 4.8 定时任务
 
 ```bash
