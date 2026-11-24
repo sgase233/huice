@@ -275,17 +275,15 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
    }
    ```
 
-   改完 `nginx -t && systemctl reload nginx`。仓库模板 `infra/deploy/nginx-huice.conf` 是反代形态（纯 http 部署也要用它），所以这一步在切 `local` 时是手工改动，恢复 `restricted` 后可按需要还原。
+   改完 `nginx -t && systemctl reload nginx`。仓库模板 `infra/deploy/nginx-huice.conf` 是反代形态（纯 http 部署也要用它），所以这一步在切 `local` 时是手工改动，恢复 `restricted` 后可按需要还原。**但这段跳转只能在「已登录浏览器的迁移」第 5 条的条件满足后才装回去**：旧会话没清空之前，80 应保持关闭（连跳转也不要开），否则尚未重登的用户手里的非 `Secure` cookie 仍会被明文带出。
 2. **企业注册入口对公网开放**；审核员注册仍受 `REVIEWER_SIGNUP_KEY` 约束。
 3. **演示门禁与 demo 配额失效**：未登录请求的身份是 `None`，公开列表也要登录后才能读。
 
-回滚：改回 `APP_ENV=demo` + `DEMO_ACCESS_MODE=restricted`（或还原 `/etc/huice/api.env` 的备份）后重启；切回后每个浏览器都要按本节重新配演示 cookie。
+**已登录浏览器的迁移**：新代码只影响**之后签发**的 cookie。服务器上已经存在的旧会话 cookie 不会因为部署而变成 `Secure`，在用户重新登录或清除之前，浏览器会继续把它发往明文的 `http://站点/api/...`。迁移顺序固定：
 
-**已登录浏览器的迁移**：新代码只影响**之后签发**的 cookie。镜像里已经存在的旧会话 cookie 不会因为部署而变成 `Secure`，在用户重新登录或清除之前，浏览器仍会把它发往明文的 `http://站点/api/...`。所以升级顺序固定为：
-
-1. **先关明文入口**：安全组不放行 80，或 nginx 只 `listen 443`。这一步必须在部署前完成——它才是旧 cookie 的可控边界，301 跳转不算。
+1. **先关明文入口**：安全组不放行 80，或 nginx 只 `listen 443`。必须在部署前完成——它是旧 cookie 的可控边界，301 跳转不算。
 2. 部署新代码并重启（§4.9 的冒烟照做）。
-3. **撤销旧会话**（可选；要让旧凭据立即失效就必须做）。脚本默认只统计：
+3. **撤销旧会话**。脚本默认只统计，`--apply` 才写 `revoked_at`（不删行，与登出同语义），只处理 `revoked_at IS NULL AND expires_at > now()`，`--username <账号>` 可只清某个人：
 
    ```bash
    # 两次都用 systemd-run + --pipe --wait --collect，才能把输出拿回来
@@ -295,12 +293,16 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
      /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/revoke-sessions.py --apply    # 撤销
    ```
 
-   只处理 `revoked_at IS NULL AND expires_at > now()` 的会话，不删行（与登出同一语义）；加 `--username <账号>` 可只清某个人。过期的会话不动。
-4. **迁移验收**：拿一台升级前已登录的浏览器——
-   - 关掉 80 后访问 `https://<站点>` 仍可用（旧 cookie 在 https 下仍有效），说明这不是"部署即失效"；
-   - 第 3 步撤销后再请求一次，`GET /api/v1/policies` 返回 `401 SESSION_INVALID`，页面跳登录页；
+4. **迁移验收**：至少两类浏览器——升级前已登录的、以及从未登录过的：
+   - 关掉 80 后，升级前已登录的那台仍能通过 `https://` 正常使用（旧 cookie 在 https 下仍有效），说明这不是「部署即失效」；
+   - 第 3 步撤销后再请求 `GET /api/v1/policies`，返回 `401 SESSION_INVALID`，页面跳登录页；
    - 重新登录后 DevTools → Application → Cookies 里 `huice_session` 的 `Secure` 已勾上；
-   - `curl -s -o /dev/null -w '%{http_code}\n' http://<站点>/api/v1/policies` 在关掉 80 后连接不成功（不是 301、也不是 200）。
+   - 从任意机器 `curl -s -o /dev/null -w '%{http_code}\n' http://<站点>/api/v1/policies` 连接不成功（既不是 301 也不是 200）。
+5. **什么时候才能重新开放 80**：只有在**所有旧会话都已撤销或已过期**、并且用户已经重新登录拿到带 `Secure` 的新 cookie 之后。两处容易想错：
+   - **撤销服务端会话不会删除浏览器里的 cookie**。它只让那条 cookie 在服务端失效（请求变成 `401 SESSION_INVALID`），浏览器仍会保存它、继续按原属性携带。所以「撤销完就能开 80」是错的——还要等用户重登（新 cookie 带 `Secure`）或手动清掉旧 cookie；
+   - **不撤销也能收敛，但前提是 80 一直关着**：旧会话最迟到 `SESSION_TTL_HOURS`（默认 12 小时）自然过期，期间用户可以照常用 https，只是登出或过期后要重新登录。
+   判断口径：`revoke-sessions.py` 统计返回 `0 条` 活跃会话，再开放 80。
+6. **用户侧通知**（演示/公开环境建议直接发一条）：请退出登录、清除本站 cookie 后重新登录；此后会话只经 https 携带。
 
 回滚：改回 `APP_ENV=demo` + `DEMO_ACCESS_MODE=restricted`（或还原 `/etc/huice/api.env` 的备份）后重启；切回后每个浏览器都要按本节重新配演示 cookie。
 
