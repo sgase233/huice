@@ -70,9 +70,11 @@ def test_dry_run_counts_without_writing_and_apply_revokes_live_sessions(database
             (username, PASSWORD_HASH),
         ).fetchone()[0]
         conn.execute(
-            "INSERT INTO user_session (id, user_id, token_hash, csrf_hash, expires_at) "
-            "VALUES (gen_random_uuid(), %s, %s, %s, now() + interval '1 hour'), "
-            "       (gen_random_uuid(), %s, %s, %s, now() - interval '1 hour')",
+            # 过期那条要同时把 created_at 往前挪：user_session_expiry 要求 expires_at > created_at。
+            "INSERT INTO user_session (id, user_id, token_hash, csrf_hash, created_at, expires_at) "
+            "VALUES (gen_random_uuid(), %s, %s, %s, now(), now() + interval '1 hour'), "
+            "       (gen_random_uuid(), %s, %s, %s, "
+            "        now() - interval '2 hours', now() - interval '1 hour')",
             (
                 user_id,
                 live_token,
