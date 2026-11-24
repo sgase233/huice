@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import os
 import subprocess
 import sys
@@ -33,6 +34,34 @@ def run_script(*args: str, **env_overrides) -> subprocess.CompletedProcess:
         env=env,
         timeout=120,
     )
+
+
+def load_script():
+    """按路径加载脚本模块（文件名带连字符，不能直接 import）。"""
+
+    spec = importlib.util.spec_from_file_location("revoke_sessions_script", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_update_statement_does_not_join_the_update_target_twice():
+    """`UPDATE user_session s … FROM user_session s` 会让别名重复声明而报错。
+
+    带库用例在 CI 上才发现过一次；这条不连库，本地就能挡住同类回归。
+    """
+
+    module = load_script()
+    where = "s.revoked_at IS NULL"
+
+    counted = module.count_sql(where)
+    revoked = module.revoke_sql(where)
+
+    assert counted.count("user_session") == 1
+    assert revoked.startswith("UPDATE user_session s SET revoked_at = now()")
+    assert revoked.count("user_session") == 1
+    assert "JOIN app_user" in counted
+    assert "FROM app_user u WHERE u.id = s.user_id" in revoked
 
 
 def test_missing_database_url_is_named_but_never_printed():

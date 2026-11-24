@@ -49,7 +49,27 @@ _USERNAME_SHAPE = re.compile(r"^[a-z0-9_.-]{3,32}$")
 
 #: 判据的公共部分：会话仍可用（未撤销、未过期）。
 _LIVE_SQL = "s.revoked_at IS NULL AND s.expires_at > now()"
-_JOIN_SQL = "FROM user_session s JOIN app_user u ON u.id = s.user_id"
+
+
+def count_sql(where: str) -> str:
+    """统计语句。
+
+    ``UPDATE`` 的目标表不能再出现在 ``FROM`` 里——那样别名 ``s`` 会被声明两次，PostgreSQL
+    直接报错；统计与撤销各自的 FROM 子句因此分开写，并有 ``test_revoke_sessions_script``
+    的一条不连库用例守着（CI 的带库用例才发现过一次）。
+    """
+
+    return (
+        "SELECT count(*) FROM user_session s JOIN app_user u ON u.id = s.user_id "
+        f"WHERE {where}"
+    )
+
+
+def revoke_sql(where: str) -> str:
+    return (
+        "UPDATE user_session s SET revoked_at = now() FROM app_user u "
+        f"WHERE u.id = s.user_id AND {where}"
+    )
 
 
 def _parse_before(raw: str) -> datetime.datetime | None:
@@ -108,16 +128,13 @@ def _run(apply: bool, username: str | None, before: datetime.datetime | None) ->
 
     try:
         with psycopg.connect(dsn, autocommit=False) as conn:
-            live = conn.execute(f"SELECT count(*) {_JOIN_SQL} WHERE {where}", params).fetchone()[0]
+            live = conn.execute(count_sql(where), params).fetchone()[0]
             if not apply:
                 conn.rollback()
                 print(f"{scope}活跃登录会话 {live} 条（dry-run，未写入）；加 --apply 才撤销。")
                 return 0
 
-            cursor = conn.execute(
-                f"UPDATE user_session s SET revoked_at = now() {_JOIN_SQL} WHERE {where}",
-                params,
-            )
+            cursor = conn.execute(revoke_sql(where), params)
             revoked = cursor.rowcount
             conn.commit()
     except Exception:  # noqa: BLE001 - 不打印异常详情：psycopg 的报错里带主机与库名
