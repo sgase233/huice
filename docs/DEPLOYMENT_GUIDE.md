@@ -321,14 +321,25 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
    WHERE created_at < '<T>'::timestamptz
      AND revoked_at IS NULL AND expires_at > now();
 
-   -- ② 边界之后的会话是否都还活着、且最早一条晚于第 5 步启动新服务的时刻
-   SELECT count(*) FILTER (WHERE revoked_at IS NOT NULL) AS wrongly_revoked,
-          count(*) AS new_sessions,
-          min(created_at) AS first_new
+   -- ② 边界之后的会话概况（只作信息，不作判据）
+   SELECT count(*) AS new_sessions,
+          min(created_at) AS first_new,
+          count(*) FILTER (WHERE revoked_at IS NOT NULL) AS revoked_later
    FROM user_session WHERE created_at >= '<T>'::timestamptz;
    ```
 
-   ① 不为 0 说明撤销没覆盖完整，不能重开 80。② 的 `wrongly_revoked` 应为 0（脚本只撤 `< T` 的会话，出现非 0 就说明有别的东西动过库）；`first_new` 应当晚于第 5 步新服务的启动时刻——**若它更早**，说明边界取早了（或旧服务没停干净），有旧代码签发的会话被划进了「新会话」一侧而没被撤销：重新在第 2 步停好服务、重取 `T` 再做一遍第 4 步。
+   ① 不为 0 说明撤销没覆盖完整，不能重开 80。② 只用来确认新代码已在签发会话（`new_sessions` > 0）以及发现边界取早：`first_new` 应当晚于第 5 步新服务的启动时刻，**若它更早**，说明边界取早了（或旧服务没停干净），有旧代码签发的会话被划进「新会话」一侧而没被撤销，需重新停服、重取 `T` 再做第 4 步。
+
+   **`revoked_later` 不为 0 是正常的，不作判据**：用户登出、修改密码、重新登录都会让应用撤销会话（登出与改密都只写 `revoked_at`）。用它当「脚本误伤新会话」的证据，会把正常操作误判成迁移失败。
+
+   **要确认脚本只动边界前的会话，用受控样本**：新服务启动后拿一个受控账号（如演示账号）登录一次，再跑一遍 `--before <T> --apply`（幂等，边界前已清空时应输出撤销 `0 条`），然后查该账号：
+
+   ```sql
+   SELECT count(*) FROM user_session s JOIN app_user u ON u.id = s.user_id
+   WHERE u.username = '<受控账号>' AND s.revoked_at IS NOT NULL;
+   ```
+
+   应为 `0`——这条会话创建于边界之后，脚本没有碰它；验完退出该账号即可。
 
 7. **什么时候才能重新开放 80**：判据是「`T` 之前创建的旧会话」清空——即 `revoke-sessions.py --before <T>` 统计返回 `0 条`。**不要**用「全部活跃会话为 0」：用户重登后会产生新的 `Secure` 会话，那个数不为 0 是正常的，按它作判据就永远开不了 80。另外两处容易想错：
    - **撤销服务端会话不会删除浏览器里的 cookie**。它只让那条 cookie 在服务端失效（请求变成 `401 SESSION_INVALID`），浏览器仍会保存它、继续按原属性携带。所以「撤销完就能开 80」是错的——还要等用户重登（新 cookie 带 `Secure`）或手动清掉旧 cookie；
