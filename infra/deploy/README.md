@@ -21,6 +21,7 @@
 | `import-collection-journal.py` | 不安装，直接跑 | 读主机事件日志、推出中断区间（配对缺口 + 心跳缺口）并按 `event_id` 幂等导入 `collection_gap`；链不完整时拒绝导入（013，§3.5.1） |
 | `backfill-date-provenance.py` + `date-provenance-backfill.json` | 不安装，直接跑 | 回填 `policy_version_date_provenance`（迁移 `011`）。默认干跑，`--apply` 才写库，且数据文件 `reviewStatus` 不是批准值时 `--apply` 照样拒绝；数据复核前只干跑（§2.1 迁移段） |
 | `provision-test-accounts.py` | 不安装，直接跑 | 建隔离环境的合成账号：1 审核员 + 2 企业，口令写成 0600 凭证文件（§3.6） |
+| `revoke-sessions.py` | 不安装，直接跑 | 撤销活跃登录会话：默认只统计，`--apply` 才写 `revoked_at`（不删行），`--username` 可只清某个账号。用于「会话 Cookie 改为在 https 站点带 `Secure`」这类变更的迁移——旧 cookie 不会因部署自动变化，要让旧凭据立即失效就得撤会话（`docs/DEPLOYMENT_GUIDE.md` §4.7.1「已登录浏览器的迁移」） |
 | `enable-tls.sh` | 在 ECS 上执行（`provision.sh` 之后再跑） | 签自签证书、装 443 站点配置、失败回滚（§3.2）；`--web-root` 时改装同源站点（§3.3） |
 | `nginx-huice-tls.conf` | 由 `enable-tls.sh` 装到 `/etc/nginx/conf.d/` | 监听 443（自签证书），转发 `/`，代理参数同 80 |
 | `nginx-huice-site.conf` | 同上，`enable-tls.sh --web-root` 时改装这一份 | 443 同源站点：前端静态文件 + `/api/v1/` 反代（与上一行**互斥**，同一个文件名） |

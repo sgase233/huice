@@ -319,9 +319,19 @@ def demo_quota_claim(request: Request, identity: Identity) -> DemoQuota | None:
 
 
 def session_cookie_attributes(settings) -> dict[str, object]:
+    """会话 cookie 属性。
+
+    ``Secure`` 不能只按 ``APP_ENV`` 判断：演示期会用 ``APP_ENV=local`` 部署在 HTTPS 站点上。
+    只看 ``APP_ENV`` 时，这种部署下的会话 cookie 不带 ``Secure``，浏览器会把它一并发往明文
+    ``http://站点/...``；而 80 端口的 301 是**收到请求之后**才回的，请求和 cookie 早已发出，
+    跳转拦不住这件事（M2 在 PR #84 复审的 P1）。所以只要站点源是 https，一律带 ``Secure``；
+    纯 http 的本机开发仍不带，否则浏览器不会保存这个 cookie。
+    """
+
     return {
         "httponly": True,
-        "secure": settings.app_env != "local",
+        "secure": settings.app_env != "local"
+        or settings.effective_public_origin.startswith("https://"),
         "samesite": "lax",
         "path": auth.SESSION_PATH,
     }
