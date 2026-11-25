@@ -282,7 +282,7 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 **已登录浏览器的迁移**：新代码只影响**之后签发**的 cookie。服务器上已经存在的旧会话 cookie 不会因为部署而变成 `Secure`，在用户重新登录或清除之前，浏览器会继续把它发往明文的 `http://站点/api/...`。迁移顺序固定：
 
 1. **先关明文入口**：安全组不放行 80，或 nginx 只 `listen 443`。必须在部署前完成——它是旧 cookie 的可控边界，301 跳转不算。
-2. **停旧服务**：`systemctl stop huice-api`。停了才不会有旧代码继续签发 cookie，边界取在后面才覆盖得到全部旧会话。
+2. **先做一次「旧会话仍有效」的确认，再停旧服务**：用一台升级前已登录的浏览器经 `https://` 正常打开站点、能读到数据（此时仍是旧代码、会话未被撤销）。这一步必须放在停服之前——撤销之后同一个浏览器只会拿到 `401`，那时再验就分不清「撤销生效」和「会话本来就没用了」。确认完执行 `systemctl stop huice-api`。停了才不会有旧代码继续签发 cookie，边界取在后面才覆盖得到全部旧会话。
 3. 部署新代码（**先不启动**，冒烟留到第 6 步）。
 4. **从数据库时钟取边界 `T`**，然后只撤销「`T` 之前创建」的旧会话：
 
@@ -308,19 +308,27 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
    **为什么必须带 `--before`**：用户重新登录会**新建**带 `Secure` 的会话；按「全部活跃会话」统计，那个数只会越来越多，「旧会话清零」永远不成立。脚本只处理 `revoked_at IS NULL AND expires_at > now()` **且** `created_at < T` 的会话（不删行，与登出同语义），`--apply` 才写库，`--username <账号>` 可再收窄到某个人。`--before` 必须带时区，不带时区脚本直接退出 2。
 
 5. **启动新服务**并做 §4.9 的冒烟。
-6. **迁移验收**：至少两类浏览器——升级前已登录的、以及从未登录过的：
-   - 关掉 80 后，升级前已登录的那台仍能通过 `https://` 正常使用（旧 cookie 在 https 下仍有效），说明这不是「部署即失效」；
-   - 第 4 步撤销后再请求 `GET /api/v1/policies`，返回 `401 SESSION_INVALID`，页面跳登录页；
+6. **迁移验收**：至少两类浏览器——升级前已登录的、以及从未登录过的。「撤销前旧会话仍有效」这一条已在第 2 步做完，这里只验撤销之后的结果：
+   - 第 4 步撤销、第 5 步启动新服务后，同一台浏览器请求 `GET /api/v1/policies` 返回 `401 SESSION_INVALID`，页面跳登录页；
    - 重新登录后 DevTools → Application → Cookies 里 `huice_session` 的 `Secure` 已勾上；
    - 从任意机器 `curl -s -o /dev/null -w '%{http_code}\n' http://<站点>/api/v1/policies` 连接不成功（既不是 301 也不是 200）。
 
-   再核一遍边界本身（同秒与时钟偏差两种情形都由「停服在前、边界取自数据库时钟」排除，这里做一次确认）——`<T>` 前后各 1 秒内创建的会话应当只来自新代码（第 5 步之后）：
+   再用 SQL 直接核边界两侧（`created_at < T` 就是旧会话、`≥ T` 是新会话，不需要按秒窗口猜——停服前一秒创建的会话同样落在 `< T` 一侧）：
 
    ```sql
+   -- ① 边界之前的旧会话是否已清空：应为 0
    SELECT count(*) FROM user_session
-   WHERE created_at BETWEEN '<T>'::timestamptz - interval '1 second'
-                        AND '<T>'::timestamptz + interval '1 second';
+   WHERE created_at < '<T>'::timestamptz
+     AND revoked_at IS NULL AND expires_at > now();
+
+   -- ② 边界之后的会话是否都还活着、且最早一条晚于第 5 步启动新服务的时刻
+   SELECT count(*) FILTER (WHERE revoked_at IS NOT NULL) AS wrongly_revoked,
+          count(*) AS new_sessions,
+          min(created_at) AS first_new
+   FROM user_session WHERE created_at >= '<T>'::timestamptz;
    ```
+
+   ① 不为 0 说明撤销没覆盖完整，不能重开 80。② 的 `wrongly_revoked` 应为 0（脚本只撤 `< T` 的会话，出现非 0 就说明有别的东西动过库）；`first_new` 应当晚于第 5 步新服务的启动时刻——**若它更早**，说明边界取早了（或旧服务没停干净），有旧代码签发的会话被划进了「新会话」一侧而没被撤销：重新在第 2 步停好服务、重取 `T` 再做一遍第 4 步。
 
 7. **什么时候才能重新开放 80**：判据是「`T` 之前创建的旧会话」清空——即 `revoke-sessions.py --before <T>` 统计返回 `0 条`。**不要**用「全部活跃会话为 0」：用户重登后会产生新的 `Secure` 会话，那个数不为 0 是正常的，按它作判据就永远开不了 80。另外两处容易想错：
    - **撤销服务端会话不会删除浏览器里的 cookie**。它只让那条 cookie 在服务端失效（请求变成 `401 SESSION_INVALID`），浏览器仍会保存它、继续按原属性携带。所以「撤销完就能开 80」是错的——还要等用户重登（新 cookie 带 `Secure`）或手动清掉旧 cookie；
