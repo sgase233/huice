@@ -332,14 +332,34 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 
    **`revoked_later` 不为 0 是正常的，不作判据**：用户登出、修改密码、重新登录都会让应用撤销会话（登出与改密都只写 `revoked_at`）。用它当「脚本误伤新会话」的证据，会把正常操作误判成迁移失败。
 
-   **要确认脚本只动边界前的会话，用受控样本**：新服务启动后拿一个受控账号（如演示账号）登录一次，再跑一遍 `--before <T> --apply`（幂等，边界前已清空时应输出撤销 `0 条`），然后查该账号：
+   **要确认脚本只动边界前的会话，用受控样本，并且锁到「本次新增的那一条」**。不能用「该账号下已撤销会话数为 0」来判：第 4 步撤销的旧会话也在同一个账号名下，那样查必然非零，会把正常迁移判成失败。
 
-   ```sql
-   SELECT count(*) FROM user_session s JOIN app_user u ON u.id = s.user_id
-   WHERE u.username = '<受控账号>' AND s.revoked_at IS NOT NULL;
-   ```
+   1. 选一个受控账号，先记下它已有的会话（这些旧会话可能已被第 4 步撤销）：
 
-   应为 `0`——这条会话创建于边界之后，脚本没有碰它；验完退出该账号即可。
+      ```sql
+      SELECT s.id, s.created_at FROM user_session s JOIN app_user u ON u.id = s.user_id
+      WHERE u.username = '<受控账号>' ORDER BY s.created_at;
+      ```
+
+   2. 用该账号登录一次，取出**本次新增**的那条会话（创建时刻在边界之后）：
+
+      ```sql
+      SELECT s.id, s.created_at FROM user_session s JOIN app_user u ON u.id = s.user_id
+      WHERE u.username = '<受控账号>' AND s.created_at >= '<T>'::timestamptz
+      ORDER BY s.created_at DESC LIMIT 1;
+      ```
+
+      与第 1 步的记录比对，确认这个 `id` 是新出现的；取不到唯一一条就记为「未验证」，不要拿账号下的历史行凑判据。
+
+   3. 执行脚本前确认这条会话仍是活跃状态：
+
+      ```sql
+      SELECT revoked_at FROM user_session WHERE id = '<会话ID>';   -- 应为 NULL
+      ```
+
+   4. 重跑 `revoke-sessions.py --before <T> --apply`（幂等，边界前已清空时应输出「撤销 0 条」），再按同一个 `id` 查一次，`revoked_at` 仍应为 `NULL`。
+
+   **第 3–4 步之间**不要对该账号登出、改密或再次登录——这三种操作都会撤销它自己的会话，让结果失去意义。全程只用会话 `id`，不需要输出 Cookie 或令牌。第 4 步确认完再退出该账号即可（退出会撤销它自己的会话，不影响已经得出的结论）。
 
 7. **什么时候才能重新开放 80**：判据是「`T` 之前创建的旧会话」清空——即 `revoke-sessions.py --before <T>` 统计返回 `0 条`。**不要**用「全部活跃会话为 0」：用户重登后会产生新的 `Secure` 会话，那个数不为 0 是正常的，按它作判据就永远开不了 80。另外两处容易想错：
    - **撤销服务端会话不会删除浏览器里的 cookie**。它只让那条 cookie 在服务端失效（请求变成 `401 SESSION_INVALID`），浏览器仍会保存它、继续按原属性携带。所以「撤销完就能开 80」是错的——还要等用户重登（新 cookie 带 `Secure`）或手动清掉旧 cookie；
