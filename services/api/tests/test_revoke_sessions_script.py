@@ -64,6 +64,24 @@ def test_update_statement_does_not_join_the_update_target_twice():
     assert "FROM app_user u WHERE u.id = s.user_id" in revoked
 
 
+def test_boundary_format_keeps_microseconds_and_offset():
+    """边界要带微秒与时区：秒精度会漏掉同一秒内签发的旧会话。"""
+
+    module = load_script()
+    value = datetime.datetime(
+        2026, 11, 25, 8, 0, 0, 123456, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
+    )
+
+    assert module.format_boundary(value) == "2026-11-25T08:00:00.123456+08:00"
+
+
+def test_print_boundary_cannot_be_combined_with_apply():
+    result = run_script("--print-boundary", "--apply", DATABASE_URL=DSN)
+
+    assert result.returncode == 2
+    assert "--print-boundary" in result.stderr
+
+
 def test_missing_database_url_is_named_but_never_printed():
     result = run_script(DATABASE_URL=None)
 
@@ -171,3 +189,57 @@ def test_dry_run_counts_without_writing_and_apply_revokes_live_sessions(database
     assert rows[old_live] is True
     assert rows[old_expired] is False
     assert rows[new_live] is False
+
+
+@pytest.mark.db
+def test_print_boundary_uses_the_database_clock_and_covers_same_second_sessions(
+    database_url_schema,
+):
+    """停服后取的边界必须覆盖同一秒内创建的会话（`date -Iseconds` 会漏掉）。"""
+
+    token = uuid.uuid4().hex + uuid.uuid4().hex
+    username = f"boundary.{uuid.uuid4().hex[:8]}"
+
+    with psycopg.connect(database_url_schema) as conn:
+        user_id = conn.execute(
+            "INSERT INTO app_user (id, username, password_hash, role) "
+            "VALUES (gen_random_uuid(), %s, %s, 'enterprise') RETURNING id",
+            (username, PASSWORD_HASH),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO user_session (id, user_id, token_hash, csrf_hash, created_at, expires_at) "
+            "VALUES (gen_random_uuid(), %s, %s, %s, now(), now() + interval '1 hour')",
+            (user_id, token, uuid.uuid4().hex + uuid.uuid4().hex),
+        )
+
+    printed = run_script("--print-boundary", DATABASE_URL=database_url_schema)
+
+    assert printed.returncode == 0, printed.stderr
+    boundary = printed.stdout.strip()
+    parsed = datetime.datetime.fromisoformat(boundary)
+    # 边界来自数据库时钟：带时区，且与 created_at 同一来源，不存在两台机器的偏差。
+    assert parsed.tzinfo is not None
+
+    counted = run_script(
+        "--username", username, "--before", boundary, DATABASE_URL=database_url_schema
+    )
+
+    assert counted.returncode == 0, counted.stderr
+    assert "1 条" in counted.stdout
+
+    applied = run_script(
+        "--username",
+        username,
+        "--before",
+        boundary,
+        "--apply",
+        DATABASE_URL=database_url_schema,
+    )
+
+    assert applied.returncode == 0, applied.stderr
+    with psycopg.connect(database_url_schema) as conn:
+        revoked = conn.execute(
+            "SELECT revoked_at IS NOT NULL FROM user_session WHERE token_hash = %s",
+            (token,),
+        ).fetchone()[0]
+    assert revoked is True

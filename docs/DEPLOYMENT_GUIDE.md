@@ -282,12 +282,18 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
 **已登录浏览器的迁移**：新代码只影响**之后签发**的 cookie。服务器上已经存在的旧会话 cookie 不会因为部署而变成 `Secure`，在用户重新登录或清除之前，浏览器会继续把它发往明文的 `http://站点/api/...`。迁移顺序固定：
 
 1. **先关明文入口**：安全组不放行 80，或 nginx 只 `listen 443`。必须在部署前完成——它是旧 cookie 的可控边界，301 跳转不算。
-2. 部署新代码并重启（§4.9 的冒烟照做）。
-3. **记下切换时刻 `T`**（部署完成、服务重启后的那一刻），然后只撤销「`T` 之前创建」的旧会话：
+2. **停旧服务**：`systemctl stop huice-api`。停了才不会有旧代码继续签发 cookie，边界取在后面才覆盖得到全部旧会话。
+3. 部署新代码（**先不启动**，冒烟留到第 6 步）。
+4. **从数据库时钟取边界 `T`**，然后只撤销「`T` 之前创建」的旧会话：
 
    ```bash
-   date -Iseconds        # 输出即 T，例如 2026-11-24T16:00:00+08:00，下面替换 <T>
+   systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
+     /opt/huice/venv/bin/python /opt/huice/app/infra/deploy/revoke-sessions.py --print-boundary
    ```
+
+   输出形如 `2026-11-25T16:00:00.123456+08:00`（微秒 + 时区），下面替换 `<T>`。
+
+   **不要用 `date -Iseconds` 取边界**：它只有秒精度，旧服务在同一秒内（`16:00:00.5`）签发的会话满足不了 `created_at < T`，会被漏掉，统计就会错误地显示清零；而且 `created_at` 由数据库时间产生，用服务器系统时钟取 `T` 还会叠加两台机器的时钟偏差。`--print-boundary` 读的是同一台数据库的 `clock_timestamp()`，与 `created_at` 同源。
 
    ```bash
    # 两次都用 systemd-run + --pipe --wait --collect，才能把输出拿回来
@@ -299,17 +305,27 @@ systemd-run --pipe --wait --collect -p EnvironmentFile=/etc/huice/api.env \
      --before <T> --apply                                                                # 撤销
    ```
 
-   **为什么必须带 `--before`**：用户重新登录会**新建**带 `Secure` 的会话；按「全部活跃会话」统计，那个数只会越来越多，「旧会话清零」永远不成立。脚本只处理 `revoked_at IS NULL AND expires_at > now()` **且** `created_at < T` 的会话（不删行，与登出同语义），`--apply` 才写库，`--username <账号>` 可再收窄到某个人。`--before` 必须带时区（`date -Iseconds` 的输出就带），不带时区脚本直接拒绝——猜时区会把还没过期的旧会话算成新会话。
+   **为什么必须带 `--before`**：用户重新登录会**新建**带 `Secure` 的会话；按「全部活跃会话」统计，那个数只会越来越多，「旧会话清零」永远不成立。脚本只处理 `revoked_at IS NULL AND expires_at > now()` **且** `created_at < T` 的会话（不删行，与登出同语义），`--apply` 才写库，`--username <账号>` 可再收窄到某个人。`--before` 必须带时区，不带时区脚本直接退出 2。
 
-4. **迁移验收**：至少两类浏览器——升级前已登录的、以及从未登录过的：
+5. **启动新服务**并做 §4.9 的冒烟。
+6. **迁移验收**：至少两类浏览器——升级前已登录的、以及从未登录过的：
    - 关掉 80 后，升级前已登录的那台仍能通过 `https://` 正常使用（旧 cookie 在 https 下仍有效），说明这不是「部署即失效」；
-   - 第 3 步撤销后再请求 `GET /api/v1/policies`，返回 `401 SESSION_INVALID`，页面跳登录页；
+   - 第 4 步撤销后再请求 `GET /api/v1/policies`，返回 `401 SESSION_INVALID`，页面跳登录页；
    - 重新登录后 DevTools → Application → Cookies 里 `huice_session` 的 `Secure` 已勾上；
    - 从任意机器 `curl -s -o /dev/null -w '%{http_code}\n' http://<站点>/api/v1/policies` 连接不成功（既不是 301 也不是 200）。
-5. **什么时候才能重新开放 80**：判据是「`T` 之前创建的旧会话」清空——即 `revoke-sessions.py --before <T>` 统计返回 `0 条`。**不要**用「全部活跃会话为 0」：用户重登后会产生新的 `Secure` 会话，那个数不为 0 是正常的，按它作判据就永远开不了 80。另外两处容易想错：
+
+   再核一遍边界本身（同秒与时钟偏差两种情形都由「停服在前、边界取自数据库时钟」排除，这里做一次确认）——`<T>` 前后各 1 秒内创建的会话应当只来自新代码（第 5 步之后）：
+
+   ```sql
+   SELECT count(*) FROM user_session
+   WHERE created_at BETWEEN '<T>'::timestamptz - interval '1 second'
+                        AND '<T>'::timestamptz + interval '1 second';
+   ```
+
+7. **什么时候才能重新开放 80**：判据是「`T` 之前创建的旧会话」清空——即 `revoke-sessions.py --before <T>` 统计返回 `0 条`。**不要**用「全部活跃会话为 0」：用户重登后会产生新的 `Secure` 会话，那个数不为 0 是正常的，按它作判据就永远开不了 80。另外两处容易想错：
    - **撤销服务端会话不会删除浏览器里的 cookie**。它只让那条 cookie 在服务端失效（请求变成 `401 SESSION_INVALID`），浏览器仍会保存它、继续按原属性携带。所以「撤销完就能开 80」是错的——还要等用户重登（新 cookie 带 `Secure`）或手动清掉旧 cookie；
    - **不撤销也能收敛，但前提是 80 一直关着**：`T` 之前的旧会话最迟到 `SESSION_TTL_HOURS`（默认 12 小时）自然过期，期间用户可以照常用 https；重登后的新会话带 `Secure`，不受影响，也不会把 `--before <T>` 的计数顶上去。
-6. **用户侧通知**（演示/公开环境建议直接发一条）：请退出登录、清除本站 cookie 后重新登录；此后会话只经 https 携带。
+8. **用户侧通知**（演示/公开环境建议直接发一条）：请退出登录、清除本站 cookie 后重新登录；此后会话只经 https 携带。
 
 回滚：改回 `APP_ENV=demo` + `DEMO_ACCESS_MODE=restricted`（或还原 `/etc/huice/api.env` 的备份）后重启；切回后每个浏览器都要按本节重新配演示 cookie。
 

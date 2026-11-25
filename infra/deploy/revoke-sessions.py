@@ -23,13 +23,20 @@ Cookie 不会因为部署而变**——它在用户重新登录或清除之前�
     # 只撤某个账号（例如只清掉演示账号的旧会话）
     ... revoke-sessions.py --username reviewer.demo --apply
 
-    # 只处理「切换时刻 T 之前创建」的会话——迁移判据要用这个，不能用「全部活跃会话」
-    ... revoke-sessions.py --before 2026-11-24T16:00:00+08:00
-    ... revoke-sessions.py --before 2026-11-24T16:00:00+08:00 --apply
+    # 先停旧服务，再从数据库时钟取边界 T（微秒级、带时区）
+    ... revoke-sessions.py --print-boundary
+    ... revoke-sessions.py --before <T>            # 统计
+    ... revoke-sessions.py --before <T> --apply    # 撤销
 
 为什么要 ``--before``：新代码上线后，用户重新登录会**新建**带 ``Secure`` 的会话；「全部
 活跃会话为 0」这个条件因此永远不成立，而重开 80 的前提恰恰是「升级前那批旧会话不再有效」。
 ``--before`` 把判据收窄到切换时刻之前创建的会话，新会话不参与统计，也不会被撤销。
+
+边界 ``T`` 必须**用 ``--print-boundary`` 从数据库时钟取**，不要用 ``date -Iseconds``：
+后者只有秒精度，旧服务在同一秒内（``16:00:00.5``）签发的会话会满足不了 ``created_at < T``
+而被漏掉，统计就会错误地显示清零；``created_at`` 由数据库时间产生，用服务器系统时钟取 ``T``
+还会叠加两台机器之间的时钟偏差。``--print-boundary`` 读的是 ``clock_timestamp()``，与
+``created_at`` 同一个时钟，且带微秒与时区。
 
 只打印条数，不打印令牌、摘要或连接串；失败也不带堆栈。
 
@@ -72,6 +79,12 @@ def revoke_sql(where: str) -> str:
     )
 
 
+def format_boundary(value: datetime.datetime) -> str:
+    """把数据库时钟读到的时刻写成 `--before` 可直接使用的 ISO 8601（含微秒与时区）。"""
+
+    return value.isoformat()
+
+
 def _parse_before(raw: str) -> datetime.datetime | None:
     """解析 `--before`：必须是带时区的 ISO 8601。
 
@@ -88,7 +101,13 @@ def _parse_before(raw: str) -> datetime.datetime | None:
     return value
 
 
-def _run(apply: bool, username: str | None, before: datetime.datetime | None) -> int:
+def _run(
+    apply: bool,
+    username: str | None,
+    before: datetime.datetime | None,
+    *,
+    print_boundary: bool = False,
+) -> int:
     dsn = os.environ.get("DATABASE_URL", "")
     if not dsn:
         print("缺少环境变量 DATABASE_URL（不打印取值）。", file=sys.stderr)
@@ -111,6 +130,17 @@ def _run(apply: bool, username: str | None, before: datetime.datetime | None) ->
         return 2
 
     logging.getLogger("psycopg.pool").setLevel(logging.CRITICAL)
+
+    if print_boundary:
+        try:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                boundary = conn.execute("SELECT clock_timestamp()").fetchone()[0]
+        except Exception:  # noqa: BLE001 - 不打印异常详情：报错里带主机与库名
+            print("读取数据库时钟失败：请检查数据库连通性（不打印连接信息）。", file=sys.stderr)
+            return 3
+        print(format_boundary(boundary))
+        print("把上面这行原样用作 --before <T>；它是数据库时钟，与 created_at 同源。", file=sys.stderr)
+        return 0
 
     conditions: list[str] = []
     params: list[object] = []
@@ -154,9 +184,17 @@ def main(argv: list[str] | None = None) -> int:
         "--before",
         default=None,
         metavar="ISO8601",
-        help="只处理 created_at 早于该时刻的会话；必须带时区，例如 2026-11-24T16:00:00+08:00",
+        help="只处理 created_at 早于该时刻的会话；必须带时区，取自 --print-boundary",
+    )
+    parser.add_argument(
+        "--print-boundary",
+        action="store_true",
+        help="只打印数据库时钟的当前时刻（微秒级、带时区），用作 --before 的边界",
     )
     args = parser.parse_args(argv)
+    if args.print_boundary and (args.apply or args.username or args.before):
+        print("--print-boundary 不能与 --apply / --username / --before 同时使用。", file=sys.stderr)
+        return 2
     before = None
     if args.before is not None:
         before = _parse_before(args.before)
@@ -167,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-    return _run(args.apply, args.username, before)
+    return _run(args.apply, args.username, before, print_boundary=args.print_boundary)
 
 
 if __name__ == "__main__":
