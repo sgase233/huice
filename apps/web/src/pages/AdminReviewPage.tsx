@@ -1,6 +1,0 @@
-export default function AdminReviewPage() {
-  return <section className="page-block" aria-labelledby="admin-title"><div className="page-heading"><div><span className="eyebrow">05 / 审核界面预览</span><h1 id="admin-title">让每条政策有可追溯的审核状态</h1><p>查看合成草稿和审核流程示例。</p></div><span className="phase-tag">仅界面预览</span></div>
-    <div className="content-columns"><section className="panel"><span className="eyebrow">草稿队列示意</span><h2>待审核条目</h2><div className="draft-row"><div><strong>合成草稿：政策正文待抽取</strong><p>demo-v1 · 待解析 · 演示发布者</p></div><span className="badge badge-pending">待解析</span></div><div className="draft-row"><div><strong>合成草稿：来源冲突待核对</strong><p>demo-v2 · 待审核 · 演示发布者</p></div><span className="badge badge-conflict">待人工核对</span></div></section>
-      <aside className="panel side-panel"><span className="eyebrow">审核步骤</span><h2>发布前核对</h2><ol className="steps"><li>导入政策正文与元数据</li><li>抽取条款并核对来源</li><li>处理冲突和缺失信息</li><li>确认版本后发布</li></ol><p className="notice warning">真实审核操作需要审核员会话。</p><div className="disabled-actions"><button className="button" type="button" disabled>导入政策（后续阶段）</button><button className="button button-secondary" type="button" disabled>审核发布（后续阶段）</button></div></aside></div>
-  </section>;
-}

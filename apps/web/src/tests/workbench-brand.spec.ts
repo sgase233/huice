@@ -3,7 +3,7 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
 });
 
-for (const url of ['/?mode=demo#enterprise', '/#enterprise']) {
+for (const url of ['/#enterprise']) {
   test(`工作台标识返回首页：${url}`, async ({ page }) => {
     await page.goto(url);
     const logo = page.getByRole('link', { name: '惠策协同首页' });

@@ -70,3 +70,12 @@ test('移动端可触碰侧边图片切换', async ({ browser }) => {
   await expect(page.locator('.home-carousel-ring')).toHaveAttribute('data-slide', '1');
   await context.close();
 });
+
+test('旧固定样例地址不再打开样例工作台', async ({ page }) => {
+  await page.goto('/?mode=demo');
+  await expect(page.getByRole('heading', { name: /看懂政策/ })).toBeVisible();
+  await expect(page.getByText('静态合成演示 · 未进行真实资格判断')).toHaveCount(0);
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: { error: { code: 'UNAUTHENTICATED', message: '需要登录', details: {} } } }));
+  await page.goto('/?mode=demo#enterprise');
+  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
+});

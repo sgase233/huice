@@ -38,9 +38,9 @@ export function validateEnterprise(input: EnterpriseInput): string[] {
   return errors;
 }
 
-type Props = { value: EnterpriseInput; onSave: (value: EnterpriseInput) => void | Promise<void>; real?: boolean };
+type Props = { value: EnterpriseInput; onSave: (value: EnterpriseInput) => void | Promise<void> };
 
-export default function EnterprisePage({ value, onSave, real = false }: Props) {
+export default function EnterprisePage({ value, onSave }: Props) {
   const [draft, setDraft] = useState<EnterpriseInput>(() => structuredClone(value));
   const [errors, setErrors] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
@@ -103,7 +103,7 @@ export default function EnterprisePage({ value, onSave, real = false }: Props) {
   }
 
   return <section className="page-block" aria-labelledby="enterprise-title">
-    <div className="page-heading"><div><span className="eyebrow">01 / 企业画像</span><h1 id="enterprise-title">先把企业情况说清楚</h1><p>{real ? '请填写示例企业的情况，保存后将创建一份新的企业信息。' : '请填写示例企业的情况，保存结果仅在当前页面有效。'}</p></div><span className="phase-tag">{real ? '示例数据 · 连接服务' : '固定样例演示'}</span></div>
+    <div className="page-heading"><div><span className="eyebrow">01 / 企业画像</span><h1 id="enterprise-title">先把企业情况说清楚</h1><p>请填写示例企业的情况，保存后将创建一份新的企业信息。</p></div><span className="phase-tag">示例数据 · 连接服务</span></div>
     <form className="panel form-panel" onSubmit={async event => {
       event.preventDefault();
       if (removingFact !== null) return;

@@ -1,7 +1,11 @@
 import { expect, test } from '@playwright/test';
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+});
+
 
 test('添加和删除信息时，卡片高度及底部按钮位置平滑变化', async ({ page }) => {
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const add = page.getByRole('button', { name: '添加一项信息' });
   const actions = page.locator('.form-actions');
   const y = () => actions.evaluate(element => element.getBoundingClientRect().top + window.scrollY);
@@ -28,14 +32,14 @@ test('添加和删除信息时，卡片高度及底部按钮位置平滑变化',
 
 test('减少动态效果时删除立即完成', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   await page.getByRole('button', { name: '移除此项信息' }).click();
   await expect(page.locator('.fact-card')).toHaveCount(2);
   await expect(page.getByRole('button', { name: '保存当前样本' })).toBeEnabled();
 });
 
 test('删除中间卡片后保留其他卡片的数据', async ({ page }) => {
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const add = page.getByRole('button', { name: '添加一项信息' });
   await add.click();
   await page.locator('.fact-card').last().getByRole('checkbox', { name: '未知' }).uncheck();
@@ -51,7 +55,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
   test(`新增卡片后页面跟随到底部：${reducedMotion}`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.emulateMedia({ reducedMotion });
-    await page.goto('/?mode=demo#enterprise');
+    await page.goto('/#enterprise');
     const add = page.getByRole('button', { name: '添加一项信息' });
     for (let count = 4; count <= 5; count++) {
       await add.click();
@@ -70,7 +74,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
 
 test('移动端新增卡片后底部操作保持可见', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   await page.getByRole('button', { name: '添加一项信息' }).click();
   await expect(page.locator('.fact-slot').last()).not.toHaveClass(/is-entering/);
   await expect.poll(async () => page.locator('.form-actions').evaluate(element => element.getBoundingClientRect().bottom <= innerHeight)).toBe(true);

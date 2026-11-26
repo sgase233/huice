@@ -1,7 +1,11 @@
 import { expect, test } from '@playwright/test';
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+});
+
 
 test('复选框支持键盘切换，并在选中时绘制对勾', async ({ page }) => {
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const checkbox = page.getByRole('checkbox', { name: '未知' }).first();
   await checkbox.focus();
   await checkbox.press('Space');
@@ -19,7 +23,7 @@ test('复选框支持键盘切换，并在选中时绘制对勾', async ({ page 
 
 test('减少动态效果时仍显示选中对勾', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const checkbox = page.getByRole('checkbox', { name: '未知' }).first();
   await checkbox.check();
   await expect(checkbox).toBeChecked();
