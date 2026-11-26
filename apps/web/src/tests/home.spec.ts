@@ -19,7 +19,7 @@ test('首页可浏览介绍并进入工作台', async ({ page }) => {
   await page.getByRole('link', { name: /开始使用工作台/ }).click();
   await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
   await expect(page.locator('a[href*="mode=demo"]')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '进入服务端演示' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '进入服务端演示' })).toHaveCount(0);
 });
 
 test('首页在移动端没有横向溢出', async ({ page }) => {

@@ -51,8 +51,6 @@ p { margin-bottom: 1rem; }
 .app-shell .auth-content .auth-primary, .app-shell .auth-content .auth-secondary { width: 100%; }
 .app-shell .auth-content .auth-secondary { background: var(--surface); color: var(--ink); border-color: var(--line); }
 .app-shell .auth-content .auth-secondary:hover:not(:disabled) { background: var(--canvas); color: var(--ink); border-color: var(--muted); }
-.auth-alternatives { display: grid; gap: .85rem; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); text-align: center; }
-.auth-alternatives a { padding: .35rem; text-underline-offset: .2em; }
 .app-shell .main-content.auth-content .auth-card button.auth-secondary:not(.button):not(.text-button) { background: var(--surface); color: var(--ink); border-color: var(--line); }
 .app-shell .main-content.auth-content .auth-card button.auth-secondary:not(.button):not(.text-button):hover:not(:disabled) { background: var(--canvas); color: var(--ink); border-color: var(--muted); }
 [data-theme="dark"] .app-shell .auth-content .auth-field input:not([type="checkbox"]) { background: transparent; border-color: #888; }
