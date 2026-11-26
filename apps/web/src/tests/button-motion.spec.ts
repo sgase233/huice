@@ -1,7 +1,11 @@
 import { expect, test } from '@playwright/test';
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+});
+
 
 test('工作台按钮从指针位置扩散波纹并在松手后回弹', async ({ page }) => {
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const button = page.getByRole('button', { name: '添加一项信息' });
   await button.scrollIntoViewIfNeeded();
   const box = (await button.boundingBox())!;
@@ -17,7 +21,7 @@ test('工作台按钮从指针位置扩散波纹并在松手后回弹', async ({
 
 test('减少动态效果时不播放波纹或缩放', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const button = page.getByRole('button', { name: '添加一项信息' });
   await button.hover();
   await page.mouse.down();
@@ -27,7 +31,7 @@ test('减少动态效果时不播放波纹或缩放', async ({ page }) => {
 });
 
 test('侧边栏控件不使用按钮动效', async ({ page }) => {
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const toggle = page.getByRole('button', { name: '收起侧边栏' });
   await toggle.hover();
   await page.mouse.down();
@@ -37,7 +41,7 @@ test('侧边栏控件不使用按钮动效', async ({ page }) => {
 });
 
 test('画像操作按钮随主题保持清晰对比', async ({ page }) => {
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   for (const [theme, background, foreground] of [['light', 'rgb(23, 23, 23)', 'rgb(255, 255, 255)'], ['dark', 'rgb(237, 237, 237)', 'rgb(23, 23, 23)']] as const) {
     await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
     for (const name of ['添加一项信息', '保存当前样本']) {

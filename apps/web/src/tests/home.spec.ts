@@ -19,7 +19,7 @@ test('首页可浏览介绍并进入工作台', async ({ page }) => {
   await page.getByRole('link', { name: /开始使用工作台/ }).click();
   await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
   await expect(page.locator('a[href*="mode=demo"]')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '进入服务端演示' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '进入服务端演示' })).toHaveCount(0);
 });
 
 test('首页在移动端没有横向溢出', async ({ page }) => {
@@ -69,4 +69,13 @@ test('移动端可触碰侧边图片切换', async ({ browser }) => {
   await page.touchscreen.tap(Math.min(box.x + box.width - 5, carouselBox.x + carouselBox.width - 5), box.y + box.height / 2);
   await expect(page.locator('.home-carousel-ring')).toHaveAttribute('data-slide', '1');
   await context.close();
+});
+
+test('旧固定样例地址不再打开样例工作台', async ({ page }) => {
+  await page.goto('/?mode=demo');
+  await expect(page.getByRole('heading', { name: /看懂政策/ })).toBeVisible();
+  await expect(page.getByText('静态合成演示 · 未进行真实资格判断')).toHaveCount(0);
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: { error: { code: 'UNAUTHENTICATED', message: '需要登录', details: {} } } }));
+  await page.goto('/?mode=demo#enterprise');
+  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
 });

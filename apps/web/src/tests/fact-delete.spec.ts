@@ -1,7 +1,11 @@
 import { expect, test } from '@playwright/test';
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+});
+
 
 test('画像期间固定的信息不可重复选择，季度信息仍可重复', async ({ page }) => {
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const cards = page.locator('.fact-card');
   const current = cards.nth(2).getByLabel('信息类型');
   await expect(current.locator('option[value="region"]')).toHaveCount(0);
@@ -20,7 +24,7 @@ test('画像期间固定的信息不可重复选择，季度信息仍可重复',
 });
 
 test('删除按钮展开显示中文并删除对应的信息卡片', async ({ page }) => {
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const cards = page.locator('.fact-card');
   const card = cards.nth(2);
   const button = card.getByRole('button', { name: '移除此项信息' });
@@ -38,8 +42,9 @@ test('删除按钮展开显示中文并删除对应的信息卡片', async ({ pa
 
 test('触屏设备始终显示删除文字', async ({ browser }) => {
   const context = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 375, height: 812 } });
+  await context.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
   const page = await context.newPage();
-  await page.goto('/?mode=demo#enterprise');
+  await page.goto('/#enterprise');
   const button = page.getByRole('button', { name: '移除此项信息' });
   await expect(button.locator('.fact-delete-label')).toHaveCSS('opacity', '1');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

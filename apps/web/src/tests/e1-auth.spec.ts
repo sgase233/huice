@@ -59,33 +59,6 @@ test('reviewer can read trace without exposing it to enterprise accounts', async
   await expect(page.getByText('这条分析记录没有处理步骤。')).toBeVisible();
 });
 
-test('unavailable server demo reports its own cause', async ({ page }) => {
-  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
-  await page.route('**/api/v1/auth/logout', route => route.fulfill({ status: 204 }));
-  await page.route('**/api/v1/policies**', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
-  await page.goto('/#enterprise');
-  await page.getByRole('button', { name: '进入服务端演示' }).click();
-  await page.getByRole('button', { name: '机会列表' }).click();
-  await expect(page.getByRole('alert')).toContainText('该部署未启用服务端演示');
-});
-
-test('demo entry restores csrf before retrying a rejected logout', async ({ page }) => {
-  let logouts = 0;
-  await page.route('**/api/v1/auth/me', route => logouts === 0 ? route.fulfill({ status: 500, json: error('INTERNAL_ERROR') }) : route.fulfill({ json: session('reviewer', 'reviewer', null) }));
-  await page.route('**/api/v1/auth/logout', route => {
-    logouts++;
-    if (logouts === 1) return route.fulfill({ status: 403, json: error('CSRF_REQUIRED') });
-    expect(route.request().headers()['x-csrf-token']).toBe('0123456789abcdef');
-    return route.fulfill({ status: 204 });
-  });
-  await page.goto('/#enterprise');
-  await page.getByRole('button', { name: '进入服务端演示' }).click();
-  await page.getByRole('button', { name: '账号与退出' }).click();
-  await expect(page.getByRole('heading', { name: '服务端演示' })).toBeVisible();
-  await page.getByRole('button', { name: '关闭账号面板' }).click();
-  expect(logouts).toBe(2);
-});
-
 test('password change exposes server field errors', async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ json: session('first', 'enterprise', null) }));
   await page.route('**/api/v1/auth/password', route => route.fulfill({ status: 422, json: { error: { code: 'VALIDATION_ERROR', message: '请求内容不合法', details: { fieldErrors: [{ field: 'newPassword', message: '密码不符合要求' }] } }, traceId: 'test' } }));
@@ -291,17 +264,12 @@ test('enterprise account cannot open reviewer view by hash', async ({ page }) =>
   await expect(page.getByRole('button', { name: '读取轨迹' })).toHaveCount(0);
 });
 
-test('valid demo identity can enter demo after session restoration is forbidden', async ({ page }) => {
+test('demo identity without a user session is directed to login', async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 403, json: error('ROLE_FORBIDDEN') }));
-  await page.route('**/api/v1/auth/logout', route => route.fulfill({ status: 204 }));
   await page.goto('/#enterprise');
   await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
-  await expect(page.getByText('请登录账号，或进入服务端演示。')).toBeVisible();
-  await expect(page.getByText('会话已失效，请重新登录。')).toHaveCount(0);
-  await page.getByRole('button', { name: '进入服务端演示' }).click();
-  await page.getByRole('button', { name: '账号与退出' }).click();
-  await expect(page.getByRole('heading', { name: '服务端演示' })).toBeVisible();
-  await page.getByRole('button', { name: '关闭账号面板' }).click();
+  await expect(page.getByText('请登录账号。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '进入服务端演示' })).toHaveCount(0);
 });
 
 test('gate failure stays distinct from an expired session', async ({ page }) => {
@@ -316,20 +284,6 @@ test('gate failure stays distinct from an expired session', async ({ page }) => 
   await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible();
   await expect(page.getByText('请求已被账号切换替代。')).toHaveCount(0);
   await expect(page.getByText('会话已失效，请重新登录。')).toBeVisible();
-});
-
-test('server demo is separate and shows quota recovery', async ({ page }) => {
-  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 401, json: error('UNAUTHENTICATED') }));
-  await page.route('**/api/v1/auth/logout', route => route.fulfill({ status: 204 }));
-  await page.route('**/api/v1/enterprises', route => route.fulfill({ status: 429, json: error('DEMO_QUOTA_EXCEEDED') }));
-  await page.goto('/#enterprise');
-  await page.getByRole('button', { name: '进入服务端演示' }).click();
-  await page.getByRole('button', { name: '账号与退出' }).click();
-  await expect(page.getByRole('heading', { name: '服务端演示' })).toBeVisible();
-  await page.getByRole('button', { name: '关闭账号面板' }).click();
-  await expect(page.getByRole('button', { name: '政策审核' })).toHaveCount(0);
-  await page.getByRole('button', { name: '保存当前样本' }).click();
-  await expect(page.getByRole('alert')).toContainText('演示样本配额已用完');
 });
 
 test('account form remains usable in both themes on a narrow screen', async ({ page }) => {

@@ -1,4 +1,8 @@
 import { expect, test } from '@playwright/test';
+test.beforeEach(async ({ page }) => {
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ json: { user: { id: 'reviewer-test', username: 'reviewer', role: 'reviewer', enterpriseId: null }, csrfToken: '0123456789abcdef', expiresAt: '2030-01-01T00:00:00Z' } }));
+});
+
 
 for (const reducedMotion of ['no-preference', 'reduce'] as const) {
   test(`卡片滚动动画遵循动态效果设置：${reducedMotion}`, async ({ page }) => {
@@ -13,7 +17,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
         return original.apply(this, args);
       };
     });
-    await page.goto('/?mode=demo#enterprise');
+    await page.goto('/#enterprise');
     const card = page.locator('.fact-card').last();
     await card.scrollIntoViewIfNeeded();
     if (reducedMotion === 'reduce') {
@@ -59,19 +63,6 @@ test('减少动态效果时审核卡片直接删除', async ({ page }) => {
   await page.getByRole('button', { name: '删除条件', exact: true }).click();
   await expect(page.locator('.admin-criterion')).toHaveCount(0);
   await expect(page.locator('.motion-card-slot.is-removing')).toHaveCount(0);
-});
-
-test('快速筛选后卡片恢复且不会被旧动画移除', async ({ page }) => {
-  await page.goto('/?mode=demo#opportunities');
-  const cards = page.locator('.policy-grid .policy-card');
-  await expect(cards).toHaveCount(4);
-  await page.getByLabel('政策类型').selectOption('tax');
-  await expect(page.locator('.policy-grid .motion-card-slot.is-removing').first()).toBeAttached();
-  await page.getByLabel('政策类型').selectOption('all');
-  await expect.poll(() => page.locator('.policy-grid .motion-card-slot.is-removing').count()).toBe(0);
-  await expect(cards).toHaveCount(4);
-  await page.waitForTimeout(500);
-  await expect(cards).toHaveCount(4);
 });
 
 test('删除规则子条件和引用时只收起对应卡片', async ({ page }) => {
